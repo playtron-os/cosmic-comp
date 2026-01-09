@@ -963,6 +963,17 @@ impl Workspace {
     }
 
     pub fn unmaximize_request(&mut self, elem: &CosmicMapped) -> Option<Rectangle<i32, Local>> {
+        self.unmaximize_request_with_options(elem, false)
+    }
+
+    /// Unmaximize with optional client-driven animation.
+    /// When `animate_client_driven` is true, the compositor sends intermediate
+    /// configure events to the client for smooth resize animation.
+    pub fn unmaximize_request_with_options(
+        &mut self,
+        elem: &CosmicMapped,
+        animate_client_driven: bool,
+    ) -> Option<Rectangle<i32, Local>> {
         let mut state = elem.maximized_state.lock().unwrap();
         if let Some(state) = state.take() {
             if let Some(minimized) = self.minimized_windows.iter_mut().find(|m| *m == elem) {
@@ -986,12 +997,18 @@ impl Workspace {
                     x => {
                         let use_geometry = !matches!(x, ManagedLayer::Tiling);
                         elem.set_maximized(false);
-                        self.floating_layer.map_internal(
-                            elem.clone(),
-                            use_geometry.then_some(state.original_geometry.loc),
-                            use_geometry.then_some(state.original_geometry.size.as_logical()),
-                            None,
-                        );
+
+                        if animate_client_driven && use_geometry {
+                            self.floating_layer
+                                .start_client_driven_resize(elem.clone(), state.original_geometry);
+                        } else {
+                            self.floating_layer.map_internal(
+                                elem.clone(),
+                                use_geometry.then_some(state.original_geometry.loc),
+                                use_geometry.then_some(state.original_geometry.size.as_logical()),
+                                None,
+                            );
+                        }
                         Some(state.original_geometry)
                     }
                 }

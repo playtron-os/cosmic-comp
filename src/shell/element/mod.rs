@@ -470,6 +470,22 @@ impl CosmicMapped {
         }
     }
 
+    /// Force send configure events to all surfaces, bypassing throttling.
+    /// Useful for animated resize where we want rapid configure updates.
+    pub fn force_configure(&self) -> Option<Serial> {
+        match &self.element {
+            CosmicMappedInternal::Stack(s) => {
+                let active = s.active();
+                for surface in s.surfaces().filter(|s| s != &active) {
+                    surface.force_configure();
+                }
+                active.force_configure()
+            }
+            CosmicMappedInternal::Window(w) => w.surface().force_configure(),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn send_close(&self) {
         let window = match &self.element {
             CosmicMappedInternal::Stack(s) => s.active(),

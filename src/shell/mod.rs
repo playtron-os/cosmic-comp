@@ -4115,12 +4115,12 @@ impl Shell {
         loop_handle: &LoopHandle<'static, State>,
     ) {
         if window.is_maximized(true) {
-            self.unmaximize_request(window);
+            self.unmaximize_request_with_options(window, true);
         } else {
             if window.is_fullscreen(true) {
                 return;
             }
-            self.maximize_request(window, seat, true, loop_handle);
+            self.maximize_request_with_options(window, seat, true, true, loop_handle);
         }
     }
 
@@ -4223,9 +4223,23 @@ impl Shell {
         animate: bool,
         loop_handle: &LoopHandle<'static, State>,
     ) {
+        self.maximize_request_with_options(mapped, seat, animate, false, loop_handle)
+    }
+
+    /// Maximize with optional client-driven animation.
+    /// When `client_driven` is true, the compositor sends intermediate
+    /// configure events to the client for smooth resize animation.
+    pub fn maximize_request_with_options(
+        &mut self,
+        mapped: &CosmicMapped,
+        seat: &Seat<State>,
+        animate: bool,
+        client_driven: bool,
+        loop_handle: &LoopHandle<'static, State>,
+    ) {
         self.unminimize_request(&mapped.active_window(), seat, loop_handle);
 
-        let (original_layer, floating_layer, original_geometry) = if let Some(set) = self
+        let (original_layer, floating_layer, mut original_geometry) = if let Some(set) = self
             .workspaces
             .sets
             .values_mut()
@@ -4245,6 +4259,25 @@ impl Shell {
             return;
         };
 
+        // If the window has a pending size (e.g., it was created with a specific size
+        // but immediately maximized), use that as the original geometry size.
+        // This ensures windows that start maximized remember their intended windowed size.
+        if let Some(pending_size) = mapped.pending_size() {
+            original_geometry.size = pending_size.as_local();
+            // Center the window on the output when unmaximizing
+            let output_geometry = floating_layer
+                .space
+                .outputs()
+                .next()
+                .map(|o| {
+                    let layers = smithay::desktop::layer_map_for_output(o);
+                    layers.non_exclusive_zone()
+                })
+                .unwrap_or_default();
+            original_geometry.loc.x = (output_geometry.size.w - original_geometry.size.w) / 2;
+            original_geometry.loc.y = (output_geometry.size.h - original_geometry.size.h) / 2;
+        }
+
         let mut state = mapped.maximized_state.lock().unwrap();
         if state.is_none() {
             *state = Some(MaximizedState {
@@ -4252,11 +4285,26 @@ impl Shell {
                 original_layer,
             });
             std::mem::drop(state);
-            floating_layer.map_maximized(mapped.clone(), original_geometry, animate);
+            if client_driven && animate {
+                floating_layer.map_maximized_client_driven(mapped.clone(), original_geometry);
+            } else {
+                floating_layer.map_maximized(mapped.clone(), original_geometry, animate);
+            }
         }
     }
 
     pub fn unmaximize_request(&mut self, mapped: &CosmicMapped) -> Option<Size<i32, Logical>> {
+        self.unmaximize_request_with_options(mapped, false)
+    }
+
+    /// Unmaximize with optional client-driven animation.
+    /// When `client_driven` is true, the compositor sends intermediate
+    /// configure events to the client for smooth resize animation.
+    pub fn unmaximize_request_with_options(
+        &mut self,
+        mapped: &CosmicMapped,
+        client_driven: bool,
+    ) -> Option<Size<i32, Logical>> {
         if let Some(set) = self.workspaces.sets.values_mut().find(|set| {
             set.sticky_layer.mapped().any(|m| m == mapped)
                 || set
@@ -4276,12 +4324,17 @@ impl Shell {
                     minimized.unmaximize(state.original_geometry);
                 } else {
                     mapped.set_maximized(false);
-                    set.sticky_layer.map_internal(
-                        mapped.clone(),
-                        Some(state.original_geometry.loc),
-                        Some(state.original_geometry.size.as_logical()),
-                        None,
-                    );
+                    if client_driven {
+                        set.sticky_layer
+                            .start_client_driven_resize(mapped.clone(), state.original_geometry);
+                    } else {
+                        set.sticky_layer.map_internal(
+                            mapped.clone(),
+                            Some(state.original_geometry.loc),
+                            Some(state.original_geometry.size.as_logical()),
+                            None,
+                        );
+                    }
                 }
                 Some(state.original_geometry.size.as_logical())
             } else {
@@ -4289,7 +4342,7 @@ impl Shell {
             }
         } else if let Some(workspace) = self.space_for_mut(mapped) {
             workspace
-                .unmaximize_request(mapped)
+                .unmaximize_request_with_options(mapped, client_driven)
                 .map(|geo| geo.size.as_logical())
         } else {
             None

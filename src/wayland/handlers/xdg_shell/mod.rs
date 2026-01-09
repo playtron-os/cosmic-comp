@@ -233,7 +233,14 @@ impl XdgShellHandler for State {
         let mut shell = self.common.shell.write();
         if let Some(mapped) = shell.element_for_surface(surface.wl_surface()).cloned() {
             let seat = shell.seats.last_active().clone();
-            shell.maximize_request(&mapped, &seat, true, &self.common.event_loop_handle)
+            // Use client-driven animation for smooth resize
+            shell.maximize_request_with_options(
+                &mapped,
+                &seat,
+                true, // animate
+                true, // client_driven
+                &self.common.event_loop_handle,
+            )
         } else if let Some(pending) = shell
             .pending_windows
             .iter_mut()
@@ -246,7 +253,8 @@ impl XdgShellHandler for State {
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         let mut shell = self.common.shell.write();
         if let Some(mapped) = shell.element_for_surface(surface.wl_surface()).cloned() {
-            shell.unmaximize_request(&mapped);
+            // Use client-driven animation for smooth resize
+            shell.unmaximize_request_with_options(&mapped, true);
         } else if let Some(pending) = shell
             .pending_windows
             .iter_mut()
