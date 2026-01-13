@@ -202,17 +202,11 @@ impl CosmicWindowInternal {
             || (is_tiled && appearance.clip_tiled_windows))
             && !is_maximized;
         let round = (!is_tiled || appearance.clip_tiled_windows) && !is_maximized;
-        let radii = round
-            .then(|| {
-                self.theme
-                    .lock()
-                    .unwrap()
-                    .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                    .map(|x| x.round() as u8)
-            })
-            .unwrap_or([0; 4]);
+        let radii = if round {
+            [super::DEFAULT_WINDOW_CORNER_RADIUS; 4]
+        } else {
+            [0; 4]
+        };
 
         match (has_ssd, clip) {
             (has_ssd, true) => {
@@ -518,13 +512,7 @@ impl CosmicWindow {
                 p.has_ssd(false),
                 p.is_tiled(),
                 p.window.is_maximized(false),
-                p.theme
-                    .lock()
-                    .unwrap()
-                    .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                    .map(|x| x.round() as u8),
+                [super::DEFAULT_WINDOW_CORNER_RADIUS; 4],
                 *p.appearance_conf.lock().unwrap(),
             )
         });

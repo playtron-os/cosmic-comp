@@ -78,6 +78,9 @@ use super::{
 };
 use cosmic_settings_config::shortcuts::action::{Direction, FocusDirection};
 
+/// Default corner radius for windows (in pixels)
+pub const DEFAULT_WINDOW_CORNER_RADIUS: u8 = 22;
+
 space_elements! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     CosmicMappedInternal;

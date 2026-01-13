@@ -686,15 +686,11 @@ impl CosmicStack {
             if tiled && !appearance.shadow_tiled_windows {
                 return None;
             }
-            let radii = round
-                .then(|| {
-                    theme
-                        .cosmic()
-                        .radius_s()
-                        .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                        .map(|x| (x * scale as f32).round() as u8)
-                })
-                .unwrap_or([0, 0, 0, 0]);
+            let radii = if round {
+                [super::DEFAULT_WINDOW_CORNER_RADIUS; 4]
+            } else {
+                [0; 4]
+            };
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
             geo.size.h += TAB_HEIGHT as f64;
@@ -764,13 +760,11 @@ impl CosmicStack {
             let maximized = windows[active].is_maximized(false);
 
             let round = (appearance.clip_tiled_windows || !tiled) && !maximized;
-            let radii = round.then(|| {
-                theme
-                    .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                    .map(|x| x.round() as u8)
-            });
+            let radii = if round {
+                Some([super::DEFAULT_WINDOW_CORNER_RADIUS; 4])
+            } else {
+                None
+            };
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
             geo.loc += location.to_f64().to_logical(scale);
@@ -954,14 +948,7 @@ impl CosmicStack {
             let maximized = active_window.is_maximized(false);
 
             let round = (appearance.clip_tiled_windows || !is_tiled) && !maximized;
-            let radii = p
-                .theme
-                .lock()
-                .unwrap()
-                .cosmic()
-                .radius_s()
-                .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                .map(|val| val.round() as u8);
+            let radii = [super::DEFAULT_WINDOW_CORNER_RADIUS; 4];
 
             if !round {
                 let mut corners = active_window

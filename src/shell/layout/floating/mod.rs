@@ -2206,7 +2206,7 @@ impl FloatingLayout {
                 let corner_radius = if elem.is_maximized(false) {
                     [0.0f32; 4]
                 } else {
-                    let radius = elem.corner_radius(geometry.size.as_logical(), 8);
+                    let radius = elem.corner_radius(geometry.size.as_logical(), crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS);
                     // Convert corner radii to f32 for shader
                     // Reorder from [bottom_right, top_right, bottom_left, top_left]
                     // to shader expected order: [top_left, top_right, bottom_right, bottom_left]
