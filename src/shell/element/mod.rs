@@ -925,6 +925,24 @@ impl CosmicMapped {
         }
     }
 
+    /// Get corner radius formatted for blur shader.
+    /// Returns [0.0; 4] for maximized windows, otherwise converts and reorders
+    /// from [bottom_right, top_right, bottom_left, top_left] to shader order
+    /// [top_left, top_right, bottom_right, bottom_left].
+    pub fn blur_corner_radius(&self, geometry_size: Size<i32, Logical>) -> [f32; 4] {
+        if self.is_maximized(false) {
+            [0.0f32; 4]
+        } else {
+            let radius = self.corner_radius(geometry_size, DEFAULT_WINDOW_CORNER_RADIUS);
+            [
+                radius[3] as f32, // top_left
+                radius[1] as f32, // top_right
+                radius[0] as f32, // bottom_right
+                radius[2] as f32, // bottom_left
+            ]
+        }
+    }
+
     /// Check if any surface in this mapped element has KDE blur enabled
     pub fn has_blur(&self) -> bool {
         match &self.element {

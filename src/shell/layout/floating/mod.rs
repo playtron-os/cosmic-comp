@@ -27,6 +27,7 @@ use smithay::{
 
 use crate::{
     backend::render::{
+        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
         BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
         element::AsGlowRenderer, get_cached_blur_texture_for_window,
     },
@@ -54,14 +55,6 @@ pub use self::grabs::*;
 
 pub const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 pub const MINIMIZE_ANIMATION_DURATION: Duration = Duration::from_millis(320);
-
-// Blur backdrop styling constants
-// CSS equivalent: background: rgba(255, 255, 255, 0.10); backdrop-filter: blur(50px)
-const BLUR_TINT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-const BLUR_TINT_STRENGTH: f32 = 0.10;
-// Fallback when blur texture not available
-const BLUR_FALLBACK_ALPHA: f32 = 0.25;
-const BLUR_FALLBACK_COLOR: [f32; 3] = [0.9, 0.9, 0.95];
 
 #[derive(Debug, Default)]
 pub struct FloatingLayout {
@@ -3068,24 +3061,7 @@ impl FloatingLayout {
             // Design spec: background: rgba(255, 255, 255, 0.10), backdrop-filter: blur(50px)
             // Skip adding backdrop if we're capturing background for blur
             if elem.has_blur() && blur_ctx.is_none() {
-                // Use 0 corner radius for maximized windows (no rounded corners when fullscreen)
-                let corner_radius = if elem.is_maximized(false) {
-                    [0.0f32; 4]
-                } else {
-                    let radius = elem.corner_radius(
-                        geometry.size.as_logical(),
-                        crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS,
-                    );
-                    // Convert corner radii to f32 for shader
-                    // Reorder from [bottom_right, top_right, bottom_left, top_left]
-                    // to shader expected order: [top_left, top_right, bottom_right, bottom_left]
-                    [
-                        radius[3] as f32, // top_left
-                        radius[1] as f32, // top_right
-                        radius[0] as f32, // bottom_right
-                        radius[2] as f32, // bottom_left
-                    ]
-                };
+                let corner_radius = elem.blur_corner_radius(geometry.size.as_logical());
 
                 // Get the output name for looking up cached blur texture
                 let output_name = output.name();

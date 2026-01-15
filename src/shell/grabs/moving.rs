@@ -2,7 +2,9 @@
 
 use crate::{
     backend::render::{
-        BackdropShader, IndicatorShader, Key, Usage, cursor::CursorState, element::AsGlowRenderer,
+        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
+        BackdropShader, BlurredBackdropShader, IndicatorShader, Key, Usage, cursor::CursorState,
+        element::AsGlowRenderer, get_cached_blur_texture_for_window,
     },
     shell::{
         CosmicMapped, CosmicSurface, Direction, ManagedLayer,
@@ -199,6 +201,55 @@ impl MoveGrabState {
             _ => vec![],
         };
 
+        // Render blur backdrop if the window has blur enabled
+        let blur_backdrop_element: Option<CosmicMappedRenderElement<R>> = if self.window.has_blur()
+        {
+            let window_geo = self.window.geometry();
+            let corner_radius = self.window.blur_corner_radius(window_geo.size.as_logical());
+
+            let output_name = output.name();
+            let window_key = self.window.key();
+            let output_transform = output.current_transform();
+            let output_scale_f = output.current_scale().fractional_scale();
+
+            // Calculate scaled geometry for the blur backdrop
+            let scaled_size = window_geo.size.to_f64().upscale(scale).to_i32_round();
+            let backdrop_geometry = Rectangle::new(render_location, scaled_size).as_local();
+
+            // Get per-window blur texture
+            let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
+
+            if let Some(blur_info) = blur_info {
+                Some(CosmicMappedRenderElement::from(
+                    BlurredBackdropShader::element(
+                        renderer,
+                        &blur_info.texture,
+                        backdrop_geometry,
+                        blur_info.size,
+                        blur_info.screen_size,
+                        output_scale_f,
+                        output_transform,
+                        corner_radius,
+                        alpha,
+                        BLUR_TINT_COLOR,
+                        BLUR_TINT_STRENGTH,
+                    ),
+                ))
+            } else {
+                // Fallback when no blur texture is cached
+                Some(CosmicMappedRenderElement::from(BackdropShader::element(
+                    renderer,
+                    Key::Window(Usage::Overlay, self.window.key()),
+                    backdrop_geometry,
+                    corner_radius,
+                    alpha * BLUR_FALLBACK_ALPHA,
+                    BLUR_FALLBACK_COLOR,
+                )))
+            }
+        } else {
+            None
+        };
+
         let w_elements = self
             .window
             .render_elements::<R, CosmicMappedRenderElement<R>>(
@@ -302,6 +353,7 @@ impl MoveGrabState {
                                 x => x,
                             }),
                     )
+                    .chain(blur_backdrop_element)
                     .chain(snapping_indicator),
             )
             .map(I::from)

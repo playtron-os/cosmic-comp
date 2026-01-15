@@ -133,8 +133,9 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 
 // Blur module re-exports
 pub use blur::{
-    BLUR_DOWNSAMPLE_FACTOR, BLUR_ITERATIONS, BlurCaptureContext, BlurRenderState,
-    BlurredTextureInfo, DEFAULT_BLUR_RADIUS, HasBlur, apply_blur_passes, blur_downsample_enabled,
+    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
+    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+    DEFAULT_BLUR_RADIUS, HasBlur, apply_blur_passes, blur_downsample_enabled,
     cache_blur_texture_for_window, clear_blur_textures_for_output, compute_element_content_hash,
     downsample_texture, get_blur_group_content_hash, get_cached_blur_texture_for_window,
     store_blur_group_content_hash,
