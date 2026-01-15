@@ -2978,6 +2978,24 @@ impl Shell {
             self.maximize_request(&mapped, &seat, false, loop_handle);
         }
 
+        // If this is an embedded window, re-apply the geometry now that it's mapped
+        // The initial configure in embed_geometry_changed happens before the window is mapped,
+        // so we need to re-apply the size here to ensure the embedded window renders at the correct size
+        if let Some(embed_info) = crate::wayland::handlers::surface_embed::get_embed_render_info(&window) {
+            tracing::debug!(
+                embedded_app_id = %window.app_id(),
+                embed_geometry = ?embed_info.geometry,
+                "Re-applying embed geometry after window mapped"
+            );
+            // Set the geometry and force a configure
+            let global_geo = smithay::utils::Rectangle::new(
+                (embed_info.geometry.loc.x, embed_info.geometry.loc.y).into(),
+                (embed_info.geometry.size.w, embed_info.geometry.size.h).into(),
+            );
+            window.set_geometry(global_geo, 0);
+            window.force_configure();
+        }
+
         let new_target = if (workspace_output == seat.active_output()
             && active_handle == workspace_handle)
             || parent_is_sticky

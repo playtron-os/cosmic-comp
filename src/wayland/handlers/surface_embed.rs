@@ -689,6 +689,12 @@ impl SurfaceEmbedHandler for State {
         );
         toplevel.set_geometry(global_geo, 0); // Pass 0 for SSD height - we skip SSD rendering for embedded
 
+        // Force send configure to the embedded toplevel so it actually resizes
+        // We use force_configure() instead of send_configure() because send_pending_configure()
+        // may not send if smithay doesn't detect a difference in pending state.
+        // For initial embed sizing, we need to guarantee the configure is sent.
+        toplevel.force_configure();
+
         // Send configure event to the parent client (chat-ui-rs)
         // This tells it the preferred size changed
         embed.configure(actual_geometry.size.w, actual_geometry.size.h);
