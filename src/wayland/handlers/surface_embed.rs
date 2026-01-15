@@ -362,6 +362,21 @@ pub fn get_children_for_parent_by_surface_id(
         .unwrap_or_default()
 }
 
+/// Get all embedded surface IDs for a parent (used for moving embedded children with parent)
+/// Returns just the surface IDs, not the full EmbedRenderInfo
+pub fn get_embedded_surface_ids_for_parent(parent_surface_id: &str) -> Vec<String> {
+    EMBEDDED_APP_IDS
+        .read()
+        .ok()
+        .map(|map| {
+            map.iter()
+                .filter(|(_, info)| info.parent_surface_id == parent_surface_id)
+                .map(|(surface_id, _)| surface_id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Update embedded render info for a parent (by surface_id) with new size
 /// Returns the updated embedded surface_ids and their new geometries
 pub fn update_embedded_geometry_for_parent_by_surface_id(

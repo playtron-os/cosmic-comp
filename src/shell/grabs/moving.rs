@@ -17,7 +17,10 @@ use crate::{
     },
     utils::prelude::*,
     wayland::{
-        handlers::surface_embed::{EmbedRenderInfo, mark_parent_grabbed, unmark_parent_grabbed},
+        handlers::surface_embed::{
+            EmbedRenderInfo, get_embedded_surface_ids_for_parent, mark_parent_grabbed,
+            unmark_parent_grabbed,
+        },
         protocols::toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
     },
 };
@@ -911,22 +914,25 @@ impl Drop for MoveGrab {
         let cursor_output = self.cursor_output.clone();
 
         let _ = self.evlh.0.insert_idle(move |state| {
-            let position: Option<(CosmicMapped, Point<i32, Global>)> = if let Some(grab_state) =
-                seat.user_data()
-                    .get::<SeatMoveGrabState>()
-                    .and_then(|s| s.lock().unwrap().take())
+            let (position, parent_surface_id): (
+                Option<(CosmicMapped, Point<i32, Global>)>,
+                Option<String>,
+            ) = if let Some(grab_state) = seat
+                .user_data()
+                .get::<SeatMoveGrabState>()
+                .and_then(|s| s.lock().unwrap().take())
             {
                 // Unmark this window as grabbed - cleanup can now orphan children if window closes
-                if let Some(surface_id) = grab_state
+                let parent_surface_id = grab_state
                     .window
                     .active_window()
                     .wl_surface()
-                    .map(|s| s.id().to_string())
-                {
-                    unmark_parent_grabbed(&surface_id);
+                    .map(|s| s.id().to_string());
+                if let Some(ref surface_id) = parent_surface_id {
+                    unmark_parent_grabbed(surface_id);
                 }
 
-                if grab_state.window.alive() {
+                let position = if grab_state.window.alive() {
                     let window_location =
                         (grab_state.location.to_i32_round() + grab_state.window_offset).as_global();
                     let mut shell = state.common.shell.write();
@@ -1031,10 +1037,80 @@ impl Drop for MoveGrab {
                         .cleanup_drag();
                     shell.set_overview_mode(None, state.common.event_loop_handle.clone());
                     None
-                }
+                };
+                (position, parent_surface_id)
             } else {
-                None
+                (None, None)
             };
+
+            // Move embedded children to follow the parent to the new output
+            if position.is_some() {
+                if let Some(ref parent_surface_id) = parent_surface_id {
+                    let embedded_children = get_embedded_surface_ids_for_parent(parent_surface_id);
+                    if !embedded_children.is_empty() {
+                        tracing::info!(
+                            parent_surface_id = %parent_surface_id,
+                            children_count = embedded_children.len(),
+                            "Moving embedded children with parent to new output"
+                        );
+
+                        // Get the target workspace handle
+                        let target_workspace = {
+                            let shell = state.common.shell.read();
+                            shell.active_space(&output).map(|ws| ws.handle.clone())
+                        };
+
+                        if let Some(target_handle) = target_workspace {
+                            for embedded_surface_id in embedded_children {
+                                // Find and move each embedded child
+                                let shell = state.common.shell.read();
+                                let embedded_mapped = shell
+                                    .workspaces
+                                    .spaces()
+                                    .flat_map(|s| s.mapped())
+                                    .find(|m| {
+                                        m.windows().any(|(w, _)| {
+                                            w.wl_surface()
+                                                .map(|s| s.id().to_string() == embedded_surface_id)
+                                                .unwrap_or(false)
+                                        })
+                                    })
+                                    .cloned();
+
+                                let embedded_workspace = embedded_mapped
+                                    .as_ref()
+                                    .and_then(|m| shell.space_for(m))
+                                    .map(|s| s.handle.clone());
+
+                                drop(shell);
+
+                                if let (Some(mapped), Some(from_handle)) =
+                                    (embedded_mapped, embedded_workspace)
+                                {
+                                    if from_handle != target_handle {
+                                        let mut workspace_state =
+                                            state.common.workspace_state.update();
+                                        let mut shell = state.common.shell.write();
+                                        let _ = shell.move_element(
+                                            None, // No seat
+                                            &mapped,
+                                            &from_handle,
+                                            &target_handle,
+                                            false, // Don't follow
+                                            None,
+                                            &mut workspace_state,
+                                        );
+                                        tracing::info!(
+                                            embedded_surface_id = %embedded_surface_id,
+                                            "Moved embedded child to parent's workspace"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             {
                 let cursor_state = seat.user_data().get::<CursorState>().unwrap();
