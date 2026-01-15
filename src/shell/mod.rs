@@ -2760,6 +2760,61 @@ impl Shell {
             maximized: should_be_maximized,
         } = self.pending_windows.remove(pos);
 
+        // Check if this window is embedded - if so, we need to place it on the same
+        // output/workspace as the parent window to ensure proper embedding
+        let embed_parent_output = crate::wayland::handlers::surface_embed::get_embed_render_info(&window)
+            .and_then(|embed_info| {
+                tracing::debug!(
+                    embedded_app_id = %window.app_id(),
+                    parent_surface_id = %embed_info.parent_surface_id,
+                    "Looking for parent output for embedded window"
+                );
+
+                // Find the parent element by its surface ID - check all outputs and workspaces
+                for output in self.outputs() {
+                    // Check workspaces on this output
+                    for workspace in self.workspaces.spaces().filter(|s| &s.output == output) {
+                        for mapped in workspace.mapped() {
+                            if let Some(surface) = mapped.active_window().wl_surface() {
+                                if surface.id().to_string() == embed_info.parent_surface_id {
+                                    tracing::info!(
+                                        embedded_app_id = %window.app_id(),
+                                        parent_app_id = %mapped.active_window().app_id(),
+                                        output = %output.name(),
+                                        "Found parent on workspace, using same output for embedded window"
+                                    );
+                                    return Some(output.clone());
+                                }
+                            }
+                        }
+                    }
+
+                    // Check sticky layer on this output
+                    if let Some(set) = self.workspaces.sets.get(output) {
+                        for mapped in set.sticky_layer.mapped() {
+                            if let Some(surface) = mapped.active_window().wl_surface() {
+                                if surface.id().to_string() == embed_info.parent_surface_id {
+                                    tracing::info!(
+                                        embedded_app_id = %window.app_id(),
+                                        parent_app_id = %mapped.active_window().app_id(),
+                                        output = %output.name(),
+                                        "Found parent on sticky layer, using same output for embedded window"
+                                    );
+                                    return Some(output.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                tracing::warn!(
+                    embedded_app_id = %window.app_id(),
+                    parent_surface_id = %embed_info.parent_surface_id,
+                    "Could not find parent for embedded window"
+                );
+                None
+            });
+
         let parent_is_sticky = if let Some(toplevel) = window.0.toplevel() {
             if let Some(parent) = toplevel.parent() {
                 if let Some(elem) = self.element_for_surface(&parent) {
@@ -2784,7 +2839,10 @@ impl Shell {
         };
 
         let should_be_fullscreen = output.is_some();
-        let mut output = output.unwrap_or_else(|| seat.active_output());
+        // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
+        let mut output = output
+            .or(embed_parent_output)
+            .unwrap_or_else(|| seat.active_output());
 
         // this is beyond stupid, just to make the borrow checker happy
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {

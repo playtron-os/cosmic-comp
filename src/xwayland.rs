@@ -841,18 +841,24 @@ impl XwmHandler for State {
                     }
                 }
             }
+
+            // Check if this window matches any pending PID-based embed requests
+            // BEFORE mapping, so the surface is marked as embedded before rendering.
+            // This prevents the window from appearing as a separate window for a few frames.
+            // Drop shell lock first as check_pending_pid_embeds_for_window needs &mut self
+            std::mem::drop(shell);
+            self.check_pending_pid_embeds_for_window(&window);
+
+            // Re-acquire shell lock for map_window
+            let mut shell = self.common.shell.write();
             let res = shell.map_window(
                 &window,
                 &mut self.common.toplevel_info_state,
                 &mut self.common.workspace_state,
                 &self.common.event_loop_handle,
             );
-            // Drop shell lock before checking pending embeds
             std::mem::drop(shell);
-            
-            // Check if this window matches any pending PID-based embed requests
-            self.check_pending_pid_embeds_for_window(&window);
-            
+
             if let Some(target) = res {
                 let shell = self.common.shell.read();
                 let seat = shell.seats.last_active().clone();

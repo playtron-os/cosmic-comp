@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{shell::Shell, utils::prelude::*};
+use crate::{
+    shell::Shell,
+    utils::prelude::*,
+    wayland::handlers::surface_embed::{get_embed_render_info_by_id, is_wl_surface_embedded},
+};
 use smithay::{
     desktop::{
         LayerSurface, PopupKind, PopupManager, WindowSurfaceType, get_popup_toplevel_coords,
@@ -9,7 +13,7 @@ use smithay::{
     output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_positioner::ConstraintAdjustment,
-        wayland_server::protocol::wl_surface::WlSurface,
+        wayland_server::{Resource, protocol::wl_surface::WlSurface},
     },
     utils::{Logical, Point, Rectangle},
     wayland::{
@@ -20,11 +24,20 @@ use smithay::{
         },
     },
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 impl Shell {
     pub fn unconstrain_popup(&self, surface: &PopupSurface) {
         if let Some(parent) = get_popup_toplevel(surface) {
+            // Check if the toplevel is embedded - if so, we need to adjust popup positioning
+            // to account for the fact that the embedded window is rendered inside its parent
+            if is_wl_surface_embedded(&parent) {
+                if let Some(result) = self.unconstrain_popup_for_embedded(surface, &parent) {
+                    return result;
+                }
+                // Fall through to normal handling if we couldn't find the parent
+            }
+
             if let Some(elem) = self.element_for_surface(&parent) {
                 let (mut element_geo, output, is_tiled) =
                     if let Some(workspace) = self.space_for(elem) {
@@ -84,6 +97,75 @@ impl Shell {
                 unconstrain_layer_popup(surface, output, &layer_surface)
             }
         }
+    }
+
+    /// Handle popup positioning for embedded windows.
+    /// When a window is embedded in another (e.g., okular embedded in chat-ui),
+    /// popups need to be positioned relative to where the embedded window is actually
+    /// rendered, not where it would be in the workspace.
+    fn unconstrain_popup_for_embedded(
+        &self,
+        surface: &PopupSurface,
+        embedded_toplevel: &WlSurface,
+    ) -> Option<()> {
+        let embedded_surface_id = embedded_toplevel.id().to_string();
+        let embed_info = get_embed_render_info_by_id(&embedded_surface_id)?;
+
+        // Find the parent window that contains the embedded window
+        // Search both workspaces and sticky layers
+        let parent_elem = self
+            .workspaces
+            .spaces()
+            .flat_map(|s| s.mapped())
+            .chain(
+                self.workspaces
+                    .sets
+                    .values()
+                    .flat_map(|set| set.sticky_layer.mapped()),
+            )
+            .find(|m| {
+                m.active_window()
+                    .wl_surface()
+                    .map(|s| s.id().to_string() == embed_info.parent_surface_id)
+                    .unwrap_or(false)
+            })?;
+
+        // Get the parent's geometry in global coordinates
+        let (parent_geo, output) = if let Some(workspace) = self.space_for(parent_elem) {
+            let elem_geo = workspace.element_geometry(parent_elem)?;
+            (
+                elem_geo.to_global(workspace.output()),
+                workspace.output.clone(),
+            )
+        } else if let Some((output, set)) = self
+            .workspaces
+            .sets
+            .iter()
+            .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == parent_elem))
+        {
+            let elem_geo = set.sticky_layer.element_geometry(parent_elem)?;
+            (elem_geo.to_global(output), output.clone())
+        } else {
+            return None;
+        };
+
+        // The embedded window is rendered at: parent_loc + embed_geometry.loc
+        // So the window_loc for popup positioning should be:
+        let embed_offset: Point<i32, Global> =
+            Point::from((embed_info.geometry.loc.x, embed_info.geometry.loc.y));
+        let window_loc = parent_geo.loc + embed_offset;
+
+        debug!(
+            embedded_app_id = %embed_info.embedded_app_id,
+            parent_app_id = %embed_info.parent_app_id,
+            parent_geo = ?parent_geo,
+            embed_geometry = ?embed_info.geometry,
+            calculated_window_loc = ?window_loc,
+            "Positioning popup for embedded window"
+        );
+
+        unconstrain_xdg_popup(surface, window_loc, output.geometry());
+        Some(())
     }
 }
 

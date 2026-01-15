@@ -680,6 +680,82 @@ impl FloatingLayout {
         embedded_elements
     }
 
+    /// Render popups for an embedded window at its correct visual position (inside parent)
+    fn render_embedded_popups<R>(
+        &self,
+        renderer: &mut R,
+        embedded_elem: &CosmicMapped,
+        output_scale: f64,
+        alpha: f32,
+    ) -> Vec<CosmicMappedRenderElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+        R::TextureId: Send + Clone + 'static,
+        CosmicMappedRenderElement<R>: RenderElement<R>,
+        CosmicWindowRenderElement<R>: RenderElement<R>,
+        CosmicStackRenderElement<R>: RenderElement<R>,
+    {
+        let mut popup_elements = Vec::new();
+
+        // Get the embedded window's surface ID
+        let embedded_window = embedded_elem.active_window();
+        let Some(embedded_surface) = embedded_window.wl_surface() else {
+            return popup_elements;
+        };
+        let embedded_surface_id = embedded_surface.id().to_string();
+
+        // Get the embed info to find the parent and embed geometry
+        let Some(embed_info) = crate::wayland::handlers::surface_embed::get_embed_render_info_by_id(
+            &embedded_surface_id,
+        ) else {
+            return popup_elements;
+        };
+
+        // Find the parent element
+        let parent_elem = self.space.elements().find(|e| {
+            e.active_window()
+                .wl_surface()
+                .map(|s| s.id().to_string() == embed_info.parent_surface_id)
+                .unwrap_or(false)
+        });
+
+        let Some(parent_elem) = parent_elem else {
+            return popup_elements;
+        };
+
+        // Get parent geometry (possibly animated)
+        let parent_geometry = self
+            .animations
+            .get(parent_elem)
+            .map(|anim| *anim.previous_geometry())
+            .unwrap_or_else(|| self.space.element_geometry(parent_elem).unwrap().as_local());
+
+        // Calculate actual embed geometry based on parent's size
+        let actual_geometry = if let Some(ref anchor_config) = embed_info.anchor_config {
+            anchor_config.calculate_geometry(parent_geometry.size.w, parent_geometry.size.h)
+        } else {
+            embed_info.geometry
+        };
+
+        // Calculate where the embedded window is visually rendered
+        let embed_offset = smithay::utils::Point::<i32, smithay::utils::Logical>::from((
+            actual_geometry.loc.x,
+            actual_geometry.loc.y,
+        ));
+        let render_location = parent_geometry.loc.as_logical() + embed_offset;
+
+        // popup_render_elements expects: target_render_loc - elem.geometry().loc
+        let popup_render_offset = render_location - embedded_elem.geometry().loc;
+        popup_elements.extend(embedded_elem.popup_render_elements(
+            renderer,
+            popup_render_offset.to_physical_precise_round(output_scale),
+            output_scale.into(),
+            alpha,
+        ));
+
+        popup_elements
+    }
+
     /// Update embedded children with lookahead sizes during animation.
     /// This ensures embedded windows commit buffers for the next frame ahead of time.
     fn update_embeds_with_lookahead(
@@ -1361,9 +1437,16 @@ impl FloatingLayout {
     }
 
     pub fn popup_element_under(&self, location: Point<f64, Local>) -> Option<KeyboardFocusTarget> {
+        // First check popups for embedded windows - they render on top of their embedded position
+        if let Some(target) = self.embedded_popup_element_under(location) {
+            return Some(target);
+        }
+
+        // Then check regular (non-embedded) windows' popups
         self.space
             .elements()
             .rev()
+            .filter(|e| !Self::is_embedded(e))
             .map(|e| {
                 (
                     e,
@@ -1389,6 +1472,66 @@ impl FloatingLayout {
                     None
                 }
             })
+    }
+
+    /// Check if the location hits a popup for any embedded window.
+    /// Embedded windows render at a different location (inside their parent),
+    /// so we need to check popups at the adjusted position.
+    fn embedded_popup_element_under(
+        &self,
+        location: Point<f64, Local>,
+    ) -> Option<KeyboardFocusTarget> {
+        // Iterate through all parent windows that have embedded children
+        for parent_elem in self.space.elements() {
+            let parent_window = parent_elem.active_window();
+            let parent_surface = parent_window.wl_surface()?;
+            let parent_surface_id = parent_surface.id().to_string();
+
+            let embedded_children =
+                crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(
+                    &parent_surface_id,
+                );
+
+            if embedded_children.is_empty() {
+                continue;
+            }
+
+            // Get parent's geometry (in Logical coordinates from Space)
+            let parent_geometry = self.space.element_geometry(parent_elem)?.as_local();
+
+            for (embedded_surface_id, embed_info) in embedded_children {
+                // Find the embedded element in the space
+                let embedded_elem = self.space.elements().find(|e| {
+                    e.active_window()
+                        .wl_surface()
+                        .map(|s| s.id().to_string() == embedded_surface_id)
+                        .unwrap_or(false)
+                })?;
+
+                // Calculate where the embedded window is actually rendered
+                // Both parent_geometry.loc and embed_offset are now Local
+                let embed_offset = Point::<i32, Local>::from((
+                    embed_info.geometry.loc.x,
+                    embed_info.geometry.loc.y,
+                ));
+                let render_location = parent_geometry.loc + embed_offset;
+
+                // Check if the location hits any popup of this embedded window
+                let point = location - render_location.to_f64();
+
+                if embedded_elem
+                    .focus_under(
+                        point.as_logical(),
+                        WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                    )
+                    .is_some()
+                {
+                    return Some(embedded_elem.clone().into());
+                }
+            }
+        }
+
+        None
     }
 
     pub fn toplevel_element_under(
@@ -1446,9 +1589,16 @@ impl FloatingLayout {
         &self,
         location: Point<f64, Local>,
     ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
+        // First check popups for embedded windows
+        if let Some(result) = self.embedded_popup_surface_under(location) {
+            return Some(result);
+        }
+
+        // Then check regular (non-embedded) windows' popups
         self.space
             .elements()
             .rev()
+            .filter(|e| !Self::is_embedded(e))
             .map(|e| {
                 (
                     e,
@@ -1471,6 +1621,62 @@ impl FloatingLayout {
                     (surface, render_location + surface_offset.as_local())
                 })
             })
+    }
+
+    /// Check if the location hits a popup surface for any embedded window.
+    /// Returns the pointer focus target and the location relative to the window.
+    fn embedded_popup_surface_under(
+        &self,
+        location: Point<f64, Local>,
+    ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
+        // Iterate through all parent windows that have embedded children
+        for parent_elem in self.space.elements() {
+            let parent_window = parent_elem.active_window();
+            let parent_surface = parent_window.wl_surface()?;
+            let parent_surface_id = parent_surface.id().to_string();
+
+            let embedded_children =
+                crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(
+                    &parent_surface_id,
+                );
+
+            if embedded_children.is_empty() {
+                continue;
+            }
+
+            // Get parent's geometry
+            let parent_geometry = self.space.element_geometry(parent_elem)?.as_local();
+
+            for (embedded_surface_id, embed_info) in embedded_children {
+                // Find the embedded element in the space
+                let embedded_elem = self.space.elements().find(|e| {
+                    e.active_window()
+                        .wl_surface()
+                        .map(|s| s.id().to_string() == embedded_surface_id)
+                        .unwrap_or(false)
+                })?;
+
+                // Calculate where the embedded window is actually rendered
+                let embed_offset = Point::<i32, Local>::from((
+                    embed_info.geometry.loc.x,
+                    embed_info.geometry.loc.y,
+                ));
+                let render_location = parent_geometry.loc + embed_offset;
+                let render_location_f64 = render_location.to_f64();
+
+                // Check if the location hits any popup of this embedded window
+                let point = location - render_location_f64;
+
+                if let Some((surface, surface_offset)) = embedded_elem.focus_under(
+                    point.as_logical(),
+                    WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                ) {
+                    return Some((surface, render_location_f64 + surface_offset.as_local()));
+                }
+            }
+        }
+
+        None
     }
 
     pub fn toplevel_surface_under(
@@ -2542,23 +2748,39 @@ impl FloatingLayout {
             .map(|(elem, _)| elem)
             .chain(self.space.elements().rev())
         {
-            let (geometry, alpha) = self
-                .animations
-                .get(elem)
-                .map(|anim| (*anim.previous_geometry(), alpha * anim.alpha()))
-                .unwrap_or_else(|| (self.space.element_geometry(elem).unwrap().as_local(), alpha));
+            // Check if this is an embedded window
+            let is_embedded = elem
+                .windows()
+                .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w));
 
-            let render_location = geometry.loc - elem.geometry().loc.as_local();
-            elements.extend(
-                elem.popup_render_elements(
-                    renderer,
-                    render_location
-                        .as_logical()
-                        .to_physical_precise_round(output_scale),
-                    output_scale.into(),
-                    alpha,
-                ),
-            );
+            if is_embedded {
+                // For embedded windows, we need to render popups at the embedded position
+                // (inside the parent window), not at the embedded window's workspace position
+                let embedded_popup_elements =
+                    self.render_embedded_popups(renderer, elem, output_scale, alpha);
+                elements.extend(embedded_popup_elements);
+            } else {
+                // Normal window - render popups at workspace position
+                let (geometry, alpha) = self
+                    .animations
+                    .get(elem)
+                    .map(|anim| (*anim.previous_geometry(), alpha * anim.alpha()))
+                    .unwrap_or_else(|| {
+                        (self.space.element_geometry(elem).unwrap().as_local(), alpha)
+                    });
+
+                let render_location = geometry.loc - elem.geometry().loc.as_local();
+                elements.extend(
+                    elem.popup_render_elements(
+                        renderer,
+                        render_location
+                            .as_logical()
+                            .to_physical_precise_round(output_scale),
+                        output_scale.into(),
+                        alpha,
+                    ),
+                );
+            }
         }
 
         elements
