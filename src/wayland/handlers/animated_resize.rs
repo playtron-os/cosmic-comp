@@ -90,45 +90,42 @@ impl AnimatedResizeHandler for State {
         let relative_x = window_center_x as f32 / output_geo.size.w as f32;
 
         // Determine target position based on window's relative position:
-        // - If window is centered or to the right (relative_x >= 0.4), keep it centered during resize
-        // - If window is to the left (relative_x < 0.4), keep left position fixed (normal resize)
+        // - If window is centered or to the right (relative_x > 0.4), adjust x by half the width change
+        //   to keep the window's center point stable during resize
+        // - If window is to the left (relative_x <= 0.4), keep x position fixed (normal resize)
+        // - Y coordinate is never modified - always keep current y position
         let mut target_x;
-        let mut target_y = current_geo.loc.y;
+        let target_y = current_geo.loc.y;
 
         const CENTER_THRESHOLD: f32 = 0.4;
-        if relative_x >= CENTER_THRESHOLD {
-            // Window is centered or to the right - calculate position to keep it centered
-            target_x = (output_geo.size.w - target_width) / 2;
-            target_y = (output_geo.size.h - target_height) / 2;
+        if relative_x > CENTER_THRESHOLD {
+            // Window is centered or to the right - move x by half the width difference
+            // to keep the window's visual center stable
+            let width_diff = current_geo.size.w - target_width;
+            target_x = current_geo.loc.x + width_diff / 2;
             debug!(
                 relative_x,
-                "Window is centered/right (>= {}), will center during resize", CENTER_THRESHOLD
+                width_diff,
+                "Window is centered/right (> {}), adjusting x by half width diff", CENTER_THRESHOLD
             );
         } else {
-            // Window is to the left - keep current position (resize from current location)
+            // Window is to the left - keep current x position (resize from current location)
             target_x = current_geo.loc.x;
             debug!(
                 relative_x,
-                "Window is to the left (< {}), will resize without moving", CENTER_THRESHOLD
+                "Window is to the left (<= {}), will resize without moving x", CENTER_THRESHOLD
             );
         }
 
-        // Boundary constraints - keep window within output bounds
+        // Boundary constraints for x - keep window within output bounds horizontally
+        // Note: y coordinates are never modified, so we don't apply y boundary constraints
         // Check right edge overflow
         if target_x + target_width > output_geo.size.w {
             target_x = (output_geo.size.w - target_width).max(0);
         }
-        // Check bottom edge overflow
-        if target_y + target_height > output_geo.size.h {
-            target_y = (output_geo.size.h - target_height).max(0);
-        }
         // Check left edge (in case window is positioned off-screen)
         if target_x < 0 {
             target_x = 0;
-        }
-        // Check top edge
-        if target_y < 0 {
-            target_y = 0;
         }
 
         let target_loc: Point<i32, Local> = (target_x, target_y).into();
