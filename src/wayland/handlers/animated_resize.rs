@@ -106,7 +106,8 @@ impl AnimatedResizeHandler for State {
             debug!(
                 relative_x,
                 width_diff,
-                "Window is centered/right (> {}), adjusting x by half width diff", CENTER_THRESHOLD
+                "Window is centered/right (> {}), adjusting x by half width diff",
+                CENTER_THRESHOLD
             );
         } else {
             // Window is to the left - keep current x position (resize from current location)
