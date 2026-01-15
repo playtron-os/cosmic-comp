@@ -4446,6 +4446,13 @@ impl Shell {
             return None;
         }
 
+        if mapped
+            .windows()
+            .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+        {
+            return None;
+        }
+
         let floating_layer = if let Some(set) = self
             .workspaces
             .sets

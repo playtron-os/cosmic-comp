@@ -195,6 +195,17 @@ pub fn get_parent_surface_id(surface: &CosmicSurface) -> Option<String> {
     get_embed_render_info(surface).map(|info| info.parent_surface_id)
 }
 
+/// Check if a WlSurface belongs to an embedded window
+/// Returns true if the surface_id is in the EMBEDDED_APP_IDS map
+pub fn is_wl_surface_embedded(surface: &WlSurface) -> bool {
+    let surface_id = surface.id().to_string();
+    EMBEDDED_APP_IDS
+        .read()
+        .ok()
+        .map(|map| map.contains_key(&surface_id))
+        .unwrap_or(false)
+}
+
 /// Mark a surface as embedded with render info
 /// Uses the WlSurface ObjectId as the unique key (not app_id)
 ///

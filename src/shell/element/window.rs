@@ -1022,6 +1022,7 @@ impl PointerTarget<State> for CosmicWindow {
             if is_surface_embedded(&p.window) {
                 return;
             }
+
             let has_ssd = p.has_ssd(false);
             let has_blur = p.window.has_blur();
             if has_ssd || p.has_tiled_state() || has_blur {
@@ -1053,6 +1054,10 @@ impl PointerTarget<State> for CosmicWindow {
     }
 
     fn button(&self, seat: &Seat<State>, data: &mut State, event: &ButtonEvent) {
+        if self.0.with_program(|p| is_surface_embedded(&p.window)) {
+            return;
+        }
+
         match self.0.with_program(|p| p.current_focus()) {
             Some(Focus::Header) => PointerTarget::button(&self.0, seat, data, event),
             Some(x) => {
