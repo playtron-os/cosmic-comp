@@ -5,10 +5,13 @@ use crate::{
         BLUR_ITERATIONS, BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR,
         CursorMode, ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
         PostprocessShader, PostprocessState, apply_blur_passes, blur_downsample_enabled,
-        cache_blur_texture_for_window, compute_element_content_hash, downsample_texture,
+        cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
+        downsample_texture,
         element::{CosmicElement, DamageElement},
-        get_blur_group_content_hash, get_cached_blur_texture_for_window, init_shaders,
-        output_elements, store_blur_group_content_hash, workspace_elements,
+        get_blur_group_content_hash, get_cached_blur_texture_for_layer,
+        get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
+        init_shaders, output_elements, store_blur_group_content_hash,
+        store_layer_blur_content_hash, workspace_elements,
     },
     config::ScreenFilter,
     shell::{Shell, grabs::SeatMoveGrabState},
@@ -19,11 +22,8 @@ use crate::{
             compositor::recursive_frame_time_estimation,
             screencopy::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
         },
-        protocols::{
-            blur::has_blur as surface_has_blur,
-            screencopy::{
-                FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
-            },
+        protocols::screencopy::{
+            FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
         },
     },
 };
@@ -70,7 +70,7 @@ use smithay::{
             utils::with_renderer_surface_state,
         },
     },
-    desktop::{layer_map_for_output, utils::OutputPresentationFeedback},
+    desktop::utils::OutputPresentationFeedback,
     output::{Output, OutputNoMode},
     reexports::{
         calloop::{
@@ -85,7 +85,7 @@ use smithay::{
         },
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Transform},
+    utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, get_dmabuf},
         presentation::Refresh,
@@ -686,6 +686,7 @@ fn process_blur(
     render_node: &DrmNode,
     format: Fourcc,
 ) {
+    use crate::backend::render::output_has_layer_blur;
     use crate::shell::layout::floating::BlurWindowGroup;
 
     let output_name = output_ref.name();
@@ -699,16 +700,14 @@ fn process_blur(
             .is_some_and(|(_, workspace)| workspace.has_blur_windows())
     };
 
-    // Check layer surfaces for blur
-    let layer_map = layer_map_for_output(output_ref);
-    let has_layer_blur = layer_map
-        .layers()
-        .any(|layer| surface_has_blur(layer.wl_surface()));
+    // Check layer surfaces for blur using non-blocking cache
+    // (updated from main thread when layer surfaces change)
+    let has_layer_blur = output_has_layer_blur(&output_name);
 
     if has_layer_blur {
         tracing::trace!(
             output = %output_name,
-            "Layer surface with blur detected"
+            "Layer surface with blur detected (from cache)"
         );
     }
 
@@ -717,6 +716,8 @@ fn process_blur(
     if !has_blur {
         return;
     }
+
+    let blur_start = std::time::Instant::now();
 
     let blur_groups: Vec<BlurWindowGroup> = {
         let shell_ref = shell.read();
@@ -727,11 +728,10 @@ fn process_blur(
         }
     };
 
-    if blur_groups.is_empty() {
+    // If no workspace blur groups and no layer blur, nothing to process
+    if blur_groups.is_empty() && !has_layer_blur {
         return;
     }
-
-    let blur_start = std::time::Instant::now();
     // Mode size is already in physical pixels - use it directly for blur textures
     let output_size = output_ref
         .current_mode()
@@ -789,7 +789,9 @@ fn process_blur(
     // Process each blur group
     // OPTIMIZATION: Skip re-blurring if background hasn't changed
     let mut any_blur_applied = false;
+    let window_blur_start = std::time::Instant::now();
     for (group_idx, group) in blur_groups.iter().enumerate() {
+        let group_start = std::time::Instant::now();
         let _group_span = tracing::info_span!(
             "blur_group",
             group = group_idx,
@@ -804,6 +806,7 @@ fn process_blur(
         let capture_filter = ElementFilter::BlurCapture(blur_ctx);
 
         // Capture scene elements for the group (no cursor for blur capture)
+        let capture_start = std::time::Instant::now();
         let capture_elements: Result<Vec<CosmicElement<GlMultiRenderer>>, _> = {
             let _capture_span = tracing::info_span!(
                 "blur_capture_elements",
@@ -824,6 +827,7 @@ fn process_blur(
                 &capture_filter,
             )
         };
+        let capture_elapsed = capture_start.elapsed();
 
         let capture_elements = match capture_elements {
             Ok(elems) => elems,
@@ -850,9 +854,12 @@ fn process_blur(
         let can_reuse_cache = !content_changed && all_cached;
 
         if can_reuse_cache {
+            let group_elapsed = group_start.elapsed();
             tracing::debug!(
                 group = group_idx,
                 windows = group.windows.len(),
+                capture_us = capture_elapsed.as_micros(),
+                total_us = group_elapsed.as_micros(),
                 "Skipping blur - cache valid (content unchanged)"
             );
             any_blur_applied = true;
@@ -863,6 +870,7 @@ fn process_blur(
             group = group_idx,
             content_changed = content_changed,
             all_cached = all_cached,
+            capture_us = capture_elapsed.as_micros(),
             "Re-blurring group"
         );
 
@@ -870,6 +878,7 @@ fn process_blur(
         store_blur_group_content_hash(&output_name, group.capture_z_threshold, content_hash);
 
         // Render captured elements to background texture
+        let bg_render_start = std::time::Instant::now();
         let bg_render_ok = {
             let _bg_render_span = tracing::info_span!(
                 "blur_bg_render",
@@ -906,8 +915,10 @@ fn process_blur(
                 false
             }
         };
+        let bg_render_elapsed = bg_render_start.elapsed();
 
         // Downsample background to smaller texture for blur passes (if enabled)
+        let downsample_start = std::time::Instant::now();
         let downsample_enabled = blur_downsample_enabled();
         let downsample_ok = if downsample_enabled && bg_render_ok {
             if let (Some(bg), Some(ds)) = (
@@ -922,8 +933,10 @@ fn process_blur(
         } else {
             !downsample_enabled && bg_render_ok // Skip downsample step when disabled
         };
+        let downsample_elapsed = downsample_start.elapsed();
 
         // Apply blur passes (on downsampled or full-size textures)
+        let blur_passes_start = std::time::Instant::now();
         if downsample_ok && blur_state.is_ready() {
             let blur_size = blur_state.texture_size;
             // Source texture: downsampled if enabled, background if disabled
@@ -976,12 +989,278 @@ fn process_blur(
                 }
             }
         }
+        let blur_passes_elapsed = blur_passes_start.elapsed();
+        let group_elapsed = group_start.elapsed();
+
+        tracing::debug!(
+            group = group_idx,
+            windows = group.windows.len(),
+            capture_us = capture_elapsed.as_micros(),
+            bg_render_us = bg_render_elapsed.as_micros(),
+            downsample_us = downsample_elapsed.as_micros(),
+            blur_passes_us = blur_passes_elapsed.as_micros(),
+            total_us = group_elapsed.as_micros(),
+            "KMS window blur group complete"
+        );
+    }
+
+    let window_blur_elapsed = window_blur_start.elapsed();
+    if !blur_groups.is_empty() {
+        tracing::debug!(
+            output = %output_name,
+            window_blur_groups = blur_groups.len(),
+            window_blur_us = window_blur_elapsed.as_micros(),
+            "KMS window blur processing complete"
+        );
+    }
+
+    // Process layer shell blur surfaces - GROUP BY LAYER TYPE for efficiency
+    // All surfaces at the same layer level see the same background, so they share one blur texture
+    if has_layer_blur {
+        use smithay::wayland::shell::wlr_layer::Layer;
+        use std::collections::HashMap as StdHashMap;
+
+        let layer_blur_start = std::time::Instant::now();
+        let layer_blur_surfaces = get_layer_blur_surfaces(&output_name);
+
+        // Group surfaces by layer type (Background=0, Bottom=1, Top=2, Overlay=3)
+        let layer_to_key = |l: Layer| -> u8 {
+            match l {
+                Layer::Background => 0,
+                Layer::Bottom => 1,
+                Layer::Top => 2,
+                Layer::Overlay => 3,
+            }
+        };
+        let key_to_layer = |k: u8| -> Layer {
+            match k {
+                0 => Layer::Background,
+                1 => Layer::Bottom,
+                2 => Layer::Top,
+                _ => Layer::Overlay,
+            }
+        };
+
+        let mut surfaces_by_layer: StdHashMap<u8, Vec<(u32, Rectangle<i32, Logical>)>> =
+            StdHashMap::new();
+        for layer_info in &layer_blur_surfaces {
+            surfaces_by_layer
+                .entry(layer_to_key(layer_info.layer))
+                .or_default()
+                .push((layer_info.surface_id, layer_info.geometry));
+        }
+
+        tracing::debug!(
+            output = %output_name,
+            total_layer_surfaces = layer_blur_surfaces.len(),
+            layer_groups = surfaces_by_layer.len(),
+            "Processing layer blur surfaces (grouped by layer)"
+        );
+
+        // Process each layer type that has blur surfaces
+        for (layer_key, surfaces) in surfaces_by_layer {
+            let layer_type = key_to_layer(layer_key);
+            let layer_group_start = std::time::Instant::now();
+
+            let _layer_span = tracing::debug_span!(
+                "layer_blur_group",
+                layer = ?layer_type,
+                surfaces = surfaces.len(),
+            )
+            .entered();
+
+            // Check if all surfaces in this layer have valid cached blur textures
+            let all_cached = surfaces.iter().all(|(surface_id, _)| {
+                get_cached_blur_texture_for_layer(&output_name, *surface_id).is_some()
+            });
+
+            // Layer blur capture: capture all elements below this layer
+            let capture_filter = ElementFilter::LayerBlurCapture(layer_type);
+
+            // Capture scene elements for the layer (no cursor for blur capture)
+            let capture_start = std::time::Instant::now();
+            let capture_elements: Result<Vec<CosmicElement<GlMultiRenderer>>, _> = {
+                workspace_elements(
+                    Some(render_node),
+                    renderer,
+                    shell,
+                    zoom_state.as_ref(),
+                    clock.now(),
+                    output_ref,
+                    previous_workspace,
+                    workspace,
+                    CursorMode::None,
+                    &capture_filter,
+                )
+            };
+            let capture_elapsed = capture_start.elapsed();
+
+            let capture_elements = match capture_elements {
+                Ok(elems) => elems,
+                Err(err) => {
+                    tracing::warn!(?err, layer = ?layer_type, "Failed to capture elements for layer blur");
+                    continue;
+                }
+            };
+
+            // Compute content hash for cache invalidation
+            let layer_z = layer_key as usize;
+            let content_hash =
+                compute_element_content_hash(layer_z + 1000, &capture_elements, scale);
+
+            // Check if content has changed since last blur
+            let hash_key = format!("{}_{:?}", output_name, layer_type);
+            let stored_hash = get_layer_blur_content_hash(&hash_key);
+            let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
+
+            if !content_changed && all_cached {
+                tracing::debug!(
+                    layer = ?layer_type,
+                    surfaces = surfaces.len(),
+                    capture_us = capture_elapsed.as_micros(),
+                    "Skipping layer blur - cache valid (content unchanged)"
+                );
+                any_blur_applied = true;
+                continue;
+            }
+
+            tracing::debug!(
+                layer = ?layer_type,
+                surfaces = surfaces.len(),
+                capture_elements = capture_elements.len(),
+                content_changed = content_changed,
+                all_cached = all_cached,
+                capture_us = capture_elapsed.as_micros(),
+                "Re-blurring layer group"
+            );
+
+            // Store the new content hash
+            store_layer_blur_content_hash(&hash_key, content_hash);
+
+            // Render captured elements to background texture
+            let bg_render_start = std::time::Instant::now();
+            let bg_render_ok = {
+                if let Some(bg_texture) = blur_state.background_texture.as_mut() {
+                    let mut blur_dt =
+                        OutputDamageTracker::new(output_size, scale, Transform::Normal);
+
+                    let render_result = (|| {
+                        let mut gles_frame = bg_texture.render();
+                        gles_frame.draw::<_, RenderError<GlMultiError>>(|tex| {
+                            let bound = renderer.bind(tex).map_err(RenderError::Rendering)?;
+                            let mut bound_target = bound;
+                            let res = blur_dt.render_output(
+                                renderer,
+                                &mut bound_target,
+                                0, // Full redraw
+                                &capture_elements,
+                                CLEAR_COLOR,
+                            );
+                            match res {
+                                Ok(_) => Ok(Vec::new()),
+                                Err(e) => Err(e),
+                            }
+                        })
+                    })();
+
+                    render_result.is_ok()
+                } else {
+                    false
+                }
+            };
+            let bg_render_elapsed = bg_render_start.elapsed();
+
+            // Downsample background to smaller texture for blur passes (if enabled)
+            let downsample_start = std::time::Instant::now();
+            let downsample_enabled = blur_downsample_enabled();
+            let downsample_ok = if downsample_enabled && bg_render_ok {
+                if let (Some(bg), Some(ds)) = (
+                    blur_state.background_texture.as_ref().cloned(),
+                    blur_state.downsampled_texture.as_mut(),
+                ) {
+                    let blur_size = blur_state.texture_size;
+                    downsample_texture(renderer, &bg, ds, output_size, blur_size).is_ok()
+                } else {
+                    false
+                }
+            } else {
+                !downsample_enabled && bg_render_ok
+            };
+            let downsample_elapsed = downsample_start.elapsed();
+
+            // Apply blur passes using LAYER-SPECIFIC textures to avoid cache pollution
+            // with window blur (which uses texture_a/texture_b)
+            let blur_passes_start = std::time::Instant::now();
+            if downsample_ok && blur_state.is_ready() {
+                let blur_size = blur_state.texture_size;
+                let blur_source = if downsample_enabled {
+                    blur_state.downsampled_texture.as_ref().cloned()
+                } else {
+                    blur_state.background_texture.as_ref().cloned()
+                };
+
+                if let (Some(src), Some(ping), Some(pong)) = (
+                    blur_source,
+                    blur_state.layer_texture_a.as_mut(),
+                    blur_state.layer_texture_b.as_mut(),
+                ) {
+                    let blur_result = apply_blur_passes(
+                        renderer,
+                        &src,
+                        ping,
+                        pong,
+                        blur_size,
+                        scale,
+                        BLUR_ITERATIONS,
+                    );
+
+                    if blur_result.is_ok() {
+                        // Cache the SAME blurred texture for ALL surfaces in this layer
+                        for (surface_id, _geo) in &surfaces {
+                            cache_blur_texture_for_layer(
+                                &output_name,
+                                *surface_id,
+                                BlurredTextureInfo {
+                                    texture: pong.clone(),
+                                    size: blur_size,
+                                    screen_size: output_size,
+                                    scale,
+                                    background_state_hash: content_hash,
+                                },
+                            );
+                        }
+                        any_blur_applied = true;
+                    }
+                }
+            }
+            let blur_passes_elapsed = blur_passes_start.elapsed();
+            let layer_group_elapsed = layer_group_start.elapsed();
+
+            tracing::debug!(
+                layer = ?layer_type,
+                surfaces = surfaces.len(),
+                capture_us = capture_elapsed.as_micros(),
+                bg_render_us = bg_render_elapsed.as_micros(),
+                downsample_us = downsample_elapsed.as_micros(),
+                blur_passes_us = blur_passes_elapsed.as_micros(),
+                total_us = layer_group_elapsed.as_micros(),
+                "KMS layer blur group complete"
+            );
+        }
+
+        let layer_blur_elapsed = layer_blur_start.elapsed();
+        tracing::debug!(
+            output = %output_name,
+            total_layer_surfaces = layer_blur_surfaces.len(),
+            layer_blur_us = layer_blur_elapsed.as_micros(),
+            "KMS layer blur processing complete"
+        );
     }
 
     blur_state.blur_applied = any_blur_applied;
 
     let blur_elapsed = blur_start.elapsed();
-    tracing::info!(
+    tracing::debug!(
         output = %output_name,
         blur_groups = blur_groups.len(),
         blur_applied = any_blur_applied,

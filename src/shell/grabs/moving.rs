@@ -236,6 +236,7 @@ impl MoveGrabState {
                         alpha,
                         BLUR_TINT_COLOR,
                         BLUR_TINT_STRENGTH,
+                        false, // No blur border for moving windows
                     ),
                 ))
             } else {

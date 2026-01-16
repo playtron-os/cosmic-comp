@@ -3096,6 +3096,7 @@ impl FloatingLayout {
                         alpha,
                         BLUR_TINT_COLOR,
                         BLUR_TINT_STRENGTH,
+                        false, // No blur border for regular windows
                     );
                     window_elements.push(blur_backdrop.into());
                 } else {

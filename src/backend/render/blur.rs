@@ -101,16 +101,27 @@ pub fn blur_downsample_enabled() -> bool {
 ///
 /// Optimization: Blur passes can run at reduced resolution (1/BLUR_DOWNSAMPLE_FACTOR)
 /// since blur removes high-frequency detail anyway.
+///
+/// Note: Window blur and layer blur have SEPARATE ping/pong textures to avoid
+/// cache pollution. Window blur uses texture_a/texture_b, layer blur uses
+/// layer_texture_a/layer_texture_b. This is necessary because cached blur
+/// textures are references to these buffers, not copies.
 #[derive(Debug)]
 pub struct BlurRenderState {
     /// Texture containing the previous frame's content at full resolution (blur source)
     pub background_texture: Option<TextureRenderBuffer<GlesTexture>>,
     /// Downsampled texture for blur input (from background_texture)
     pub downsampled_texture: Option<TextureRenderBuffer<GlesTexture>>,
-    /// Offscreen texture for blur passes (ping) - at reduced resolution
+    /// Offscreen texture for window blur passes (ping) - at reduced resolution
     pub texture_a: Option<TextureRenderBuffer<GlesTexture>>,
-    /// Offscreen texture for blur passes (pong) - at reduced resolution
+    /// Offscreen texture for window blur passes (pong) - at reduced resolution
     pub texture_b: Option<TextureRenderBuffer<GlesTexture>>,
+    /// Offscreen texture for layer blur passes (ping) - at reduced resolution
+    /// Separate from texture_a to avoid cache pollution between window and layer blur
+    pub layer_texture_a: Option<TextureRenderBuffer<GlesTexture>>,
+    /// Offscreen texture for layer blur passes (pong) - at reduced resolution
+    /// Separate from texture_b to avoid cache pollution between window and layer blur
+    pub layer_texture_b: Option<TextureRenderBuffer<GlesTexture>>,
     /// Damage tracker for the blur textures
     pub damage_tracker: Option<OutputDamageTracker>,
     /// Size of the full-resolution background texture (screen size)
@@ -130,6 +141,8 @@ impl Default for BlurRenderState {
             downsampled_texture: None,
             texture_a: None,
             texture_b: None,
+            layer_texture_a: None,
+            layer_texture_b: None,
             damage_tracker: None,
             screen_size: Size::from((0, 0)),
             texture_size: Size::from((0, 0)),
@@ -166,12 +179,16 @@ impl BlurRenderState {
             self.screen_size == size
                 && self.texture_a.is_some()
                 && self.texture_b.is_some()
+                && self.layer_texture_a.is_some()
+                && self.layer_texture_b.is_some()
                 && self.background_texture.is_some()
                 && self.downsampled_texture.is_some()
         } else {
             self.screen_size == size
                 && self.texture_a.is_some()
                 && self.texture_b.is_some()
+                && self.layer_texture_a.is_some()
+                && self.layer_texture_b.is_some()
                 && self.background_texture.is_some()
         };
 
@@ -237,6 +254,28 @@ impl BlurRenderState {
             None,
         ));
 
+        // Create layer texture A (ping) - separate from window blur to avoid cache pollution
+        let layer_tex_a =
+            Offscreen::<GlesTexture>::create_buffer(renderer, format, blur_buffer_size)?;
+        self.layer_texture_a = Some(TextureRenderBuffer::from_texture(
+            renderer.glow_renderer(),
+            layer_tex_a,
+            1,
+            Transform::Normal,
+            None,
+        ));
+
+        // Create layer texture B (pong) - separate from window blur to avoid cache pollution
+        let layer_tex_b =
+            Offscreen::<GlesTexture>::create_buffer(renderer, format, blur_buffer_size)?;
+        self.layer_texture_b = Some(TextureRenderBuffer::from_texture(
+            renderer.glow_renderer(),
+            layer_tex_b,
+            1,
+            Transform::Normal,
+            None,
+        ));
+
         // Create damage tracker
         self.damage_tracker = Some(OutputDamageTracker::new(size, scale, Transform::Normal));
 
@@ -271,7 +310,9 @@ impl BlurRenderState {
     pub fn is_ready(&self) -> bool {
         let base_ready = self.background_texture.is_some()
             && self.texture_a.is_some()
-            && self.texture_b.is_some();
+            && self.texture_b.is_some()
+            && self.layer_texture_a.is_some()
+            && self.layer_texture_b.is_some();
 
         if blur_downsample_enabled() {
             base_ready && self.downsampled_texture.is_some()
@@ -395,8 +436,128 @@ pub fn get_cached_blur_texture_for_layer(
 
 /// Clear all layer blur textures for an output
 pub fn clear_layer_blur_textures_for_output(output_name: &str) {
-    if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.write() {
+    if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.try_write() {
         cache.retain(|(out, _), _| out != output_name);
+    }
+}
+
+/// Information about a layer surface with blur, cached from the main thread.
+#[derive(Debug, Clone)]
+pub struct LayerBlurSurfaceInfo {
+    /// Surface protocol ID for cache key
+    pub surface_id: u32,
+    /// Geometry of the layer surface
+    pub geometry: Rectangle<i32, Logical>,
+    /// Layer type (Bottom, Top, Overlay, Background)
+    pub layer: smithay::wayland::shell::wlr_layer::Layer,
+}
+
+/// Cached layer surface info for rendering (includes the actual LayerSurface).
+/// Used by render thread to avoid calling layer_map_for_output.
+#[derive(Clone)]
+pub struct CachedLayerSurface {
+    /// The layer surface (cloned for thread safety)
+    pub surface: smithay::desktop::LayerSurface,
+    /// Location relative to output
+    pub location: Point<i32, Logical>,
+}
+
+/// Convert Layer enum to a hashable u8 key
+fn layer_to_key(layer: smithay::wayland::shell::wlr_layer::Layer) -> u8 {
+    use smithay::wayland::shell::wlr_layer::Layer;
+    match layer {
+        Layer::Background => 0,
+        Layer::Bottom => 1,
+        Layer::Top => 2,
+        Layer::Overlay => 3,
+    }
+}
+
+/// Cache tracking ALL layer surfaces per output, organized by layer type.
+/// Updated from the main thread when layer surfaces change, read by render thread.
+/// Key: (output_name, layer_key), Value: list of cached layer surfaces
+pub static OUTPUT_LAYER_SURFACES: LazyLock<RwLock<HashMap<(String, u8), Vec<CachedLayerSurface>>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Get cached layer surfaces for a specific layer on an output (non-blocking).
+/// Returns empty vec if lock can't be acquired.
+pub fn get_cached_layer_surfaces(
+    output_name: &str,
+    layer: smithay::wayland::shell::wlr_layer::Layer,
+) -> Vec<CachedLayerSurface> {
+    if let Ok(cache) = OUTPUT_LAYER_SURFACES.try_read() {
+        cache
+            .get(&(output_name.to_string(), layer_to_key(layer)))
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Update the cached layer surfaces for a specific layer on an output.
+/// Called from the main thread when layer surfaces change.
+pub fn set_cached_layer_surfaces(
+    output_name: &str,
+    layer: smithay::wayland::shell::wlr_layer::Layer,
+    surfaces: Vec<CachedLayerSurface>,
+) {
+    if let Ok(mut cache) = OUTPUT_LAYER_SURFACES.try_write() {
+        let key = (output_name.to_string(), layer_to_key(layer));
+        if surfaces.is_empty() {
+            cache.remove(&key);
+        } else {
+            cache.insert(key, surfaces);
+        }
+    }
+}
+
+/// Clear all cached layer surfaces for an output.
+pub fn clear_cached_layer_surfaces(output_name: &str) {
+    if let Ok(mut cache) = OUTPUT_LAYER_SURFACES.try_write() {
+        cache.retain(|(out, _), _| out != output_name);
+    }
+}
+
+/// Cache tracking layer surfaces with blur for each output.
+/// Updated from the main thread when layer surfaces change, read by render thread.
+/// Key: output_name, Value: list of layer blur surface info
+pub static OUTPUT_LAYER_BLUR_SURFACES: LazyLock<
+    RwLock<HashMap<String, Vec<LayerBlurSurfaceInfo>>>,
+> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Check if an output has any layer surfaces with blur (non-blocking).
+/// Returns false if the lock can't be acquired (safe default for render thread).
+pub fn output_has_layer_blur(output_name: &str) -> bool {
+    if let Ok(cache) = OUTPUT_LAYER_BLUR_SURFACES.try_read() {
+        cache
+            .get(output_name)
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Get cached layer blur surface info for an output (non-blocking).
+/// Returns empty vec if lock can't be acquired.
+pub fn get_layer_blur_surfaces(output_name: &str) -> Vec<LayerBlurSurfaceInfo> {
+    if let Ok(cache) = OUTPUT_LAYER_BLUR_SURFACES.try_read() {
+        cache.get(output_name).cloned().unwrap_or_default()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Update the layer blur surfaces for an output.
+/// Called from the main thread when layer surfaces are added/removed/changed.
+pub fn set_layer_blur_surfaces(output_name: &str, surfaces: Vec<LayerBlurSurfaceInfo>) {
+    if let Ok(mut cache) = OUTPUT_LAYER_BLUR_SURFACES.try_write() {
+        if surfaces.is_empty() {
+            cache.remove(output_name);
+        } else {
+            cache.insert(output_name.to_string(), surfaces);
+        }
     }
 }
 

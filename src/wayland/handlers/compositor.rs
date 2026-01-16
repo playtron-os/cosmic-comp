@@ -367,6 +367,9 @@ impl CompositorHandler for State {
             if changed {
                 shell.workspaces.recalculate();
             }
+            // Update layer blur cache when layer surfaces are committed
+            // (blur protocol state may have changed)
+            crate::wayland::handlers::layer_shell::update_layer_blur_state(&output);
         }
     }
 }

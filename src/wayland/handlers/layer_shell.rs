@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{shell::PendingLayer, utils::prelude::*};
+use crate::{
+    backend::render::{
+        CachedLayerSurface, LayerBlurSurfaceInfo, set_cached_layer_surfaces,
+        set_layer_blur_surfaces,
+    },
+    shell::PendingLayer,
+    utils::prelude::*,
+    wayland::protocols::blur::has_blur as surface_has_blur,
+};
 use smithay::{
     delegate_layer_shell,
     desktop::{LayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output},
     output::Output,
-    reexports::wayland_server::protocol::wl_output::WlOutput,
+    reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
+    utils::IsAlive,
     wayland::shell::{
         wlr_layer::{
             Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
@@ -13,6 +22,70 @@ use smithay::{
         xdg::PopupSurface,
     },
 };
+
+/// All layer types that need to be cached for render thread access
+const CACHED_LAYERS: [Layer; 4] = [Layer::Background, Layer::Bottom, Layer::Top, Layer::Overlay];
+
+/// Update the layer surface caches for an output.
+/// Called from the main thread when layer surfaces change.
+/// Populates both the blur cache and the general layer surface cache for render thread.
+pub fn update_layer_blur_state(output: &Output) {
+    let layer_map = layer_map_for_output(output);
+
+    // Update blur surfaces cache
+    let blur_surfaces: Vec<LayerBlurSurfaceInfo> = layer_map
+        .layers()
+        .filter(|layer| {
+            let surface = layer.wl_surface();
+            let alive = surface.alive();
+            let has_blur = surface_has_blur(surface);
+            tracing::trace!(
+                surface_id = surface.id().protocol_id(),
+                alive,
+                has_blur,
+                layer = ?layer.layer(),
+                "Checking layer surface for blur"
+            );
+            alive && has_blur
+        })
+        .filter_map(|layer| {
+            let geometry = layer_map.layer_geometry(layer)?;
+            let layer_type = layer.layer();
+            let surface_id = layer.wl_surface().id().protocol_id();
+
+            Some(LayerBlurSurfaceInfo {
+                surface_id,
+                geometry,
+                layer: layer_type,
+            })
+        })
+        .collect();
+
+    tracing::trace!(
+        output = output.name(),
+        blur_surface_count = blur_surfaces.len(),
+        "Updated layer blur surfaces"
+    );
+
+    set_layer_blur_surfaces(&output.name(), blur_surfaces);
+
+    // Update general layer surface cache for each layer type
+    for layer_type in CACHED_LAYERS {
+        let surfaces: Vec<CachedLayerSurface> = layer_map
+            .layers_on(layer_type)
+            .rev()
+            .filter_map(|layer| {
+                let geometry = layer_map.layer_geometry(layer)?;
+                Some(CachedLayerSurface {
+                    surface: layer.clone(),
+                    location: geometry.loc,
+                })
+            })
+            .collect();
+
+        set_cached_layer_surfaces(&output.name(), layer_type, surfaces);
+    }
+}
 
 impl WlrLayerShellHandler for State {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
@@ -72,6 +145,9 @@ impl WlrLayerShellHandler for State {
                     .clone();
                 map.unmap_layer(&layer);
             }
+
+            // Update layer blur cache after unmapping
+            update_layer_blur_state(&output);
 
             shell.workspaces.recalculate();
 

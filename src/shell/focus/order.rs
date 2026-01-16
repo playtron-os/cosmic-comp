@@ -25,6 +25,32 @@ use crate::{
     wayland::protocols::workspace::WorkspaceHandle,
 };
 
+/// Check if windows/workspaces should be included for the given element filter.
+/// Returns false for LayerShellOnly and for LayerBlurCapture when capturing for
+/// layers below windows (Bottom, Background).
+fn should_include_windows(element_filter: &ElementFilter) -> bool {
+    let result = match element_filter {
+        ElementFilter::LayerShellOnly => false,
+        ElementFilter::LayerBlurCapture(layer) => {
+            // Only include windows for layers above windows (Top, Overlay)
+            // Bottom and Background are below windows, so skip windows when capturing for them
+            matches!(layer, Layer::Top | Layer::Overlay)
+        }
+        _ => true,
+    };
+
+    // Debug logging for blur capture
+    if let ElementFilter::LayerBlurCapture(layer) = element_filter {
+        tracing::debug!(
+            layer = ?layer,
+            include_windows = result,
+            "should_include_windows for LayerBlurCapture"
+        );
+    }
+
+    result
+}
+
 pub enum Stage<'a> {
     ZoomUI,
     SessionLock(Option<&'a LockSurface>),
@@ -52,7 +78,6 @@ pub enum Stage<'a> {
         offset: Point<i32, Logical>,
     },
 }
-
 pub fn render_input_order<R: Default + 'static>(
     shell: &Shell,
     output: &Output,
@@ -210,7 +235,7 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if *element_filter != ElementFilter::LayerShellOnly {
+    if should_include_windows(element_filter) {
         // overlay redirect windows
         // they need to be over sticky windows, because they could be popups of sticky windows,
         // and we can't differenciate that.
@@ -236,7 +261,7 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if *element_filter != ElementFilter::LayerShellOnly {
+    if should_include_windows(element_filter) {
         // previous workspace popups
         if let Some((previous_handle, _, offset)) = previous.as_ref() {
             let Some(workspace) = shell.workspaces.space_for_handle(previous_handle) else {
@@ -316,12 +341,12 @@ fn render_input_order_internal<R: 'static>(
         }
 
         // sticky windows
-        if *element_filter != ElementFilter::LayerShellOnly {
+        if should_include_windows(element_filter) {
             callback(Stage::Sticky(&set.sticky_layer))?;
         }
     }
 
-    if *element_filter != ElementFilter::LayerShellOnly {
+    if should_include_windows(element_filter) {
         // workspace windows
         callback(Stage::Workspace {
             workspace,
@@ -394,18 +419,53 @@ fn layer_popups<'a>(
     })
 }
 
+/// Get the z-order level of a layer (higher = closer to viewer)
+/// Background=0, Bottom=1, Top=2, Overlay=3
+fn layer_z_level(layer: Layer) -> u8 {
+    match layer {
+        Layer::Background => 0,
+        Layer::Bottom => 1,
+        Layer::Top => 2,
+        Layer::Overlay => 3,
+    }
+}
+
 fn layer_surfaces<'a>(
     output: &'a Output,
     layer: Layer,
     element_filter: &'a ElementFilter,
 ) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>)> + 'a {
+    // For BlurCapture and LayerBlurCapture modes, use cached layer surfaces to prevent deadlocks
+    let use_cache = matches!(
+        element_filter,
+        ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_)
+    );
+
+    // For LayerBlurCapture, skip layers at or above the requesting layer's z-level
+    // e.g., Bottom layer blur should only capture Background, not Bottom/Top/Overlay
+    let skip_layer = match element_filter {
+        ElementFilter::LayerBlurCapture(requesting_layer) => {
+            layer_z_level(layer) >= layer_z_level(*requesting_layer)
+        }
+        _ => false,
+    };
+
     // we want to avoid deadlocks on the layer-map in callbacks, so we need to clone the layer surfaces
-    let layers = {
+    let layers = if skip_layer {
+        // Skip this entire layer for layer blur capture
+        Vec::new()
+    } else if use_cache {
+        // Use cached layer surfaces (populated by main thread)
+        crate::backend::render::get_cached_layer_surfaces(&output.name(), layer)
+            .into_iter()
+            .map(|cached| (cached.surface, cached.location))
+            .collect::<Vec<_>>()
+    } else {
         let layer_map = layer_map_for_output(output);
         layer_map
             .layers_on(layer)
             .rev()
-            .map(|s| (s.clone(), layer_map.layer_geometry(s).unwrap()))
+            .map(|s| (s.clone(), layer_map.layer_geometry(s).unwrap().loc))
             .collect::<Vec<_>>()
     };
 
@@ -415,5 +475,5 @@ fn layer_surfaces<'a>(
             !(*element_filter == ElementFilter::ExcludeWorkspaceOverview
                 && s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE)
         })
-        .map(|(surface, geometry)| (surface, geometry.loc.as_local().to_global(output)))
+        .map(|(surface, loc)| (surface, loc.as_local().to_global(output)))
 }
