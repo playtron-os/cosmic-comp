@@ -37,7 +37,7 @@ use crate::{
             data_device::get_dnd_icon,
             screencopy::{FrameHolder, SessionData, render_session},
         },
-        protocols::workspace::WorkspaceHandle,
+        protocols::{blur::has_blur as surface_has_blur, workspace::WorkspaceHandle},
     },
 };
 
@@ -136,9 +136,11 @@ pub use blur::{
     BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
     BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
     DEFAULT_BLUR_RADIUS, HasBlur, apply_blur_passes, blur_downsample_enabled,
-    cache_blur_texture_for_window, clear_blur_textures_for_output, compute_element_content_hash,
-    downsample_texture, get_blur_group_content_hash, get_cached_blur_texture_for_window,
-    store_blur_group_content_hash,
+    cache_blur_texture_for_layer, cache_blur_texture_for_window, clear_blur_textures_for_output,
+    clear_layer_blur_textures_for_output, compute_element_content_hash, downsample_texture,
+    get_blur_group_content_hash, get_cached_blur_texture_for_layer,
+    get_cached_blur_texture_for_window, get_layer_blur_content_hash, store_blur_group_content_hash,
+    store_layer_blur_content_hash,
 };
 
 /// Shader for applying blur effects to surfaces
@@ -165,6 +167,8 @@ pub enum Key {
     Static(WeakId),
     Group(Weak<()>),
     Window(Usage, CosmicMappedKey),
+    /// Layer surface key using protocol ID
+    LayerSurface(u32),
 }
 impl std::hash::Hash for Key {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
@@ -175,6 +179,7 @@ impl std::hash::Hash for Key {
                 usage.hash(state);
                 window.hash(state);
             }
+            Key::LayerSurface(id) => id.hash(state),
         }
     }
 }
@@ -184,6 +189,7 @@ impl PartialEq for Key {
             (Key::Static(s1), Key::Static(s2)) => s1 == s2,
             (Key::Group(g1), Key::Group(g2)) => Weak::ptr_eq(g1, g2),
             (Key::Window(u1, w1), Key::Window(u2, w2)) => u1 == u2 && w1 == w2,
+            (Key::LayerSurface(id1), Key::LayerSurface(id2)) => id1 == id2,
             _ => false,
         }
     }
@@ -276,6 +282,7 @@ impl IndicatorShader {
             Key::Static(w) => w.upgrade().is_some(),
             Key::Group(w) => w.upgrade().is_some(),
             Key::Window(_, w) => w.alive(),
+            Key::LayerSurface(_) => true, // Layer surfaces are always considered alive
         });
 
         let key = key.into();
@@ -367,6 +374,7 @@ impl BackdropShader {
             Key::Static(w) => w.upgrade().is_some(),
             Key::Group(a) => a.upgrade().is_some(),
             Key::Window(_, w) => w.alive(),
+            Key::LayerSurface(_) => true, // Layer surfaces are always considered alive
         });
 
         let key = key.into();
@@ -921,6 +929,9 @@ pub enum ElementFilter {
     ExcludeBlurWindows,
     /// Blur capture mode with context (replaces thread-local globals)
     BlurCapture(BlurCaptureContext),
+    /// Capture only elements below the specified layer (for layer shell blur)
+    /// Background layer captures nothing, Bottom captures Background only, etc.
+    LayerBlurCapture(smithay::wayland::shell::wlr_layer::Layer),
 }
 
 pub fn output_elements<R>(
@@ -1226,6 +1237,7 @@ where
                     );
                 }
                 Stage::LayerSurface { layer, location } => {
+                    // First render the layer surface content
                     elements.extend(
                         render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
                             renderer,
@@ -1242,6 +1254,45 @@ where
                         .flat_map(crop_to_output)
                         .map(Into::into),
                     );
+
+                    // Then render blur backdrop behind the layer surface
+                    // (elements added later are rendered behind earlier elements)
+                    if surface_has_blur(layer.wl_surface()) {
+                        let surface_id = layer.wl_surface().id().protocol_id();
+                        let output_name = output.name();
+
+                        // Use the layer's geometry for the backdrop
+                        let layer_geo = layer.bbox();
+                        let local_geo =
+                            Rectangle::new(location.to_local(output), layer_geo.size.as_local());
+
+                        // Try to get cached blur texture for this layer surface
+                        if let Some(blur_info) =
+                            get_cached_blur_texture_for_layer(&output_name, surface_id)
+                        {
+                            // Use the blurred backdrop shader with the cached texture
+                            let output_transform = output.current_transform();
+                            let blurred_element = BlurredBackdropShader::element(
+                                renderer,
+                                &blur_info.texture,
+                                local_geo,
+                                blur_info.size,
+                                blur_info.screen_size,
+                                blur_info.scale.x,
+                                output_transform,
+                                [0.0; 4],
+                                1.0,
+                                BLUR_TINT_COLOR,
+                                BLUR_TINT_STRENGTH,
+                            );
+
+                            let backdrop_element: WorkspaceRenderElement<R> =
+                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
+                            if let Some(cropped) = crop_to_output(backdrop_element) {
+                                elements.push(cropped.into());
+                            }
+                        }
+                    }
                 }
                 Stage::OverrideRedirect { surface, location } => {
                     elements.extend(surface.wl_surface().into_iter().flat_map(|surface| {
@@ -1605,22 +1656,37 @@ where
     let zoom_state = shell_ref.zoom_state().cloned();
 
     // Check if there are blur windows and get their geometries
-    let has_blur = workspace_ref.has_blur_windows();
-    let blur_geometries = if has_blur {
+    let has_workspace_blur = workspace_ref.has_blur_windows();
+    let mut blur_geometries = if has_workspace_blur {
         workspace_ref.blur_window_geometries(1.0)
     } else {
         Vec::new()
     };
 
-    // Debug logging for blur detection
-    tracing::debug!(
-        has_blur = has_blur,
-        blur_geometry_count = blur_geometries.len(),
-        screen_filter_noop = screen_filter.filter.is_noop(),
-        "Blur detection in render_output_with_blur"
-    );
-
     std::mem::drop(shell_ref);
+
+    // Check layer surfaces for blur (call layer_map_for_output only once)
+    // Collect layer surface info: (surface_id, geometry, layer_type)
+    use smithay::wayland::shell::wlr_layer::Layer;
+    let layer_blur_surfaces: Vec<(u32, Rectangle<i32, Local>, Layer)> = {
+        use smithay::desktop::layer_map_for_output;
+        let layer_map = layer_map_for_output(output);
+        layer_map
+            .layers()
+            .filter(|layer| surface_has_blur(layer.wl_surface()))
+            .filter_map(|layer| {
+                layer_map.layer_geometry(layer).map(|geo| {
+                    let surface_id = layer.wl_surface().id().protocol_id();
+                    let layer_type = layer.cached_state().layer;
+                    blur_geometries.push((geo.as_local(), 1.0));
+                    (surface_id, geo.as_local(), layer_type)
+                })
+            })
+            .collect()
+    };
+    let has_layer_blur = !layer_blur_surfaces.is_empty();
+
+    let has_blur = has_workspace_blur || has_layer_blur;
 
     let element_filter = if workspace_overview_is_open(output) {
         ElementFilter::LayerShellOnly
@@ -1986,6 +2052,225 @@ where
                 }
             }
         }
+
+        // Process layer surface blur (if any)
+        // For Bottom layer surfaces (like docks), we only capture Background layer (cosmic-bg)
+        // For other layers, we would capture what's below them in the z-order
+        if has_layer_blur && blur_state.is_ready() {
+            // Group layer blur surfaces by layer type
+            let bottom_layer_surfaces: Vec<_> = layer_blur_surfaces
+                .iter()
+                .filter(|(_, _, layer)| *layer == Layer::Bottom)
+                .collect();
+
+            tracing::trace!(
+                layer_count = layer_blur_surfaces.len(),
+                bottom_count = bottom_layer_surfaces.len(),
+                "Processing layer surface blur"
+            );
+
+            // For Bottom layer surfaces, capture only Background layer surfaces (cosmic-bg)
+            // This excludes windows, cursors, and other layer shells
+            let layer_capture_elements: Vec<CosmicElement<R>> = if !bottom_layer_surfaces.is_empty()
+            {
+                // Capture only background layer surfaces using layer_map
+                use smithay::desktop::layer_map_for_output;
+                let layer_map = layer_map_for_output(output);
+                let mut bg_elements = Vec::new();
+
+                for layer in layer_map.layers_on(Layer::Background) {
+                    let location = layer_map
+                        .layer_geometry(layer)
+                        .map(|geo| geo.loc.as_local().to_global(output))
+                        .unwrap_or_default();
+
+                    // Render background layer surface elements
+                    let layer_elements: Vec<WorkspaceRenderElement<R>> =
+                        render_elements_from_surface_tree(
+                            renderer,
+                            layer.wl_surface(),
+                            location
+                                .to_local(output)
+                                .as_logical()
+                                .to_physical_precise_round(scale),
+                            Scale::from(scale),
+                            1.0,
+                            FRAME_TIME_FILTER,
+                        );
+
+                    // Apply crop transformation (matching workspace_elements)
+                    // No zoom for blur capture, so focal_point is (0,0) and zoom_scale is 1.0
+                    for element in layer_elements {
+                        let rescaled =
+                            RescaleRenderElement::from_element(element, Point::from((0, 0)), 1.0);
+                        if let Some(cropped) = CropRenderElement::from_element(
+                            rescaled,
+                            scale,
+                            Rectangle::from_size(output_size),
+                        ) {
+                            bg_elements.push(cropped.into());
+                        }
+                    }
+                }
+
+                tracing::trace!(
+                    bg_element_count = bg_elements.len(),
+                    "Captured background layer elements for Bottom layer blur"
+                );
+
+                bg_elements
+            } else {
+                // For non-Bottom layers (Top, Overlay), capture more elements
+                // TODO: Implement proper z-order based capture for other layer types
+                let layer_capture_filter = ElementFilter::All;
+                workspace_elements(
+                    gpu,
+                    renderer,
+                    shell,
+                    zoom_state.as_ref(),
+                    now,
+                    output,
+                    previous_workspace,
+                    workspace,
+                    cursor_mode,
+                    &layer_capture_filter,
+                )?
+            };
+
+            // Compute content hash for cache invalidation
+            let content_hash = compute_element_content_hash(0, &layer_capture_elements, scale);
+
+            // Check if content has changed since last blur
+            let stored_hash = get_layer_blur_content_hash(&output_name);
+            let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
+
+            // Also verify all layer surfaces have cached textures
+            let all_cached = layer_blur_surfaces.iter().all(|(surface_id, _, _)| {
+                get_cached_blur_texture_for_layer(&output_name, *surface_id).is_some()
+            });
+
+            let can_reuse_cache = !content_changed && all_cached;
+
+            if can_reuse_cache {
+                tracing::trace!(
+                    layer_count = layer_blur_surfaces.len(),
+                    "Skipping layer blur - cache valid (content unchanged)"
+                );
+                any_blur_applied = true; // Cached textures are still valid
+            } else {
+                tracing::trace!(
+                    layer_count = layer_blur_surfaces.len(),
+                    content_changed = content_changed,
+                    all_cached = all_cached,
+                    "Re-blurring layer surfaces"
+                );
+
+                // Store the new content hash after we commit to re-blurring
+                store_layer_blur_content_hash(&output_name, content_hash);
+
+                // Render captured elements to background texture
+                let bg_render_ok = if let Some(bg_texture) = blur_state.background_texture.as_mut()
+                {
+                    let mut blur_dt =
+                        OutputDamageTracker::new(output_size, scale, Transform::Normal);
+
+                    let render_result = (|| {
+                        let mut gles_frame = bg_texture.render();
+
+                        let render_res = gles_frame.draw::<_, RenderError<R::Error>>(|tex| {
+                            let bound = renderer.bind(tex).map_err(RenderError::Rendering)?;
+                            let mut bound_target = bound;
+                            let res = blur_dt.render_output(
+                                renderer,
+                                &mut bound_target,
+                                0, // Full redraw for blur capture
+                                &layer_capture_elements,
+                                CLEAR_COLOR,
+                            );
+                            match res {
+                                Ok(_) => Ok(Vec::new()),
+                                Err(e) => Err(e.into()),
+                            }
+                        });
+
+                        render_res.map_err(|_| ())
+                    })();
+
+                    render_result.is_ok()
+                } else {
+                    false
+                };
+
+                // Downsample background to smaller texture for blur passes (if enabled)
+                let downsample_enabled = blur_downsample_enabled();
+                let downsample_ok = if downsample_enabled && bg_render_ok {
+                    if let (Some(bg), Some(ds)) = (
+                        blur_state.background_texture.as_ref().cloned(),
+                        blur_state.downsampled_texture.as_mut(),
+                    ) {
+                        let blur_size = blur_state.texture_size;
+                        downsample_texture(renderer, &bg, ds, output_size, blur_size).is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    !downsample_enabled && bg_render_ok
+                };
+
+                // Apply blur passes (once for all layer surfaces since they share the background)
+                if downsample_ok {
+                    let blur_size = blur_state.texture_size;
+                    let blur_source = if downsample_enabled {
+                        blur_state.downsampled_texture.as_ref().cloned()
+                    } else {
+                        blur_state.background_texture.as_ref().cloned()
+                    };
+
+                    if let (Some(src), Some(ping), Some(pong)) = (
+                        blur_source,
+                        blur_state.texture_a.as_mut(),
+                        blur_state.texture_b.as_mut(),
+                    ) {
+                        let blur_result = apply_blur_passes(
+                            renderer,
+                            &src,
+                            ping,
+                            pong,
+                            blur_size,
+                            scale,
+                            BLUR_ITERATIONS,
+                        );
+
+                        if blur_result.is_ok() {
+                            // Cache the blurred texture for all layer surfaces
+                            for (surface_id, _layer_geo, _layer_type) in &layer_blur_surfaces {
+                                cache_blur_texture_for_layer(
+                                    &output_name,
+                                    *surface_id,
+                                    BlurredTextureInfo {
+                                        texture: pong.clone(),
+                                        size: blur_size,
+                                        screen_size: output_size,
+                                        scale,
+                                        background_state_hash: content_hash,
+                                    },
+                                );
+                                tracing::debug!(
+                                    surface_id = surface_id,
+                                    blur_w = blur_size.w,
+                                    blur_h = blur_size.h,
+                                    "Cached blur texture for layer surface"
+                                );
+                            }
+                            any_blur_applied = true;
+                        } else {
+                            tracing::warn!("Layer surface blur passes failed");
+                        }
+                    }
+                }
+            }
+        }
+
         blur_state.blur_applied = any_blur_applied;
 
         // Final render: collect ALL elements (blur backdrops will find their per-window cached textures)

@@ -19,8 +19,11 @@ use crate::{
             compositor::recursive_frame_time_estimation,
             screencopy::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
         },
-        protocols::screencopy::{
-            FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
+        protocols::{
+            blur::has_blur as surface_has_blur,
+            screencopy::{
+                FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
+            },
         },
     },
 };
@@ -67,7 +70,7 @@ use smithay::{
             utils::with_renderer_surface_state,
         },
     },
-    desktop::utils::OutputPresentationFeedback,
+    desktop::{layer_map_for_output, utils::OutputPresentationFeedback},
     output::{Output, OutputNoMode},
     reexports::{
         calloop::{
@@ -687,13 +690,29 @@ fn process_blur(
 
     let output_name = output_ref.name();
 
-    let has_blur = {
+    // Check workspace windows for blur
+    let has_workspace_blur = {
         let shell_ref = shell.read();
         shell_ref
             .workspaces
             .active(output_ref)
             .is_some_and(|(_, workspace)| workspace.has_blur_windows())
     };
+
+    // Check layer surfaces for blur
+    let layer_map = layer_map_for_output(output_ref);
+    let has_layer_blur = layer_map
+        .layers()
+        .any(|layer| surface_has_blur(layer.wl_surface()));
+
+    if has_layer_blur {
+        tracing::trace!(
+            output = %output_name,
+            "Layer surface with blur detected"
+        );
+    }
+
+    let has_blur = has_workspace_blur || has_layer_blur;
 
     if !has_blur {
         return;

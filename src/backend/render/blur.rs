@@ -361,6 +361,67 @@ pub fn clear_blur_textures_for_output(output_name: &str) {
 }
 
 // =============================================================================
+// Layer Surface Blur Cache
+// =============================================================================
+
+/// Cache key for layer surface blur: (output_name, surface_id)
+type LayerBlurCacheKey = (String, u32);
+
+/// Global cache of blurred textures for layer surfaces per output.
+pub static LAYER_BLUR_TEXTURE_CACHE: LazyLock<
+    RwLock<HashMap<LayerBlurCacheKey, BlurredTextureInfo>>,
+> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Store a blurred texture for a specific layer surface on an output.
+pub fn cache_blur_texture_for_layer(output_name: &str, surface_id: u32, info: BlurredTextureInfo) {
+    let key = (output_name.to_string(), surface_id);
+    if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.write() {
+        cache.insert(key, info);
+    }
+}
+
+/// Get the cached blurred texture for a specific layer surface on an output.
+pub fn get_cached_blur_texture_for_layer(
+    output_name: &str,
+    surface_id: u32,
+) -> Option<BlurredTextureInfo> {
+    let key = (output_name.to_string(), surface_id);
+    if let Ok(cache) = LAYER_BLUR_TEXTURE_CACHE.read() {
+        cache.get(&key).cloned()
+    } else {
+        None
+    }
+}
+
+/// Clear all layer blur textures for an output
+pub fn clear_layer_blur_textures_for_output(output_name: &str) {
+    if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.write() {
+        cache.retain(|(out, _), _| out != output_name);
+    }
+}
+
+/// Cache for layer blur content state: output_name -> content_hash
+/// Used to detect when background content has changed and blur needs re-rendering
+pub static LAYER_BLUR_CONTENT_STATE: LazyLock<RwLock<HashMap<String, u64>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Get the stored content hash for layer blur on an output
+pub fn get_layer_blur_content_hash(output_name: &str) -> Option<u64> {
+    if let Ok(cache) = LAYER_BLUR_CONTENT_STATE.read() {
+        cache.get(output_name).copied()
+    } else {
+        None
+    }
+}
+
+/// Store the content hash for layer blur after rendering
+pub fn store_layer_blur_content_hash(output_name: &str, hash: u64) {
+    if let Ok(mut cache) = LAYER_BLUR_CONTENT_STATE.write() {
+        cache.insert(output_name.to_string(), hash);
+    }
+}
+
+// =============================================================================
 // Content Hash for Cache Invalidation
 // =============================================================================
 
