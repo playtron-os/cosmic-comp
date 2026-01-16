@@ -51,17 +51,11 @@ use crate::shell::element::{CosmicMapped, CosmicMappedKey};
 // Constants
 // =============================================================================
 
-/// Default blur radius in pixels (design spec: Figma blur 100)
-/// Figma blur 100 ≈ Gaussian σ ≈ 25–30px, effective diameter ~100–120px.
-/// This value is passed to the shader and scaled by the offset divisor.
+/// Default blur radius in pixels
 pub const DEFAULT_BLUR_RADIUS: f32 = 100.0;
 
-/// Number of blur iterations for Figma-quality blur.
-/// Kawase blur needs many passes for large radii. For Figma blur 100:
-/// - Minimum: 16 passes
-/// - Good: 20-24 passes
-/// 24 iterations at 1/8 resolution is still very performant.
-pub const BLUR_ITERATIONS: u32 = 24;
+/// Number of blur iterations.
+pub const BLUR_ITERATIONS: u32 = 12;
 
 /// Downsample factor for blur textures.
 /// For Figma blur 100, we need heavy downsampling:
