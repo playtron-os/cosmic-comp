@@ -41,12 +41,15 @@ pub enum VisibilityMode {
     Always,
     /// Only visible when compositor is in home mode
     HomeOnly,
+    /// Hidden when compositor is in home mode (inverse of HomeOnly)
+    HideOnHome,
 }
 
 impl From<WEnum<zcosmic_home_visibility_v1::VisibilityMode>> for VisibilityMode {
     fn from(value: WEnum<zcosmic_home_visibility_v1::VisibilityMode>) -> Self {
         match value.into_result() {
             Ok(zcosmic_home_visibility_v1::VisibilityMode::HomeOnly) => VisibilityMode::HomeOnly,
+            Ok(zcosmic_home_visibility_v1::VisibilityMode::HideOnHome) => VisibilityMode::HideOnHome,
             _ => VisibilityMode::Always,
         }
     }
@@ -164,7 +167,7 @@ pub trait HomeVisibilityHandler {
     fn home_visibility_state(&self) -> &HomeVisibilityState;
 
     /// Set a surface's visibility mode in the Shell
-    fn set_surface_visibility(&mut self, surface_id: u32, home_only: bool);
+    fn set_surface_visibility_mode(&mut self, surface_id: u32, mode: VisibilityMode);
 
     /// Remove a surface from visibility tracking in the Shell
     fn remove_surface_visibility(&mut self, surface_id: u32);
@@ -263,9 +266,8 @@ where
 
                 if let Some(surface) = data.surface.upgrade().ok() {
                     let surface_id = surface.id().protocol_id();
-                    let home_only = visibility_mode == VisibilityMode::HomeOnly;
-                    state.set_surface_visibility(surface_id, home_only);
-                    debug!(surface_id, home_only, "Surface visibility mode changed");
+                    state.set_surface_visibility_mode(surface_id, visibility_mode);
+                    debug!(surface_id, ?visibility_mode, "Surface visibility mode changed");
                 }
             }
         }

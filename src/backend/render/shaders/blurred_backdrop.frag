@@ -99,5 +99,7 @@ void main() {
     
     // Final output with premultiplied alpha
     // cosmic-comp uses premultiplied alpha throughout the pipeline
-    gl_FragColor = vec4(final_color * mask, blurred.a * alpha * mask);
+    // Both RGB and A must be multiplied by alpha for correct blending
+    float final_alpha = blurred.a * alpha * mask;
+    gl_FragColor = vec4(final_color * final_alpha, final_alpha);
 }

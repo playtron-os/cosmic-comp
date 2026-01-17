@@ -86,6 +86,7 @@
       </description>
       <entry name="always" value="0" summary="always visible (default)"/>
       <entry name="home_only" value="1" summary="visible only when at home"/>
+      <entry name="hide_on_home" value="2" summary="hidden when at home (inverse of home_only)"/>
     </enum>
 
     <request name="destroy" type="destructor">
@@ -101,6 +102,7 @@
         
         - always (0): Surface is always visible regardless of home state
         - home_only (1): Surface is only visible when compositor is in home mode
+        - hide_on_home (2): Surface is hidden when in home mode (inverse fade)
         
         The default is "always" to maintain backwards compatibility with
         existing layer-shell clients.

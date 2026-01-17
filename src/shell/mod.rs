@@ -403,6 +403,8 @@ pub struct Shell {
     home_mode: HomeMode,
     /// Surface IDs that should only be visible when in home mode
     home_only_surfaces: std::collections::HashSet<u32>,
+    /// Surface IDs that should be hidden when in home mode (inverse of home_only)
+    hide_on_home_surfaces: std::collections::HashSet<u32>,
     /// Surfaces minimized by home mode (to restore when exiting)
     home_minimized_surfaces: Vec<CosmicSurface>,
 
@@ -1728,6 +1730,7 @@ impl Shell {
             // Start in home mode only if HOME_ENABLED is set
             home_mode: if home_enabled() { HomeMode::Active } else { HomeMode::None },
             home_only_surfaces: std::collections::HashSet::new(),
+            hide_on_home_surfaces: std::collections::HashSet::new(),
             home_minimized_surfaces: Vec::new(),
 
             #[cfg(feature = "debug")]
@@ -2528,18 +2531,40 @@ impl Shell {
         &self.home_only_surfaces
     }
 
-    /// Register a surface as home-only (visible only when at home)
-    pub fn set_surface_home_only(&mut self, surface_id: u32, home_only: bool) {
-        if home_only {
-            self.home_only_surfaces.insert(surface_id);
-        } else {
-            self.home_only_surfaces.remove(&surface_id);
+    /// Get the set of hide-on-home surface IDs
+    pub fn hide_on_home_surfaces(&self) -> &std::collections::HashSet<u32> {
+        &self.hide_on_home_surfaces
+    }
+
+    /// Set a surface's visibility mode
+    pub fn set_surface_visibility_mode(
+        &mut self,
+        surface_id: u32,
+        mode: crate::wayland::protocols::home_visibility::VisibilityMode,
+    ) {
+        use crate::wayland::protocols::home_visibility::VisibilityMode;
+        // Remove from both sets first
+        self.home_only_surfaces.remove(&surface_id);
+        self.hide_on_home_surfaces.remove(&surface_id);
+
+        // Add to appropriate set based on mode
+        match mode {
+            VisibilityMode::HomeOnly => {
+                self.home_only_surfaces.insert(surface_id);
+            }
+            VisibilityMode::HideOnHome => {
+                self.hide_on_home_surfaces.insert(surface_id);
+            }
+            VisibilityMode::Always => {
+                // Already removed from both sets
+            }
         }
     }
 
-    /// Remove a surface from home-only tracking
-    pub fn remove_home_only_surface(&mut self, surface_id: u32) {
+    /// Remove a surface from visibility tracking
+    pub fn remove_surface_visibility(&mut self, surface_id: u32) {
         self.home_only_surfaces.remove(&surface_id);
+        self.hide_on_home_surfaces.remove(&surface_id);
     }
 
     /// Check if a surface should be visible given current home state
@@ -2548,6 +2573,10 @@ impl Shell {
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible when at home or animating
             let alpha = self.home_mode.alpha();
+            (alpha > 0.0, alpha)
+        } else if self.hide_on_home_surfaces.contains(&surface_id) {
+            // Hide-on-home surface: visible when NOT at home (inverse alpha)
+            let alpha = 1.0 - self.home_mode.alpha();
             (alpha > 0.0, alpha)
         } else {
             // Always-visible surface (default)
@@ -2560,6 +2589,9 @@ impl Shell {
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible when at home or during animation
             is_home || self.home_mode.alpha() > 0.0
+        } else if self.hide_on_home_surfaces.contains(&surface_id) {
+            // Hide-on-home surface: visible when NOT at home or during animation
+            !is_home || self.home_mode.alpha() < 1.0
         } else {
             // Always-visible surface (default)
             true

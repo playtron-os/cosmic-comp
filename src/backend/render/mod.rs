@@ -938,6 +938,8 @@ pub type EguiState = ();
 pub struct HomeVisibilityContext {
     /// Set of surface IDs that are "home-only" (only visible when in home mode)
     pub home_only_surfaces: std::collections::HashSet<u32>,
+    /// Set of surface IDs that are "hide-on-home" (hidden when in home mode)
+    pub hide_on_home_surfaces: std::collections::HashSet<u32>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
 }
@@ -947,6 +949,7 @@ impl HomeVisibilityContext {
     pub fn from_shell(shell: &crate::shell::Shell) -> Self {
         Self {
             home_only_surfaces: shell.home_only_surfaces().clone(),
+            hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
             home_alpha: shell.home_alpha(),
         }
     }
@@ -958,6 +961,14 @@ impl HomeVisibilityContext {
             // Home-only surface: visible only when home_alpha > 0
             if self.home_alpha > 0.0 {
                 (true, self.home_alpha)
+            } else {
+                (false, 0.0)
+            }
+        } else if self.hide_on_home_surfaces.contains(&surface_id) {
+            // Hide-on-home surface: inverse of home_alpha (visible when NOT in home mode)
+            let alpha = 1.0 - self.home_alpha;
+            if alpha > 0.0 {
+                (true, alpha)
             } else {
                 (false, 0.0)
             }
@@ -1310,7 +1321,7 @@ where
                     layer,
                     location,
                     alpha,
-                    home_only,
+                    skip_blur: _,
                 } => {
                     // First render the layer surface content
                     elements.extend(
@@ -1339,8 +1350,9 @@ where
                     let corner_radius =
                         get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
 
-                    // Render shadow behind the layer surface if enabled (skip for home_only surfaces)
-                    if !home_only && surface_has_shadow(layer.wl_surface()) {
+                    // Render shadow behind the layer surface if enabled
+                    // Alpha handles fading for home visibility surfaces
+                    if surface_has_shadow(layer.wl_surface()) {
                         let is_dark = theme.cosmic().is_dark;
                         let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
@@ -1362,8 +1374,8 @@ where
                     }
 
                     // Then render blur backdrop behind the layer surface (and shadow)
-                    // Skip blur for home_only surfaces (e.g., humainos-home)
-                    if !home_only && surface_has_blur(layer.wl_surface()) {
+                    // Alpha handles fading for home visibility surfaces
+                    if surface_has_blur(layer.wl_surface()) {
                         let output_name = output.name();
 
                         // Try to get cached blur texture for this layer surface

@@ -65,8 +65,8 @@ pub enum Stage<'a> {
         location: Point<i32, Global>,
         /// Alpha/opacity for the surface (0.0-1.0), used for home visibility animation
         alpha: f32,
-        /// Whether this is a home-only surface (blur should be skipped)
-        home_only: bool,
+        /// Whether blur should be skipped for this surface (home_only or hide_on_home surfaces)
+        skip_blur: bool,
     },
     OverrideRedirect {
         surface: &'a X11Surface,
@@ -132,14 +132,14 @@ fn render_input_order_internal<R: 'static>(
             location,
         })?;
     }
-    for (layer, location, alpha, home_only) in
+    for (layer, location, alpha, skip_blur) in
         layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
     {
         callback(Stage::LayerSurface {
             layer,
             location,
             alpha,
-            home_only,
+            skip_blur,
         })?;
     }
 
@@ -362,14 +362,14 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_focused_fullscreen {
         // top-layer shell
-        for (layer, location, alpha, home_only) in
+        for (layer, location, alpha, skip_blur) in
             layer_surfaces(output, Layer::Top, element_filter, &home_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
                 location,
                 alpha,
-                home_only,
+                skip_blur,
             })?;
         }
 
@@ -400,7 +400,7 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_focused_fullscreen {
         // bottom layer
-        for (layer, mut location, alpha, home_only) in
+        for (layer, mut location, alpha, skip_blur) in
             layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -408,7 +408,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                home_only,
+                skip_blur,
             })?;
         }
     }
@@ -416,7 +416,7 @@ fn render_input_order_internal<R: 'static>(
     if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
         if !has_fullscreen {
             // previous bottom layer
-            for (layer, mut location, alpha, home_only) in
+            for (layer, mut location, alpha, skip_blur) in
                 layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
             {
                 location += offset.as_global();
@@ -424,7 +424,7 @@ fn render_input_order_internal<R: 'static>(
                     layer,
                     location,
                     alpha,
-                    home_only,
+                    skip_blur,
                 })?;
             }
         }
@@ -432,7 +432,7 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_fullscreen {
         // background layer
-        for (layer, mut location, alpha, home_only) in
+        for (layer, mut location, alpha, skip_blur) in
             layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -440,7 +440,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                home_only,
+                skip_blur,
             })?;
         }
     }
@@ -448,7 +448,7 @@ fn render_input_order_internal<R: 'static>(
     if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
         if !has_fullscreen {
             // previous background layer
-            for (layer, mut location, alpha, home_only) in
+            for (layer, mut location, alpha, skip_blur) in
                 layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
             {
                 location += offset.as_global();
@@ -456,7 +456,7 @@ fn render_input_order_internal<R: 'static>(
                     layer,
                     location,
                     alpha,
-                    home_only,
+                    skip_blur,
                 })?;
             }
         }
@@ -552,7 +552,13 @@ fn layer_surfaces<'a>(
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id().protocol_id();
         let (visible, alpha) = home_visibility.surface_visibility(surface_id);
-        let is_home_only = home_visibility.home_only_surfaces.contains(&surface_id);
+
+        // Only skip blur/shadow when the surface is actually animating (alpha < 1.0)
+        // This allows hide_on_home surfaces to have blur when fully visible
+        let is_animating = alpha < 1.0;
+        let has_home_visibility = home_visibility.home_only_surfaces.contains(&surface_id)
+            || home_visibility.hide_on_home_surfaces.contains(&surface_id);
+        let skip_blur = has_home_visibility && is_animating;
 
         // Filter out completely invisible surfaces
         if !visible {
@@ -560,7 +566,7 @@ fn layer_surfaces<'a>(
         }
 
         // Use the surface-specific alpha (which considers home_alpha for home-only surfaces)
-        // Also return whether this is a home_only surface for blur filtering
-        Some((s, loc.as_local().to_global(output), alpha, is_home_only))
+        // Also return whether blur should be skipped (only when animating)
+        Some((s, loc.as_local().to_global(output), alpha, skip_blur))
     })
 }
