@@ -1310,6 +1310,7 @@ where
                     layer,
                     location,
                     alpha,
+                    home_only,
                 } => {
                     // First render the layer surface content
                     elements.extend(
@@ -1338,8 +1339,8 @@ where
                     let corner_radius =
                         get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
 
-                    // Render shadow behind the layer surface if enabled
-                    if surface_has_shadow(layer.wl_surface()) {
+                    // Render shadow behind the layer surface if enabled (skip for home_only surfaces)
+                    if !home_only && surface_has_shadow(layer.wl_surface()) {
                         let is_dark = theme.cosmic().is_dark;
                         let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
@@ -1361,7 +1362,8 @@ where
                     }
 
                     // Then render blur backdrop behind the layer surface (and shadow)
-                    if surface_has_blur(layer.wl_surface()) {
+                    // Skip blur for home_only surfaces (e.g., humainos-home)
+                    if !home_only && surface_has_blur(layer.wl_surface()) {
                         let output_name = output.name();
 
                         // Try to get cached blur texture for this layer surface

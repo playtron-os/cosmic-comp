@@ -65,6 +65,8 @@ pub enum Stage<'a> {
         location: Point<i32, Global>,
         /// Alpha/opacity for the surface (0.0-1.0), used for home visibility animation
         alpha: f32,
+        /// Whether this is a home-only surface (blur should be skipped)
+        home_only: bool,
     },
     OverrideRedirect {
         surface: &'a X11Surface,
@@ -130,13 +132,14 @@ fn render_input_order_internal<R: 'static>(
             location,
         })?;
     }
-    for (layer, location, alpha) in
+    for (layer, location, alpha, home_only) in
         layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
     {
         callback(Stage::LayerSurface {
             layer,
             location,
             alpha,
+            home_only,
         })?;
     }
 
@@ -359,13 +362,14 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_focused_fullscreen {
         // top-layer shell
-        for (layer, location, alpha) in
+        for (layer, location, alpha, home_only) in
             layer_surfaces(output, Layer::Top, element_filter, &home_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
                 location,
                 alpha,
+                home_only,
             })?;
         }
 
@@ -396,7 +400,7 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_focused_fullscreen {
         // bottom layer
-        for (layer, mut location, alpha) in
+        for (layer, mut location, alpha, home_only) in
             layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -404,6 +408,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
+                home_only,
             })?;
         }
     }
@@ -411,7 +416,7 @@ fn render_input_order_internal<R: 'static>(
     if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
         if !has_fullscreen {
             // previous bottom layer
-            for (layer, mut location, alpha) in
+            for (layer, mut location, alpha, home_only) in
                 layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
             {
                 location += offset.as_global();
@@ -419,6 +424,7 @@ fn render_input_order_internal<R: 'static>(
                     layer,
                     location,
                     alpha,
+                    home_only,
                 })?;
             }
         }
@@ -426,7 +432,7 @@ fn render_input_order_internal<R: 'static>(
 
     if !has_fullscreen {
         // background layer
-        for (layer, mut location, alpha) in
+        for (layer, mut location, alpha, home_only) in
             layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -434,6 +440,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
+                home_only,
             })?;
         }
     }
@@ -441,7 +448,7 @@ fn render_input_order_internal<R: 'static>(
     if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
         if !has_fullscreen {
             // previous background layer
-            for (layer, mut location, alpha) in
+            for (layer, mut location, alpha, home_only) in
                 layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
             {
                 location += offset.as_global();
@@ -449,6 +456,7 @@ fn render_input_order_internal<R: 'static>(
                     layer,
                     location,
                     alpha,
+                    home_only,
                 })?;
             }
         }
@@ -464,7 +472,7 @@ fn layer_popups<'a>(
     home_visibility: &'a HomeVisibilityContext,
 ) -> impl Iterator<Item = (LayerSurface, PopupKind, Point<i32, Global>, f32)> + 'a {
     layer_surfaces(output, layer, element_filter, home_visibility).flat_map(
-        move |(surface, location, alpha)| {
+        move |(surface, location, alpha, _home_only)| {
             let location_clone = location;
             let surface_clone = surface.clone();
             PopupManager::popups_for_surface(surface.wl_surface()).map(
@@ -498,7 +506,7 @@ fn layer_surfaces<'a>(
     layer: Layer,
     element_filter: &'a ElementFilter,
     home_visibility: &'a HomeVisibilityContext,
-) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>, f32)> + 'a {
+) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>, f32, bool)> + 'a {
     // For BlurCapture and LayerBlurCapture modes, use cached layer surfaces to prevent deadlocks
     let use_cache = matches!(
         element_filter,
@@ -544,6 +552,7 @@ fn layer_surfaces<'a>(
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id().protocol_id();
         let (visible, alpha) = home_visibility.surface_visibility(surface_id);
+        let is_home_only = home_visibility.home_only_surfaces.contains(&surface_id);
 
         // Filter out completely invisible surfaces
         if !visible {
@@ -551,6 +560,7 @@ fn layer_surfaces<'a>(
         }
 
         // Use the surface-specific alpha (which considers home_alpha for home-only surfaces)
-        Some((s, loc.as_local().to_global(output), alpha))
+        // Also return whether this is a home_only surface for blur filtering
+        Some((s, loc.as_local().to_global(output), alpha, is_home_only))
     })
 }
