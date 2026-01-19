@@ -30,7 +30,7 @@ use crate::{
 /// Returns false for LayerShellOnly and for LayerBlurCapture when capturing for
 /// layers below windows (Bottom, Background).
 fn should_include_windows(element_filter: &ElementFilter) -> bool {
-    let result = match element_filter {
+    match element_filter {
         ElementFilter::LayerShellOnly => false,
         ElementFilter::LayerBlurCapture(layer) => {
             // Only include windows for layers above windows (Top, Overlay)
@@ -38,18 +38,7 @@ fn should_include_windows(element_filter: &ElementFilter) -> bool {
             matches!(layer, Layer::Top | Layer::Overlay)
         }
         _ => true,
-    };
-
-    // Debug logging for blur capture
-    if let ElementFilter::LayerBlurCapture(layer) = element_filter {
-        tracing::debug!(
-            layer = ?layer,
-            include_windows = result,
-            "should_include_windows for LayerBlurCapture"
-        );
     }
-
-    result
 }
 
 pub enum Stage<'a> {

@@ -4050,6 +4050,14 @@ impl Shell {
             return None;
         }
 
+        // Block move requests for embedded windows - they should not be draggable
+        if old_mapped
+            .windows()
+            .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+        {
+            return None;
+        }
+
         let (window, _) = old_mapped
             .windows()
             .find(|(w, _)| w.wl_surface().as_deref() == Some(surface))

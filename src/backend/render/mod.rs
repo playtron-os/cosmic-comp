@@ -1532,13 +1532,6 @@ where
                     );
                 }
                 Stage::Workspace { workspace, offset } => {
-                    // Debug: Log when workspace is rendered during blur capture
-                    if let ElementFilter::LayerBlurCapture(layer) = element_filter {
-                        tracing::warn!(
-                            layer = ?layer,
-                            "Stage::Workspace being rendered during LayerBlurCapture - this should NOT happen!"
-                        );
-                    }
                     elements.extend(
                         match workspace.render(
                             renderer,
@@ -1992,18 +1985,14 @@ where
         let grabbed_window_key = {
             let shell_ref = shell.read();
             let last_active_seat = shell_ref.seats.last_active();
-            let key = last_active_seat
+            last_active_seat
                 .user_data()
                 .get::<SeatMoveGrabState>()
                 .unwrap()
                 .lock()
                 .unwrap()
                 .as_ref()
-                .map(|s| s.element().key());
-            if key.is_some() {
-                tracing::debug!("Found grabbed window to exclude from blur");
-            }
-            key
+                .map(|s| s.element().key())
         };
 
         // Optimized iterative blur: one capture per GROUP, then blur for each window in group

@@ -838,7 +838,7 @@ fn process_blur(
         };
 
         // Compute content hash for cache invalidation
-        // This includes element IDs (which change on content updates) and geometry
+        // This includes commit counters (which change on content updates) and geometry
         let content_hash =
             compute_element_content_hash(group.capture_z_threshold, &capture_elements, scale);
 
@@ -853,8 +853,12 @@ fn process_blur(
 
         // Throttle blur updates: if content changed but we have cached textures
         // and it's been less than BLUR_THROTTLE_INTERVAL, use the cache
+        // IMPORTANT: Don't throttle when a window is being dragged - the blur needs to update
+        // every frame to reflect the moving window's new position
+        let is_dragging = grabbed_window_key.is_some();
         let throttled = content_changed
             && all_cached
+            && !is_dragging
             && should_throttle_blur(&output_name, group.capture_z_threshold);
 
         let can_reuse_cache = (!content_changed && all_cached) || throttled;

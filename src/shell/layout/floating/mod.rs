@@ -1382,14 +1382,25 @@ impl FloatingLayout {
 
     /// Find an embedded element under the given location.
     /// Returns the element and its render location if found.
+    /// Only returns an embedded element if its parent window is the topmost
+    /// non-embedded window at that location (respects z-order).
     fn embedded_element_under(
         &self,
         location: Point<f64, Local>,
     ) -> Option<(&CosmicMapped, Point<i32, Logical>)> {
+        // Find the topmost non-embedded window at this location for z-order checking
+        let topmost_surface_id = self.topmost_parent_surface_id_at(location);
+
+        // Now check embedded elements, but only if their parent is the topmost window
         for elem in self.space.elements() {
             if let Some(embed_info) = elem.windows().find_map(|(w, _)| {
                 crate::wayland::handlers::surface_embed::get_embed_render_info(&w)
             }) {
+                // Only consider this embedded window if its parent is the topmost window at this location
+                if topmost_surface_id.as_ref() != Some(&embed_info.parent_surface_id) {
+                    continue;
+                }
+
                 if let Some(render_location) =
                     self.calculate_embed_render_location(&embed_info, location)
                 {
@@ -1441,6 +1452,22 @@ impl FloatingLayout {
         })
     }
 
+    /// Find the topmost non-embedded window at a given location.
+    /// Returns the surface ID of that window if found.
+    fn topmost_parent_surface_id_at(&self, location: Point<f64, Local>) -> Option<String> {
+        self.space
+            .elements()
+            .rev()
+            .filter(|e| !Self::is_embedded(e))
+            .find(|e| {
+                let render_location = self.space.element_location(e).unwrap() - e.geometry().loc;
+                let mut bbox = e.bbox();
+                bbox.loc += render_location;
+                bbox.to_f64().contains(location.as_logical())
+            })
+            .and_then(|e| e.active_window().wl_surface().map(|s| s.id().to_string()))
+    }
+
     pub fn popup_element_under(&self, location: Point<f64, Local>) -> Option<KeyboardFocusTarget> {
         // First check popups for embedded windows - they render on top of their embedded position
         if let Some(target) = self.embedded_popup_element_under(location) {
@@ -1482,15 +1509,25 @@ impl FloatingLayout {
     /// Check if the location hits a popup for any embedded window.
     /// Embedded windows render at a different location (inside their parent),
     /// so we need to check popups at the adjusted position.
+    /// Only returns a popup if its parent window is the topmost non-embedded window
+    /// at that location (respects z-order).
     fn embedded_popup_element_under(
         &self,
         location: Point<f64, Local>,
     ) -> Option<KeyboardFocusTarget> {
+        // Find the topmost non-embedded window at this location for z-order checking
+        let topmost_surface_id = self.topmost_parent_surface_id_at(location);
+
         // Iterate through all parent windows that have embedded children
         for parent_elem in self.space.elements() {
             let parent_window = parent_elem.active_window();
             let parent_surface = parent_window.wl_surface()?;
             let parent_surface_id = parent_surface.id().to_string();
+
+            // Only consider this parent if it's the topmost window at this location
+            if topmost_surface_id.as_ref() != Some(&parent_surface_id) {
+                continue;
+            }
 
             let embedded_children =
                 crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(
@@ -1633,15 +1670,25 @@ impl FloatingLayout {
 
     /// Check if the location hits a popup surface for any embedded window.
     /// Returns the pointer focus target and the location relative to the window.
+    /// Only returns a popup if its parent window is the topmost non-embedded window
+    /// at that location (respects z-order).
     fn embedded_popup_surface_under(
         &self,
         location: Point<f64, Local>,
     ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
+        // Find the topmost non-embedded window at this location for z-order checking
+        let topmost_surface_id = self.topmost_parent_surface_id_at(location);
+
         // Iterate through all parent windows that have embedded children
         for parent_elem in self.space.elements() {
             let parent_window = parent_elem.active_window();
             let parent_surface = parent_window.wl_surface()?;
             let parent_surface_id = parent_surface.id().to_string();
+
+            // Only consider this parent if it's the topmost window at this location
+            if topmost_surface_id.as_ref() != Some(&parent_surface_id) {
+                continue;
+            }
 
             let embedded_children =
                 crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(
@@ -2543,11 +2590,7 @@ impl FloatingLayout {
 
     /// Check if any windows in this layout have blur enabled
     pub fn has_blur_windows(&self) -> bool {
-        let count = self.space.elements().filter(|elem| elem.has_blur()).count();
-        if count > 0 {
-            tracing::debug!(blur_window_count = count, "FloatingLayout has blur windows");
-        }
-        count > 0
+        self.space.elements().any(|elem| elem.has_blur())
     }
 
     /// Get blur windows in Z-order (bottom to top) with their keys
@@ -2605,7 +2648,10 @@ impl FloatingLayout {
     /// Example:
     /// - Windows: [non-blur z=0, blur z=1, blur z=2, non-blur z=3, blur z=4]
     /// - Groups: [{threshold=1, windows=[z=1,z=2]}, {threshold=4, windows=[z=4]}]
-    /// - Only 2 captures needed instead of 3
+    /// - Only 2 captures needed instead of 3 (when windows don't overlap)
+    ///
+    /// When consecutive blur windows OVERLAP geometrically, they need separate groups
+    /// because the top window needs to capture the bottom window in its blur.
     pub fn blur_windows_grouped(&self, alpha: f32) -> Vec<BlurWindowGroup> {
         if self.space.outputs().next().is_none() {
             return Vec::new();
@@ -2617,7 +2663,16 @@ impl FloatingLayout {
             .iter()
             .filter(|(_, anim)| matches!(anim, Animation::Minimize { .. }))
             .count();
-        let total_count = minimizing_count + self.space.elements().count();
+        let space_element_count = self.space.elements().count();
+        let total_count = minimizing_count + space_element_count;
+
+        // Debug: Log window counts to track z-order stability
+        tracing::debug!(
+            minimizing_count,
+            space_element_count,
+            total_count,
+            "blur_windows_grouped: window counts"
+        );
 
         if total_count == 0 {
             return Vec::new();
@@ -2656,7 +2711,8 @@ impl FloatingLayout {
             })
             .collect();
 
-        // Group consecutive blur windows (sorted by z-index, bottom to top)
+        // Group consecutive blur windows that don't overlap
+        // If windows overlap, the top one needs to see the bottom one in its blur
         let mut groups: Vec<BlurWindowGroup> = Vec::new();
         let mut current_group: Option<BlurWindowGroup> = None;
         let mut last_z_idx: Option<usize> = None;
@@ -2671,7 +2727,18 @@ impl FloatingLayout {
                     // Check if this blur window is consecutive with the previous
                     let is_consecutive = last_z_idx.map(|last| z_idx == last + 1).unwrap_or(true);
 
-                    if is_consecutive {
+                    // Check if this window overlaps with any window in the current group
+                    let overlaps_with_group = current_group
+                        .as_ref()
+                        .map(|group| {
+                            group.windows.iter().any(|(_, group_geo, _, _)| {
+                                // Check if rectangles intersect
+                                geometry.overlaps(*group_geo)
+                            })
+                        })
+                        .unwrap_or(false);
+
+                    if is_consecutive && !overlaps_with_group {
                         // Add to current group or start new one
                         if let Some(ref mut group) = current_group {
                             group.windows.push((key, geometry, elem_alpha, z_idx));
@@ -2682,7 +2749,7 @@ impl FloatingLayout {
                             });
                         }
                     } else {
-                        // Gap detected - finish current group and start new one
+                        // Gap detected OR windows overlap - finish current group and start new one
                         if let Some(group) = current_group.take() {
                             groups.push(group);
                         }
@@ -2830,21 +2897,6 @@ impl FloatingLayout {
             ElementFilter::BlurCapture(ctx) => Some(ctx),
             _ => None,
         };
-
-        // Debug: Log how many windows are in the space during blur capture
-        if blur_ctx.is_some() {
-            let window_count = self.space.elements().count();
-            let window_list: Vec<_> = self
-                .space
-                .elements()
-                .map(|e| e.active_window().app_id())
-                .collect();
-            tracing::debug!(
-                window_count = window_count,
-                windows = ?window_list,
-                "Blur capture: iterating windows in space"
-            );
-        }
 
         // Count total windows for z-index calculation
         let minimizing_count = self
@@ -3318,6 +3370,15 @@ impl FloatingLayout {
             // Render embedded children in front of parent (they'll be on top in the z-order)
             let embedded_elements =
                 self.render_embedded_children(renderer, elem, geometry, output_scale, alpha);
+
+            // Log embedded children during blur capture
+            if blur_ctx.is_some() && !embedded_elements.is_empty() {
+                tracing::debug!(
+                    parent_app_id = %elem.active_window().app_id(),
+                    embedded_count = embedded_elements.len(),
+                    "Blur capture: including embedded children for parent"
+                );
+            }
 
             // Combine: embedded first (on top), then parent's elements (behind)
             let mut all_window_elements = embedded_elements;

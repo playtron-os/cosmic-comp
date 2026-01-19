@@ -591,6 +591,10 @@ pub fn store_layer_blur_content_hash(output_name: &str, hash: u64) {
 
 /// Compute a hash of element content state (commit counters + geometry).
 /// Commit counters change when surfaces commit new content (terminal updates, etc.)
+///
+/// NOTE: We intentionally DO NOT include element IDs in the hash because some
+/// render elements (like shadows, decorations) get recreated each frame with
+/// new ExternalIds. We rely on commit counters + geometry for change detection.
 pub fn compute_element_content_hash<E: Element>(
     z_threshold: usize,
     elements: &[E],
@@ -607,14 +611,11 @@ pub fn compute_element_content_hash<E: Element>(
 
     // Include each element's commit counter (changes on content update) and geometry
     for elem in elements {
-        // Element ID for identity
-        let id = elem.id();
-        id.hash(&mut hasher);
-
         // Commit counter - THIS changes when surface content updates
         // CommitCounter doesn't implement Hash, so we use Debug format
         let commit = elem.current_commit();
-        format!("{:?}", commit).hash(&mut hasher);
+        let commit_str = format!("{:?}", commit);
+        commit_str.hash(&mut hasher);
 
         // Also include geometry
         let geo = elem.geometry(scale);
