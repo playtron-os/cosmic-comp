@@ -1612,6 +1612,31 @@ impl State {
             .a11y_keyboard_monitor_state
             .key_event(modifiers, &handle, event.state());
 
+        // Forward Right Super key (KEY_RIGHTMETA, keycode 134) to specific apps
+        // Apps can be configured via COSMIC_VOICE_INPUT_APP_IDS env var (comma-separated)
+        // This allows apps like chat-ui to use it as a voice input trigger
+        const KEY_RIGHTMETA: u32 = 134;
+        if event.key_code() == KEY_RIGHTMETA.into() {
+            let allowed_app_ids: Vec<&str> = std::env::var("COSMIC_VOICE_INPUT_APP_IDS")
+                .map(|s| s.leak() as &str)
+                .unwrap_or("chat-ui")
+                .split(',')
+                .map(|s| s.trim())
+                .collect();
+
+            let current_app_id = match &current_focus {
+                Some(KeyboardFocusTarget::Element(elem)) => Some(elem.active_window().app_id()),
+                Some(KeyboardFocusTarget::Fullscreen(surface)) => Some(surface.app_id()),
+                _ => None,
+            };
+
+            if let Some(app_id) = current_app_id {
+                if allowed_app_ids.iter().any(|allowed| *allowed == app_id) {
+                    return FilterResult::Forward;
+                }
+            }
+        }
+
         // Leave move overview mode, if any modifier was released
         if let Some(Trigger::KeyboardMove(action_modifiers)) =
             shell.overview_mode().0.active_trigger()
