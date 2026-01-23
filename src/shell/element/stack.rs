@@ -1321,8 +1321,14 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
         {
             Radius::from(0.0)
         } else {
-            let r = super::DEFAULT_WINDOW_CORNER_RADIUS as f32;
-            Radius::from([r, r, 0., 0.])
+            let radii = stack
+                .theme
+                .lock()
+                .unwrap()
+                .cosmic()
+                .radius_s()
+                .map(|x| if x < 4.0 { x } else { x + 4.0 });
+            Radius::from([radii[0], radii[1], 0., 0.])
         };
         let group_focused = stack.group_focused.load(Ordering::SeqCst);
 
