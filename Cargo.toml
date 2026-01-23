@@ -147,4 +147,4 @@ cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch
 cosmic-client-toolkit = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 
 [patch.crates-io]
-smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "fe5d08d" }
+smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "ae14fa1" }
