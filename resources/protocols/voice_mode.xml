@@ -89,6 +89,21 @@
       </description>
     </request>
 
+    <request name="set_audio_level">
+      <description summary="update audio input level for visualization">
+        Send the current audio input level for voice orb visualization.
+        Clients should call this periodically (e.g., 20-30Hz) while recording
+        to provide smooth animation feedback.
+        
+        The level is a linear amplitude value from 0 to 1000, where:
+        - 0 = silence (no audio input)
+        - 1000 = maximum amplitude
+        
+        The compositor uses this to animate the voice orb (pulsing, glow, etc.).
+      </description>
+      <arg name="level" type="uint" summary="audio level 0-1000 (0=silence, 1000=max)"/>
+    </request>
+
     <event name="start">
       <description summary="voice input started">
         Sent when voice input has started and this surface should begin

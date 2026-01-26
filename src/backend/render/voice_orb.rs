@@ -312,6 +312,24 @@ impl VoiceOrbState {
         }
     }
 
+    /// Update audio level for visualization (0-1000 -> 0.0-1.0)
+    pub fn set_audio_level(&mut self, level: u32) {
+        // Normalize to 0.0-1.0 range with some smoothing
+        let target = (level as f32 / 1000.0).clamp(0.0, 1.0);
+        // Apply some smoothing to avoid jitter (lerp toward target)
+        self.pulse_intensity = self.pulse_intensity * 0.7 + target * 0.3;
+        // Also set voice state to recording if we have audio
+        if level > 0 {
+            self.voice_state = VoiceState::Recording;
+        }
+    }
+
+    /// Reset audio level (called when voice mode ends)
+    pub fn reset_audio_level(&mut self) {
+        self.pulse_intensity = 0.0;
+        self.voice_state = VoiceState::Idle;
+    }
+
     /// Check if the orb should be rendered
     pub fn should_render(&self) -> bool {
         self.scale > 0.001 || self.animation.is_some()

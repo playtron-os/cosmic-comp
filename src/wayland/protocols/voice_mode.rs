@@ -108,6 +108,8 @@ pub struct VoiceModeState {
     current_orb_state: Mutex<OrbState>,
     /// Currently active receiver surface
     active_receiver_surface: Mutex<Option<Weak<WlSurface>>>,
+    /// Current audio level from client (0-1000)
+    audio_level: Mutex<u32>,
 }
 
 impl std::fmt::Debug for VoiceModeState {
@@ -119,6 +121,7 @@ impl std::fmt::Debug for VoiceModeState {
                 "has_active_receiver",
                 &self.active_receiver_surface.lock().unwrap().is_some(),
             )
+            .field("audio_level", &self.audio_level.lock().unwrap())
             .finish()
     }
 }
@@ -141,6 +144,7 @@ impl VoiceModeState {
             receivers: Mutex::new(Vec::new()),
             current_orb_state: Mutex::new(OrbState::Hidden),
             active_receiver_surface: Mutex::new(None),
+            audio_level: Mutex::new(0),
         }
     }
 
@@ -216,6 +220,7 @@ impl VoiceModeState {
         let active_surface = self.active_receiver_surface.lock().unwrap().clone();
         *self.current_orb_state.lock().unwrap() = OrbState::Hidden;
         *self.active_receiver_surface.lock().unwrap() = None;
+        self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
             if let Ok(surface) = surface_weak.upgrade() {
@@ -236,6 +241,7 @@ impl VoiceModeState {
         let active_surface = self.active_receiver_surface.lock().unwrap().clone();
         *self.current_orb_state.lock().unwrap() = OrbState::Hidden;
         *self.active_receiver_surface.lock().unwrap() = None;
+        self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
             if let Ok(surface) = surface_weak.upgrade() {
@@ -289,6 +295,26 @@ impl VoiceModeState {
     pub fn cleanup_dead_receivers(&self) {
         let mut receivers = self.receivers.lock().unwrap();
         receivers.retain(|r| r.resource.upgrade().is_ok() && r.surface.upgrade().is_ok());
+    }
+
+    /// Get current audio level (0-1000)
+    pub fn audio_level(&self) -> u32 {
+        *self.audio_level.lock().unwrap()
+    }
+
+    /// Get current audio level as a normalized float (0.0-1.0)
+    pub fn audio_level_normalized(&self) -> f32 {
+        (*self.audio_level.lock().unwrap() as f32 / 1000.0).clamp(0.0, 1.0)
+    }
+
+    /// Set audio level (called from protocol handler)
+    fn set_audio_level(&self, level: u32) {
+        *self.audio_level.lock().unwrap() = level.min(1000);
+    }
+
+    /// Reset audio level to 0 (called when voice mode ends)
+    pub fn reset_audio_level(&self) {
+        *self.audio_level.lock().unwrap() = 0;
     }
 }
 
@@ -387,7 +413,7 @@ where
         + 'static,
 {
     fn request(
-        _state: &mut D,
+        state: &mut D,
         _client: &Client,
         _resource: &zcosmic_voice_mode_v1::ZcosmicVoiceModeV1,
         request: zcosmic_voice_mode_v1::Request,
@@ -398,6 +424,12 @@ where
         match request {
             zcosmic_voice_mode_v1::Request::Destroy => {
                 debug!(is_default = data.is_default, "Voice receiver destroyed");
+            }
+            zcosmic_voice_mode_v1::Request::SetAudioLevel { level } => {
+                // Only accept audio level updates if voice mode is active
+                if state.voice_mode_state().is_active() {
+                    state.voice_mode_state().set_audio_level(level);
+                }
             }
         }
     }

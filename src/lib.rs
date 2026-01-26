@@ -171,7 +171,13 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         }
 
         // trigger routines
-        let clients = state.common.shell.write().update_animations();
+        // Sync audio level from voice mode protocol to orb renderer
+        let audio_level = state.common.voice_mode_state.audio_level();
+        let clients = {
+            let mut shell = state.common.shell.write();
+            shell.voice_orb_state.set_audio_level(audio_level);
+            shell.update_animations()
+        };
         {
             let dh = state.common.display_handle.clone();
             for client in clients.values() {
