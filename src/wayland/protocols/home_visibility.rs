@@ -49,7 +49,9 @@ impl From<WEnum<zcosmic_home_visibility_v1::VisibilityMode>> for VisibilityMode 
     fn from(value: WEnum<zcosmic_home_visibility_v1::VisibilityMode>) -> Self {
         match value.into_result() {
             Ok(zcosmic_home_visibility_v1::VisibilityMode::HomeOnly) => VisibilityMode::HomeOnly,
-            Ok(zcosmic_home_visibility_v1::VisibilityMode::HideOnHome) => VisibilityMode::HideOnHome,
+            Ok(zcosmic_home_visibility_v1::VisibilityMode::HideOnHome) => {
+                VisibilityMode::HideOnHome
+            }
             _ => VisibilityMode::Always,
         }
     }
@@ -267,7 +269,11 @@ where
                 if let Some(surface) = data.surface.upgrade().ok() {
                     let surface_id = surface.id().protocol_id();
                     state.set_surface_visibility_mode(surface_id, visibility_mode);
-                    debug!(surface_id, ?visibility_mode, "Surface visibility mode changed");
+                    debug!(
+                        surface_id,
+                        ?visibility_mode,
+                        "Surface visibility mode changed"
+                    );
                 }
             }
         }

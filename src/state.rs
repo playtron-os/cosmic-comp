@@ -32,6 +32,7 @@ use crate::{
             surface_embed::SurfaceEmbedManagerState,
             toplevel_info::ToplevelInfoState,
             toplevel_management::{ManagementCapabilities, ToplevelManagementState},
+            voice_mode::VoiceModeState,
             workspace::{WorkspaceState, WorkspaceUpdateGuard},
         },
     },
@@ -264,6 +265,7 @@ pub struct Common {
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
     pub home_visibility_state: HomeVisibilityState,
+    pub voice_mode_state: VoiceModeState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub output_state: OutputManagerState,
@@ -659,6 +661,7 @@ impl State {
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
         let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
+        let voice_mode_state = VoiceModeState::new::<Self>(dh);
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(dh);
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
         let output_state = OutputManagerState::new_with_xdg_output::<Self>(dh);
@@ -784,6 +787,7 @@ impl State {
                 dmabuf_state,
                 exclusive_mode_state,
                 home_visibility_state,
+                voice_mode_state,
                 fractional_scale_state,
                 idle_notifier_state,
                 idle_inhibit_manager_state,

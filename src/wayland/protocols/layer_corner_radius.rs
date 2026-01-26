@@ -23,18 +23,22 @@ mod generated {
 }
 
 use crate::wayland::protocols::corner_radius::{CacheableCorners, Corners};
+use smithay::utils::HookId;
 use smithay::{
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
-        backend::GlobalId,
-        protocol::wl_surface::WlSurface,
+        backend::GlobalId, protocol::wl_surface::WlSurface,
     },
-    wayland::compositor::{with_states, add_pre_commit_hook},
+    wayland::compositor::{add_pre_commit_hook, with_states},
 };
-use smithay::utils::HookId;
 use std::sync::Mutex;
 
-type SurfaceHookId = Mutex<Option<(HookId, Weak<layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1>)>>;
+type SurfaceHookId = Mutex<
+    Option<(
+        HookId,
+        Weak<layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1>,
+    )>,
+>;
 
 /// State for the layer corner radius manager protocol
 #[derive(Debug)]
@@ -48,12 +52,14 @@ impl LayerCornerRadiusState {
     where
         D: GlobalDispatch<layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, ()>
             + Dispatch<layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, ()>
-            + Dispatch<layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1, LayerCornerRadiusData>
-            + LayerCornerRadiusHandler
+            + Dispatch<
+                layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1,
+                LayerCornerRadiusData,
+            > + LayerCornerRadiusHandler
             + 'static,
     {
-        let global =
-            dh.create_global::<D, layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, _>(
+        let global = dh
+            .create_global::<D, layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, _>(
                 1,
                 (),
             );
@@ -144,13 +150,10 @@ where
 
                 let needs_hook = radius_exists.is_none();
                 if needs_hook {
-                    let hook_id = add_pre_commit_hook::<D, _>(
-                        &surface,
-                        move |_, _dh, _surface| {
-                            // Pre-commit hook - corner radius is validated when set
-                            // No additional validation needed here
-                        },
-                    );
+                    let hook_id = add_pre_commit_hook::<D, _>(&surface, move |_, _dh, _surface| {
+                        // Pre-commit hook - corner radius is validated when set
+                        // No additional validation needed here
+                    });
 
                     with_states(&surface, |surface_data| {
                         let hook_ids = surface_data
@@ -165,7 +168,8 @@ where
     }
 }
 
-impl<D> Dispatch<layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1, LayerCornerRadiusData, D>
+impl<D>
+    Dispatch<layer_corner_radius_surface_v1::LayerCornerRadiusSurfaceV1, LayerCornerRadiusData, D>
     for LayerCornerRadiusState
 where
     D: GlobalDispatch<layer_corner_radius_manager_v1::LayerCornerRadiusManagerV1, ()>

@@ -5132,7 +5132,9 @@ fn render_old_tree(
             .filter(|(mapped, _, _, _)| !mapped.is_maximized(false))
             .filter(|(mapped, _, _, _)| {
                 // Skip embedded windows - they are rendered inside their parent window
-                !mapped.windows().any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+                !mapped
+                    .windows()
+                    .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
             })
             .filter(|(mapped, _, _, _)| {
                 if let Some(root) = target_tree.root_node_id() {
@@ -5224,7 +5226,10 @@ where
         |_node_id, data, geo, _original_geo, alpha, _| {
             if let Data::Mapped { mapped, .. } = data {
                 // Skip embedded windows - they are rendered inside their parent window
-                if mapped.windows().any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w)) {
+                if mapped
+                    .windows()
+                    .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+                {
                     return;
                 }
 
@@ -5431,7 +5436,10 @@ where
                                 .is_none_or(|n| n != &node_id) =>
                         {
                             mapped
-                                .corner_radius(geo.size.as_logical(), crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS)
+                                .corner_radius(
+                                    geo.size.as_logical(),
+                                    crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS,
+                                )
                                 .map(|val| (val as f64 * scale.x.min(scale.y)).round() as u8)
                         }
                         _ => [crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS; 4]
@@ -5575,7 +5583,10 @@ where
 
             if let Data::Mapped { mapped, .. } = data {
                 // Skip embedded windows - they are rendered inside their parent window
-                if mapped.windows().any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w)) {
+                if mapped
+                    .windows()
+                    .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+                {
                     return;
                 }
 
@@ -5639,7 +5650,10 @@ where
 
                 // Add blur backdrop for windows that request KDE blur
                 if mapped.has_blur() {
-                    let radius = mapped.corner_radius(geo.size.as_logical(), crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS);
+                    let radius = mapped.corner_radius(
+                        geo.size.as_logical(),
+                        crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS,
+                    );
                     // Reorder from [bottom_right, top_right, bottom_left, top_left]
                     // to shader expected order: [top_left, top_right, bottom_right, bottom_left]
                     let corner_radius = [

@@ -337,6 +337,115 @@ impl HomeMode {
     }
 }
 
+/// Voice mode animation duration
+const VOICE_MODE_ANIMATION_DURATION: Duration = Duration::from_millis(200);
+
+/// Voice mode state for window fading when voice orb is active
+#[derive(Debug, Clone)]
+pub enum VoiceMode {
+    /// Voice mode not active - windows at full opacity
+    None,
+    /// Transitioning to voice mode (fading out windows)
+    FadingIn(Instant),
+    /// Fully in voice mode - windows faded out
+    Active,
+    /// Transitioning out of voice mode (fading in windows)
+    FadingOut(Instant),
+}
+
+impl Default for VoiceMode {
+    fn default() -> Self {
+        VoiceMode::None
+    }
+}
+
+impl VoiceMode {
+    /// Returns the current fade-out alpha for windows (1.0 = full opacity, 0.0 = hidden)
+    /// When voice mode is active, windows should fade to completely hidden
+    pub fn window_alpha(&self) -> f32 {
+        match self {
+            VoiceMode::None => 1.0,
+            VoiceMode::FadingIn(start) => {
+                let percentage = Instant::now().duration_since(*start).as_millis() as f32
+                    / VOICE_MODE_ANIMATION_DURATION.as_millis() as f32;
+                // Simple linear fade from 1.0 to 0.0
+                let t = percentage.min(1.0);
+                1.0 - t
+            }
+            VoiceMode::Active => 0.0,
+            VoiceMode::FadingOut(start) => {
+                let percentage = Instant::now().duration_since(*start).as_millis() as f32
+                    / VOICE_MODE_ANIMATION_DURATION.as_millis() as f32;
+                // Simple linear fade from 0.0 to 1.0
+                let t = percentage.min(1.0);
+                t
+            }
+        }
+    }
+
+    /// Returns true if voice mode is active or transitioning to active
+    pub fn is_active(&self) -> bool {
+        matches!(self, VoiceMode::FadingIn(_) | VoiceMode::Active)
+    }
+
+    /// Returns true if an animation is in progress
+    pub fn is_animating(&self) -> bool {
+        match self {
+            VoiceMode::FadingIn(start) | VoiceMode::FadingOut(start) => {
+                Instant::now().duration_since(*start) < VOICE_MODE_ANIMATION_DURATION
+            }
+            _ => false,
+        }
+    }
+
+    /// Start transition to voice mode (fade out windows)
+    pub fn enter(&mut self) {
+        match self {
+            VoiceMode::None => {
+                *self = VoiceMode::FadingIn(Instant::now());
+            }
+            VoiceMode::FadingOut(start) => {
+                // Reverse the animation from current position
+                let elapsed = Instant::now().duration_since(*start);
+                let remaining = VOICE_MODE_ANIMATION_DURATION.saturating_sub(elapsed);
+                *self = VoiceMode::FadingIn(Instant::now() - remaining);
+            }
+            _ => {} // Already active or fading in
+        }
+    }
+
+    /// Start transition out of voice mode (fade in windows)
+    pub fn exit(&mut self) {
+        match self {
+            VoiceMode::Active => *self = VoiceMode::FadingOut(Instant::now()),
+            VoiceMode::FadingIn(start) => {
+                // Reverse the animation from current position
+                let elapsed = Instant::now().duration_since(*start);
+                let remaining = VOICE_MODE_ANIMATION_DURATION.saturating_sub(elapsed);
+                *self = VoiceMode::FadingOut(Instant::now() - remaining);
+            }
+            _ => {} // Already none or fading out
+        }
+    }
+
+    /// Update animation state, transitioning to final state when complete
+    pub fn update(&mut self) {
+        match self {
+            VoiceMode::FadingIn(start) => {
+                if Instant::now().duration_since(*start) >= VOICE_MODE_ANIMATION_DURATION {
+                    *self = VoiceMode::Active;
+                }
+            }
+            VoiceMode::FadingOut(start) => {
+                if Instant::now().duration_since(*start) >= VOICE_MODE_ANIMATION_DURATION {
+                    *self = VoiceMode::None;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ActivationKey {
     Wayland(WlSurface),
@@ -407,6 +516,11 @@ pub struct Shell {
     hide_on_home_surfaces: std::collections::HashSet<u32>,
     /// Surfaces minimized by home mode (to restore when exiting)
     home_minimized_surfaces: Vec<CosmicSurface>,
+
+    /// Voice mode state for window fading animation
+    voice_mode: VoiceMode,
+    /// Voice orb rendering state
+    pub voice_orb_state: crate::backend::render::voice_orb::VoiceOrbState,
 
     #[cfg(feature = "debug")]
     pub debug_active: bool,
@@ -1728,10 +1842,18 @@ impl Shell {
             zoom_state: None,
             tiling_exceptions,
             // Start in home mode only if HOME_ENABLED is set
-            home_mode: if home_enabled() { HomeMode::Active } else { HomeMode::None },
+            home_mode: if home_enabled() {
+                HomeMode::Active
+            } else {
+                HomeMode::None
+            },
             home_only_surfaces: std::collections::HashSet::new(),
             hide_on_home_surfaces: std::collections::HashSet::new(),
             home_minimized_surfaces: Vec::new(),
+
+            // Voice mode state
+            voice_mode: VoiceMode::None,
+            voice_orb_state: Default::default(),
 
             #[cfg(feature = "debug")]
             debug_active: false,
@@ -2255,6 +2377,43 @@ impl Shell {
         })
     }
 
+    /// Find elements by app_id (e.g., for chat windows)
+    /// Returns iterator of (mapped element, geometry) pairs
+    pub fn elements_by_app_id(
+        &self,
+        app_id: &str,
+    ) -> Vec<(&CosmicMapped, Rectangle<i32, Logical>)> {
+        let mut results = Vec::new();
+
+        for set in self.workspaces.sets.values() {
+            // Check sticky layer
+            for mapped in set.sticky_layer.mapped() {
+                if mapped.active_window().app_id() == app_id {
+                    results.push((mapped, mapped.geometry()));
+                }
+            }
+
+            // Check workspaces
+            for workspace in &set.workspaces {
+                // Floating layer
+                for mapped in workspace.floating_layer.mapped() {
+                    if mapped.active_window().app_id() == app_id {
+                        results.push((mapped, mapped.geometry()));
+                    }
+                }
+
+                // Tiling layer
+                for (mapped, _) in workspace.tiling_layer.mapped() {
+                    if mapped.active_window().app_id() == app_id {
+                        results.push((mapped, mapped.geometry()));
+                    }
+                }
+            }
+        }
+
+        results
+    }
+
     pub fn is_surface_mapped<S>(&self, surface: &S) -> bool
     where
         CosmicSurface: PartialEq<S>,
@@ -2366,10 +2525,11 @@ impl Shell {
             self.resize_mode,
             ResizeMode::None | ResizeMode::Active(_, _)
         ) || self.home_mode.is_animating()
+            || self.voice_orb_state.animation.is_some()
             || self
-            .workspaces
-            .spaces()
-            .any(|workspace| workspace.animations_going())
+                .workspaces
+                .spaces()
+                .any(|workspace| workspace.animations_going())
             || self.zoom_state.as_ref().is_some_and(|_| {
                 self.outputs().any(|o| {
                     o.user_data()
@@ -2389,6 +2549,8 @@ impl Shell {
         }
         // Update home mode animation
         self.home_mode.update();
+        // Update voice orb animation
+        self.voice_orb_state.update();
         clients
     }
 
@@ -2462,6 +2624,15 @@ impl Shell {
     pub fn enter_home(&mut self) {
         self.home_mode.enter();
 
+        // If voice mode is active and attached to a window, transition to floating
+        // since the window will be minimized
+        if self.voice_orb_state.orb_state
+            == crate::wayland::protocols::voice_mode::OrbState::Attached
+        {
+            self.voice_orb_state.transition_to_floating();
+            self.voice_mode.enter(); // Enable window fading (even though we're going to home)
+        }
+
         // Minimize all visible windows across all workspaces
         self.minimize_all_windows();
     }
@@ -2502,11 +2673,7 @@ impl Shell {
     }
 
     /// Exit home mode (with animation) and restore previously minimized windows
-    pub fn exit_home(
-        &mut self,
-        seat: &Seat<State>,
-        loop_handle: &LoopHandle<'static, State>,
-    ) {
+    pub fn exit_home(&mut self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
         self.home_mode.exit();
 
         // Restore windows that were minimized by home mode
@@ -2567,7 +2734,96 @@ impl Shell {
         self.hide_on_home_surfaces.remove(&surface_id);
     }
 
-    /// Check if a surface should be visible given current home state
+    // Voice mode methods
+
+    /// Check if voice mode is currently active
+    pub fn is_voice_mode_active(&self) -> bool {
+        self.voice_orb_state.is_active()
+    }
+
+    /// Update voice mode animation state
+    pub fn update_voice_mode_animation(&mut self) {
+        self.voice_orb_state.update();
+    }
+
+    /// Enter voice mode (fade out windows)
+    pub fn enter_voice_mode(&mut self) {
+        self.voice_mode.enter();
+    }
+
+    /// Exit voice mode (fade in windows)
+    pub fn exit_voice_mode(&mut self) {
+        self.voice_mode.exit();
+    }
+
+    /// Handle focus change for voice mode - transitions between floating and attached orb
+    /// Returns true if voice mode active and transition occurred
+    pub fn handle_voice_mode_focus_change(
+        &mut self,
+        focused_element: Option<&CosmicMapped>,
+        output: &Output,
+    ) -> bool {
+        // Only process if voice mode is active
+        if !self.voice_orb_state.is_active() {
+            return false;
+        }
+
+        // Check if the focused element is the chat window
+        let is_chat_window = focused_element.map_or(false, |mapped| {
+            let app_id = mapped.active_window().app_id();
+            self.voice_orb_state
+                .app_id
+                .as_ref()
+                .map_or(false, |expected| expected == &app_id)
+        });
+
+        let output_geo = output.geometry();
+
+        match (is_chat_window, self.voice_orb_state.orb_state) {
+            // Chat window focused and orb is floating -> transition to attached
+            (true, crate::wayland::protocols::voice_mode::OrbState::Floating) => {
+                if let Some(mapped) = focused_element {
+                    use smithay::desktop::space::SpaceElement;
+                    let window_geo = SpaceElement::geometry(mapped);
+                    let output_size = output_geo.size.as_logical();
+                    self.voice_orb_state
+                        .transition_to_attached(window_geo, output_size);
+                    // Disable window fading when attached
+                    self.voice_mode.exit();
+                    tracing::debug!("Voice orb: transitioning to attached mode");
+                    return true;
+                }
+            }
+            // Chat window lost focus and orb is attached -> transition to floating
+            (false, crate::wayland::protocols::voice_mode::OrbState::Attached) => {
+                self.voice_orb_state.transition_to_floating();
+                // Enable window fading when floating
+                self.voice_mode.enter();
+                tracing::debug!("Voice orb: transitioning to floating mode");
+                return true;
+            }
+            _ => {}
+        }
+
+        false
+    }
+
+    /// Get the current window alpha for voice mode (1.0 = full, 0.15 = faded)
+    pub fn voice_mode_window_alpha(&self) -> f32 {
+        self.voice_mode.window_alpha()
+    }
+
+    /// Check if voice mode animation is in progress
+    pub fn voice_mode_animating(&self) -> bool {
+        self.voice_mode.is_animating()
+    }
+
+    /// Update voice mode fade animation state
+    pub fn update_voice_mode_fade(&mut self) {
+        self.voice_mode.update();
+    }
+
+    /// Check if a surface should be rendered (for filtering)
     /// Returns (visible, alpha) where alpha is for animation blending
     pub fn surface_home_visibility(&self, surface_id: u32) -> (bool, f32) {
         if self.home_only_surfaces.contains(&surface_id) {
@@ -3059,7 +3315,7 @@ impl Shell {
                         output = %output.name(),
                         "Checking output for parent"
                     );
-                    
+
                     // Check workspaces on this output
                     for workspace in self.workspaces.spaces().filter(|s| &s.output == output) {
                         for mapped in workspace.mapped() {
@@ -3263,7 +3519,9 @@ impl Shell {
         // If this is an embedded window, re-apply the geometry now that it's mapped
         // The initial configure in embed_geometry_changed happens before the window is mapped,
         // so we need to re-apply the size here to ensure the embedded window renders at the correct size
-        if let Some(embed_info) = crate::wayland::handlers::surface_embed::get_embed_render_info(&window) {
+        if let Some(embed_info) =
+            crate::wayland::handlers::surface_embed::get_embed_render_info(&window)
+        {
             tracing::debug!(
                 embedded_app_id = %window.app_id(),
                 embed_geometry = ?embed_info.geometry,

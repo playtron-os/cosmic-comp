@@ -41,6 +41,7 @@ use tracing::{error, warn};
 mod input_config;
 pub mod key_bindings;
 mod types;
+pub mod voice;
 
 use cosmic::config::CosmicTk;
 pub use cosmic_comp_config::EdidProduct;
@@ -70,6 +71,8 @@ pub struct Config {
     pub tiling_exceptions: Vec<ApplicationException>,
     /// System actions from `com.system76.CosmicSettings.Shortcuts`
     pub system_actions: BTreeMap<shortcuts::action::System, String>,
+    /// Voice mode configuration
+    pub voice_config: voice::VoiceConfig,
 }
 
 #[derive(Debug)]
@@ -323,6 +326,26 @@ impl Config {
                 .set_screen_filter(filter_conf.color_filter);
         });
 
+        // Load voice mode configuration
+        let voice_config = voice::VoiceConfig::load();
+
+        // Watch for voice config changes
+        if let Ok(voice_context) = voice::VoiceConfig::context() {
+            match cosmic_config::calloop::ConfigWatchSource::new(&voice_context) {
+                Ok(source) => {
+                    if let Err(err) =
+                        loop_handle.insert_source(source, |(_config, _keys), (), state| {
+                            state.common.config.voice_config = voice::VoiceConfig::load();
+                            tracing::info!("Voice mode configuration reloaded");
+                        })
+                    {
+                        warn!(?err, "Failed to watch voice mode config");
+                    }
+                }
+                Err(err) => warn!(?err, "Failed to create voice config watch source"),
+            }
+        }
+
         Config {
             dynamic_conf: Self::load_dynamic(&xdg),
             cosmic_conf: cosmic_comp_config,
@@ -331,6 +354,7 @@ impl Config {
             shortcuts,
             system_actions,
             tiling_exceptions,
+            voice_config,
         }
     }
 

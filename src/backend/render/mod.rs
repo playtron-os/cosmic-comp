@@ -92,6 +92,7 @@ pub mod clipped_surface;
 pub mod cursor;
 pub mod element;
 pub mod shadow;
+pub mod voice_orb;
 use self::element::{AsGlowRenderer, CosmicElement};
 
 use super::kms::Timings;
@@ -770,6 +771,9 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         .user_data()
         .insert_if_missing(|| BlurredBackdropShader(blurred_backdrop_shader));
 
+    // Initialize voice orb shader
+    voice_orb::VoiceOrbShader::init(renderer)?;
+
     Ok(())
 }
 
@@ -942,6 +946,8 @@ pub struct HomeVisibilityContext {
     pub hide_on_home_surfaces: std::collections::HashSet<u32>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
+    /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
+    pub voice_mode_alpha: f32,
 }
 
 impl HomeVisibilityContext {
@@ -951,30 +957,43 @@ impl HomeVisibilityContext {
             home_only_surfaces: shell.home_only_surfaces().clone(),
             hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
             home_alpha: shell.home_alpha(),
+            voice_mode_alpha: shell.voice_mode_window_alpha(),
         }
     }
 
-    /// Get visibility and alpha for a surface based on home mode
+    /// Get visibility and alpha for a surface based on home mode and voice mode
     /// Returns (visible, alpha) where visible indicates if surface should be rendered
     pub fn surface_visibility(&self, surface_id: u32) -> (bool, f32) {
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible only when home_alpha > 0
+            // BUT also fades out when voice mode is active
             if self.home_alpha > 0.0 {
-                (true, self.home_alpha)
+                // Apply voice mode alpha to home surfaces too
+                let alpha = self.home_alpha * self.voice_mode_alpha;
+                if alpha > 0.0 {
+                    (true, alpha)
+                } else {
+                    (false, 0.0)
+                }
             } else {
                 (false, 0.0)
             }
         } else if self.hide_on_home_surfaces.contains(&surface_id) {
             // Hide-on-home surface: inverse of home_alpha (visible when NOT in home mode)
-            let alpha = 1.0 - self.home_alpha;
+            // Also applies voice mode alpha
+            let alpha = (1.0 - self.home_alpha) * self.voice_mode_alpha;
             if alpha > 0.0 {
                 (true, alpha)
             } else {
                 (false, 0.0)
             }
         } else {
-            // Always-visible surface: full opacity
-            (true, 1.0)
+            // Always-visible surface: apply voice mode alpha
+            if self.voice_mode_alpha > 0.0 {
+                (true, self.voice_mode_alpha)
+            } else {
+                (false, 0.0)
+            }
         }
     }
 }
@@ -1206,6 +1225,17 @@ where
         &embedded_children_for_grabbed,
     ));
 
+    // Render voice orb on top of everything if active
+    {
+        let shell_guard = shell.read();
+        let output_geo = output.geometry().as_logical();
+        if let Some(orb_element) =
+            voice_orb::VoiceOrbShader::element(renderer, &shell_guard.voice_orb_state, output_geo)
+        {
+            elements.push(orb_element.into());
+        }
+    }
+
     let shell = shell.read();
     let overview = shell.overview_mode();
     let (resize_mode, resize_indicator) = shell.resize_mode();
@@ -1276,6 +1306,9 @@ where
             Rectangle::from_size(output_size),
         )
     };
+
+    // Get voice mode window alpha for fading windows during voice mode
+    let voice_mode_alpha = shell.voice_mode_window_alpha();
 
     render_input_order::<()>(
         &shell,
@@ -1542,6 +1575,7 @@ where
                             active_hint,
                             theme.cosmic(),
                             element_filter.clone(),
+                            voice_mode_alpha,
                         ) {
                             Ok(elements) => {
                                 elements

@@ -23,8 +23,8 @@ mod generated {
 
 use smithay::{
     reexports::wayland_server::{
-        backend::GlobalId, protocol::wl_surface::WlSurface, Client, DataInit, Dispatch,
-        DisplayHandle, GlobalDispatch, New, Resource, Weak,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
+        backend::GlobalId, protocol::wl_surface::WlSurface,
     },
     utils::{Logical, Size},
 };
@@ -62,12 +62,12 @@ impl AnimatedResizeState {
     /// Create a new animated resize manager global
     pub fn new<D>(dh: &DisplayHandle) -> AnimatedResizeState
     where
-        D: GlobalDispatch<
-                zcosmic_animated_resize_manager_v1::ZcosmicAnimatedResizeManagerV1,
-                (),
-            > + Dispatch<zcosmic_animated_resize_manager_v1::ZcosmicAnimatedResizeManagerV1, ()>
-            + Dispatch<zcosmic_animated_resize_v1::ZcosmicAnimatedResizeV1, AnimatedResizeControllerData>
-            + AnimatedResizeHandler
+        D: GlobalDispatch<zcosmic_animated_resize_manager_v1::ZcosmicAnimatedResizeManagerV1, ()>
+            + Dispatch<zcosmic_animated_resize_manager_v1::ZcosmicAnimatedResizeManagerV1, ()>
+            + Dispatch<
+                zcosmic_animated_resize_v1::ZcosmicAnimatedResizeV1,
+                AnimatedResizeControllerData,
+            > + AnimatedResizeHandler
             + 'static,
     {
         let global = dh.create_global::<
@@ -163,7 +163,8 @@ where
     }
 }
 
-impl<D> Dispatch<zcosmic_animated_resize_v1::ZcosmicAnimatedResizeV1, AnimatedResizeControllerData, D>
+impl<D>
+    Dispatch<zcosmic_animated_resize_v1::ZcosmicAnimatedResizeV1, AnimatedResizeControllerData, D>
     for AnimatedResizeState
 where
     D: GlobalDispatch<zcosmic_animated_resize_manager_v1::ZcosmicAnimatedResizeManagerV1, ()>
@@ -220,7 +221,12 @@ where
 
                     // Notify the handler with position
                     state.animated_resize_request_with_position(
-                        &surface, x, y, width, height, duration_ms,
+                        &surface,
+                        x,
+                        y,
+                        width,
+                        height,
+                        duration_ms,
                     );
                 }
             }

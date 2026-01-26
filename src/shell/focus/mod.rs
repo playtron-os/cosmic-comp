@@ -202,6 +202,12 @@ impl Shell {
             _ => None,
         };
 
+        // Extract the focused element for voice mode handling
+        let focused_element = match target {
+            Some(KeyboardFocusTarget::Element(mapped)) => Some(mapped.clone()),
+            _ => None,
+        };
+
         if let Some(target) = focus_target {
             let mut shell = state.common.shell.write();
             shell.append_focus_stack(target, seat);
@@ -214,6 +220,13 @@ impl Shell {
             } else {
                 drop(shell);
             }
+        }
+
+        // Handle voice mode focus transitions
+        {
+            let output = seat.active_output();
+            let mut shell = state.common.shell.write();
+            shell.handle_voice_mode_focus_change(focused_element.as_ref(), &output);
         }
 
         update_focus_state(seat, target, state, serial, update_cursor);

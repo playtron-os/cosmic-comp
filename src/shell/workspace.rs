@@ -1613,6 +1613,7 @@ impl Workspace {
         indicator_thickness: u8,
         theme: &CosmicTheme,
         element_filter: ElementFilter,
+        window_alpha: f32,
     ) -> Result<Vec<WorkspaceRenderElement<R>>, OutputNotMapped>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -1638,7 +1639,7 @@ impl Workspace {
                 .as_ref()
                 .unwrap_or(&fullscreen_geo);
 
-            let (target_geo, alpha) = match (fullscreen.start_at, fullscreen.ended_at) {
+            let (target_geo, fullscreen_alpha) = match (fullscreen.start_at, fullscreen.ended_at) {
                 (Some(started), _) => {
                     let duration = Instant::now().duration_since(started).as_secs_f64()
                         / FULLSCREEN_ANIMATION_DURATION.as_secs_f64();
@@ -1650,7 +1651,7 @@ impl Workspace {
                             duration,
                         )
                         .0,
-                        ease(EaseInOutCubic, 0.0, 1.0, duration),
+                        ease(EaseInOutCubic, 0.0, 1.0, duration) * window_alpha,
                     )
                 }
                 (_, Some(ended)) => {
@@ -1664,10 +1665,10 @@ impl Workspace {
                             duration,
                         )
                         .0,
-                        ease(EaseInOutCubic, 1.0, 0.0, duration),
+                        ease(EaseInOutCubic, 1.0, 0.0, duration) * window_alpha,
                     )
                 }
-                (None, None) => (fullscreen_geo, 1.0),
+                (None, None) => (fullscreen_geo, 1.0 * window_alpha),
             };
 
             let render_loc = target_geo
@@ -1696,7 +1697,7 @@ impl Workspace {
                     renderer,
                     render_loc,
                     output_scale.into(),
-                    alpha,
+                    fullscreen_alpha,
                     Some(true),
                 )
                 .into_iter()
@@ -1718,7 +1719,7 @@ impl Workspace {
                 .unwrap_or(true)
         {
             // floating surfaces
-            let alpha = match &overview.0 {
+            let floating_alpha = match &overview.0 {
                 OverviewMode::Started(_, started) => {
                     (1.0 - (Instant::now().duration_since(*started).as_millis()
                         / ANIMATION_DURATION.as_millis()) as f32)
@@ -1734,7 +1735,7 @@ impl Workspace {
                 }
                 OverviewMode::Active(_) => 0.6,
                 OverviewMode::None => 1.0,
-            };
+            } * window_alpha;
 
             elements.extend(
                 self.floating_layer
@@ -1749,7 +1750,7 @@ impl Workspace {
                         }),
                         resize_indicator.clone(),
                         indicator_thickness,
-                        alpha,
+                        floating_alpha,
                         theme,
                         element_filter.clone(),
                     )

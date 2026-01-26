@@ -49,6 +49,7 @@ pub mod toplevel_info;
 pub mod toplevel_management;
 pub mod viewporter;
 pub mod virtual_keyboard;
+pub mod voice_mode;
 pub mod workspace;
 pub mod xdg_activation;
 pub mod xdg_foreign;

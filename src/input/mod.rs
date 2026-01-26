@@ -1612,6 +1612,46 @@ impl State {
             .a11y_keyboard_monitor_state
             .key_event(modifiers, &handle, event.state());
 
+        // Handle voice mode key bindings from configuration
+        // This enables push-to-talk: press to activate voice mode, release to deactivate
+        let voice_config = &self.common.config.voice_config;
+        let matches = voice_config.matches_binding(handle.modified_sym(), modifiers);
+        if voice_config.enabled && matches {
+            // Get the focused app_id to determine which receiver to use
+            let focused_app_id = match &current_focus {
+                Some(KeyboardFocusTarget::Element(elem)) => Some(elem.active_window().app_id()),
+                Some(KeyboardFocusTarget::Fullscreen(surface)) => Some(surface.app_id()),
+                _ => None,
+            };
+
+            std::mem::drop(shell); // Release shell lock before protocol calls
+
+            if event.state() == KeyState::Pressed {
+                // Activate voice mode via protocol
+                use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                let orb_state = self.activate_voice_mode(focused_app_id.as_deref());
+                tracing::info!(
+                    ?orb_state,
+                    ?focused_app_id,
+                    "Voice mode activated via hotkey"
+                );
+
+                // Suppress the key so release is also handled
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(None);
+            } else if event.state() == KeyState::Released {
+                // Deactivate voice mode via protocol
+                use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                self.deactivate_voice_mode();
+                tracing::info!("Voice mode deactivated via hotkey");
+
+                // Key was suppressed on press, intercept release too
+                return FilterResult::Intercept(None);
+            }
+            // Re-acquire shell lock for subsequent code
+            shell = self.common.shell.write();
+        }
+
         // Forward Right Super key (KEY_RIGHTMETA, keycode 134) to specific apps
         // Apps can be configured via COSMIC_VOICE_INPUT_APP_IDS env var (comma-separated)
         // This allows apps like chat-ui to use it as a voice input trigger

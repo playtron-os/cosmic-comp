@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="cosmic_voice_mode_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="voice mode overlay and input protocol">
+    This protocol allows clients to receive voice input events from the compositor.
+    The compositor has full control over the voice mode orb overlay - clients
+    only receive notifications and voice input events.
+    
+    Apps can register as voice input receivers:
+    1. Window-specific: Receives events when that window is focused
+    2. Default receiver: Receives events when no other receiver is focused
+       (controlled by COSMIC_VOICE_DEFAULT_RECEIVER env var)
+    
+    When voice mode is activated via hotkey:
+    - If a registered receiver window is focused, it gets start/stop/cancel
+    - Otherwise, the default receiver (if any) gets the events
+    
+    The orb visual indicator shows where voice input is going:
+    - Floating: Default receiver is handling voice input
+    - Attached: A specific window is handling voice input
+  </description>
+
+  <interface name="zcosmic_voice_mode_manager_v1" version="1">
+    <description summary="manager for voice mode">
+      This interface allows clients to register as voice input receivers.
+      The compositor controls voice mode; clients receive events.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy this manager object.
+      </description>
+    </request>
+
+    <request name="register_receiver">
+      <description summary="register as a voice input receiver">
+        Register this client as a voice input receiver. The app_id identifies
+        which windows can receive voice input when focused.
+        
+        If the app_id matches COSMIC_VOICE_DEFAULT_RECEIVER, this client
+        becomes the default receiver for when no other receiver is focused.
+      </description>
+      <arg name="id" type="new_id" interface="zcosmic_voice_mode_v1"/>
+      <arg name="app_id" type="string" summary="application ID"/>
+    </request>
+  </interface>
+
+  <interface name="zcosmic_voice_mode_v1" version="1">
+    <description summary="voice input receiver">
+      This interface receives voice input events from the compositor.
+      Events are sent based on focus and receiver registration.
+    </description>
+
+    <enum name="orb_state">
+      <description summary="orb display states">
+        The current display state of the orb.
+      </description>
+      <entry name="hidden" value="0" summary="orb is not visible"/>
+      <entry name="floating" value="1" summary="orb is floating (default receiver active)"/>
+      <entry name="attached" value="2" summary="orb is attached to a window"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="unregister as voice input receiver">
+        Destroy this receiver and stop receiving voice input events.
+      </description>
+    </request>
+
+    <event name="registered">
+      <description summary="registration confirmed">
+        Sent when registration is complete. Indicates whether this client
+        is the default receiver or a window-specific receiver.
+      </description>
+      <arg name="is_default" type="uint" summary="1 if default receiver, 0 if window-specific"/>
+    </event>
+
+    <event name="start">
+      <description summary="voice input started">
+        Sent when voice input has started and this receiver should begin
+        listening/recording. The client should start capturing audio.
+      </description>
+      <arg name="orb_state" type="uint" enum="orb_state" summary="where the orb is displayed"/>
+    </event>
+
+    <event name="stop">
+      <description summary="voice input stopped">
+        Sent when voice input has stopped normally (key released).
+        The client should stop recording and process the audio.
+      </description>
+    </event>
+
+    <event name="cancel">
+      <description summary="voice input cancelled">
+        Sent when voice input was cancelled (e.g., user switched focus,
+        pressed escape, or another interruption). The client should
+        discard any recorded audio.
+      </description>
+    </event>
+
+    <event name="orb_attached">
+      <description summary="orb attached to this receiver's window">
+        Sent when the orb has visually attached to this receiver's window.
+        Includes the window geometry for reference.
+      </description>
+      <arg name="x" type="int" summary="window x position"/>
+      <arg name="y" type="int" summary="window y position"/>
+      <arg name="width" type="int" summary="window width"/>
+      <arg name="height" type="int" summary="window height"/>
+    </event>
+
+    <event name="orb_detached">
+      <description summary="orb detached from this receiver's window">
+        Sent when the orb has detached from this receiver's window
+        (e.g., focus changed to another receiver or default).
+      </description>
+    </event>
+  </interface>
+</protocol>
