@@ -46,10 +46,16 @@ impl VoiceModifiers {
 
     /// Check if the given smithay modifiers match this configuration
     pub fn matches(&self, mods: &ModifiersState) -> bool {
-        self.ctrl == mods.ctrl
-            && self.alt == mods.alt
-            && self.shift == mods.shift
-            && self.logo == mods.logo
+        // If no modifiers required, always match
+        if !self.ctrl && !self.alt && !self.shift && !self.logo {
+            return true;
+        }
+
+        // Otherwise check that required modifiers are pressed
+        (!self.ctrl || mods.ctrl)
+            && (!self.alt || mods.alt)
+            && (!self.shift || mods.shift)
+            && (!self.logo || mods.logo)
     }
 }
 
@@ -211,7 +217,9 @@ impl VoiceConfig {
             ?modifiers,
             enabled = self.enabled,
             primary_key = %self.primary_binding.key,
+            primary_mods = ?self.primary_binding.modifiers,
             fallback_key = ?self.fallback_binding.as_ref().map(|f| &f.key),
+            fallback_mods = ?self.fallback_binding.as_ref().map(|f| &f.modifiers),
             "matches_binding called"
         );
 
@@ -234,6 +242,8 @@ impl VoiceConfig {
             if fallback_match {
                 return true;
             }
+        } else {
+            tracing::trace!("No fallback binding configured");
         }
 
         false
