@@ -337,19 +337,31 @@ impl HomeMode {
     }
 }
 
-/// Voice mode animation duration
+/// Voice mode animation duration for window fade
 const VOICE_MODE_ANIMATION_DURATION: Duration = Duration::from_millis(200);
+/// Duration to wait for orb to grow in before considering animation complete
+const VOICE_MODE_ORB_GROW_DURATION: Duration = Duration::from_millis(400);
+/// Duration to wait for orb to shrink out
+const VOICE_MODE_ORB_SHRINK_DURATION: Duration = Duration::from_millis(300);
 
 /// Voice mode state for window fading when voice orb is active
+/// 
+/// The animation sequence is:
+/// - Enter: None -> FadingIn -> WaitingForOrbGrow -> Active
+/// - Exit:  Active -> WaitingForOrbShrink -> FadingOut -> None
 #[derive(Debug, Clone)]
 pub enum VoiceMode {
     /// Voice mode not active - windows at full opacity
     None,
-    /// Transitioning to voice mode (fading out windows)
+    /// Step 1 (enter): Fading out windows before showing orb
     FadingIn(Instant),
-    /// Fully in voice mode - windows faded out
+    /// Step 2 (enter): Windows faded, waiting for orb grow-in animation
+    WaitingForOrbGrow(Instant),
+    /// Fully in voice mode - windows faded, orb visible
     Active,
-    /// Transitioning out of voice mode (fading in windows)
+    /// Step 1 (exit): Orb is shrinking, windows still faded
+    WaitingForOrbShrink(Instant),
+    /// Step 2 (exit): Orb hidden, fading in windows
     FadingOut(Instant),
 }
 
@@ -368,15 +380,16 @@ impl VoiceMode {
             VoiceMode::FadingIn(start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
                     / VOICE_MODE_ANIMATION_DURATION.as_millis() as f32;
-                // Simple linear fade from 1.0 to 0.0
+                // Fade from 1.0 to 0.0
                 let t = percentage.min(1.0);
                 1.0 - t
             }
-            VoiceMode::Active => 0.0,
+            // Windows stay fully faded during orb animations and active state
+            VoiceMode::WaitingForOrbGrow(_) | VoiceMode::Active | VoiceMode::WaitingForOrbShrink(_) => 0.0,
             VoiceMode::FadingOut(start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
                     / VOICE_MODE_ANIMATION_DURATION.as_millis() as f32;
-                // Simple linear fade from 0.0 to 1.0
+                // Fade from 0.0 to 1.0
                 let t = percentage.min(1.0);
                 t
             }
@@ -385,20 +398,34 @@ impl VoiceMode {
 
     /// Returns true if voice mode is active or transitioning to active
     pub fn is_active(&self) -> bool {
-        matches!(self, VoiceMode::FadingIn(_) | VoiceMode::Active)
+        matches!(
+            self,
+            VoiceMode::FadingIn(_)
+                | VoiceMode::WaitingForOrbGrow(_)
+                | VoiceMode::Active
+                | VoiceMode::WaitingForOrbShrink(_)
+        )
     }
 
     /// Returns true if an animation is in progress
     pub fn is_animating(&self) -> bool {
-        match self {
-            VoiceMode::FadingIn(start) | VoiceMode::FadingOut(start) => {
-                Instant::now().duration_since(*start) < VOICE_MODE_ANIMATION_DURATION
-            }
-            _ => false,
-        }
+        !matches!(self, VoiceMode::None | VoiceMode::Active)
     }
 
-    /// Start transition to voice mode (fade out windows)
+    /// Returns true if the orb should be shown (windows have faded out)
+    pub fn should_show_orb(&self) -> bool {
+        matches!(
+            self,
+            VoiceMode::WaitingForOrbGrow(_) | VoiceMode::Active | VoiceMode::WaitingForOrbShrink(_)
+        )
+    }
+
+    /// Returns true if the orb should be hidden (exiting voice mode)
+    pub fn should_hide_orb(&self) -> bool {
+        matches!(self, VoiceMode::WaitingForOrbShrink(_) | VoiceMode::FadingOut(_) | VoiceMode::None)
+    }
+
+    /// Start transition to voice mode (fade out windows, then orb grows)
     pub fn enter(&mut self) {
         match self {
             VoiceMode::None => {
@@ -414,26 +441,41 @@ impl VoiceMode {
         }
     }
 
-    /// Start transition out of voice mode (fade in windows)
+    /// Start transition out of voice mode (orb shrinks, then windows fade in)
     pub fn exit(&mut self) {
         match self {
-            VoiceMode::Active => *self = VoiceMode::FadingOut(Instant::now()),
+            VoiceMode::Active | VoiceMode::WaitingForOrbGrow(_) => {
+                // Start orb shrink phase
+                *self = VoiceMode::WaitingForOrbShrink(Instant::now());
+            }
             VoiceMode::FadingIn(start) => {
-                // Reverse the animation from current position
+                // If still fading in, reverse to fade out
                 let elapsed = Instant::now().duration_since(*start);
                 let remaining = VOICE_MODE_ANIMATION_DURATION.saturating_sub(elapsed);
                 *self = VoiceMode::FadingOut(Instant::now() - remaining);
             }
-            _ => {} // Already none or fading out
+            _ => {} // Already none, fading out, or waiting for orb shrink
         }
     }
 
-    /// Update animation state, transitioning to final state when complete
+    /// Update animation state, transitioning through the sequence
     pub fn update(&mut self) {
         match self {
             VoiceMode::FadingIn(start) => {
                 if Instant::now().duration_since(*start) >= VOICE_MODE_ANIMATION_DURATION {
+                    // Window fade complete, now wait for orb to grow
+                    *self = VoiceMode::WaitingForOrbGrow(Instant::now());
+                }
+            }
+            VoiceMode::WaitingForOrbGrow(start) => {
+                if Instant::now().duration_since(*start) >= VOICE_MODE_ORB_GROW_DURATION {
                     *self = VoiceMode::Active;
+                }
+            }
+            VoiceMode::WaitingForOrbShrink(start) => {
+                if Instant::now().duration_since(*start) >= VOICE_MODE_ORB_SHRINK_DURATION {
+                    // Orb shrink complete, now fade in windows
+                    *self = VoiceMode::FadingOut(Instant::now());
                 }
             }
             VoiceMode::FadingOut(start) => {
@@ -2525,6 +2567,7 @@ impl Shell {
             self.resize_mode,
             ResizeMode::None | ResizeMode::Active(_, _)
         ) || self.home_mode.is_animating()
+            || self.voice_mode.is_animating()
             || self.voice_orb_state.needs_continuous_render()
             || self
                 .workspaces
@@ -2549,6 +2592,8 @@ impl Shell {
         }
         // Update home mode animation
         self.home_mode.update();
+        // Update voice mode fade animation and coordinate orb showing/hiding
+        self.update_voice_mode_fade();
         // Update voice orb animation
         self.voice_orb_state.update();
         clients
@@ -2811,8 +2856,20 @@ impl Shell {
         self.voice_mode.is_animating()
     }
 
-    /// Update voice mode fade animation state
+    /// Update voice mode fade animation state and coordinate orb animation sequence
     pub fn update_voice_mode_fade(&mut self) {
+        // Check if we should start showing the orb (window fade completed)
+        if self.voice_mode.should_show_orb() && self.voice_orb_state.has_pending_show() {
+            self.voice_orb_state.show_floating();
+        }
+
+        // Check if we should start hiding the orb (exit requested)
+        if self.voice_mode.should_hide_orb() && self.voice_orb_state.has_pending_hide() {
+            self.voice_orb_state.hide();
+            self.voice_orb_state.clear_pending_hide();
+        }
+
+        // Update the voice mode state machine
         self.voice_mode.update();
     }
 

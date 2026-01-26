@@ -73,7 +73,7 @@ impl VoiceModeHandler for State {
                 OrbState::Attached
             } else {
                 // Shouldn't happen, but fall back to floating
-                shell.voice_orb_state.show_floating();
+                shell.voice_orb_state.request_show_floating();
                 shell.enter_voice_mode();
                 drop(shell);
                 self.common
@@ -84,7 +84,8 @@ impl VoiceModeHandler for State {
         } else {
             // No focused receiver, use default receiver with floating orb
             info!("Showing floating orb (using default receiver)");
-            shell.voice_orb_state.show_floating();
+            // Request orb show - will start after window fade completes
+            shell.voice_orb_state.request_show_floating();
             shell.enter_voice_mode();
             drop(shell);
             self.common
@@ -104,10 +105,10 @@ impl VoiceModeHandler for State {
 
         let mut shell = self.common.shell.write();
 
-        // Hide the orb
-        shell.voice_orb_state.hide();
+        // Request orb hide - will start shrinking, then windows fade in
+        shell.voice_orb_state.request_hide();
 
-        // Restore faded windows
+        // Start the exit sequence (orb shrinks first, then windows fade in)
         shell.exit_voice_mode();
     }
 
@@ -119,10 +120,10 @@ impl VoiceModeHandler for State {
 
         let mut shell = self.common.shell.write();
 
-        // Hide the orb
-        shell.voice_orb_state.hide();
+        // Request orb hide - will start shrinking, then windows fade in
+        shell.voice_orb_state.request_hide();
 
-        // Restore faded windows
+        // Start the exit sequence (orb shrinks first, then windows fade in)
         shell.exit_voice_mode();
     }
 }

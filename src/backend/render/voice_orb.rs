@@ -211,6 +211,10 @@ pub struct VoiceOrbState {
     pub attached_window: Option<Rectangle<i32, Logical>>,
     /// Animation start time for shader time uniform
     pub shader_time_start: Instant,
+    /// Pending orb show - waiting for window fade to complete
+    pending_show: bool,
+    /// Pending orb hide - orb should start hiding
+    pending_hide: bool,
 }
 
 impl Default for VoiceOrbState {
@@ -226,15 +230,30 @@ impl Default for VoiceOrbState {
             animation: None,
             attached_window: None,
             shader_time_start: Instant::now(),
+            pending_show: false,
+            pending_hide: false,
         }
     }
 }
 
 impl VoiceOrbState {
+    /// Request showing the orb (will start after window fade completes)
+    pub fn request_show_floating(&mut self) {
+        self.pending_show = true;
+        self.pending_hide = false;
+    }
+
     /// Start showing the orb (floating in center)
     pub fn show_floating(&mut self) {
         self.orb_state = OrbState::Floating;
         self.animation = Some(VoiceOrbAnimation::grow_in());
+        self.pending_show = false;
+    }
+
+    /// Request hiding the orb (will trigger window fade after orb shrinks)
+    pub fn request_hide(&mut self) {
+        self.pending_hide = true;
+        self.pending_show = false;
     }
 
     /// Hide the orb
@@ -243,6 +262,22 @@ impl VoiceOrbState {
             self.animation = Some(VoiceOrbAnimation::shrink_out(self.scale, self.position));
             self.orb_state = OrbState::Hidden;
         }
+        self.pending_show = false;
+    }
+
+    /// Check if the orb has a pending show request
+    pub fn has_pending_show(&self) -> bool {
+        self.pending_show
+    }
+
+    /// Check if the orb has a pending hide request
+    pub fn has_pending_hide(&self) -> bool {
+        self.pending_hide
+    }
+
+    /// Clear the pending hide flag (called when hide animation starts)
+    pub fn clear_pending_hide(&mut self) {
+        self.pending_hide = false;
     }
 
     /// Attach to a window
