@@ -98,60 +98,62 @@ void main() {
     
     float animTime = time * speed;
     
-    // Audio reactivity (use pulse as both low and high intensity for now)
-    float iLowIntensity = pulse;
-    float iHighIntensity = pulse * 0.8;
+    // Smooth the pulse value for cleaner animation (cubic smoothstep)
+    float smoothPulse = pulse * pulse * (3.0 - 2.0 * pulse);
     
-    // Frequency band modulations
-    float bassPulse = pow(iLowIntensity, 1.2) * 1.5;
-    float trebleShimmer = pow(iHighIntensity, 1.5) * 2.0;
+    // Audio reactivity - subtle expansion based on voice input
+    float bassPulse = smoothPulse * 0.8;      // Radius expansion
+    float trebleShimmer = smoothPulse * 0.5;  // Brightness/glow boost
     
     float ang = atan(uv.y, uv.x);
     float len = length(uv);
     
-    // Dynamic parameters based on audio
-    float dynamicRadius = innerRadius + bassPulse * 0.22;
-    float dynamicNoiseScale = noiseScale + trebleShimmer * 0.35;
+    // Dynamic parameters based on audio - subtle radius expansion when speaking
+    float dynamicRadius = innerRadius + bassPulse * 0.12;
+    float dynamicNoiseScale = noiseScale + trebleShimmer * 0.15;
     
     // Noise-based distortion
     float n0 = snoise3(vec3(uv * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
     float r0 = mix(mix(dynamicRadius, 1.0, 0.4), mix(dynamicRadius, 1.0, 0.6), n0);
     float d0 = distance(uv, r0 / len * uv);
     
-    // Core glow
-    float v0 = light1(1.0 + bassPulse * 8.0, 15.0 - bassPulse * 8.0, d0);
+    // Core glow - brighter when speaking
+    float v0 = light1(1.0 + bassPulse * 2.0, 15.0 - bassPulse * 3.0, d0);
     v0 *= smoothstep(r0 * 1.05, r0, len);
-    float cl = cos(ang + animTime * 2.0 + (bassPulse + trebleShimmer) * 2.0) * 0.5 + 0.5;
+    float cl = cos(ang + animTime * 2.0 + bassPulse * 1.5) * 0.5 + 0.5;
     
     // Rotating light point
     float a = animTime * -1.0;
     vec2 pos = vec2(cos(a), sin(a)) * r0;
     float d = distance(uv, pos);
-    float v1 = light2(2.0 + bassPulse * 3.0, 5.0, d);
-    v1 *= light1(1.0, 50.0 - bassPulse * 25.0, d0);
+    float v1 = light2(2.0 + bassPulse * 1.5, 5.0, d);
+    v1 *= light1(1.0, 50.0 - bassPulse * 10.0, d0);
     
-    // Outer halo ring
-    float haloR = r0 * (1.18 + trebleShimmer * 0.1);
+    // Outer halo ring - more visible when speaking
+    float haloR = r0 * (1.18 + trebleShimmer * 0.08);
     float dHalo = abs(len - haloR);
-    float v4 = light1(trebleShimmer * 0.6, 60.0, dHalo);
+    float haloIntensity = 0.15 + trebleShimmer * 0.4;  // Base glow + voice boost
+    float v4 = light1(haloIntensity, 60.0, dHalo);
     v4 *= smoothstep(0.12, 0.0, dHalo);
     
     // Edge masks
-    float v2 = smoothstep(1.0 + bassPulse * 0.1, mix(dynamicRadius, 1.0, n0 * 0.5), len);
+    float v2 = smoothstep(1.0 + bassPulse * 0.05, mix(dynamicRadius, 1.0, n0 * 0.5), len);
     float v3 = smoothstep(dynamicRadius, mix(dynamicRadius, 1.0, 0.5), len);
     
-    // Hue-shifted colors based on audio
-    vec3 baseCol1 = hueShift(color1, bassPulse * 1.2 + trebleShimmer * 0.5);
-    vec3 baseCol2 = hueShift(color2, -bassPulse * 0.6);
-    vec3 baseCol3 = hueShift(color3, bassPulse * 0.3);
-    vec3 haloColFinal = hueShift(haloColor, trebleShimmer * 3.0);
+    // Subtle hue shift based on voice activity
+    vec3 baseCol1 = hueShift(color1, bassPulse * 0.3);
+    vec3 baseCol2 = hueShift(color2, -bassPulse * 0.15);
+    vec3 baseCol3 = hueShift(color3, bassPulse * 0.1);
+    vec3 haloColFinal = hueShift(haloColor, trebleShimmer * 0.8);
     
     // Combine colors
     vec3 col = mix(baseCol1, baseCol2, cl);
     col = mix(baseCol3, col, v0);
     col += haloColFinal * v4 * 3.5;
     col *= (1.0 - v4 * 0.2);
-    col += (baseCol1 + baseCol2) * bassPulse * 0.2;
+    
+    // Subtle brightness boost when speaking
+    col += (baseCol1 + baseCol2) * bassPulse * 0.08;
     
     col = (col + v1) * v2 * v3;
     col = clamp(col, 0.0, 1.0);
@@ -162,7 +164,7 @@ void main() {
     // Background gradient (only visible inside orb area)
     float bgGrad = clamp(len * 0.5 + uv.y * 0.2, 0.0, 1.0);
     vec3 currentBG = mix(bgColor, bgColor2, bgGrad);
-    currentBG += bgColor2 * bassPulse * 0.15;
+    currentBG += bgColor2 * bassPulse * 0.05;
     
     // Mix portal with background
     vec3 finalRGB = mix(currentBG, portal.rgb, portal.a);

@@ -201,8 +201,10 @@ pub struct VoiceOrbState {
     pub position: Point<f32, Logical>,
     /// Morph progress for window attachment (0.0 = orb, 1.0 = fill window)
     pub morph_progress: f32,
-    /// Pulse intensity (0.0 to 1.0)
+    /// Current smoothed pulse intensity (0.0 to 1.0)
     pub pulse_intensity: f32,
+    /// Target pulse intensity for smooth interpolation
+    target_pulse_intensity: f32,
     /// Current animation (if any)
     pub animation: Option<VoiceOrbAnimation>,
     /// Attached window geometry (if attached)
@@ -220,6 +222,7 @@ impl Default for VoiceOrbState {
             position: Point::from((0.5, 0.5)),
             morph_progress: 0.0,
             pulse_intensity: 0.0,
+            target_pulse_intensity: 0.0,
             animation: None,
             attached_window: None,
             shader_time_start: Instant::now(),
@@ -232,7 +235,6 @@ impl VoiceOrbState {
     pub fn show_floating(&mut self) {
         self.orb_state = OrbState::Floating;
         self.animation = Some(VoiceOrbAnimation::grow_in());
-        self.shader_time_start = Instant::now();
     }
 
     /// Hide the orb
@@ -295,6 +297,9 @@ impl VoiceOrbState {
 
     /// Update animation state
     pub fn update(&mut self) {
+        // Update pulse intensity smoothing every frame
+        self.update_pulse();
+
         if let Some(ref animation) = self.animation {
             self.scale = animation.current_scale();
             self.position = animation.current_position();
@@ -314,19 +319,35 @@ impl VoiceOrbState {
 
     /// Update audio level for visualization (0-1000 -> 0.0-1.0)
     pub fn set_audio_level(&mut self, level: u32) {
-        // Normalize to 0.0-1.0 range with some smoothing
+        // Normalize to 0.0-1.0 range
         let target = (level as f32 / 1000.0).clamp(0.0, 1.0);
-        // Apply some smoothing to avoid jitter (lerp toward target)
-        self.pulse_intensity = self.pulse_intensity * 0.7 + target * 0.3;
+        // Set target for smooth interpolation (actual smoothing happens in update())
+        self.target_pulse_intensity = target;
         // Also set voice state to recording if we have audio
         if level > 0 {
             self.voice_state = VoiceState::Recording;
         }
     }
 
+    /// Update pulse intensity with smooth interpolation (call every frame)
+    pub fn update_pulse(&mut self) {
+        // Asymmetric smoothing: fast attack, slow decay for natural feel
+        let diff = self.target_pulse_intensity - self.pulse_intensity;
+        if diff > 0.0 {
+            // Attack: respond quickly to increases (snappy)
+            self.pulse_intensity += diff * 0.25;
+        } else {
+            // Decay: fade out slowly for smooth trail
+            self.pulse_intensity += diff * 0.08;
+        }
+        // Clamp to valid range
+        self.pulse_intensity = self.pulse_intensity.clamp(0.0, 1.0);
+    }
+
     /// Reset audio level (called when voice mode ends)
     pub fn reset_audio_level(&mut self) {
         self.pulse_intensity = 0.0;
+        self.target_pulse_intensity = 0.0;
         self.voice_state = VoiceState::Idle;
     }
 
