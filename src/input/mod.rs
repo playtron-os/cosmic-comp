@@ -23,6 +23,7 @@ use crate::{
         },
         zoom::ZoomState,
     },
+    state::BackendData,
     utils::{prelude::*, quirks::workspace_overview_is_open},
     wayland::{
         handlers::{screencopy::SessionHolder, xwayland_keyboard_grab::XWaylandGrabSeat},
@@ -1892,18 +1893,20 @@ impl State {
             }
         }
 
-        // Handle VT switches
+        // Handle VT switches (KMS backend only)
         if event.state() == KeyState::Pressed
             && (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw())
                 .contains(&handle.modified_sym().raw())
         {
-            if let Err(err) = self.backend.kms().switch_vt(
-                (handle.modified_sym().raw() - Keysym::XF86_Switch_VT_1.raw() + 1) as i32,
-            ) {
-                error!(?err, "Failed switching virtual terminal.");
+            if let BackendData::Kms(kms) = &mut self.backend {
+                if let Err(err) = kms.switch_vt(
+                    (handle.modified_sym().raw() - Keysym::XF86_Switch_VT_1.raw() + 1) as i32,
+                ) {
+                    error!(?err, "Failed switching virtual terminal.");
+                }
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(None);
             }
-            seat.supressed_keys().add(&handle, None);
-            return FilterResult::Intercept(None);
         }
 
         // Intercept window-control keys (F11, Alt+F4) for embedded windows and forward to parent
