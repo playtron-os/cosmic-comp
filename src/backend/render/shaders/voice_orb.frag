@@ -12,11 +12,14 @@ varying vec2 v_coords;
 uniform float time;           // Animation time in seconds
 uniform float scale;          // Current scale of the orb (0.0 to 1.0 for grow animation)
 uniform float pulse;          // Pulse intensity (0.0 to 1.0) for voice activity
-uniform float attached;       // 1.0 if attached to window, 0.0 if floating
+uniform float attached;       // 1.0 if attached to window (burst mode), 0.0 if floating
 
 // Position uniforms (for window attachment)
 uniform vec2 target_center;   // Target center position (normalized 0-1)
-uniform float morph_progress; // Progress of morphing to fill window (0-1)
+uniform float morph_progress; // Deprecated - kept for compatibility
+uniform float cover_scale;    // Scale factor: how much larger orb is than render area
+uniform float window_aspect;  // Window aspect ratio (w/h) when attached
+uniform float border_radius;  // Border radius in pixels for rounded corners when attached
 
 // Configuration constants
 const float innerRadius = 0.45;    // Aperture
@@ -91,10 +94,38 @@ vec3 hueShift(vec3 color, float amount) {
     return color * cosAngle + cross(k, color) * sin(amount) + k * dot(k, color) * (1.0 - cosAngle);
 }
 
+// Signed distance function for rounded rectangle
+// Returns positive value inside, negative outside
+float roundedRectSDF(vec2 pos, vec2 halfSize, float radius) {
+    vec2 d = abs(pos) - halfSize + vec2(radius);
+    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - radius;
+}
+
 void main() {
     // Exact coordinate transformation from original shader
     vec2 fragCoord = v_coords * size;
-    vec2 uv = (fragCoord * 2.0 - size) / size.y;
+    
+    // When attached (burst mode), we need special UV handling to keep orb circular
+    vec2 uv;
+    vec2 noiseUV;
+    
+    if (attached > 0.5) {
+        // For attached mode: create a square coordinate system centered on window
+        // This ensures the orb stays circular regardless of window aspect ratio
+        float maxDim = max(size.x, size.y);
+        
+        // Center the coordinate system and normalize by the larger dimension
+        // This creates a square UV space where the orb will be circular
+        uv = (fragCoord * 2.0 - size) / maxDim;
+        noiseUV = uv;
+        
+        // Scale down UV so orb appears cover_scale times larger
+        uv /= cover_scale;
+    } else {
+        // Floating mode: use standard height-based normalization
+        uv = (fragCoord * 2.0 - size) / size.y;
+        noiseUV = uv;
+    }
     
     float animTime = time * speed;
     
@@ -112,8 +143,8 @@ void main() {
     float dynamicRadius = innerRadius + bassPulse * 0.12;
     float dynamicNoiseScale = noiseScale + trebleShimmer * 0.15;
     
-    // Noise-based distortion
-    float n0 = snoise3(vec3(uv * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
+    // Noise-based distortion - use noiseUV for consistent visual detail during scaling
+    float n0 = snoise3(vec3(noiseUV * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
     float r0 = mix(mix(dynamicRadius, 1.0, 0.4), mix(dynamicRadius, 1.0, 0.6), n0);
     float d0 = distance(uv, r0 / len * uv);
     
@@ -175,6 +206,20 @@ void main() {
     
     // Final alpha (scale is handled by geometry size, not shader)
     float finalAlpha = orbMask * alpha;
+    
+    // When attached, apply rounded corner mask
+    if (attached > 0.5 && border_radius > 0.0) {
+        // Calculate position relative to window bounds (in pixels from center)
+        vec2 fragPos = v_coords * size - size * 0.5;
+        vec2 halfSize = size * 0.5;
+        
+        // Calculate rounded rect SDF
+        float dist = roundedRectSDF(fragPos, halfSize, border_radius);
+        
+        // Apply smooth edge mask (inside = positive)
+        float cornerMask = 1.0 - smoothstep(-1.0, 1.0, dist);
+        finalAlpha *= cornerMask;
+    }
     
     // Output with premultiplied alpha
     gl_FragColor = vec4(finalRGB * finalAlpha, finalAlpha);

@@ -19,6 +19,7 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle, Size},
 };
+use tracing::debug;
 
 use super::element::AsGlowRenderer;
 use crate::wayland::protocols::voice_mode::{OrbState, VoiceState};
@@ -31,89 +32,146 @@ pub struct VoiceOrbShader(pub GlesPixelProgram);
 
 /// Animation state for the voice orb
 #[derive(Debug, Clone)]
-pub struct VoiceOrbAnimation {
-    /// When the animation started
-    pub start_time: Instant,
-    /// Animation duration in seconds
-    pub duration: f32,
-    /// Starting scale
-    pub start_scale: f32,
-    /// Target scale
-    pub target_scale: f32,
-    /// Starting position (normalized 0-1)
-    pub start_position: Point<f32, Logical>,
-    /// Target position (normalized 0-1)
-    pub target_position: Point<f32, Logical>,
-    /// Starting morph progress
-    pub start_morph: f32,
-    /// Target morph progress
-    pub target_morph: f32,
+pub enum VoiceOrbAnimation {
+    /// Simple animation (grow, shrink, move)
+    Simple {
+        start_time: Instant,
+        duration: f32,
+        start_scale: f32,
+        target_scale: f32,
+        start_position: Point<f32, Logical>,
+        target_position: Point<f32, Logical>,
+    },
+    /// Two-phase animation for attaching to window:
+    /// Phase 1: Dart toward window while shrinking to fit inside
+    /// Phase 2: Burst to fill window background (clipped)
+    DartThenBurst {
+        start_time: Instant,
+        /// Duration of dart phase
+        dart_duration: f32,
+        /// Duration of burst phase
+        burst_duration: f32,
+        /// Starting position (screen center typically)
+        start_position: Point<f32, Logical>,
+        /// Window center position (normalized)
+        window_center: Point<f32, Logical>,
+        /// Starting scale
+        start_scale: f32,
+        /// Scale when contained in window (before burst)
+        contained_scale: f32,
+        /// Final burst scale (to cover window)
+        burst_scale: f32,
+    },
+    /// Detach from window: shrink then dart back to center
+    ShrinkThenDart {
+        start_time: Instant,
+        shrink_duration: f32,
+        dart_duration: f32,
+        window_center: Point<f32, Logical>,
+        target_position: Point<f32, Logical>,
+        start_scale: f32,
+        contained_scale: f32,
+    },
 }
 
 impl VoiceOrbAnimation {
     /// Create a new grow-in animation with spring bounce
-    pub fn grow_in() -> Self {
-        Self {
+    /// Starts from current scale/position for smooth transitions when interrupted
+    pub fn grow_in(current_scale: f32, current_position: Point<f32, Logical>) -> Self {
+        Self::Simple {
             start_time: Instant::now(),
             duration: 0.4, // 400ms - longer grow phase with bounces at end
-            start_scale: 0.0,
+            start_scale: current_scale,
             target_scale: 1.0,
-            start_position: Point::from((0.5, 0.5)),
+            start_position: current_position,
             target_position: Point::from((0.5, 0.5)),
-            start_morph: 0.0,
-            target_morph: 0.0,
         }
     }
 
     /// Create a shrink-out animation
-    pub fn shrink_out(current_scale: f32, current_position: Point<f32, Logical>) -> Self {
-        Self {
+    /// When stay_in_place is true, shrinks from current position (for attached mode)
+    /// When false, shrinks while moving to center (for floating mode)
+    pub fn shrink_out(current_scale: f32, current_position: Point<f32, Logical>, stay_in_place: bool) -> Self {
+        Self::Simple {
             start_time: Instant::now(),
             duration: 0.3,
             start_scale: current_scale,
             target_scale: 0.0,
             start_position: current_position,
-            target_position: Point::from((0.5, 0.5)),
-            start_morph: 0.0,
-            target_morph: 0.0,
+            target_position: if stay_in_place { current_position } else { Point::from((0.5, 0.5)) },
         }
     }
 
-    /// Create an animation to attach to a window
-    pub fn attach_to_window(
-        current_position: Point<f32, Logical>,
-        window_center: Point<f32, Logical>,
-    ) -> Self {
-        Self {
+    /// Create a burst-only animation (for when orb appears directly attached to window)
+    /// Starts from current scale/position for smooth transitions when interrupted
+    pub fn burst_only(current_scale: f32, current_position: Point<f32, Logical>, burst_scale: f32, window_center: Point<f32, Logical>) -> Self {
+        Self::Simple {
             start_time: Instant::now(),
-            duration: 0.5,
-            start_scale: 1.0,
-            target_scale: 1.0,
+            duration: 0.35, // Slightly longer for direct burst
+            start_scale: current_scale,
+            target_scale: burst_scale,
             start_position: current_position,
             target_position: window_center,
-            start_morph: 0.0,
-            target_morph: 1.0,
+        }
+    }
+
+    /// Create an animation to attach to a window (dart then burst)
+    /// - contained_scale: scale at which orb fits inside window (relative to floating size)
+    /// - burst_scale: scale to fill window with cover effect
+    pub fn dart_then_burst(
+        current_position: Point<f32, Logical>,
+        window_center: Point<f32, Logical>,
+        current_scale: f32,
+        contained_scale: f32,
+        burst_scale: f32,
+    ) -> Self {
+        Self::DartThenBurst {
+            start_time: Instant::now(),
+            dart_duration: 0.35,  // Fast dart
+            burst_duration: 0.25, // Quick burst
+            start_position: current_position,
+            window_center,
+            start_scale: current_scale,
+            contained_scale,
+            burst_scale,
         }
     }
 
     /// Create an animation to detach from window
-    pub fn detach_from_window(window_center: Point<f32, Logical>) -> Self {
-        Self {
+    pub fn shrink_then_dart(
+        window_center: Point<f32, Logical>,
+        burst_scale: f32,
+        contained_scale: f32,
+    ) -> Self {
+        Self::ShrinkThenDart {
             start_time: Instant::now(),
-            duration: 0.5,
-            start_scale: 1.0,
-            target_scale: 1.0,
-            start_position: window_center,
+            shrink_duration: 0.2,
+            dart_duration: 0.35,
+            window_center,
             target_position: Point::from((0.5, 0.5)),
-            start_morph: 1.0,
-            target_morph: 0.0,
+            start_scale: burst_scale,
+            contained_scale,
         }
     }
 
     /// Get the animation progress (0.0 to 1.0)
     pub fn progress(&self) -> f32 {
-        let elapsed = self.start_time.elapsed().as_secs_f32();
-        (elapsed / self.duration).min(1.0)
+        match self {
+            Self::Simple { start_time, duration, .. } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                (elapsed / duration).min(1.0)
+            }
+            Self::DartThenBurst { start_time, dart_duration, burst_duration, .. } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let total = dart_duration + burst_duration;
+                (elapsed / total).min(1.0)
+            }
+            Self::ShrinkThenDart { start_time, shrink_duration, dart_duration, .. } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                let total = shrink_duration + dart_duration;
+                (elapsed / total).min(1.0)
+            }
+        }
     }
 
     /// Check if the animation is complete
@@ -121,33 +179,117 @@ impl VoiceOrbAnimation {
         self.progress() >= 1.0
     }
 
+    /// Check if we're in the "burst" phase (attached and filling window)
+    pub fn is_in_burst_phase(&self) -> bool {
+        match self {
+            Self::DartThenBurst { start_time, dart_duration, .. } => {
+                start_time.elapsed().as_secs_f32() >= *dart_duration
+            }
+            Self::ShrinkThenDart { start_time, shrink_duration, .. } => {
+                // In shrink phase (not yet darting) - still attached
+                start_time.elapsed().as_secs_f32() < *shrink_duration
+            }
+            _ => false,
+        }
+    }
+
     /// Get the current scale with easing
     pub fn current_scale(&self) -> f32 {
-        let t = self.progress();
-        // Use spring bounce for grow-in (0 -> 1), ease-out for shrink
-        let eased_t = if self.start_scale < self.target_scale {
-            // Growing in: use spring bounce
-            ease_spring_bounce(t)
-        } else {
-            // Shrinking out: use smooth ease-out
-            ease(EaseOutCubic, 0.0, 1.0, t)
-        };
-        self.start_scale + (self.target_scale - self.start_scale) * eased_t
+        match self {
+            Self::Simple { start_scale, target_scale, .. } => {
+                let t = self.progress();
+                let eased_t = if *start_scale < *target_scale {
+                    ease_spring_bounce(t)
+                } else {
+                    ease(EaseOutCubic, 0.0, 1.0, t)
+                };
+                start_scale + (target_scale - start_scale) * eased_t
+            }
+            Self::DartThenBurst {
+                start_time, dart_duration, burst_duration,
+                start_scale, contained_scale, burst_scale, ..
+            } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                if elapsed < *dart_duration {
+                    // Dart phase: shrink from start to contained
+                    let t = elapsed / dart_duration;
+                    let eased_t = ease(EaseOutCubic, 0.0, 1.0, t);
+                    start_scale + (contained_scale - start_scale) * eased_t
+                } else {
+                    // Burst phase: expand from contained to burst (with spring)
+                    let t = (elapsed - dart_duration) / burst_duration;
+                    let eased_t = ease_spring_bounce(t.min(1.0));
+                    contained_scale + (burst_scale - contained_scale) * eased_t
+                }
+            }
+            Self::ShrinkThenDart {
+                start_time, shrink_duration, dart_duration,
+                start_scale, contained_scale, ..
+            } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                if elapsed < *shrink_duration {
+                    // Shrink phase: from burst to contained
+                    let t = elapsed / shrink_duration;
+                    let eased_t = ease(EaseOutCubic, 0.0, 1.0, t);
+                    start_scale + (contained_scale - start_scale) * eased_t
+                } else {
+                    // Dart phase: stay at contained scale, moving back to center
+                    // Then grow back to 1.0 as we reach center
+                    let t = (elapsed - shrink_duration) / dart_duration;
+                    let eased_t = ease(EaseOutCubic, 0.0, 1.0, t.min(1.0));
+                    contained_scale + (1.0 - contained_scale) * eased_t
+                }
+            }
+        }
     }
 
     /// Get the current position with easing
     pub fn current_position(&self) -> Point<f32, Logical> {
-        let t = ease(EaseOutCubic, 0.0, 1.0, self.progress());
-        Point::from((
-            self.start_position.x + (self.target_position.x - self.start_position.x) * t,
-            self.start_position.y + (self.target_position.y - self.start_position.y) * t,
-        ))
-    }
-
-    /// Get the current morph progress with easing
-    pub fn current_morph(&self) -> f32 {
-        let t = ease(EaseOutCubic, 0.0, 1.0, self.progress());
-        self.start_morph + (self.target_morph - self.start_morph) * t
+        match self {
+            Self::Simple { start_position, target_position, .. } => {
+                let t = ease(EaseOutCubic, 0.0, 1.0, self.progress());
+                Point::from((
+                    start_position.x + (target_position.x - start_position.x) * t,
+                    start_position.y + (target_position.y - start_position.y) * t,
+                ))
+            }
+            Self::DartThenBurst {
+                start_time, dart_duration,
+                start_position, window_center, ..
+            } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                if elapsed < *dart_duration {
+                    // Dart phase: move toward window
+                    let t = elapsed / dart_duration;
+                    let eased_t = ease(EaseOutCubic, 0.0, 1.0, t);
+                    Point::from((
+                        start_position.x + (window_center.x - start_position.x) * eased_t,
+                        start_position.y + (window_center.y - start_position.y) * eased_t,
+                    ))
+                } else {
+                    // Burst phase: stay at window center
+                    *window_center
+                }
+            }
+            Self::ShrinkThenDart {
+                start_time, shrink_duration, dart_duration,
+                window_center, target_position, ..
+            } => {
+                let elapsed = start_time.elapsed().as_secs_f32();
+                if elapsed < *shrink_duration {
+                    // Shrink phase: stay at window center
+                    *window_center
+                } else {
+                    // Dart phase: move back to center
+                    let t = (elapsed - shrink_duration) / dart_duration;
+                    let eased_t = ease(EaseOutCubic, 0.0, 1.0, t.min(1.0));
+                    Point::from((
+                        window_center.x + (target_position.x - window_center.x) * eased_t,
+                        window_center.y + (target_position.y - window_center.y) * eased_t,
+                    ))
+                }
+            }
+        }
     }
 }
 
@@ -169,9 +311,14 @@ fn ease_spring_bounce(t: f32) -> f32 {
     // 1.0  -> 1.0  (settle)
 
     if t < 0.65 {
-        // Grow phase: 0 to 1.08 with ease-out
+        // Grow phase: 0 to 1.08 with ease-in-out for smoother start
         let local_t = t / 0.65;
-        let eased = 1.0 - (1.0 - local_t).powi(3);
+        // Ease-in-out cubic: starts slow, speeds up, then slows down
+        let eased = if local_t < 0.5 {
+            4.0 * local_t * local_t * local_t
+        } else {
+            1.0 - (-2.0 * local_t + 2.0).powi(3) / 2.0
+        };
         eased * 1.08
     } else if t < 0.78 {
         // First bounce back: 1.08 to 0.96
@@ -195,12 +342,10 @@ pub struct VoiceOrbState {
     pub orb_state: OrbState,
     /// Current voice input state
     pub voice_state: VoiceState,
-    /// Current scale (0.0 to 1.0)
+    /// Current scale (0.0 to 1.0 for floating, can be higher for burst)
     pub scale: f32,
     /// Current position (normalized to output)
     pub position: Point<f32, Logical>,
-    /// Morph progress for window attachment (0.0 = orb, 1.0 = fill window)
-    pub morph_progress: f32,
     /// Current smoothed pulse intensity (0.0 to 1.0)
     pub pulse_intensity: f32,
     /// Target pulse intensity for smooth interpolation
@@ -209,12 +354,20 @@ pub struct VoiceOrbState {
     pub animation: Option<VoiceOrbAnimation>,
     /// Attached window geometry (if attached)
     pub attached_window: Option<Rectangle<i32, Logical>>,
+    /// Attached window surface ID (for reliable matching during render)
+    pub attached_surface_id: Option<String>,
     /// Animation start time for shader time uniform
     pub shader_time_start: Instant,
     /// Pending orb show - waiting for window fade to complete
     pending_show: bool,
     /// Pending orb hide - orb should start hiding
     pending_hide: bool,
+    /// Cached burst scale for current window (orb scale to cover window)
+    burst_scale: f32,
+    /// Cached contained scale for current window (orb scale to fit inside)
+    contained_scale: f32,
+    /// True when shrinking from attached state (keep rendering at window level)
+    pub shrinking_from_attached: bool,
 }
 
 impl Default for VoiceOrbState {
@@ -224,14 +377,17 @@ impl Default for VoiceOrbState {
             voice_state: VoiceState::Idle,
             scale: 0.0,
             position: Point::from((0.5, 0.5)),
-            morph_progress: 0.0,
             pulse_intensity: 0.0,
             target_pulse_intensity: 0.0,
             animation: None,
             attached_window: None,
+            attached_surface_id: None,
             shader_time_start: Instant::now(),
             pending_show: false,
             pending_hide: false,
+            burst_scale: 1.0,
+            contained_scale: 0.3,
+            shrinking_from_attached: false,
         }
     }
 }
@@ -243,10 +399,56 @@ impl VoiceOrbState {
         self.pending_hide = false;
     }
 
+    /// Request showing the orb attached to a window (will start after window fade completes)
+    pub fn request_show_attached(
+        &mut self,
+        window_geo: Rectangle<i32, Logical>,
+        output_size: Size<i32, Logical>,
+        surface_id: String,
+    ) {
+        // Pre-calculate scales and position
+        let window_center = Point::from((
+            (window_geo.loc.x as f32 + window_geo.size.w as f32 / 2.0) / output_size.w as f32,
+            (window_geo.loc.y as f32 + window_geo.size.h as f32 / 2.0) / output_size.h as f32,
+        ));
+        
+        let floating_orb_size = output_size.w as f32 * 0.20;
+        let window_min_dim = (window_geo.size.w.min(window_geo.size.h) as f32) * 0.6;
+        self.contained_scale = (window_min_dim / floating_orb_size).min(0.5);
+        
+        // For cover effect, orb needs to be larger than the window's max dimension
+        // The shader normalizes by max(width, height), so scale relative to that
+        // Orb radius needs to cover from center to corner, plus margin
+        // For a rectangle, the corner distance from center is sqrt((w/2)^2 + (h/2)^2)
+        let w = window_geo.size.w as f32;
+        let h = window_geo.size.h as f32;
+        let corner_dist = ((w/2.0).powi(2) + (h/2.0).powi(2)).sqrt();
+        // Orb diameter needs to be 2 * corner_dist, plus some margin
+        let cover_diameter = corner_dist * 2.0 * 1.25;
+        self.burst_scale = cover_diameter / floating_orb_size;
+        
+        // Set position to window center now
+        self.position = window_center;
+        self.attached_window = Some(window_geo);
+        self.attached_surface_id = Some(surface_id);
+        self.pending_show = true;
+        self.pending_hide = false;
+        self.orb_state = OrbState::Attached;
+    }
+
     /// Start showing the orb (floating in center)
     pub fn show_floating(&mut self) {
         self.orb_state = OrbState::Floating;
-        self.animation = Some(VoiceOrbAnimation::grow_in());
+        // Start from current position/scale for smooth transitions when interrupted
+        self.animation = Some(VoiceOrbAnimation::grow_in(self.scale, self.position));
+        self.pending_show = false;
+    }
+
+    /// Start showing the orb attached to a window (burst only, no dart)
+    pub fn show_attached(&mut self) {
+        // Position and window_geo should already be set by request_show_attached
+        // Start from current scale/position for smooth transitions when interrupted
+        self.animation = Some(VoiceOrbAnimation::burst_only(self.scale, self.position, self.burst_scale, self.position));
         self.pending_show = false;
     }
 
@@ -259,7 +461,15 @@ impl VoiceOrbState {
     /// Hide the orb
     pub fn hide(&mut self) {
         if self.orb_state != OrbState::Hidden {
-            self.animation = Some(VoiceOrbAnimation::shrink_out(self.scale, self.position));
+            // When attached, shrink in place; when floating, shrink toward center
+            let stay_in_place = self.orb_state == OrbState::Attached;
+            // Track if we're shrinking from attached state (for render layer)
+            self.shrinking_from_attached = stay_in_place;
+            debug!(
+                "Voice orb hiding: stay_in_place={}, shrinking_from_attached={}, position={:?}, scale={}",
+                stay_in_place, self.shrinking_from_attached, self.position, self.scale
+            );
+            self.animation = Some(VoiceOrbAnimation::shrink_out(self.scale, self.position, stay_in_place));
             self.orb_state = OrbState::Hidden;
         }
         self.pending_show = false;
@@ -280,7 +490,7 @@ impl VoiceOrbState {
         self.pending_hide = false;
     }
 
-    /// Attach to a window
+    /// Attach to a window with dart-then-burst animation
     pub fn attach_to(
         &mut self,
         window_geo: Rectangle<i32, Logical>,
@@ -290,9 +500,29 @@ impl VoiceOrbState {
             (window_geo.loc.x as f32 + window_geo.size.w as f32 / 2.0) / output_size.w as f32,
             (window_geo.loc.y as f32 + window_geo.size.h as f32 / 2.0) / output_size.h as f32,
         ));
-        self.animation = Some(VoiceOrbAnimation::attach_to_window(
+        
+        // Calculate the floating orb size (20% of display width)
+        let floating_orb_size = output_size.w as f32 * 0.20;
+        
+        // Calculate scale to fit orb inside window (with some margin)
+        // The orb should shrink so it fits within the smaller dimension
+        let window_min_dim = (window_geo.size.w.min(window_geo.size.h) as f32) * 0.6;
+        self.contained_scale = (window_min_dim / floating_orb_size).min(0.5);
+        
+        // For cover effect, orb needs to cover from center to corners
+        let w = window_geo.size.w as f32;
+        let h = window_geo.size.h as f32;
+        let corner_dist = ((w/2.0).powi(2) + (h/2.0).powi(2)).sqrt();
+        // Orb diameter needs to be 2 * corner_dist, plus some margin
+        let cover_diameter = corner_dist * 2.0 * 1.25;
+        self.burst_scale = cover_diameter / floating_orb_size;
+        
+        self.animation = Some(VoiceOrbAnimation::dart_then_burst(
             self.position,
             window_center,
+            self.scale,
+            self.contained_scale,
+            self.burst_scale,
         ));
         self.attached_window = Some(window_geo);
         self.orb_state = OrbState::Attached;
@@ -301,8 +531,12 @@ impl VoiceOrbState {
     /// Detach from window and return to floating mode
     pub fn detach(&mut self) {
         if let Some(_window) = self.attached_window.take() {
-            // Use current position for the detach animation
-            self.animation = Some(VoiceOrbAnimation::detach_from_window(self.position));
+            // Create shrink-then-dart animation
+            self.animation = Some(VoiceOrbAnimation::shrink_then_dart(
+                self.position,
+                self.burst_scale,
+                self.contained_scale,
+            ));
         }
         self.orb_state = OrbState::Floating;
     }
@@ -338,17 +572,63 @@ impl VoiceOrbState {
         if let Some(ref animation) = self.animation {
             self.scale = animation.current_scale();
             self.position = animation.current_position();
-            self.morph_progress = animation.current_morph();
 
             if animation.is_complete() {
                 // Animation done, clear it
                 self.animation = None;
 
-                // If we animated to hidden, ensure scale is 0
+                // If we animated to hidden, ensure scale is 0 and clear attached state
                 if self.orb_state == OrbState::Hidden {
                     self.scale = 0.0;
+                    // Reset position to center so next show starts from center
+                    self.position = Point::from((0.5, 0.5));
+                    self.shrinking_from_attached = false;
+                    // Clear attached window info when fully hidden
+                    self.attached_window = None;
+                    self.attached_surface_id = None;
+                }
+                // If attached, ensure we're at burst scale
+                if self.orb_state == OrbState::Attached {
+                    self.scale = self.burst_scale;
+                }
+                // If floating (after detach), ensure scale is 1.0
+                if self.orb_state == OrbState::Floating && self.scale > 0.5 {
+                    self.scale = 1.0;
                 }
             }
+        }
+    }
+
+    /// Check if currently in burst phase (rendering clipped to window)
+    pub fn is_in_burst_phase(&self) -> bool {
+        // If shrinking from attached, we're still in burst phase (need clipping)
+        if self.shrinking_from_attached {
+            return true;
+        }
+        // If not attached, never in burst phase
+        if self.orb_state != OrbState::Attached {
+            return false;
+        }
+        // If attached and no animation, we're fully burst (or if simple animation while attached)
+        if self.animation.is_none() {
+            return true;
+        }
+        // Check if animation is in burst phase
+        match &self.animation {
+            Some(VoiceOrbAnimation::DartThenBurst { start_time, dart_duration, .. }) => {
+                // In burst phase after dart completes
+                start_time.elapsed().as_secs_f32() >= *dart_duration
+            }
+            Some(VoiceOrbAnimation::ShrinkThenDart { start_time, shrink_duration, .. }) => {
+                // In shrink phase (not yet darting) - still attached/burst
+                start_time.elapsed().as_secs_f32() < *shrink_duration
+            }
+            Some(VoiceOrbAnimation::Simple { target_scale, .. }) => {
+                // Simple animation while attached - we're bursting if scale > 1
+                // (burst_only animation has target_scale > 1, shrink has target 0)
+                *target_scale > 1.0
+            }
+            None => true,
         }
     }
 
@@ -403,6 +683,36 @@ impl VoiceOrbState {
     pub fn shader_time(&self) -> f32 {
         self.shader_time_start.elapsed().as_secs_f32()
     }
+
+    /// Check if the orb is attached to a window and in burst phase,
+    /// or if we're shrinking from an attached state
+    /// When true, the orb should be rendered at the window level (between blur and content)
+    /// rather than at the global level (on top of everything)
+    pub fn should_render_at_window_level(&self) -> bool {
+        // Render at window level if:
+        // 1. Attached and in burst phase, OR
+        // 2. Currently shrinking from an attached state (hide animation)
+        (self.orb_state == OrbState::Attached && self.is_in_burst_phase())
+            || self.shrinking_from_attached
+    }
+
+    /// Get the attached window geometry if in window-level render mode
+    pub fn attached_window_for_render(&self) -> Option<Rectangle<i32, Logical>> {
+        if self.should_render_at_window_level() {
+            self.attached_window
+        } else {
+            None
+        }
+    }
+
+    /// Get the attached surface ID if in window-level render mode
+    pub fn attached_surface_id_for_render(&self) -> Option<&str> {
+        if self.should_render_at_window_level() {
+            self.attached_surface_id.as_deref()
+        } else {
+            None
+        }
+    }
 }
 
 impl VoiceOrbShader {
@@ -417,6 +727,9 @@ impl VoiceOrbShader {
                 UniformName::new("attached", UniformType::_1f),
                 UniformName::new("target_center", UniformType::_2f),
                 UniformName::new("morph_progress", UniformType::_1f),
+                UniformName::new("cover_scale", UniformType::_1f),
+                UniformName::new("window_aspect", UniformType::_1f),
+                UniformName::new("border_radius", UniformType::_1f),
             ],
         )?;
 
@@ -449,24 +762,51 @@ impl VoiceOrbShader {
 
         let shader = Self::get(renderer)?;
 
+        // Calculate the base orb size (20% of display width)
+        let base_orb_size = output_geo.size.w as f32 * 0.20;
+        
+        // Determine if we should clip to window (burst phase)
+        let in_burst_phase = orb_state.is_in_burst_phase();
+        
         // Calculate the orb geometry based on state
-        let geo = if let Some(window_geo) = orb_state.attached_window {
-            // When attached, use window geometry for rendering area
-            window_geo
+        let (geo, orb_scale_in_shader) = if in_burst_phase {
+            // In burst phase: render clipped to window bounds
+            // The shader will draw an orb that extends beyond the window
+            // but the element geometry clips it
+            if let Some(window_geo) = orb_state.attached_window {
+                debug!(
+                    "Voice orb burst phase: window_geo={:?}, scale={}, position={:?}",
+                    window_geo, orb_state.scale, orb_state.position
+                );
+                // Use window geometry as render bounds (clipping)
+                // Calculate how large the orb appears relative to window
+                let orb_diameter = base_orb_size * orb_state.scale;
+                // Shader uses max(width, height) for normalization, so scale relative to that
+                let window_max = window_geo.size.w.max(window_geo.size.h) as f32;
+                
+                // Scale factor: how much bigger is the orb than the window's larger dimension?
+                // This tells the shader to draw the orb larger than the render area
+                let scale_in_shader = orb_diameter / window_max;
+                
+                (window_geo, scale_in_shader)
+            } else {
+                return None;
+            }
         } else {
-            // When floating, center a square render area
-            // Orb is 20% of display width, render area is 50% larger for outer glow
-            let orb_size = (output_geo.size.w as f32 * 0.20 * orb_state.scale) as i32;
-            let render_size = (orb_size as f32 * 1.5) as i32; // Extra space for blue fog
+            // Floating or darting: render as normal orb
+            let orb_size = (base_orb_size * orb_state.scale) as i32;
+            let render_size = (orb_size as f32 * 1.5) as i32; // Extra space for glow
             let center_x =
                 (orb_state.position.x * output_geo.size.w as f32) as i32 + output_geo.loc.x;
             let center_y =
                 (orb_state.position.y * output_geo.size.h as f32) as i32 + output_geo.loc.y;
 
-            Rectangle::new(
+            let geo = Rectangle::new(
                 Point::from((center_x - render_size / 2, center_y - render_size / 2)),
                 Size::from((render_size, render_size)),
-            )
+            );
+            // In floating mode, orb scale in shader is 1.0 (normal size)
+            (geo, 1.0f32)
         };
 
         // Time for animation
@@ -478,10 +818,21 @@ impl VoiceOrbShader {
             VoiceState::Idle => 0.0,
         };
 
-        let attached = if orb_state.orb_state == OrbState::Attached {
-            1.0
+        // Window aspect ratio and border radius for proper orb rendering when clipped
+        let (window_aspect, is_attached, border_radius) = if in_burst_phase {
+            if let Some(window_geo) = orb_state.attached_window {
+                // Use default window corner radius (22 pixels)
+                use crate::shell::element::DEFAULT_WINDOW_CORNER_RADIUS;
+                (
+                    window_geo.size.w as f32 / window_geo.size.h as f32, 
+                    1.0f32,
+                    DEFAULT_WINDOW_CORNER_RADIUS as f32
+                )
+            } else {
+                (1.0, 0.0, 0.0)
+            }
         } else {
-            0.0
+            (1.0, 0.0, 0.0)
         };
 
         // Create the shader element
@@ -494,12 +845,15 @@ impl VoiceOrbShader {
                 Uniform::new("time", time),
                 Uniform::new("scale", orb_state.scale),
                 Uniform::new("pulse", pulse),
-                Uniform::new("attached", attached),
+                Uniform::new("attached", is_attached),
                 Uniform::new(
                     "target_center",
                     [orb_state.position.x, orb_state.position.y],
                 ),
-                Uniform::new("morph_progress", orb_state.morph_progress),
+                Uniform::new("morph_progress", 0.0f32), // Deprecated, kept for compatibility
+                Uniform::new("cover_scale", orb_scale_in_shader),
+                Uniform::new("window_aspect", window_aspect),
+                Uniform::new("border_radius", border_radius),
             ],
             Kind::Unspecified,
         );

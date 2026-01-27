@@ -1253,14 +1253,24 @@ where
         &embedded_children_for_grabbed,
     ));
 
-    // Render voice orb on top of everything if active
+    // Render voice orb - either globally (floating) or defer to window level (attached)
+    let attached_orb_state: Option<voice_orb::VoiceOrbState>;
     {
         let shell_guard = shell.read();
         let output_geo = output.geometry().as_logical();
-        if let Some(orb_element) =
-            voice_orb::VoiceOrbShader::element(renderer, &shell_guard.voice_orb_state, output_geo)
-        {
-            elements.push(orb_element.into());
+        
+        // Check if orb should render at window level (attached mode in burst phase)
+        if shell_guard.voice_orb_state.should_render_at_window_level() {
+            // Don't render globally - will be rendered at window level
+            attached_orb_state = Some(shell_guard.voice_orb_state.clone());
+        } else {
+            // Render globally (floating or not in burst phase yet)
+            attached_orb_state = None;
+            if let Some(orb_element) =
+                voice_orb::VoiceOrbShader::element(renderer, &shell_guard.voice_orb_state, output_geo)
+            {
+                elements.push(orb_element.into());
+            }
         }
     }
 
@@ -1556,6 +1566,7 @@ where
                                 alpha,
                                 theme.cosmic(),
                                 element_filter.clone(),
+                                None, // No attached orb for sticky layer
                             )
                             .into_iter()
                             .map(Into::into)
@@ -1604,6 +1615,7 @@ where
                             theme.cosmic(),
                             element_filter.clone(),
                             voice_mode_alpha,
+                            attached_orb_state.as_ref(),
                         ) {
                             Ok(elements) => {
                                 elements

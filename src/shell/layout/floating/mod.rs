@@ -13,7 +13,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, RenderElement,
+            AsRenderElements, Element, RenderElement,
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
         },
     },
@@ -30,6 +30,7 @@ use crate::{
         BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
         BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
         element::AsGlowRenderer, get_cached_blur_texture_for_window,
+        voice_orb::{VoiceOrbShader, VoiceOrbState},
     },
     shell::{
         CosmicSurface, Direction, ManagedLayer, MoveResult, ResizeMode,
@@ -2875,6 +2876,7 @@ impl FloatingLayout {
         alpha: f32,
         theme: &cosmic::theme::CosmicTheme,
         element_filter: ElementFilter,
+        attached_orb_state: Option<&VoiceOrbState>,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -3160,6 +3162,43 @@ impl FloatingLayout {
                 let window_key = elem.key();
                 let output_transform = output.current_transform();
                 let output_scale = output.current_scale().fractional_scale();
+
+                // If this window has the attached voice orb, insert it BEFORE blur
+                // (In front-to-back rendering: content -> shadow -> orb -> blur)
+                // This makes orb visible in front of blur but behind window content
+                if let Some(orb_state) = attached_orb_state {
+                    if let Some(attached_surface_id) = orb_state.attached_surface_id_for_render() {
+                        // Compare window surface ID with attached surface ID for reliable matching
+                        let window_surface_id = elem
+                            .active_window()
+                            .wl_surface()
+                            .map(|s| s.id().to_string());
+                        
+                        if window_surface_id.as_deref() == Some(attached_surface_id) {
+                            // Get output geometry for orb rendering
+                            let output_geo = output.geometry().as_logical();
+                            
+                            // Create the voice orb element
+                            if let Some(orb_element) = VoiceOrbShader::element(renderer, orb_state, output_geo) {
+                                // Insert orb element before blur (behind window content, in front of blur)
+                                let orb_geo = orb_element.geometry(output.current_scale().fractional_scale().into());
+                                tracing::debug!(
+                                    surface_id = %attached_surface_id,
+                                    orb_geo_x = orb_geo.loc.x,
+                                    orb_geo_y = orb_geo.loc.y,
+                                    orb_geo_w = orb_geo.size.w,
+                                    orb_geo_h = orb_geo.size.h,
+                                    orb_scale = orb_state.scale,
+                                    is_burst = orb_state.is_in_burst_phase(),
+                                    shrinking_from_attached = orb_state.shrinking_from_attached,
+                                    window_elements_count = window_elements.len(),
+                                    "Voice orb element created for attached window"
+                                );
+                                window_elements.push(orb_element.into());
+                            }
+                        }
+                    }
+                }
 
                 // Get per-window blur texture (iterative multi-pass blur)
                 let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);

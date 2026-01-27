@@ -4,13 +4,14 @@
 
 use crate::shell::SeatExt;
 use crate::state::State;
-use crate::utils::geometry::SizeExt;
+use crate::utils::geometry::{RectGlobalExt, RectLocalExt, SizeExt};
 use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::voice_mode::{
     OrbState, VoiceModeHandler, VoiceModeState, delegate_voice_mode,
 };
-use smithay::desktop::space::SpaceElement;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Resource;
+use smithay::wayland::seat::WaylandFocus;
 use tracing::info;
 
 impl VoiceModeHandler for State {
@@ -33,15 +34,22 @@ impl VoiceModeHandler for State {
                 .voice_mode_state
                 .has_receiver_for_surface(surface)
             {
-                // Get the focused window's geometry
+                // Get the focused window's geometry and surface ID from the workspace
                 let keyboard = seat.get_keyboard().unwrap();
-                let geo = keyboard.current_focus().and_then(|focus| match &focus {
+                let geo_and_id = keyboard.current_focus().and_then(|focus| match &focus {
                     crate::shell::focus::target::KeyboardFocusTarget::Element(mapped) => {
-                        Some(SpaceElement::geometry(mapped))
+                        // Get element geometry from workspace (gives position in workspace coordinates)
+                        let workspace = shell.active_space(&output)?;
+                        let local_geo = workspace.element_geometry(mapped)?;
+                        // Convert to global/logical coordinates for rendering
+                        let geo = local_geo.to_global(&output).as_logical();
+                        // Get surface ID for reliable window matching during render
+                        let surface_id = mapped.active_window().wl_surface()?.id().to_string();
+                        Some((geo, surface_id))
                     }
                     _ => None,
                 });
-                (Some(surface), geo)
+                (Some(surface), geo_and_id)
             } else {
                 // Focused surface doesn't have a receiver, fall back to default
                 (None, None)
@@ -51,13 +59,15 @@ impl VoiceModeHandler for State {
         };
 
         let orb_state = if let Some(surface) = receiver_surface {
-            if let Some(geo) = window_geo {
+            if let Some((geo, surface_id)) = window_geo {
                 // Attach orb to the focused window
-                info!("Attaching orb to receiver surface");
+                info!("Attaching orb to receiver surface at {:?} (surface_id: {})", geo, surface_id);
                 let output_geo = output.geometry();
+                // Request show attached - orb will burst directly in window
                 shell
                     .voice_orb_state
-                    .attach_to(geo, output_geo.size.as_logical());
+                    .request_show_attached(geo, output_geo.size.as_logical(), surface_id);
+                shell.enter_voice_mode();
 
                 // Send start to the window-specific receiver
                 drop(shell);

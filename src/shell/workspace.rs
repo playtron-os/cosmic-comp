@@ -5,6 +5,7 @@ use crate::{
     backend::render::{
         BackdropShader, ElementFilter,
         element::{AsGlowRenderer, FromGlesError},
+        voice_orb::VoiceOrbState,
     },
     shell::{
         ANIMATION_DURATION, OverviewMode, SeatMoveGrabState,
@@ -1614,6 +1615,7 @@ impl Workspace {
         theme: &CosmicTheme,
         element_filter: ElementFilter,
         window_alpha: f32,
+        attached_orb_state: Option<&VoiceOrbState>,
     ) -> Result<Vec<WorkspaceRenderElement<R>>, OutputNotMapped>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -1753,6 +1755,7 @@ impl Workspace {
                         floating_alpha,
                         theme,
                         element_filter.clone(),
+                        attached_orb_state,
                     )
                     .into_iter()
                     .map(WorkspaceRenderElement::from),
