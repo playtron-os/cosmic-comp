@@ -437,6 +437,11 @@ impl VoiceMode {
                 let remaining = VOICE_MODE_ANIMATION_DURATION.saturating_sub(elapsed);
                 *self = VoiceMode::FadingIn(Instant::now() - remaining);
             }
+            VoiceMode::WaitingForOrbShrink(_) => {
+                // Re-entering voice mode while orb was shrinking
+                // Go directly to Active since orb is already visible
+                *self = VoiceMode::Active;
+            }
             _ => {} // Already active or fading in
         }
     }

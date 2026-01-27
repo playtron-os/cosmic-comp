@@ -397,6 +397,8 @@ impl VoiceOrbState {
     pub fn request_show_floating(&mut self) {
         self.pending_show = true;
         self.pending_hide = false;
+        // Clear any shrink state from previous hide
+        self.shrinking_from_attached = false;
     }
 
     /// Request showing the orb attached to a window (will start after window fade completes)
@@ -433,6 +435,8 @@ impl VoiceOrbState {
         self.attached_surface_id = Some(surface_id);
         self.pending_show = true;
         self.pending_hide = false;
+        // Clear any shrink state from previous hide
+        self.shrinking_from_attached = false;
         self.orb_state = OrbState::Attached;
     }
 
