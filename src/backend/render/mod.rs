@@ -1243,13 +1243,7 @@ where
 
     // Skip move grab for blur capture modes where windows shouldn't be included
     let skip_move_grab = match element_filter {
-        ElementFilter::BlurCapture(_) => true,
-        ElementFilter::LayerBlurCapture(layer, _) => {
-            use smithay::wayland::shell::wlr_layer::Layer;
-            // For Top/Overlay layers: skip move grab (dragged window shouldn't appear in blur)
-            // For Bottom/Background layers: include move grab (layers are below windows)
-            matches!(layer, Layer::Top | Layer::Overlay)
-        }
+        ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_, _) => true,
         _ => false,
     };
 
