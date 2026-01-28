@@ -237,8 +237,9 @@ impl XdgShellHandler for State {
             shell.maximize_request_with_options(
                 &mapped,
                 &seat,
-                true, // animate
-                true, // client_driven
+                true,  // animate
+                true,  // client_driven
+                false, // fade_in_only
                 &self.common.event_loop_handle,
             )
         } else if let Some(pending) = shell

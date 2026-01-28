@@ -3692,7 +3692,9 @@ impl Shell {
         }
 
         if should_be_maximized {
-            self.maximize_request(&mapped, &seat, false, loop_handle);
+            // Fade-in animation for windows that start maximized
+            // Window appears at full size and fades in (no geometry transition)
+            self.maximize_request_fade_in(&mapped, &seat, loop_handle);
         }
 
         // If this is an embedded window, re-apply the geometry now that it's mapped
@@ -5029,7 +5031,7 @@ impl Shell {
             if window.is_fullscreen(true) {
                 return;
             }
-            self.maximize_request_with_options(window, seat, true, true, loop_handle);
+            self.maximize_request_with_options(window, seat, true, true, false, loop_handle);
         }
     }
 
@@ -5132,7 +5134,18 @@ impl Shell {
         animate: bool,
         loop_handle: &LoopHandle<'static, State>,
     ) {
-        self.maximize_request_with_options(mapped, seat, animate, false, loop_handle)
+        self.maximize_request_with_options(mapped, seat, animate, false, false, loop_handle)
+    }
+
+    /// Maximize with fade-in animation only (no geometry transition).
+    /// Used for windows that start maximized - they appear at full size and fade in.
+    pub fn maximize_request_fade_in(
+        &mut self,
+        mapped: &CosmicMapped,
+        seat: &Seat<State>,
+        loop_handle: &LoopHandle<'static, State>,
+    ) {
+        self.maximize_request_with_options(mapped, seat, true, false, true, loop_handle)
     }
 
     /// Maximize with optional client-driven animation.
@@ -5144,6 +5157,7 @@ impl Shell {
         seat: &Seat<State>,
         animate: bool,
         client_driven: bool,
+        fade_in_only: bool,
         loop_handle: &LoopHandle<'static, State>,
     ) {
         // Don't allow maximizing embedded windows
@@ -5192,6 +5206,8 @@ impl Shell {
             std::mem::drop(state);
             if client_driven && animate {
                 floating_layer.map_maximized_client_driven(mapped.clone(), original_geometry);
+            } else if fade_in_only && animate {
+                floating_layer.map_maximized_fade_in(mapped.clone(), original_geometry);
             } else {
                 floating_layer.map_maximized(mapped.clone(), original_geometry, animate);
             }

@@ -874,7 +874,17 @@ impl FloatingLayout {
         previous_geometry: Rectangle<i32, Local>,
         animate: bool,
     ) {
-        self.map_maximized_internal(mapped, previous_geometry, animate, false)
+        self.map_maximized_internal(mapped, previous_geometry, animate, false, false)
+    }
+
+    /// Map a window as maximized with fade-in animation only (no geometry transition).
+    /// Used for windows that start maximized - they appear at full size and fade in.
+    pub fn map_maximized_fade_in(
+        &mut self,
+        mapped: CosmicMapped,
+        previous_geometry: Rectangle<i32, Local>,
+    ) {
+        self.map_maximized_internal(mapped, previous_geometry, true, false, true)
     }
 
     /// Map a window as maximized with client-driven animation.
@@ -884,7 +894,7 @@ impl FloatingLayout {
         mapped: CosmicMapped,
         previous_geometry: Rectangle<i32, Local>,
     ) {
-        self.map_maximized_internal(mapped, previous_geometry, true, true)
+        self.map_maximized_internal(mapped, previous_geometry, true, true, false)
     }
 
     fn map_maximized_internal(
@@ -893,6 +903,7 @@ impl FloatingLayout {
         previous_geometry: Rectangle<i32, Local>,
         animate: bool,
         client_driven: bool,
+        fade_in_only: bool,
     ) {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
@@ -944,7 +955,22 @@ impl FloatingLayout {
             mapped.configure();
 
             if animate {
-                self.update_or_insert_tiled_animation(&mapped, previous_geometry, target_geometry);
+                if fade_in_only {
+                    // Pure fade-in: window starts at full size, just animate alpha
+                    self.animations.insert(
+                        mapped.clone(),
+                        Animation::MapFadeIn {
+                            start: Instant::now(),
+                            geometry: target_geometry,
+                        },
+                    );
+                } else {
+                    self.update_or_insert_tiled_animation(
+                        &mapped,
+                        previous_geometry,
+                        target_geometry,
+                    );
+                }
             } else {
                 self.animations.remove(&mapped);
             }
