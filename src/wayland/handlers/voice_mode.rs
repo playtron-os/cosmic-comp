@@ -354,8 +354,9 @@ impl VoiceModeHandler for State {
         // Request orb hide - will start shrinking animation
         shell.voice_orb_state.request_hide();
 
-        // Start the exit sequence (orb shrinks, then windows fade in)
-        shell.exit_voice_mode();
+        // Fade windows in immediately (skip WaitingForOrbShrink since orb was frozen/stationary)
+        // The orb will shrink while windows fade in simultaneously
+        shell.voice_mode_fade_in_immediately();
 
         // Update protocol state
         drop(shell);

@@ -345,7 +345,7 @@ const VOICE_MODE_ORB_GROW_DURATION: Duration = Duration::from_millis(400);
 const VOICE_MODE_ORB_SHRINK_DURATION: Duration = Duration::from_millis(300);
 
 /// Voice mode state for window fading when voice orb is active
-/// 
+///
 /// The animation sequence is:
 /// - Enter: None -> FadingIn -> WaitingForOrbGrow -> Active
 /// - Exit:  Active -> WaitingForOrbShrink -> FadingOut -> None
@@ -385,7 +385,9 @@ impl VoiceMode {
                 1.0 - t
             }
             // Windows stay fully faded during orb animations and active state
-            VoiceMode::WaitingForOrbGrow(_) | VoiceMode::Active | VoiceMode::WaitingForOrbShrink(_) => 0.0,
+            VoiceMode::WaitingForOrbGrow(_)
+            | VoiceMode::Active
+            | VoiceMode::WaitingForOrbShrink(_) => 0.0,
             VoiceMode::FadingOut(start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
                     / VOICE_MODE_ANIMATION_DURATION.as_millis() as f32;
@@ -422,7 +424,10 @@ impl VoiceMode {
 
     /// Returns true if the orb should be hidden (exiting voice mode)
     pub fn should_hide_orb(&self) -> bool {
-        matches!(self, VoiceMode::WaitingForOrbShrink(_) | VoiceMode::FadingOut(_) | VoiceMode::None)
+        matches!(
+            self,
+            VoiceMode::WaitingForOrbShrink(_) | VoiceMode::FadingOut(_) | VoiceMode::None
+        )
     }
 
     /// Start transition to voice mode (fade out windows, then orb grows)
@@ -2895,11 +2900,16 @@ impl Shell {
                         .wl_surface()
                         .map(|s| s.id().to_string())
                         .unwrap_or_default();
-                    self.voice_orb_state
-                        .start_attach_and_transition(window_geo, output_size, surface_id);
+                    self.voice_orb_state.start_attach_and_transition(
+                        window_geo,
+                        output_size,
+                        surface_id,
+                    );
                     // Fade windows back in (orb will burst then fade out)
                     self.voice_mode.fade_in_immediately();
-                    tracing::debug!("Voice orb: frozen -> attach_and_transition to newly focused window");
+                    tracing::debug!(
+                        "Voice orb: frozen -> attach_and_transition to newly focused window"
+                    );
                     return true;
                 }
             }
@@ -2918,18 +2928,19 @@ impl Shell {
     }
 
     /// Get the current window alpha for voice mode (1.0 = full, 0.0 = hidden)
-    /// When orb is attached to a window, windows fade back to visible
-    /// When orb is floating, windows fade out during voice mode
+    /// When orb is attached to a window, windows are visible (orb bursts behind window)
+    /// When orb is floating or frozen, windows are hidden
     pub fn voice_mode_window_alpha(&self) -> f32 {
         use crate::wayland::protocols::voice_mode::OrbState;
-        
-        // Windows stay visible when attached, frozen, transitioning, or shrinking from attached
-        if self.voice_orb_state.orb_state == OrbState::Attached 
-            || self.voice_orb_state.orb_state == OrbState::Frozen
+
+        // Windows stay visible only when attached or transitioning (orb behind window)
+        // or when shrinking from attached state (window was already visible)
+        // Frozen state keeps windows hidden like floating - orb is just paused
+        if self.voice_orb_state.orb_state == OrbState::Attached
             || self.voice_orb_state.orb_state == OrbState::Transitioning
-            || self.voice_orb_state.shrinking_from_attached 
+            || self.voice_orb_state.shrinking_from_attached
         {
-            // When attached/frozen/transitioning, windows should be visible
+            // When attached/transitioning, windows should be visible
             // But respect the animation state for smooth transitions
             match &self.voice_mode {
                 // Use animation alpha during FadingOut (fade-in animation)
@@ -2941,10 +2952,10 @@ impl Shell {
                 _ => 1.0,
             }
         } else {
-            // Floating or hidden - use normal voice mode alpha (fades windows out)
+            // Floating, frozen, or hidden - use normal voice mode alpha (fades windows out)
             // BUT: if orb is hidden and we're fading out (transitioning to None),
             // windows should be visible (alpha = 1.0) because we're exiting voice mode.
-            // The FadingOut animation is for when we're coming from floating mode
+            // The FadingOut animation is for when we're coming from floating/frozen mode
             // where windows were hidden and need to fade back in.
             // When attached mode exits quickly (scale was already 0), the window
             // was never hidden, so don't apply the fade animation.
@@ -2972,7 +2983,9 @@ impl Shell {
         // Check if we should start showing the orb (window fade completed)
         if self.voice_mode.should_show_orb() && self.voice_orb_state.has_pending_show() {
             // Choose show method based on orb state
-            if self.voice_orb_state.orb_state == crate::wayland::protocols::voice_mode::OrbState::Attached {
+            if self.voice_orb_state.orb_state
+                == crate::wayland::protocols::voice_mode::OrbState::Attached
+            {
                 self.voice_orb_state.show_attached();
             } else {
                 self.voice_orb_state.show_floating();
