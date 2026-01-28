@@ -967,8 +967,8 @@ impl HomeVisibilityContext {
     /// Returns (visible, alpha) where visible indicates if surface should be rendered
     ///
     /// The `layer` parameter specifies the layer shell layer (if this is a layer surface).
-    /// Voice mode alpha is NOT applied to Background or Top layer surfaces (wallpaper and panel
-    /// should remain visible during voice mode). All other surfaces fade during voice mode.
+    /// Voice mode alpha is NOT applied to Background layer surfaces (wallpaper should remain
+    /// visible during voice mode). All other surfaces (including Top layer like dock) fade.
     pub fn surface_visibility(
         &self,
         surface_id: u32,
@@ -976,8 +976,9 @@ impl HomeVisibilityContext {
     ) -> (bool, f32) {
         use smithay::wayland::shell::wlr_layer::Layer;
 
-        // Background and Top layer surfaces should NOT fade during voice mode
-        let skip_voice_mode_alpha = matches!(layer, Some(Layer::Background) | Some(Layer::Top));
+        // Only Background layer surfaces should NOT fade during voice mode
+        // Top layer (dock/panel) should fade like other surfaces
+        let skip_voice_mode_alpha = matches!(layer, Some(Layer::Background));
 
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible only when home_alpha > 0
