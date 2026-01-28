@@ -1087,7 +1087,8 @@ fn process_blur(
             });
 
             // Layer blur capture: capture all elements below this layer
-            let capture_filter = ElementFilter::LayerBlurCapture(layer_type);
+            let capture_filter =
+                ElementFilter::LayerBlurCapture(layer_type, grabbed_window_key.clone());
 
             // Capture scene elements for the layer (no cursor for blur capture)
             let capture_start = std::time::Instant::now();

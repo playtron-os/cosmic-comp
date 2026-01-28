@@ -32,7 +32,7 @@ use crate::{
 fn should_include_windows(element_filter: &ElementFilter) -> bool {
     match element_filter {
         ElementFilter::LayerShellOnly => false,
-        ElementFilter::LayerBlurCapture(layer) => {
+        ElementFilter::LayerBlurCapture(layer, _) => {
             // Only include windows for layers above windows (Top, Overlay)
             // Bottom and Background are below windows, so skip windows when capturing for them
             matches!(layer, Layer::Top | Layer::Overlay)
@@ -499,13 +499,13 @@ fn layer_surfaces<'a>(
     // For BlurCapture and LayerBlurCapture modes, use cached layer surfaces to prevent deadlocks
     let use_cache = matches!(
         element_filter,
-        ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_)
+        ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_, _)
     );
 
     // For LayerBlurCapture, skip layers at or above the requesting layer's z-level
     // e.g., Bottom layer blur should only capture Background, not Bottom/Top/Overlay
     let skip_layer = match element_filter {
-        ElementFilter::LayerBlurCapture(requesting_layer) => {
+        ElementFilter::LayerBlurCapture(requesting_layer, _) => {
             layer_z_level(layer) >= layer_z_level(*requesting_layer)
         }
         _ => false,

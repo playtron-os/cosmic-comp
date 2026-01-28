@@ -2953,10 +2953,11 @@ impl FloatingLayout {
 
         let mut elements = Vec::default();
 
-        // Extract blur capture context if present
-        let blur_ctx = match &element_filter {
-            ElementFilter::BlurCapture(ctx) => Some(ctx),
-            _ => None,
+        // Extract blur capture context if present, or grabbed window key from LayerBlurCapture
+        let (blur_ctx, layer_blur_grabbed_key) = match &element_filter {
+            ElementFilter::BlurCapture(ctx) => (Some(ctx), None),
+            ElementFilter::LayerBlurCapture(_, grabbed_key) => (None, grabbed_key.as_ref()),
+            _ => (None, None),
         };
 
         // Count total windows for z-index calculation
@@ -3051,6 +3052,18 @@ impl FloatingLayout {
                     z_idx = z_idx,
                     "Including window in blur capture"
                 );
+            }
+
+            // For LayerBlurCapture: skip grabbed/dragged window (they shouldn't appear in layer blur)
+            if let Some(grabbed_key) = layer_blur_grabbed_key {
+                if elem.key() == *grabbed_key {
+                    tracing::debug!(
+                        window_class = %elem.active_window().app_id(),
+                        z_idx = z_idx,
+                        "Skipping grabbed window during layer blur capture"
+                    );
+                    continue;
+                }
             }
 
             let anim_opt = self.animations.get(elem);

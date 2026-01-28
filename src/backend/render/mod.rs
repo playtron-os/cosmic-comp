@@ -1039,7 +1039,11 @@ pub enum ElementFilter {
     BlurCapture(BlurCaptureContext),
     /// Capture only elements below the specified layer (for layer shell blur)
     /// Background layer captures nothing, Bottom captures Background only, etc.
-    LayerBlurCapture(smithay::wayland::shell::wlr_layer::Layer),
+    /// The optional CosmicMappedKey is the grabbed/dragged window to exclude.
+    LayerBlurCapture(
+        smithay::wayland::shell::wlr_layer::Layer,
+        Option<CosmicMappedKey>,
+    ),
 }
 
 impl ElementFilter {
@@ -1240,11 +1244,11 @@ where
     // Skip move grab for blur capture modes where windows shouldn't be included
     let skip_move_grab = match element_filter {
         ElementFilter::BlurCapture(_) => true,
-        ElementFilter::LayerBlurCapture(layer) => {
+        ElementFilter::LayerBlurCapture(layer, _) => {
             use smithay::wayland::shell::wlr_layer::Layer;
-            // Skip move grab for layers below windows (Bottom, Background)
-            // Only include move grab for layers above windows (Top, Overlay)
-            !matches!(layer, Layer::Top | Layer::Overlay)
+            // For Top/Overlay layers: skip move grab (dragged window shouldn't appear in blur)
+            // For Bottom/Background layers: include move grab (layers are below windows)
+            matches!(layer, Layer::Top | Layer::Overlay)
         }
         _ => false,
     };
@@ -2355,7 +2359,8 @@ where
                 });
 
                 // Capture elements below this layer using LayerBlurCapture filter
-                let capture_filter = ElementFilter::LayerBlurCapture(layer_type);
+                let capture_filter =
+                    ElementFilter::LayerBlurCapture(layer_type, grabbed_window_key.clone());
                 let capture_start = std::time::Instant::now();
                 let layer_capture_elements: Vec<CosmicElement<R>> = workspace_elements(
                     gpu,
