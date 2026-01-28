@@ -335,6 +335,10 @@ impl MoveGrabState {
                             render_location,
                             self.window.geometry().size.to_f64().upscale(scale).to_i32_round(),
                         );
+
+                        // Compute window corner radius from theme: radius_s + 4 for values >= 4
+                        let radius_s = theme.radius_s()[0];
+                        let window_border_radius = if radius_s < 4.0 { radius_s } else { radius_s + 4.0 };
                         
                         // Create the voice orb element with current window geometry
                         VoiceOrbShader::element_with_window_override(
@@ -342,6 +346,7 @@ impl MoveGrabState {
                             orb_state,
                             output_geo,
                             Some(current_window_geo),
+                            Some(window_border_radius),
                         ).map(|e| CosmicMappedRenderElement::from(e))
                     } else {
                         None

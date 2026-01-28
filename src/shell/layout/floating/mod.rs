@@ -3157,14 +3157,13 @@ impl FloatingLayout {
 
                 // Compute window corner radius from theme: radius_s + 4 for values >= 4
                 let radius_s = theme.radius_s()[0];
-                let window_radius = (if radius_s < 4.0 {
+                let window_border_radius = if radius_s < 4.0 {
                     radius_s
                 } else {
                     radius_s + 4.0
-                })
-                .round() as u8;
+                };
                 let corner_radius =
-                    elem.blur_corner_radius(blur_geometry.size.as_logical(), window_radius);
+                    elem.blur_corner_radius(blur_geometry.size.as_logical(), window_border_radius.round() as u8);
 
                 // Get the output name for looking up cached blur texture
                 let output_name = output.name();
@@ -3197,6 +3196,7 @@ impl FloatingLayout {
                                 orb_state, 
                                 output_geo,
                                 Some(current_window_geo),
+                                Some(window_border_radius),
                             ) {
                                 // Insert orb element before blur (behind window content, in front of blur)
                                 let orb_geo = orb_element.geometry(output.current_scale().fractional_scale().into());
