@@ -284,7 +284,7 @@ impl VoiceModeState {
     /// Returns the serial used, or None if no active receiver
     pub fn send_will_stop(&self) -> Option<u32> {
         let active_surface = self.active_receiver_surface.lock().unwrap().clone();
-        
+
         if let Some(surface_weak) = active_surface {
             if let Ok(surface) = surface_weak.upgrade() {
                 if let Some(receiver) = self.find_receiver_by_surface(&surface) {
@@ -292,13 +292,13 @@ impl VoiceModeState {
                         let serial = self.serial_counter.fetch_add(1, Ordering::SeqCst);
                         info!(serial, "Sending will_stop to receiver");
                         resource.will_stop(serial);
-                        
+
                         // Store pending stop state
                         *self.pending_stop.lock().unwrap() = Some(PendingStop {
                             serial,
                             sent_at: Instant::now(),
                         });
-                        
+
                         return Some(serial);
                     }
                 }
@@ -463,6 +463,10 @@ pub trait VoiceModeHandler {
     /// Called when a new voice receiver is registered
     /// If orb is frozen, this can trigger transition to the new window
     fn on_voice_receiver_registered(&mut self, surface: &WlSurface);
+
+    /// Called when client sends dismiss request to hide the frozen orb
+    /// This happens when transcription completes with empty result or error
+    fn dismiss_orb(&mut self);
 }
 
 impl<D> GlobalDispatch<zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, (), D>
@@ -568,8 +572,10 @@ where
             zcosmic_voice_mode_v1::Request::AckStop { serial, freeze } => {
                 let freeze = freeze != 0;
                 info!(serial, freeze, "Client ack_stop received");
-                
-                if let Some(should_freeze) = state.voice_mode_state().handle_ack_stop(serial, freeze) {
+
+                if let Some(should_freeze) =
+                    state.voice_mode_state().handle_ack_stop(serial, freeze)
+                {
                     if should_freeze {
                         // Client wants to freeze the orb
                         state.freeze_orb();
@@ -577,6 +583,15 @@ where
                         // Client wants to proceed with hide
                         state.complete_deactivation();
                     }
+                }
+            }
+            zcosmic_voice_mode_v1::Request::Dismiss => {
+                info!("Client dismiss request received - hiding frozen orb");
+                // Only valid when orb is frozen
+                if state.voice_mode_state().orb_state() == OrbState::Frozen {
+                    state.dismiss_orb();
+                } else {
+                    debug!("Dismiss request ignored - orb not in frozen state");
                 }
             }
         }

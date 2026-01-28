@@ -124,6 +124,19 @@
       <arg name="freeze" type="uint" summary="1 to freeze orb, 0 to proceed with hide"/>
     </request>
 
+    <request name="dismiss">
+      <description summary="dismiss the frozen orb">
+        Request the compositor to hide the voice orb. This is used when
+        transcription processing completes but no new window will be opened
+        (e.g., empty transcription result or error).
+        
+        This request is only valid when the orb is in the frozen state
+        (after ack_stop with freeze=1). In other states, this request is ignored.
+        
+        The compositor will animate the orb hiding and clean up voice mode state.
+      </description>
+    </request>
+
     <event name="start">
       <description summary="voice input started">
         Sent when voice input has started and this surface should begin

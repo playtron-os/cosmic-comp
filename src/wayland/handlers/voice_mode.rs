@@ -345,6 +345,23 @@ impl VoiceModeHandler for State {
             info!("Could not find window for registered voice receiver surface");
         }
     }
+
+    fn dismiss_orb(&mut self) {
+        info!("Dismissing frozen orb (client requested hide)");
+
+        let mut shell = self.common.shell.write();
+
+        // Request orb hide - will start shrinking animation
+        shell.voice_orb_state.request_hide();
+
+        // Start the exit sequence (orb shrinks, then windows fade in)
+        shell.exit_voice_mode();
+
+        // Update protocol state
+        drop(shell);
+        self.common.voice_mode_state.set_orb_state(OrbState::Hidden);
+        self.common.voice_mode_state.reset_audio_level();
+    }
 }
 
 delegate_voice_mode!(State);

@@ -29,7 +29,8 @@ use crate::{
     backend::render::{
         BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
         BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
-        element::AsGlowRenderer, get_cached_blur_texture_for_window,
+        element::AsGlowRenderer,
+        get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
     },
     shell::{
@@ -95,6 +96,12 @@ enum Animation {
         /// Last size we sent in a configure (for change detection)
         last_sent_size: Size<i32, Local>,
     },
+    /// Fade-in animation for newly mapped maximized windows.
+    /// Window starts at 0% opacity and fades to 100% over ANIMATION_DURATION.
+    MapFadeIn {
+        start: Instant,
+        geometry: Rectangle<i32, Local>,
+    },
 }
 
 impl Animation {
@@ -104,6 +111,7 @@ impl Animation {
             Animation::Minimize { start, .. } => start,
             Animation::Unminimize { start, .. } => start,
             Animation::ClientDrivenResize { start, .. } => start,
+            Animation::MapFadeIn { start, .. } => start,
         }
     }
 
@@ -127,6 +135,14 @@ impl Animation {
                     / MINIMIZE_ANIMATION_DURATION.as_secs_f32();
                 (percentage * 2.0).min(1.0)
             }
+            Animation::MapFadeIn { start, .. } => {
+                let percentage = Instant::now()
+                    .duration_since(*start)
+                    .min(ANIMATION_DURATION)
+                    .as_secs_f32()
+                    / ANIMATION_DURATION.as_secs_f32();
+                ease(EaseInOutCubic, 0.0, 1.0, percentage)
+            }
         }
     }
 
@@ -144,6 +160,7 @@ impl Animation {
             Animation::ClientDrivenResize {
                 previous_geometry, ..
             } => previous_geometry,
+            Animation::MapFadeIn { geometry, .. } => geometry,
         }
     }
 
@@ -246,6 +263,11 @@ impl Animation {
                 // The actual render geometry should be calculated via
                 // render_geometry_for_buffer_size() based on the client's buffer.
                 return *previous_geometry;
+            }
+            Animation::MapFadeIn { geometry, .. } => {
+                // MapFadeIn doesn't change geometry, just alpha.
+                // Return the target geometry immediately.
+                return *geometry;
             }
             Animation::Tiled { .. } => {
                 let target_geometry = if let Some(target_rect) =
@@ -931,7 +953,9 @@ impl FloatingLayout {
         self.finalize_maximize_map(mapped, target_geometry);
     }
 
-    /// Update an existing animation's target or insert a new Tiled animation
+    /// Update an existing animation's target or insert a new animation.
+    /// If geometries are the same (window mapped directly to final size), use fade-in.
+    /// Otherwise use a Tiled animation for geometry transition.
     fn update_or_insert_tiled_animation(
         &mut self,
         mapped: &CosmicMapped,
@@ -950,16 +974,25 @@ impl FloatingLayout {
                 } => {
                     *tg = target_geometry;
                 }
-                Animation::Minimize { .. } | Animation::Tiled { .. } => {}
+                Animation::Minimize { .. }
+                | Animation::Tiled { .. }
+                | Animation::MapFadeIn { .. } => {}
             }
         } else {
-            self.animations.insert(
-                mapped.clone(),
+            // If geometries are the same, use fade-in animation instead of tiled
+            // This happens when a window is mapped directly to its maximized size
+            let animation = if previous_geometry == target_geometry {
+                Animation::MapFadeIn {
+                    start: Instant::now(),
+                    geometry: target_geometry,
+                }
+            } else {
                 Animation::Tiled {
                     start: Instant::now(),
                     previous_geometry,
-                },
-            );
+                }
+            };
+            self.animations.insert(mapped.clone(), animation);
         }
     }
 
@@ -3162,8 +3195,10 @@ impl FloatingLayout {
                 } else {
                     radius_s + 4.0
                 };
-                let corner_radius =
-                    elem.blur_corner_radius(blur_geometry.size.as_logical(), window_border_radius.round() as u8);
+                let corner_radius = elem.blur_corner_radius(
+                    blur_geometry.size.as_logical(),
+                    window_border_radius.round() as u8,
+                );
 
                 // Get the output name for looking up cached blur texture
                 let output_name = output.name();
@@ -3181,25 +3216,26 @@ impl FloatingLayout {
                             .active_window()
                             .wl_surface()
                             .map(|s| s.id().to_string());
-                        
+
                         if window_surface_id.as_deref() == Some(attached_surface_id) {
                             // Get output geometry for orb rendering
                             let output_geo = output.geometry().as_logical();
-                            
+
                             // Get the current window geometry for orb positioning
                             // Use the render geometry (which tracks the window during drag)
                             let current_window_geo = geometry.as_logical();
-                            
+
                             // Create the voice orb element with current window geometry
                             if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
-                                renderer, 
-                                orb_state, 
+                                renderer,
+                                orb_state,
                                 output_geo,
                                 Some(current_window_geo),
                                 Some(window_border_radius),
                             ) {
                                 // Insert orb element before blur (behind window content, in front of blur)
-                                let orb_geo = orb_element.geometry(output.current_scale().fractional_scale().into());
+                                let orb_geo = orb_element
+                                    .geometry(output.current_scale().fractional_scale().into());
                                 tracing::debug!(
                                     surface_id = %attached_surface_id,
                                     orb_geo_x = orb_geo.loc.x,
