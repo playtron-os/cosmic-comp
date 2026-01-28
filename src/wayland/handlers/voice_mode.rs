@@ -11,8 +11,8 @@ use crate::wayland::protocols::voice_mode::{
     OrbState, VoiceModeHandler, VoiceModeState, delegate_voice_mode,
 };
 use smithay::desktop::space::SpaceElement;
-use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::seat::WaylandFocus;
 use tracing::info;
 
@@ -28,26 +28,31 @@ impl VoiceModeHandler for State {
         self.common.home_visibility_state.set_home(false);
 
         let mut shell = self.common.shell.write();
-        
+
         // Also exit the shell's internal home mode so home_alpha goes to 0
         // This ensures home-only surfaces are hidden during voice mode
         shell.exit_home_visual_only();
-        
+
         let seat = shell.seats.last_active().clone();
-        
+
         // Find output under pointer for floating orb placement
         let pointer_pos = seat.get_pointer().map(|ptr| ptr.current_location());
         let output_under_pointer = pointer_pos.and_then(|pos| {
-            shell.outputs()
+            shell
+                .outputs()
                 .find(|out| out.geometry().to_f64().contains(pos.as_global()))
                 .cloned()
         });
-        
+
         // Use the output under the pointer if available, otherwise fall back to active_output
         let output = output_under_pointer.unwrap_or_else(|| seat.active_output());
 
         // Check if a window is currently being grabbed/dragged
-        let grabbed_window_info: Option<(WlSurface, smithay::utils::Rectangle<i32, smithay::utils::Logical>, String)> = seat
+        let grabbed_window_info: Option<(
+            WlSurface,
+            smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+            String,
+        )> = seat
             .user_data()
             .get::<SeatMoveGrabState>()
             .and_then(|grab_state| {
@@ -65,7 +70,9 @@ impl VoiceModeHandler for State {
 
         // Determine which receiver to use and get window geometry if attaching
         // Priority: grabbed window > focused window > default receiver
-        let (receiver_surface, window_geo) = if let Some((grabbed_surface, geo, surface_id)) = &grabbed_window_info {
+        let (receiver_surface, window_geo) = if let Some((grabbed_surface, geo, surface_id)) =
+            &grabbed_window_info
+        {
             // Check if grabbed window has a voice receiver
             if self
                 .common
@@ -73,7 +80,10 @@ impl VoiceModeHandler for State {
                 .has_receiver_for_surface(grabbed_surface)
             {
                 info!("Using grabbed window as voice receiver");
-                (Some(grabbed_surface.clone()), Some((geo.clone(), surface_id.clone())))
+                (
+                    Some(grabbed_surface.clone()),
+                    Some((geo.clone(), surface_id.clone())),
+                )
             } else if let Some(surface) = focused_surface {
                 // Fall back to focused surface check
                 if self
@@ -139,7 +149,11 @@ impl VoiceModeHandler for State {
                     // Check if it has a voice receiver
                     let active_window = mapped.active_window();
                     let wl_surface = active_window.wl_surface()?;
-                    if !self.common.voice_mode_state.has_receiver_for_surface(&wl_surface) {
+                    if !self
+                        .common
+                        .voice_mode_state
+                        .has_receiver_for_surface(&wl_surface)
+                    {
                         return None;
                     }
                     // Get geometry
@@ -161,12 +175,17 @@ impl VoiceModeHandler for State {
         let orb_state = if let Some(ref surface) = receiver_surface {
             if let Some((geo, surface_id)) = window_geo {
                 // Attach orb to the focused window
-                info!("Attaching orb to receiver surface at {:?} (surface_id: {})", geo, surface_id);
+                info!(
+                    "Attaching orb to receiver surface at {:?} (surface_id: {})",
+                    geo, surface_id
+                );
                 let output_geo = output.geometry();
                 // Request show attached - orb will burst directly in window
-                shell
-                    .voice_orb_state
-                    .request_show_attached(geo, output_geo.size.as_logical(), surface_id);
+                shell.voice_orb_state.request_show_attached(
+                    geo,
+                    output_geo.size.as_logical(),
+                    surface_id,
+                );
                 shell.enter_voice_mode();
 
                 // Send start to the window-specific receiver
@@ -193,7 +212,10 @@ impl VoiceModeHandler for State {
             }
         } else {
             // No focused receiver, use default receiver with floating orb
-            info!("Showing floating orb (using default receiver) on output: {}", output.name());
+            info!(
+                "Showing floating orb (using default receiver) on output: {}",
+                output.name()
+            );
             // Request orb show - will start after window fade completes
             shell.voice_orb_state.request_show_floating(output.name());
             shell.enter_voice_mode();
@@ -286,7 +308,7 @@ impl VoiceModeHandler for State {
         let shell = self.common.shell.read();
         let seat = shell.seats.last_active().clone();
         let output = seat.active_output();
-        
+
         // Search for the mapped element that contains this surface
         let workspace = shell.active_space(&output);
         let window_info = workspace.and_then(|ws| {
@@ -306,8 +328,7 @@ impl VoiceModeHandler for State {
         if let Some((window_geo, surface_id)) = window_info {
             info!(
                 ?window_geo,
-                surface_id,
-                "Transitioning frozen orb to newly registered receiver window"
+                surface_id, "Transitioning frozen orb to newly registered receiver window"
             );
 
             let mut shell = self.common.shell.write();
