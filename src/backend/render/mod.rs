@@ -965,7 +965,7 @@ impl HomeVisibilityContext {
 
     /// Get visibility and alpha for a surface based on home mode and voice mode
     /// Returns (visible, alpha) where visible indicates if surface should be rendered
-    /// 
+    ///
     /// The `layer` parameter specifies the layer shell layer (if this is a layer surface).
     /// Voice mode alpha is NOT applied to Background or Top layer surfaces (wallpaper and panel
     /// should remain visible during voice mode). All other surfaces fade during voice mode.
@@ -1268,7 +1268,7 @@ where
     {
         let shell_guard = shell.read();
         let output_geo = output.geometry().as_logical();
-        
+
         // Check if orb should render at window level (attached mode in burst phase)
         if shell_guard.voice_orb_state.should_render_at_window_level() {
             // Don't render globally - will be rendered at window level
@@ -1276,10 +1276,18 @@ where
         } else {
             // Render globally (floating or not in burst phase yet)
             attached_orb_state = None;
-            if let Some(orb_element) =
-                voice_orb::VoiceOrbShader::element(renderer, &shell_guard.voice_orb_state, output_geo)
-            {
-                elements.push(orb_element.into());
+
+            let target_output = shell_guard.voice_orb_state.target_output.as_deref();
+            let should_render_here = target_output.map(|t| t == output.name()).unwrap_or(false);
+
+            if should_render_here {
+                if let Some(orb_element) = voice_orb::VoiceOrbShader::element(
+                    renderer,
+                    &shell_guard.voice_orb_state,
+                    output_geo,
+                ) {
+                    elements.push(orb_element.into());
+                }
             }
         }
     }

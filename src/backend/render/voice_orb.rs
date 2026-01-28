@@ -597,6 +597,8 @@ pub struct VoiceOrbState {
     pub shrinking_from_attached: bool,
     /// True when attach_and_transition animation just completed (for state sync)
     pub transition_just_completed: bool,
+    /// Output name where floating orb should be rendered (set when voice mode starts)
+    pub target_output: Option<String>,
 }
 
 impl Default for VoiceOrbState {
@@ -619,17 +621,21 @@ impl Default for VoiceOrbState {
             contained_scale: 0.3,
             shrinking_from_attached: false,
             transition_just_completed: false,
+            target_output: None,
         }
     }
 }
 
 impl VoiceOrbState {
     /// Request showing the orb (will start after window fade completes)
-    pub fn request_show_floating(&mut self) {
+    /// `output_name` specifies which output the floating orb should render on
+    pub fn request_show_floating(&mut self, output_name: String) {
         self.pending_show = true;
         self.pending_hide = false;
         // Clear any shrink state from previous hide
         self.shrinking_from_attached = false;
+        // Set the target output for floating orb rendering
+        self.target_output = Some(output_name);
     }
 
     /// Request showing the orb attached to a window (will start after window fade completes)
@@ -879,6 +885,8 @@ impl VoiceOrbState {
                     self.attached_window = None;
                     self.attached_surface_id = None;
                     self.opacity = 1.0;
+                    // Clear target output so next show picks current cursor output
+                    self.target_output = None;
                 }
                 // If transitioning (attach_and_transition), complete -> hidden
                 if self.orb_state == OrbState::Transitioning {
@@ -889,6 +897,8 @@ impl VoiceOrbState {
                     self.attached_window = None;
                     self.attached_surface_id = None;
                     self.opacity = 1.0;
+                    // Clear target output so next show picks current cursor output
+                    self.target_output = None;
                     // Set flag for external state sync
                     self.transition_just_completed = true;
                 }
@@ -1197,12 +1207,12 @@ impl VoiceOrbShader {
             }
         } else {
             // Floating or darting: render as normal orb
+            // Note: Use output-local coordinates (0,0 origin) for element positioning
+            // The output_geo.loc is the global position but elements render in local space
             let orb_size = (base_orb_size * orb_state.scale) as i32;
             let render_size = (orb_size as f32 * 1.5) as i32; // Extra space for glow
-            let center_x =
-                (orb_state.position.x * output_geo.size.w as f32) as i32 + output_geo.loc.x;
-            let center_y =
-                (orb_state.position.y * output_geo.size.h as f32) as i32 + output_geo.loc.y;
+            let center_x = (orb_state.position.x * output_geo.size.w as f32) as i32;
+            let center_y = (orb_state.position.y * output_geo.size.h as f32) as i32;
 
             let geo = Rectangle::new(
                 Point::from((center_x - render_size / 2, center_y - render_size / 2)),

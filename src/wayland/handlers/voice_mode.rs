@@ -5,7 +5,7 @@
 use crate::shell::SeatExt;
 use crate::shell::grabs::SeatMoveGrabState;
 use crate::state::State;
-use crate::utils::geometry::{RectGlobalExt, RectLocalExt, SizeExt};
+use crate::utils::geometry::{PointExt, RectGlobalExt, RectLocalExt, SizeExt};
 use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::voice_mode::{
     OrbState, VoiceModeHandler, VoiceModeState, delegate_voice_mode,
@@ -34,7 +34,17 @@ impl VoiceModeHandler for State {
         shell.exit_home_visual_only();
         
         let seat = shell.seats.last_active().clone();
-        let output = seat.active_output();
+        
+        // Find output under pointer for floating orb placement
+        let pointer_pos = seat.get_pointer().map(|ptr| ptr.current_location());
+        let output_under_pointer = pointer_pos.and_then(|pos| {
+            shell.outputs()
+                .find(|out| out.geometry().to_f64().contains(pos.as_global()))
+                .cloned()
+        });
+        
+        // Use the output under the pointer if available, otherwise fall back to active_output
+        let output = output_under_pointer.unwrap_or_else(|| seat.active_output());
 
         // Check if a window is currently being grabbed/dragged
         let grabbed_window_info: Option<(WlSurface, smithay::utils::Rectangle<i32, smithay::utils::Logical>, String)> = seat
@@ -173,7 +183,7 @@ impl VoiceModeHandler for State {
                 OrbState::Attached
             } else {
                 // Shouldn't happen, but fall back to floating
-                shell.voice_orb_state.request_show_floating();
+                shell.voice_orb_state.request_show_floating(output.name());
                 shell.enter_voice_mode();
                 drop(shell);
                 self.common
@@ -183,9 +193,9 @@ impl VoiceModeHandler for State {
             }
         } else {
             // No focused receiver, use default receiver with floating orb
-            info!("Showing floating orb (using default receiver)");
+            info!("Showing floating orb (using default receiver) on output: {}", output.name());
             // Request orb show - will start after window fade completes
-            shell.voice_orb_state.request_show_floating();
+            shell.voice_orb_state.request_show_floating(output.name());
             shell.enter_voice_mode();
             drop(shell);
             self.common
