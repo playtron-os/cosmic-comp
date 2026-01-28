@@ -963,6 +963,15 @@ impl VoiceOrbState {
         }
     }
 
+    /// Check if currently running the BurstThenFadeOut animation
+    /// Used to delay layer shell fade-in until this animation completes
+    pub fn is_in_burst_then_fade_out(&self) -> bool {
+        matches!(
+            &self.animation,
+            Some(VoiceOrbAnimation::BurstThenFadeOut { .. })
+        )
+    }
+
     /// Update audio level for visualization (0-1000 -> 0.0-1.0)
     pub fn set_audio_level(&mut self, level: u32) {
         // Normalize to 0.0-1.0 range

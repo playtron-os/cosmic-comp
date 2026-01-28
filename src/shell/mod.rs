@@ -2973,6 +2973,19 @@ impl Shell {
         }
     }
 
+    /// Get the current layer shell alpha for voice mode (1.0 = full, 0.0 = hidden)
+    /// Layer shells stay hidden during the BurstThenFadeOut animation so windows fade in first,
+    /// then layer shells fade in after the burst completes.
+    pub fn voice_mode_layer_shell_alpha(&self) -> f32 {
+        // During BurstThenFadeOut animation, keep layer shells hidden until complete
+        if self.voice_orb_state.is_in_burst_then_fade_out() {
+            return 0.0;
+        }
+
+        // Otherwise, use the same alpha as windows
+        self.voice_mode_window_alpha()
+    }
+
     /// Check if voice mode animation is in progress
     pub fn voice_mode_animating(&self) -> bool {
         self.voice_mode.is_animating()

@@ -950,6 +950,9 @@ pub struct HomeVisibilityContext {
     pub home_alpha: f32,
     /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
     pub voice_mode_alpha: f32,
+    /// Current voice mode layer shell alpha (0 during burst transition, otherwise same as voice_mode_alpha)
+    /// Layer shells wait until burst animation completes so windows fade in first
+    pub voice_mode_layer_alpha: f32,
 }
 
 impl HomeVisibilityContext {
@@ -960,6 +963,7 @@ impl HomeVisibilityContext {
             hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
             home_alpha: shell.home_alpha(),
             voice_mode_alpha: shell.voice_mode_window_alpha(),
+            voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
         }
     }
 
@@ -972,6 +976,9 @@ impl HomeVisibilityContext {
     /// - Background layer surfaces (wallpaper should remain visible)
     /// - cosmic-panel (system panel should remain visible)
     /// All other surfaces (including Top layer like dock) fade during voice mode.
+    ///
+    /// Layer shell surfaces (layer is Some) use voice_mode_layer_alpha which stays at 0
+    /// during burst transition so windows fade in first.
     pub fn surface_visibility(
         &self,
         surface_id: u32,
@@ -987,13 +994,22 @@ impl HomeVisibilityContext {
         let is_cosmic_panel = namespace.is_some_and(|ns| ns == "cosmic-panel");
         let skip_voice_mode_alpha = is_background || is_cosmic_panel;
 
+        // Use layer shell alpha for layer surfaces (waits until burst completes)
+        // Use window alpha for regular windows (fades in during burst)
+        let is_layer_shell = layer.is_some();
+        let effective_voice_alpha = if is_layer_shell {
+            self.voice_mode_layer_alpha
+        } else {
+            self.voice_mode_alpha
+        };
+
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible only when home_alpha > 0
             if self.home_alpha > 0.0 {
                 let alpha = if skip_voice_mode_alpha {
                     self.home_alpha
                 } else {
-                    self.home_alpha * self.voice_mode_alpha
+                    self.home_alpha * effective_voice_alpha
                 };
                 if alpha > 0.0 {
                     (true, alpha)
@@ -1010,7 +1026,7 @@ impl HomeVisibilityContext {
                 let alpha = if skip_voice_mode_alpha {
                     base_alpha
                 } else {
-                    base_alpha * self.voice_mode_alpha
+                    base_alpha * effective_voice_alpha
                 };
                 if alpha > 0.0 {
                     (true, alpha)
@@ -1026,9 +1042,9 @@ impl HomeVisibilityContext {
             if skip_voice_mode_alpha {
                 // Background or Top layer surface - always visible, no voice mode fade
                 (true, 1.0)
-            } else if self.voice_mode_alpha > 0.0 {
+            } else if effective_voice_alpha > 0.0 {
                 // Apply voice mode alpha (fades during voice mode)
-                (true, self.voice_mode_alpha)
+                (true, effective_voice_alpha)
             } else {
                 (false, 0.0)
             }
