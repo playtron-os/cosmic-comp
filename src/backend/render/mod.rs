@@ -967,18 +967,25 @@ impl HomeVisibilityContext {
     /// Returns (visible, alpha) where visible indicates if surface should be rendered
     ///
     /// The `layer` parameter specifies the layer shell layer (if this is a layer surface).
-    /// Voice mode alpha is NOT applied to Background layer surfaces (wallpaper should remain
-    /// visible during voice mode). All other surfaces (including Top layer like dock) fade.
+    /// The `namespace` parameter is the app_id/namespace for layer surfaces.
+    /// Voice mode alpha is NOT applied to:
+    /// - Background layer surfaces (wallpaper should remain visible)
+    /// - cosmic-panel (system panel should remain visible)
+    /// All other surfaces (including Top layer like dock) fade during voice mode.
     pub fn surface_visibility(
         &self,
         surface_id: u32,
         layer: Option<smithay::wayland::shell::wlr_layer::Layer>,
+        namespace: Option<&str>,
     ) -> (bool, f32) {
         use smithay::wayland::shell::wlr_layer::Layer;
 
-        // Only Background layer surfaces should NOT fade during voice mode
-        // Top layer (dock/panel) should fade like other surfaces
-        let skip_voice_mode_alpha = matches!(layer, Some(Layer::Background));
+        // Skip voice mode alpha for:
+        // - Background layer surfaces (wallpaper like cosmic-bg)
+        // - cosmic-panel (system panel should remain visible during voice mode)
+        let is_background = matches!(layer, Some(Layer::Background));
+        let is_cosmic_panel = namespace.is_some_and(|ns| ns == "cosmic-panel");
+        let skip_voice_mode_alpha = is_background || is_cosmic_panel;
 
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible only when home_alpha > 0

@@ -540,7 +540,8 @@ fn layer_surfaces<'a>(
 
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id().protocol_id();
-        let (visible, alpha) = home_visibility.surface_visibility(surface_id, Some(layer));
+        let namespace = s.namespace();
+        let (visible, alpha) = home_visibility.surface_visibility(surface_id, Some(layer), Some(&namespace));
 
         // Only skip blur/shadow when the surface is actually animating (alpha < 1.0)
         // This allows hide_on_home surfaces to have blur when fully visible
