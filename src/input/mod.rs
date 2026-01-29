@@ -1614,7 +1614,9 @@ impl State {
             .key_event(modifiers, &handle, event.state());
 
         // Handle voice mode key bindings from configuration
-        // This enables push-to-talk: press to activate voice mode, release to deactivate
+        // This enables:
+        // - Tap (short press < 300ms): Focus chat input field
+        // - Hold (press and hold): Push-to-talk voice mode
         let voice_config = &self.common.config.voice_config;
         let matches = voice_config.matches_binding(handle.modified_sym(), modifiers);
         
@@ -1622,9 +1624,7 @@ impl State {
         // may have been released before the main key). Check if voice mode is active.
         let voice_mode_active = shell.is_voice_mode_active();
         let key_matches_without_mods = voice_config.matches_key_only(handle.modified_sym());
-        let is_voice_key_release = event.state() == KeyState::Released 
-            && voice_mode_active 
-            && key_matches_without_mods;
+        let is_voice_key_release = event.state() == KeyState::Released && key_matches_without_mods;
         
         if voice_config.enabled && (matches || is_voice_key_release) {
             // Check if voice mode is in a non-interruptible state (frozen, transitioning)
@@ -1645,19 +1645,36 @@ impl State {
             std::mem::drop(shell); // Release shell lock before protocol calls
 
             if event.state() == KeyState::Pressed {
+                // Record key press time for tap vs hold detection
+                self.common.voice_mode_state.record_key_press();
+                
                 // Activate voice mode via protocol
                 use crate::wayland::protocols::voice_mode::VoiceModeHandler;
                 let orb_state = self.activate_voice_mode(focused_surface.as_deref());
-                tracing::info!(?orb_state, "Voice mode activated via hotkey");
+                
+                // Mark that voice mode was activated if it actually started
+                if orb_state != crate::wayland::protocols::voice_mode::OrbState::Hidden {
+                    self.common.voice_mode_state.mark_voice_activated();
+                    tracing::info!(?orb_state, "Voice mode activated via hotkey (hold)");
+                }
 
                 // Suppress the key so release is also handled
                 seat.supressed_keys().add(&handle, None);
                 return FilterResult::Intercept(None);
             } else if event.state() == KeyState::Released {
-                // Deactivate voice mode via protocol
-                use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                self.deactivate_voice_mode();
-                tracing::info!("Voice mode deactivated via hotkey");
+                // Check if this was a tap (short press) vs hold
+                let was_tap = self.common.voice_mode_state.check_and_clear_tap();
+                
+                if was_tap && !voice_mode_active {
+                    // Tap detected: send focus_input event to default receiver
+                    tracing::info!("Voice key tap detected - sending focus_input");
+                    self.common.voice_mode_state.send_focus_input();
+                } else if voice_mode_active {
+                    // Hold release: deactivate voice mode via protocol
+                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                    self.deactivate_voice_mode();
+                    tracing::info!("Voice mode deactivated via hotkey (hold release)");
+                }
 
                 // Key was suppressed on press, intercept release too
                 return FilterResult::Intercept(None);

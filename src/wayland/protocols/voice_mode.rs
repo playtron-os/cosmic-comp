@@ -130,6 +130,11 @@ pub struct PendingStop {
 /// Timeout for will_stop ack (200ms - needs to account for event loop latency)
 pub const WILL_STOP_TIMEOUT_MS: u128 = 200;
 
+/// Threshold for tap vs hold detection (in milliseconds)
+/// If key is released before this duration, it's a tap (focus chat)
+/// If key is held longer, it's a hold (voice mode)
+pub const TAP_THRESHOLD_MS: u128 = 300;
+
 /// State for the voice mode manager protocol
 pub struct VoiceModeState {
     global: GlobalId,
@@ -145,6 +150,10 @@ pub struct VoiceModeState {
     serial_counter: AtomicU32,
     /// Pending stop state (waiting for ack_stop)
     pending_stop: Mutex<Option<PendingStop>>,
+    /// Time when the voice key was pressed (for tap vs hold detection)
+    key_press_time: Mutex<Option<Instant>>,
+    /// Whether voice mode was actually activated during this key press
+    voice_activated_this_press: Mutex<bool>,
 }
 
 impl std::fmt::Debug for VoiceModeState {
@@ -183,12 +192,47 @@ impl VoiceModeState {
             audio_level: Mutex::new(0),
             serial_counter: AtomicU32::new(1),
             pending_stop: Mutex::new(None),
+            key_press_time: Mutex::new(None),
+            voice_activated_this_press: Mutex::new(false),
         }
     }
 
     /// Get the global ID
     pub fn global_id(&self) -> GlobalId {
         self.global.clone()
+    }
+
+    /// Record the time when the voice key was pressed
+    pub fn record_key_press(&self) {
+        *self.key_press_time.lock().unwrap() = Some(Instant::now());
+        *self.voice_activated_this_press.lock().unwrap() = false;
+    }
+
+    /// Mark that voice mode was activated during this key press
+    pub fn mark_voice_activated(&self) {
+        *self.voice_activated_this_press.lock().unwrap() = true;
+    }
+
+    /// Check if the key release was a tap (short press without voice activation)
+    /// Returns true if it was a tap (should focus chat instead)
+    pub fn check_and_clear_tap(&self) -> bool {
+        let press_time = self.key_press_time.lock().unwrap().take();
+        let voice_activated = *self.voice_activated_this_press.lock().unwrap();
+        *self.voice_activated_this_press.lock().unwrap() = false;
+
+        if voice_activated {
+            // Voice was activated, not a tap
+            return false;
+        }
+
+        if let Some(pressed_at) = press_time {
+            let duration = Instant::now().duration_since(pressed_at).as_millis();
+            if duration < TAP_THRESHOLD_MS {
+                debug!("Voice key tap detected ({}ms < {}ms threshold)", duration, TAP_THRESHOLD_MS);
+                return true;
+            }
+        }
+        false
     }
 
     /// Check if voice mode is currently active
@@ -369,6 +413,21 @@ impl VoiceModeState {
             }
         }
         debug!("No active receiver to send cancel to");
+    }
+
+    /// Send focus_input event to the default receiver (for single tap)
+    /// This tells the client to focus its text input field
+    /// Returns true if the event was sent successfully
+    pub fn send_focus_input(&self) -> bool {
+        if let Some(receiver) = self.find_default_receiver() {
+            if let Ok(resource) = receiver.resource.upgrade() {
+                info!("Sending focus_input to default receiver");
+                resource.focus_input();
+                return true;
+            }
+        }
+        debug!("No default receiver to send focus_input to");
+        false
     }
 
     /// Send orb_attached event to a surface's receiver

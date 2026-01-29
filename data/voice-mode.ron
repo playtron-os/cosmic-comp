@@ -4,30 +4,26 @@
 # Location: ~/.config/cosmic/com.playtron.VoiceMode/v1/
 #
 # The configuration uses cosmic-config format (RON)
+#
+# Key behavior:
+# - Tap (< 300ms): Focus the chat input field
+# - Hold (>= 300ms): Push-to-talk voice mode
 
-# Primary voice key binding (for dedicated voice button)
-# Default: Shift+Super+F23
+# Primary voice key binding (Super + Copilot key)
+# Default: Super+F23 (Copilot key on Qualcomm laptops)
 primary_binding = (
     key: "F23",
     modifiers: (
         ctrl: false,
         alt: false,
-        shift: true,
+        shift: false,
         logo: true,
     )
 )
 
-# Fallback voice key binding (for development/testing)
-# Default: F6 with no modifiers
-fallback_binding = Some((
-    key: "F6",
-    modifiers: (
-        ctrl: false,
-        alt: false,
-        shift: false,
-        logo: false,
-    )
-))
+# Fallback voice key binding (optional, for development/testing)
+# Set to None to disable fallback
+fallback_binding = None
 
 # App ID for the chat window that the voice orb attaches to
 chat_app_id = "chat-ui"
