@@ -1617,7 +1617,16 @@ impl State {
         // This enables push-to-talk: press to activate voice mode, release to deactivate
         let voice_config = &self.common.config.voice_config;
         let matches = voice_config.matches_binding(handle.modified_sym(), modifiers);
-        if voice_config.enabled && matches {
+        
+        // For key release, also check if the key matches without modifiers (since modifiers 
+        // may have been released before the main key). Check if voice mode is active.
+        let voice_mode_active = shell.is_voice_mode_active();
+        let key_matches_without_mods = voice_config.matches_key_only(handle.modified_sym());
+        let is_voice_key_release = event.state() == KeyState::Released 
+            && voice_mode_active 
+            && key_matches_without_mods;
+        
+        if voice_config.enabled && (matches || is_voice_key_release) {
             // Check if voice mode is in a non-interruptible state (frozen, transitioning)
             // During these states, pressing the key again will cancel voice mode
             if self.common.voice_mode_state.orb_state().is_non_interruptible() {

@@ -130,6 +130,8 @@ pub struct BlurRenderState {
     pub scale: Scale<f64>,
     /// Whether blur has been applied this frame
     pub blur_applied: bool,
+    /// Whether texture allocation has permanently failed (don't retry)
+    pub allocation_failed: bool,
 }
 
 impl Default for BlurRenderState {
@@ -146,6 +148,7 @@ impl Default for BlurRenderState {
             texture_size: Size::from((0, 0)),
             scale: Scale::from(1.0),
             blur_applied: false,
+            allocation_failed: false,
         }
     }
 }
@@ -153,13 +156,21 @@ impl Default for BlurRenderState {
 impl BlurRenderState {
     /// Create or resize blur textures if needed.
     /// Creates full-size background texture and optionally downsampled blur textures.
+    /// 
+    /// Returns `Ok(true)` if textures are ready, `Ok(false)` if allocation was previously
+    /// marked as failed (skipped), or `Err` on new failure.
     pub fn ensure_textures<R: AsGlowRenderer + Offscreen<GlesTexture>>(
         &mut self,
         renderer: &mut R,
         format: Fourcc,
         size: Size<i32, Physical>,
         scale: Scale<f64>,
-    ) -> Result<(), R::Error> {
+    ) -> Result<bool, R::Error> {
+        // If allocation has previously failed permanently, skip without error
+        if self.allocation_failed {
+            return Ok(false);
+        }
+
         let downsample_enabled = blur_downsample_enabled();
 
         // Calculate blur size (downsampled if enabled, full size otherwise)
@@ -191,7 +202,7 @@ impl BlurRenderState {
         };
 
         if textures_valid {
-            return Ok(());
+            return Ok(true);
         }
 
         tracing::debug!(
@@ -281,7 +292,7 @@ impl BlurRenderState {
         self.texture_size = blur_size;
         self.scale = scale;
         self.blur_applied = false;
-        Ok(())
+        Ok(true)
     }
 
     /// Get background texture (previous frame content at full resolution)

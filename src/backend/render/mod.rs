@@ -2070,9 +2070,37 @@ where
         let format = target.format().unwrap_or(Fourcc::Abgr8888);
 
         // Ensure blur textures are allocated
-        blur_state
-            .ensure_textures(renderer, format, output_size, scale)
-            .map_err(RenderError::Rendering)?;
+        match blur_state.ensure_textures(renderer, format, output_size, scale) {
+            Ok(true) => {} // Textures ready, continue
+            Ok(false) => {
+                // Allocation was disabled, fall back to render without blur
+                return render_workspace(
+                    gpu,
+                    renderer,
+                    target,
+                    damage_tracker,
+                    age,
+                    None,
+                    shell,
+                    zoom_state.as_ref(),
+                    now,
+                    output,
+                    previous_workspace,
+                    workspace,
+                    cursor_mode,
+                    element_filter,
+                ).map(|(res, _elements)| res);
+            }
+            Err(err) => {
+                // Check if this is a pixel format error (permanent failure)
+                let err_str = format!("{:?}", err);
+                if err_str.contains("UnsupportedPixelFormat") && !blur_state.allocation_failed {
+                    tracing::warn!(?err, "Failed to allocate blur textures - disabling blur for this output");
+                    blur_state.allocation_failed = true;
+                }
+                return Err(RenderError::Rendering(err));
+            }
+        }
 
         // Get blur windows GROUPED by shared capture requirements
         // Consecutive blur windows (no non-blur windows between them) share a single capture

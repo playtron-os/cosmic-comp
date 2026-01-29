@@ -75,16 +75,14 @@ pub struct VoiceConfig {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            // Primary: Shift+Super+F23 (dedicated voice button)
             primary_binding: VoiceKeyBinding {
                 key: "F23".to_string(),
-                modifiers: VoiceModifiers::shift_logo(),
+                modifiers: VoiceModifiers {
+                    logo: true,
+                    ..Default::default()
+                },
             },
-            // Fallback: F6 (for development/keyboards without F23)
-            fallback_binding: Some(VoiceKeyBinding {
-                key: "F6".to_string(),
-                modifiers: VoiceModifiers::none(),
-            }),
+            fallback_binding: None,
             chat_app_id: "chat-ui".to_string(),
             enabled: true,
         }
@@ -258,7 +256,9 @@ impl VoiceConfig {
         tracing::trace!(
             binding_key = %binding.key,
             binding_mods = ?binding.modifiers,
-            ?keysym,
+            keysym_raw = keysym.raw(),
+            keysym_is_f23 = (keysym == Keysym::F23),
+            keysym_is_touchpad_off = (keysym.raw() == 0x1008ffb1),
             ?modifiers,
             "key_matches checking"
         );
@@ -285,14 +285,69 @@ impl VoiceConfig {
             "F20" => keysym == Keysym::F20,
             "F21" => keysym == Keysym::F21,
             "F22" => keysym == Keysym::F22,
-            "F23" => keysym == Keysym::F23,
+            "F23" => keysym == Keysym::F23 || keysym.raw() == 0x1008ffb1, // Also match XF86TouchpadOff (some layouts map F23 to this)
             "F24" => keysym == Keysym::F24,
+            // XF86 multimedia keys - Copilot key on some laptops reports as XF86TouchpadOff via xkbcommon
+            "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1, // XF86XK_TouchpadOff = 269025201
             _ => false,
         };
 
         let mods_match = binding.modifiers.matches(modifiers);
         tracing::trace!(key_matches, mods_match, "key_matches result");
         key_matches && mods_match
+    }
+
+    /// Check if a keysym matches any configured voice binding key (ignoring modifiers)
+    /// This is used to detect key release when modifiers may have already been released
+    pub fn matches_key_only(&self, keysym: Keysym) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        // Check primary binding key
+        if self.keysym_matches_key(&self.primary_binding.key, keysym) {
+            return true;
+        }
+
+        // Check fallback binding key
+        if let Some(ref fallback) = self.fallback_binding {
+            if self.keysym_matches_key(&fallback.key, keysym) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn keysym_matches_key(&self, key: &str, keysym: Keysym) -> bool {
+        match key {
+            "F1" => keysym == Keysym::F1,
+            "F2" => keysym == Keysym::F2,
+            "F3" => keysym == Keysym::F3,
+            "F4" => keysym == Keysym::F4,
+            "F5" => keysym == Keysym::F5,
+            "F6" => keysym == Keysym::F6,
+            "F7" => keysym == Keysym::F7,
+            "F8" => keysym == Keysym::F8,
+            "F9" => keysym == Keysym::F9,
+            "F10" => keysym == Keysym::F10,
+            "F11" => keysym == Keysym::F11,
+            "F12" => keysym == Keysym::F12,
+            "F13" => keysym == Keysym::F13,
+            "F14" => keysym == Keysym::F14,
+            "F15" => keysym == Keysym::F15,
+            "F16" => keysym == Keysym::F16,
+            "F17" => keysym == Keysym::F17,
+            "F18" => keysym == Keysym::F18,
+            "F19" => keysym == Keysym::F19,
+            "F20" => keysym == Keysym::F20,
+            "F21" => keysym == Keysym::F21,
+            "F22" => keysym == Keysym::F22,
+            "F23" => keysym == Keysym::F23 || keysym.raw() == 0x1008ffb1,
+            "F24" => keysym == Keysym::F24,
+            "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1,
+            _ => false,
+        }
     }
 }
 
@@ -305,9 +360,9 @@ mod tests {
         let config = VoiceConfig::default();
         assert!(config.enabled);
         assert_eq!(config.primary_binding.key, "F23");
-        assert!(config.primary_binding.modifiers.shift);
+        assert!(!config.primary_binding.modifiers.shift);
         assert!(config.primary_binding.modifiers.logo);
-        assert!(config.fallback_binding.is_some());
+        assert!(config.fallback_binding.is_none());
     }
 
     #[test]

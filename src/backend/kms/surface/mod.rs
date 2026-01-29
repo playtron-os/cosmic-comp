@@ -740,9 +740,24 @@ fn process_blur(
     let scale = Scale::from(output_ref.current_scale().fractional_scale());
 
     // Ensure blur textures are allocated
-    if let Err(err) = blur_state.ensure_textures(renderer, format, output_size, scale) {
-        tracing::warn!(?err, "Failed to allocate blur textures");
-        return;
+    match blur_state.ensure_textures(renderer, format, output_size, scale) {
+        Ok(true) => {} // Textures ready, continue
+        Ok(false) => return, // Allocation was disabled, skip blur
+        Err(err) => {
+            // Check if this is a pixel format error (permanent failure)
+            let err_str = format!("{:?}", err);
+            if err_str.contains("UnsupportedPixelFormat") {
+                // Mark as permanently failed to avoid retry spam
+                if !blur_state.allocation_failed {
+                    tracing::warn!(?err, "Failed to allocate blur textures - disabling blur for this output");
+                    blur_state.allocation_failed = true;
+                }
+            } else if !blur_state.allocation_failed {
+                // Only log other errors once
+                tracing::warn!(?err, "Failed to allocate blur textures");
+            }
+            return;
+        }
     }
 
     let total_windows: usize = blur_groups.iter().map(|g| g.windows.len()).sum();
