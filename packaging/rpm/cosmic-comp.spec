@@ -40,11 +40,21 @@ install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/keybindings.ron" "%{buildroot
 install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/tiling-exceptions.ron" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
 install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/LICENSE" "%{buildroot}%{_datadir}/licenses/cosmic-comp/LICENSE"
 
+# Voice mode configuration (individual key files for cosmic-config)
+install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/voice-mode/primary_binding" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/primary_binding"
+install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/voice-mode/fallback_binding" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/fallback_binding"
+install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/voice-mode/chat_app_id" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
+install -Dm0644 "%{getenv:COSMIC_COMP_SOURCE}/data/voice-mode/enabled" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled"
+
 %files
 %license %{_datadir}/licenses/cosmic-comp/LICENSE
 %{_bindir}/cosmic-comp
 %{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
 %{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
+%{_datadir}/cosmic/com.playtron.VoiceMode/v1/primary_binding
+%{_datadir}/cosmic/com.playtron.VoiceMode/v1/fallback_binding
+%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id
+%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled
 
 %changelog
 * Thu Jan 09 2026 Playtron <dev@playtron.one> - 1.0.0-1

@@ -211,7 +211,8 @@ impl VoiceConfig {
     /// Check if a keysym and modifiers match any configured voice binding
     pub fn matches_binding(&self, keysym: Keysym, modifiers: &ModifiersState) -> bool {
         tracing::trace!(
-            ?keysym,
+            keysym_raw = keysym.raw(),
+            keysym_name = ?keysym,
             ?modifiers,
             enabled = self.enabled,
             primary_key = %self.primary_binding.key,
@@ -253,12 +254,18 @@ impl VoiceConfig {
         keysym: Keysym,
         modifiers: &ModifiersState,
     ) -> bool {
+        let is_super_l = keysym == Keysym::Super_L;
+        let is_super_r = keysym == Keysym::Super_R;
         tracing::trace!(
             binding_key = %binding.key,
             binding_mods = ?binding.modifiers,
             keysym_raw = keysym.raw(),
             keysym_is_f23 = (keysym == Keysym::F23),
             keysym_is_touchpad_off = (keysym.raw() == 0x1008ffb1),
+            is_super_l,
+            is_super_r,
+            super_l_raw = Keysym::Super_L.raw(),
+            super_r_raw = Keysym::Super_R.raw(),
             ?modifiers,
             "key_matches checking"
         );
@@ -289,6 +296,9 @@ impl VoiceConfig {
             "F24" => keysym == Keysym::F24,
             // XF86 multimedia keys - Copilot key on some laptops reports as XF86TouchpadOff via xkbcommon
             "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1, // XF86XK_TouchpadOff = 269025201
+            // Super keys (for development/testing)
+            "Super_L" => keysym == Keysym::Super_L || keysym == Keysym::Super_R,
+            "Super_R" => keysym == Keysym::Super_L || keysym == Keysym::Super_R,
             _ => false,
         };
 
@@ -346,6 +356,8 @@ impl VoiceConfig {
             "F23" => keysym == Keysym::F23 || keysym.raw() == 0x1008ffb1,
             "F24" => keysym == Keysym::F24,
             "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1,
+            "Super_L" => keysym == Keysym::Super_L || keysym == Keysym::Super_R,
+            "Super_R" => keysym == Keysym::Super_L || keysym == Keysym::Super_R,
             _ => false,
         }
     }

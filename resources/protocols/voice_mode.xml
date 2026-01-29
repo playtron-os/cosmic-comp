@@ -191,5 +191,15 @@
       </description>
       <arg name="serial" type="uint" summary="serial for ack_stop"/>
     </event>
+
+    <event name="focus_input">
+      <description summary="focus the input field">
+        Sent when the user tapped the voice key (short press without holding).
+        The client should focus its text input field so the user can start typing.
+        
+        This event is only sent to the default receiver (typically the home app).
+        If the surface is not currently visible, the client may bring it to focus first.
+      </description>
+    </event>
   </interface>
 </protocol>

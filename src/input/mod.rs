@@ -60,7 +60,10 @@ use smithay::{
     output::Output,
     reexports::{
         input::Device as InputDevice,
-        wayland_server::{Resource, protocol::wl_shm::Format as ShmFormat},
+        wayland_server::{
+            Resource,
+            protocol::{wl_shm::Format as ShmFormat, wl_surface::WlSurface},
+        },
     },
     utils::{Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
@@ -1614,22 +1617,45 @@ impl State {
             .key_event(modifiers, &handle, event.state());
 
         // Handle voice mode key bindings from configuration
-        // This enables push-to-talk: press to activate voice mode, release to deactivate
+        // This enables:
+        // - Tap (short press < 300ms): Focus chat input field
+        // - Hold (press and hold): Push-to-talk voice mode
         let voice_config = &self.common.config.voice_config;
-        let matches = voice_config.matches_binding(handle.modified_sym(), modifiers);
-        
-        // For key release, also check if the key matches without modifiers (since modifiers 
+        let keysym = handle.modified_sym();
+        tracing::debug!(
+            keysym_raw = keysym.raw(),
+            keysym_name = ?keysym,
+            key_code = u32::from(event.key_code()),
+            key_state = ?event.state(),
+            voice_enabled = voice_config.enabled,
+            "Voice key check - incoming key event"
+        );
+        let matches = voice_config.matches_binding(keysym, modifiers);
+
+        // For key release, also check if the key matches without modifiers (since modifiers
         // may have been released before the main key). Check if voice mode is active.
         let voice_mode_active = shell.is_voice_mode_active();
-        let key_matches_without_mods = voice_config.matches_key_only(handle.modified_sym());
-        let is_voice_key_release = event.state() == KeyState::Released 
-            && voice_mode_active 
-            && key_matches_without_mods;
-        
+        let key_matches_without_mods = voice_config.matches_key_only(keysym);
+        let is_voice_key_release = event.state() == KeyState::Released && key_matches_without_mods;
+
+        tracing::trace!(
+            matches,
+            key_matches_without_mods,
+            is_voice_key_release,
+            voice_mode_active,
+            "Voice key check - binding match results"
+        );
+
         if voice_config.enabled && (matches || is_voice_key_release) {
+            tracing::debug!("Voice key binding matched! Processing...");
             // Check if voice mode is in a non-interruptible state (frozen, transitioning)
             // During these states, pressing the key again will cancel voice mode
-            if self.common.voice_mode_state.orb_state().is_non_interruptible() {
+            if self
+                .common
+                .voice_mode_state
+                .orb_state()
+                .is_non_interruptible()
+            {
                 if event.state() == KeyState::Pressed {
                     tracing::debug!("Voice mode interrupted during freeze/transition - cancelling");
                     std::mem::drop(shell); // Release shell lock before protocol calls
@@ -1639,25 +1665,113 @@ impl State {
                 return FilterResult::Intercept(None);
             }
 
-            // Get the focused surface to determine which receiver to use
-            let focused_surface = current_focus.as_ref().and_then(|f| f.wl_surface());
-
             std::mem::drop(shell); // Release shell lock before protocol calls
 
             if event.state() == KeyState::Pressed {
-                // Activate voice mode via protocol
-                use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                let orb_state = self.activate_voice_mode(focused_surface.as_deref());
-                tracing::info!(?orb_state, "Voice mode activated via hotkey");
+                // Record key press time for tap vs hold detection
+                // Do NOT activate voice mode immediately - wait to see if it's a tap or hold
+                self.common.voice_mode_state.record_key_press();
+                tracing::debug!("Voice key pressed - recording time for tap detection");
+
+                // Start a timer to activate voice mode after TAP_THRESHOLD_MS
+                // If the key is released before the timer fires, it's a tap
+                use crate::wayland::protocols::voice_mode::TAP_THRESHOLD_MS;
+                let delay =
+                    Timer::from_duration(std::time::Duration::from_millis(TAP_THRESHOLD_MS as u64));
+                let seat_name = seat.name().to_string();
+
+                let _ = self
+                    .common
+                    .event_loop_handle
+                    .insert_source(delay, move |_, _, state| {
+                        // Check if key is still being held (press time still recorded)
+                        if state.common.voice_mode_state.should_activate_voice() {
+                            tracing::debug!(
+                                "Voice key held past threshold - activating voice mode"
+                            );
+
+                            // Re-fetch the current focused surface at activation time
+                            let focused_surface: Option<WlSurface> = state
+                                .common
+                                .shell
+                                .read()
+                                .seats
+                                .iter()
+                                .find(|s| s.name() == seat_name)
+                                .and_then(|seat| seat.get_keyboard())
+                                .and_then(|kb| kb.current_focus())
+                                .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
+
+                            use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                            let orb_state = state.activate_voice_mode(focused_surface.as_ref());
+                            if orb_state != crate::wayland::protocols::voice_mode::OrbState::Hidden
+                            {
+                                state.common.voice_mode_state.mark_voice_activated();
+                                tracing::debug!(
+                                    ?orb_state,
+                                    "Voice mode activated via timer (hold)"
+                                );
+                            }
+                        }
+                        TimeoutAction::Drop
+                    });
 
                 // Suppress the key so release is also handled
                 seat.supressed_keys().add(&handle, None);
                 return FilterResult::Intercept(None);
             } else if event.state() == KeyState::Released {
-                // Deactivate voice mode via protocol
-                use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                self.deactivate_voice_mode();
-                tracing::info!("Voice mode deactivated via hotkey");
+                // Check if this was a tap (short press < 300ms) vs hold
+                let was_tap = self.common.voice_mode_state.check_tap_without_clearing();
+
+                if was_tap {
+                    // Tap detected: send focus_input event to focused surface or default receiver
+                    // Don't activate voice mode at all
+                    tracing::debug!(
+                        "Voice key tap detected - sending focus_input (not activating voice)"
+                    );
+                    self.common.voice_mode_state.clear_key_press();
+
+                    // Get the currently focused surface to send focus_input to it
+                    // If it has a receiver, it gets the event; otherwise fall back to last focused or default
+                    let focused_surface: Option<WlSurface> = current_focus
+                        .as_ref()
+                        .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
+
+                    // send_focus_input_to_surface_or_default returns the surface that received the event
+                    // (if it was a non-default receiver), so we can activate that window
+                    if let Some(surface_to_activate) = self
+                        .common
+                        .voice_mode_state
+                        .send_focus_input_to_surface_or_default(focused_surface.as_ref())
+                    {
+                        // Activate the window (unminimize, switch workspace, raise, focus)
+                        use crate::wayland::handlers::xdg_activation::ActivationContext;
+                        let output = seat.active_output();
+                        let workspace_handle = {
+                            let shell = self.common.shell.read();
+                            shell.active_space(&output).unwrap().handle
+                        };
+                        self.activate_surface(
+                            &surface_to_activate,
+                            Some((
+                                crate::shell::ActivationKey::Wayland(surface_to_activate.clone()),
+                                ActivationContext::Workspace(workspace_handle),
+                            )),
+                        );
+                        tracing::debug!("Activated window for voice focus_input");
+                    }
+                } else if voice_mode_active {
+                    // Voice mode is active (was held long enough) - now deactivate
+                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                    self.common.voice_mode_state.clear_key_press();
+                    self.deactivate_voice_mode();
+                    tracing::debug!("Voice mode deactivated via hotkey (hold release)");
+                } else {
+                    // Hold detected but voice mode wasn't activated yet
+                    // This can happen if timer hasn't fired yet - just clear state
+                    tracing::debug!("Voice key released before timer fired");
+                    self.common.voice_mode_state.clear_key_press();
+                }
 
                 // Key was suppressed on press, intercept release too
                 return FilterResult::Intercept(None);

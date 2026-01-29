@@ -130,6 +130,11 @@ pub struct PendingStop {
 /// Timeout for will_stop ack (200ms - needs to account for event loop latency)
 pub const WILL_STOP_TIMEOUT_MS: u128 = 200;
 
+/// Threshold for tap vs hold detection (in milliseconds)
+/// If key is released before this duration, it's a tap (focus chat)
+/// If key is held longer, it's a hold (voice mode)
+pub const TAP_THRESHOLD_MS: u128 = 300;
+
 /// State for the voice mode manager protocol
 pub struct VoiceModeState {
     global: GlobalId,
@@ -145,6 +150,13 @@ pub struct VoiceModeState {
     serial_counter: AtomicU32,
     /// Pending stop state (waiting for ack_stop)
     pending_stop: Mutex<Option<PendingStop>>,
+    /// Time when the voice key was pressed (for tap vs hold detection)
+    key_press_time: Mutex<Option<Instant>>,
+    /// Whether voice mode was actually activated during this key press
+    voice_activated_this_press: Mutex<bool>,
+    /// Last focused non-default receiver surface (for tap-to-focus when unfocused)
+    /// This is updated whenever a non-default receiver's surface gains keyboard focus
+    last_focused_receiver: Mutex<Option<Weak<WlSurface>>>,
 }
 
 impl std::fmt::Debug for VoiceModeState {
@@ -183,12 +195,88 @@ impl VoiceModeState {
             audio_level: Mutex::new(0),
             serial_counter: AtomicU32::new(1),
             pending_stop: Mutex::new(None),
+            key_press_time: Mutex::new(None),
+            voice_activated_this_press: Mutex::new(false),
+            last_focused_receiver: Mutex::new(None),
         }
     }
 
     /// Get the global ID
     pub fn global_id(&self) -> GlobalId {
         self.global.clone()
+    }
+
+    /// Record the time when the voice key was pressed
+    pub fn record_key_press(&self) {
+        *self.key_press_time.lock().unwrap() = Some(Instant::now());
+        *self.voice_activated_this_press.lock().unwrap() = false;
+    }
+
+    /// Mark that voice mode was activated during this key press
+    pub fn mark_voice_activated(&self) {
+        *self.voice_activated_this_press.lock().unwrap() = true;
+    }
+
+    /// Check if the key release was a tap (short press without voice activation)
+    /// Returns true if it was a tap (should focus chat instead)
+    pub fn check_and_clear_tap(&self) -> bool {
+        let press_time = self.key_press_time.lock().unwrap().take();
+        let voice_activated = *self.voice_activated_this_press.lock().unwrap();
+        *self.voice_activated_this_press.lock().unwrap() = false;
+
+        if voice_activated {
+            // Voice was activated, not a tap
+            return false;
+        }
+
+        if let Some(pressed_at) = press_time {
+            let duration = Instant::now().duration_since(pressed_at).as_millis();
+            if duration < TAP_THRESHOLD_MS {
+                debug!(
+                    "Voice key tap detected ({}ms < {}ms threshold)",
+                    duration, TAP_THRESHOLD_MS
+                );
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if this is a tap without clearing the press time
+    /// Returns true if key was pressed and released within TAP_THRESHOLD_MS
+    pub fn check_tap_without_clearing(&self) -> bool {
+        let press_time = self.key_press_time.lock().unwrap();
+        if let Some(pressed_at) = *press_time {
+            let duration = Instant::now().duration_since(pressed_at).as_millis();
+            let is_tap = duration < TAP_THRESHOLD_MS;
+            debug!(
+                duration_ms = duration,
+                threshold_ms = TAP_THRESHOLD_MS,
+                is_tap,
+                "check_tap_without_clearing"
+            );
+            is_tap
+        } else {
+            false
+        }
+    }
+
+    /// Clear the recorded key press time
+    pub fn clear_key_press(&self) {
+        *self.key_press_time.lock().unwrap() = None;
+        *self.voice_activated_this_press.lock().unwrap() = false;
+    }
+
+    /// Check if enough time has passed since key press to activate voice mode
+    /// Returns true if key has been held for >= TAP_THRESHOLD_MS
+    pub fn should_activate_voice(&self) -> bool {
+        let press_time = self.key_press_time.lock().unwrap();
+        if let Some(pressed_at) = *press_time {
+            let duration = Instant::now().duration_since(pressed_at).as_millis();
+            duration >= TAP_THRESHOLD_MS
+        } else {
+            false
+        }
     }
 
     /// Check if voice mode is currently active
@@ -369,6 +457,89 @@ impl VoiceModeState {
             }
         }
         debug!("No active receiver to send cancel to");
+    }
+
+    /// Send focus_input event to the default receiver (for single tap)
+    /// This tells the client to focus its text input field
+    /// Returns true if the event was sent successfully
+    pub fn send_focus_input(&self) -> bool {
+        if let Some(receiver) = self.find_default_receiver() {
+            if let Ok(resource) = receiver.resource.upgrade() {
+                info!("Sending focus_input to default receiver");
+                resource.focus_input();
+                return true;
+            }
+        }
+        debug!("No default receiver to send focus_input to");
+        false
+    }
+
+    /// Send focus_input event to a specific surface's receiver, or fall back to last focused, or default
+    /// This is used for tap detection - priority order:
+    /// 1. If a non-default registered window is currently focused, send to it
+    /// 2. If there's a last-focused non-default receiver (e.g., chat-ui was unfocused), send to it
+    /// 3. Fall back to the default receiver (typically humainos-home)
+    /// Returns the surface that received the event (if any), for activation purposes
+    pub fn send_focus_input_to_surface_or_default(
+        &self,
+        surface: Option<&WlSurface>,
+    ) -> Option<WlSurface> {
+        // First try the focused surface if it has a non-default receiver
+        if let Some(surface) = surface {
+            if let Some(receiver) = self.find_receiver_by_surface(surface) {
+                if !receiver.is_default {
+                    if let Ok(resource) = receiver.resource.upgrade() {
+                        info!("Sending focus_input to focused surface's receiver");
+                        resource.focus_input();
+                        return Some(surface.clone());
+                    }
+                }
+            }
+        }
+
+        // Try the last focused non-default receiver
+        if let Some(last_surface) = self.get_last_focused_receiver() {
+            if let Some(receiver) = self.find_receiver_by_surface(&last_surface) {
+                if !receiver.is_default {
+                    if let Ok(resource) = receiver.resource.upgrade() {
+                        info!("Sending focus_input to last-focused receiver");
+                        resource.focus_input();
+                        return Some(last_surface);
+                    }
+                }
+            }
+        }
+
+        // Fall back to default receiver
+        if self.send_focus_input() {
+            // Return None for default receiver - no need to activate humainos-home
+            None
+        } else {
+            None
+        }
+    }
+
+    /// Update the last focused non-default receiver when focus changes
+    /// Call this when a surface with a voice receiver gains keyboard focus
+    pub fn update_last_focused_receiver(&self, surface: Option<&WlSurface>) {
+        if let Some(surface) = surface {
+            if let Some(receiver) = self.find_receiver_by_surface(surface) {
+                // Only track non-default receivers
+                if !receiver.is_default {
+                    info!("Updating last focused voice receiver");
+                    *self.last_focused_receiver.lock().unwrap() = Some(surface.downgrade());
+                }
+            }
+        }
+    }
+
+    /// Get the last focused non-default receiver surface
+    pub fn get_last_focused_receiver(&self) -> Option<WlSurface> {
+        self.last_focused_receiver
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|w| w.upgrade().ok())
     }
 
     /// Send orb_attached event to a surface's receiver
