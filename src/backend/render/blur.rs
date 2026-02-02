@@ -156,7 +156,7 @@ impl Default for BlurRenderState {
 impl BlurRenderState {
     /// Create or resize blur textures if needed.
     /// Creates full-size background texture and optionally downsampled blur textures.
-    /// 
+    ///
     /// Returns `Ok(true)` if textures are ready, `Ok(false)` if allocation was previously
     /// marked as failed (skipped), or `Err` on new failure.
     pub fn ensure_textures<R: AsGlowRenderer + Offscreen<GlesTexture>>(
@@ -686,6 +686,96 @@ pub fn should_throttle_blur(output_name: &str, capture_z_threshold: usize) -> bo
     } else {
         false
     }
+}
+
+/// Copy a blur texture to a new texture for caching.
+///
+/// This is necessary because multiple blur groups share the same ping/pong textures.
+/// After blurring group 0, we must copy the result to a dedicated texture before
+/// processing group 1, otherwise group 1's blur will overwrite group 0's cached texture.
+///
+/// Returns a new `TextureRenderBuffer` containing a copy of the source texture.
+pub fn copy_blur_texture_for_cache<R>(
+    renderer: &mut R,
+    source: &TextureRenderBuffer<GlesTexture>,
+    size: Size<i32, Physical>,
+) -> Result<TextureRenderBuffer<GlesTexture>, GlesError>
+where
+    R: Renderer + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    use smithay::backend::renderer::{Color32F, Frame as FrameTrait};
+    use smithay::utils::Buffer as BufferCoords;
+
+    // Create a new texture buffer for the copy
+    let new_texture = Offscreen::<GlesTexture>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        Size::from((size.w, size.h)),
+    )
+    .map_err(|_| GlesError::UnknownSize)?;
+
+    let mut new_buffer = TextureRenderBuffer::from_texture(
+        renderer.glow_renderer(),
+        new_texture,
+        1,
+        Transform::Normal,
+        None,
+    );
+
+    // Create a texture element from the source at position (0, 0)
+    let src_elem = TextureRenderElement::from_texture_render_buffer(
+        Point::<f64, Physical>::from((0.0, 0.0)),
+        source,
+        Some(1.0),
+        None,                                               // No src_rect - use full texture
+        Some(Size::<i32, Logical>::from((size.w, size.h))), // Same size
+        Kind::Unspecified,
+    );
+
+    new_buffer.render().draw::<_, GlesError>(|tex| {
+        let glow = renderer.glow_renderer_mut();
+        let mut target = glow.bind(tex)?;
+
+        use smithay::backend::renderer::Renderer as RendererTrait;
+        let mut frame = glow.render(&mut target, size, Transform::Normal)?;
+
+        // Clear and render the source texture
+        use smithay::backend::renderer::element::RenderElement;
+        use smithay::backend::renderer::glow::GlowRenderer;
+
+        let clear_damage = [Rectangle::from_size(size)];
+        frame.clear(Color32F::from([0.0, 0.0, 0.0, 0.0]), &clear_damage)?;
+
+        // Source: full texture in buffer coordinates
+        let src: Rectangle<f64, BufferCoords> =
+            Rectangle::from_size((size.w as f64, size.h as f64).into());
+        // Destination: full output in physical coordinates
+        let dst: Rectangle<i32, Physical> = Rectangle::from_size(size);
+        let damage = [dst];
+
+        <TextureRenderElement<GlesTexture> as RenderElement<GlowRenderer>>::draw(
+            &src_elem,
+            &mut frame,
+            src,
+            dst,
+            &damage,
+            &[],
+        )?;
+
+        drop(frame);
+
+        // Return damage in buffer coordinates
+        let buffer_size: Size<i32, Logical> = size.to_logical(1);
+        let damage_rect = Rectangle::from_size(size);
+        Ok(vec![damage_rect.to_logical(1).to_buffer(
+            1,
+            Transform::Normal,
+            &buffer_size,
+        )])
+    })?;
+
+    Ok(new_buffer)
 }
 
 /// Compute a hash of the background state for blur cache invalidation.

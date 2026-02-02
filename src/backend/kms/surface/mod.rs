@@ -6,7 +6,7 @@ use crate::{
         CursorMode, ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
         PostprocessShader, PostprocessState, apply_blur_passes, blur_downsample_enabled,
         cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
-        downsample_texture,
+        copy_blur_texture_for_cache, downsample_texture,
         element::{CosmicElement, DamageElement},
         get_blur_group_content_hash, get_cached_blur_texture_for_layer,
         get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
@@ -741,7 +741,7 @@ fn process_blur(
 
     // Ensure blur textures are allocated
     match blur_state.ensure_textures(renderer, format, output_size, scale) {
-        Ok(true) => {} // Textures ready, continue
+        Ok(true) => {}       // Textures ready, continue
         Ok(false) => return, // Allocation was disabled, skip blur
         Err(err) => {
             // Check if this is a pixel format error (permanent failure)
@@ -749,7 +749,10 @@ fn process_blur(
             if err_str.contains("UnsupportedPixelFormat") {
                 // Mark as permanently failed to avoid retry spam
                 if !blur_state.allocation_failed {
-                    tracing::warn!(?err, "Failed to allocate blur textures - disabling blur for this output");
+                    tracing::warn!(
+                        ?err,
+                        "Failed to allocate blur textures - disabling blur for this output"
+                    );
                     blur_state.allocation_failed = true;
                 }
             } else if !blur_state.allocation_failed {
@@ -854,11 +857,11 @@ fn process_blur(
 
         // Compute content hash for cache invalidation
         // This includes commit counters (which change on content updates) and geometry
+        let stored_hash = get_blur_group_content_hash(&output_name, group.capture_z_threshold);
         let content_hash =
             compute_element_content_hash(group.capture_z_threshold, &capture_elements, scale);
 
         // Check if content has changed since last blur
-        let stored_hash = get_blur_group_content_hash(&output_name, group.capture_z_threshold);
         let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
         // Also verify all windows have cached textures
@@ -989,6 +992,23 @@ fn process_blur(
                 );
 
                 if blur_result.is_ok() {
+                    // Make a copy of the blurred texture so it doesn't get overwritten
+                    // when processing the next blur group (the ping/pong buffers are reused)
+                    let cached_texture =
+                        match copy_blur_texture_for_cache(renderer, &pong, blur_size) {
+                            Ok(tex) => tex,
+                            Err(e) => {
+                                tracing::warn!(
+                                    output = %output_name,
+                                    group = group_idx,
+                                    error = ?e,
+                                    "Failed to copy blur texture for cache, using original"
+                                );
+                                // Fall back to the original texture (may cause blur-on-blur artifacts)
+                                pong.clone()
+                            }
+                        };
+
                     // Cache the same blurred texture for all windows in this group
                     for (window_key, window_geo, _alpha, z_idx) in &group.windows {
                         tracing::trace!(
@@ -1004,7 +1024,7 @@ fn process_blur(
                             &output_name,
                             window_key,
                             BlurredTextureInfo {
-                                texture: pong.clone(),
+                                texture: cached_texture.clone(),
                                 size: blur_size,
                                 screen_size: output_size,
                                 scale,
@@ -1243,13 +1263,31 @@ fn process_blur(
                     );
 
                     if blur_result.is_ok() {
+                        // Make a copy of the blurred texture so it doesn't get overwritten
+                        // when processing the next blur group (the ping/pong buffers are reused)
+                        let cached_texture = match copy_blur_texture_for_cache(
+                            renderer, &pong, blur_size,
+                        ) {
+                            Ok(tex) => tex,
+                            Err(e) => {
+                                tracing::warn!(
+                                    output = %output_name,
+                                    layer = ?layer_type,
+                                    error = ?e,
+                                    "Failed to copy layer blur texture for cache, using original"
+                                );
+                                // Fall back to the original texture (may cause blur-on-blur artifacts)
+                                pong.clone()
+                            }
+                        };
+
                         // Cache the SAME blurred texture for ALL surfaces in this layer
                         for (surface_id, _geo) in &surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
                                 *surface_id,
                                 BlurredTextureInfo {
-                                    texture: pong.clone(),
+                                    texture: cached_texture.clone(),
                                     size: blur_size,
                                     screen_size: output_size,
                                     scale,

@@ -142,12 +142,13 @@ pub use blur::{
     BlurRenderState, BlurredTextureInfo, CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur,
     LayerBlurSurfaceInfo, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
     cache_blur_texture_for_window, clear_blur_textures_for_output, clear_cached_layer_surfaces,
-    clear_layer_blur_textures_for_output, compute_element_content_hash, downsample_texture,
-    get_blur_group_content_hash, get_cached_blur_texture_for_layer,
-    get_cached_blur_texture_for_window, get_cached_layer_surfaces, get_layer_blur_content_hash,
-    get_layer_blur_surfaces, output_has_layer_blur, set_cached_layer_surfaces,
-    set_layer_blur_surfaces, should_throttle_blur, store_blur_group_content_hash,
-    store_blur_group_last_update, store_layer_blur_content_hash,
+    clear_layer_blur_textures_for_output, compute_element_content_hash,
+    copy_blur_texture_for_cache, downsample_texture, get_blur_group_content_hash,
+    get_cached_blur_texture_for_layer, get_cached_blur_texture_for_window,
+    get_cached_layer_surfaces, get_layer_blur_content_hash, get_layer_blur_surfaces,
+    output_has_layer_blur, set_cached_layer_surfaces, set_layer_blur_surfaces,
+    should_throttle_blur, store_blur_group_content_hash, store_blur_group_last_update,
+    store_layer_blur_content_hash,
 };
 
 /// Shader for applying blur effects to surfaces
@@ -2089,13 +2090,17 @@ where
                     workspace,
                     cursor_mode,
                     element_filter,
-                ).map(|(res, _elements)| res);
+                )
+                .map(|(res, _elements)| res);
             }
             Err(err) => {
                 // Check if this is a pixel format error (permanent failure)
                 let err_str = format!("{:?}", err);
                 if err_str.contains("UnsupportedPixelFormat") && !blur_state.allocation_failed {
-                    tracing::warn!(?err, "Failed to allocate blur textures - disabling blur for this output");
+                    tracing::warn!(
+                        ?err,
+                        "Failed to allocate blur textures - disabling blur for this output"
+                    );
                     blur_state.allocation_failed = true;
                 }
                 return Err(RenderError::Rendering(err));
