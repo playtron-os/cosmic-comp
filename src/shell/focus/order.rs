@@ -502,9 +502,15 @@ fn layer_surfaces<'a>(
         ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_, _)
     );
 
-    // For LayerBlurCapture, skip layers at or above the requesting layer's z-level
-    // e.g., Bottom layer blur should only capture Background, not Bottom/Top/Overlay
+    // Skip layers based on blur capture mode:
+    // - BlurCapture (window blur): Always skip Top and Overlay layers (they render above windows)
+    // - LayerBlurCapture: Skip layers at or above the requesting layer's z-level
     let skip_layer = match element_filter {
+        ElementFilter::BlurCapture(_) => {
+            // Window blur should only capture Background and Bottom layers
+            // Top and Overlay are above windows and should never appear in window blur
+            matches!(layer, Layer::Top | Layer::Overlay)
+        }
         ElementFilter::LayerBlurCapture(requesting_layer, _) => {
             layer_z_level(layer) >= layer_z_level(*requesting_layer)
         }
