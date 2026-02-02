@@ -1093,7 +1093,7 @@ impl State {
 
             // Gets the configured command for a given system action.
             Action::System(system) => {
-                use crate::shell::home_enabled;
+                use crate::shell::{Shell, home_enabled};
                 use shortcuts::action::System;
 
                 // If HOME_ENABLED is set and this is the Launcher action, toggle home mode instead
@@ -1105,8 +1105,22 @@ impl State {
                         self.common.home_visibility_state.set_home(false);
                     } else {
                         shell.enter_home();
+
+                        // Find the default voice receiver's layer surface and focus it
+                        let focus_target = self
+                            .common
+                            .voice_mode_state
+                            .get_default_receiver_surface()
+                            .and_then(|surface| shell.find_layer_surface_by_wl_surface(&surface))
+                            .map(KeyboardFocusTarget::from);
+
                         drop(shell);
                         self.common.home_visibility_state.set_home(true);
+
+                        // Set focus to the home layer surface if found
+                        if let Some(target) = focus_target {
+                            Shell::set_focus(self, Some(&target), seat, None, false);
+                        }
                     }
                 } else if let Some(command) = self.common.config.system_actions.get(&system) {
                     self.spawn_command(command.clone());

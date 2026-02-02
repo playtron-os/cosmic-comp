@@ -1738,27 +1738,43 @@ impl State {
                         .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
 
                     // send_focus_input_to_surface_or_default returns the surface that received the event
-                    // (if it was a non-default receiver), so we can activate that window
-                    if let Some(surface_to_activate) = self
+                    if let Some(surface_to_focus) = self
                         .common
                         .voice_mode_state
                         .send_focus_input_to_surface_or_default(focused_surface.as_ref())
                     {
-                        // Activate the window (unminimize, switch workspace, raise, focus)
-                        use crate::wayland::handlers::xdg_activation::ActivationContext;
-                        let output = seat.active_output();
-                        let workspace_handle = {
-                            let shell = self.common.shell.read();
-                            shell.active_space(&output).unwrap().handle
-                        };
-                        self.activate_surface(
-                            &surface_to_activate,
-                            Some((
-                                crate::shell::ActivationKey::Wayland(surface_to_activate.clone()),
-                                ActivationContext::Workspace(workspace_handle),
-                            )),
-                        );
-                        tracing::debug!("Activated window for voice focus_input");
+                        // Check if this is a layer surface
+                        // Layer surfaces with OnDemand interactivity need explicit keyboard focus
+                        let shell = self.common.shell.read();
+                        if let Some(layer_surface) =
+                            shell.find_layer_surface_by_wl_surface(&surface_to_focus)
+                        {
+                            drop(shell);
+                            // Enter home mode to minimize all windows and show home widgets
+                            tracing::info!(
+                                "Entering home mode and setting keyboard focus to default receiver layer surface"
+                            );
+                            self.common.shell.write().enter_home();
+                            let focus_target = KeyboardFocusTarget::from(layer_surface);
+                            Shell::set_focus(self, Some(&focus_target), seat, None, false);
+                        } else {
+                            drop(shell);
+                            // Regular window - activate it (unminimize, switch workspace, raise, focus)
+                            use crate::wayland::handlers::xdg_activation::ActivationContext;
+                            let output = seat.active_output();
+                            let workspace_handle = {
+                                let shell = self.common.shell.read();
+                                shell.active_space(&output).unwrap().handle
+                            };
+                            self.activate_surface(
+                                &surface_to_focus,
+                                Some((
+                                    crate::shell::ActivationKey::Wayland(surface_to_focus.clone()),
+                                    ActivationContext::Workspace(workspace_handle),
+                                )),
+                            );
+                            tracing::debug!("Activated window for voice focus_input");
+                        }
                     }
                 } else if voice_mode_active {
                     // Voice mode is active (was held long enough) - now deactivate

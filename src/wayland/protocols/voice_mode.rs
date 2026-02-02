@@ -309,6 +309,12 @@ impl VoiceModeState {
         receivers.iter().find(|r| r.is_default).cloned()
     }
 
+    /// Get the default receiver's surface
+    pub fn get_default_receiver_surface(&self) -> Option<WlSurface> {
+        self.find_default_receiver()
+            .and_then(|r| r.surface.upgrade().ok())
+    }
+
     /// Check if a surface has a registered receiver
     pub fn has_receiver_for_surface(&self, surface: &WlSurface) -> bool {
         self.find_receiver_by_surface(surface).is_some()
@@ -510,13 +516,17 @@ impl VoiceModeState {
             }
         }
 
-        // Fall back to default receiver
-        if self.send_focus_input() {
-            // Return None for default receiver - no need to activate humainos-home
-            None
-        } else {
-            None
+        // Fall back to default receiver - also return the surface so it can be focused
+        if let Some(receiver) = self.find_default_receiver() {
+            if let Ok(resource) = receiver.resource.upgrade() {
+                info!("Sending focus_input to default receiver (returning surface for focus)");
+                resource.focus_input();
+                // Return the surface so the compositor can set keyboard focus to it
+                return receiver.surface.upgrade().ok();
+            }
         }
+        debug!("No default receiver to send focus_input to");
+        None
     }
 
     /// Update the last focused non-default receiver when focus changes

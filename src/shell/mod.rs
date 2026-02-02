@@ -2258,6 +2258,19 @@ impl Shell {
         }
     }
 
+    /// Find a layer surface by its wl_surface
+    pub fn find_layer_surface_by_wl_surface(&self, surface: &WlSurface) -> Option<LayerSurface> {
+        for output in self.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.wl_surface() == surface {
+                    return Some(layer.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub fn visible_output_for_surface(&self, surface: &WlSurface) -> Option<&Output> {
         if let Some(session_lock) = &self.session_lock {
             return session_lock
