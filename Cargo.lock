@@ -839,7 +839,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-comp"
-version = "1.0.5"
+version = "1.0.6"
 dependencies = [
  "anyhow",
  "bitflags 2.9.4",
@@ -891,6 +891,7 @@ dependencies = [
  "tracing-subscriber",
  "tracy-client",
  "wayland-backend",
+ "wayland-protocols-wlr",
  "wayland-scanner",
  "xcursor",
  "xdg",

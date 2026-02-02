@@ -6,6 +6,7 @@ pub mod blur;
 pub mod corner_radius;
 pub mod drm;
 pub mod exclusive_mode;
+pub mod export_dmabuf;
 pub mod home_visibility;
 pub mod image_capture_source;
 pub mod layer_corner_radius;

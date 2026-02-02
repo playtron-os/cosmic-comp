@@ -22,8 +22,11 @@ use crate::{
             compositor::recursive_frame_time_estimation,
             screencopy::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
         },
-        protocols::screencopy::{
-            FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
+        protocols::{
+            export_dmabuf::ExportDmabufFrameHolder,
+            screencopy::{
+                FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
+            },
         },
     },
 };
@@ -34,7 +37,9 @@ use cosmic_comp_config::output::comp::AdaptiveSync;
 use smithay::{
     backend::{
         allocator::{
+            Buffer as AllocatorBuffer,
             Fourcc,
+            dmabuf::AsDmabuf,
             format::FormatSet,
             gbm::{GbmAllocator, GbmBuffer},
         },
@@ -2013,6 +2018,11 @@ impl SurfaceThreadState {
                             }
                         }
 
+                        // Send export-dmabuf frames
+                        if self.mirroring.is_none() {
+                            send_export_dmabuf_frames(&frame_result, &self.output, now.into());
+                        }
+
                         if self.mirroring.is_none() {
                             // If postprocessing, use states from first render
                             let states = pre_postprocess_data.states.unwrap_or(frame_result.states);
@@ -2628,4 +2638,116 @@ fn postprocess_elements<'a>(
     )
     .map(CosmicElement::<GlMultiRenderer>::Postprocess)
     .collect::<Vec<_>>()
+}
+
+/// Send export-dmabuf frame results to clients.
+/// 
+/// This exports the primary swapchain buffer as a DMA-BUF and sends
+/// the frame/object/ready events to the client.
+fn send_export_dmabuf_frames<'a>(
+    frame_result: &RenderFrameResult<'a, GbmBuffer, GbmFramebuffer, CosmicElement<GlMultiRenderer<'a>>>,
+    output: &Output,
+    presentation_time: Duration,
+) {
+    use std::os::unix::io::OwnedFd;
+    use wayland_protocols_wlr::export_dmabuf::v1::server::zwlr_export_dmabuf_frame_v1::CancelReason;
+
+    let frames = output.take_export_dmabuf_frames();
+    if frames.is_empty() {
+        return;
+    }
+
+    // Get the primary swapchain buffer and export it as dmabuf
+    let dmabuf = match &frame_result.primary_element {
+        PrimaryPlaneElement::Swapchain(elem) => {
+            // Use the buffer() accessor to get the GbmBuffer reference
+            match elem.buffer().export() {
+                Ok(dmabuf) => dmabuf,
+                Err(err) => {
+                    tracing::warn!(?err, "Failed to export dmabuf for export-dmabuf");
+                    for frame in frames {
+                        frame.cancel(CancelReason::Temporary);
+                    }
+                    return;
+                }
+            }
+        }
+        PrimaryPlaneElement::Element(_) => {
+            // Direct scanout - no swapchain buffer available
+            // Cancel all frames with temporary reason (client can try again)
+            for frame in frames {
+                frame.cancel(CancelReason::Temporary);
+            }
+            return;
+        }
+    };
+
+    // Get buffer info from the dmabuf
+    let format = dmabuf.format();
+    let size = dmabuf.size();
+    let num_planes = dmabuf.num_planes() as u32;
+
+    // Calculate timestamp
+    let tv_sec = presentation_time.as_secs();
+    let tv_nsec = presentation_time.subsec_nanos();
+
+    for frame in frames {
+        // Send frame event
+        frame.send_frame(
+            size.w as u32,
+            size.h as u32,
+            0, // offset_x
+            0, // offset_y
+            0, // buffer_flags (no Y_INVERT, INTERLACED, etc.)
+            format.code,
+            format.modifier,
+            num_planes,
+        );
+
+        // Send object events for each plane
+        // We need to dup the fds since each client needs its own copy
+        let mut success = true;
+        for (index, ((fd, offset), stride)) in dmabuf
+            .handles()
+            .zip(dmabuf.offsets())
+            .zip(dmabuf.strides())
+            .enumerate()
+        {
+            // Dup the fd for the client
+            match rustix::io::dup(fd) {
+                Ok(duped_fd) => {
+                    // Calculate plane size (estimate based on stride and height)
+                    // For the last plane, use remaining size
+                    let plane_size = (stride * size.h as u32) as u32;
+                    
+                    frame.send_object(
+                        index as u32,
+                        OwnedFd::from(duped_fd),
+                        plane_size,
+                        offset,
+                        stride,
+                        index as u32, // plane_index
+                    );
+                }
+                Err(err) => {
+                    tracing::warn!(?err, "Failed to dup dmabuf fd for export-dmabuf");
+                    frame.cancel(CancelReason::Temporary);
+                    success = false;
+                    break;
+                }
+            }
+        }
+
+        if success {
+            // Send ready event
+            frame.send_ready(tv_sec, tv_nsec);
+            tracing::trace!(
+                "Export-dmabuf: sent frame {}x{} format {:?} with {} planes",
+                size.w,
+                size.h,
+                format.code,
+                num_planes
+            );
+        }
+    }
 }

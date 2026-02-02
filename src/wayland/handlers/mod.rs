@@ -15,6 +15,7 @@ pub mod drm;
 pub mod drm_lease;
 pub mod drm_syncobj;
 pub mod exclusive_mode;
+pub mod export_dmabuf;
 pub mod foreign_toplevel_list;
 pub mod fractional_scale;
 pub mod home_visibility;

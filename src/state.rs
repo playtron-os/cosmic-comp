@@ -21,6 +21,7 @@ use crate::{
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
             exclusive_mode::ExclusiveModeState,
+            export_dmabuf::ExportDmabufState,
             home_visibility::HomeVisibilityState,
             image_capture_source::ImageCaptureSourceState,
             layer_corner_radius::LayerCornerRadiusState,
@@ -264,6 +265,7 @@ pub struct Common {
     pub data_device_state: DataDeviceState,
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
+    pub export_dmabuf_state: ExportDmabufState,
     pub home_visibility_state: HomeVisibilityState,
     pub voice_mode_state: VoiceModeState,
     pub fractional_scale_state: FractionalScaleManagerState,
@@ -660,6 +662,7 @@ impl State {
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
+        let export_dmabuf_state = ExportDmabufState::new::<Self, _>(dh, client_not_sandboxed);
         let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
         let voice_mode_state = VoiceModeState::new::<Self>(dh);
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(dh);
@@ -786,6 +789,7 @@ impl State {
                 data_device_state,
                 dmabuf_state,
                 exclusive_mode_state,
+                export_dmabuf_state,
                 home_visibility_state,
                 voice_mode_state,
                 fractional_scale_state,

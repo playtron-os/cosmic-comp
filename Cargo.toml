@@ -3,7 +3,7 @@ authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
 name = "cosmic-comp"
-version = "1.0.5"
+version = "1.0.6"
 rust-version = "1.90"
 
 [workspace]
@@ -73,6 +73,7 @@ tracing-subscriber = { version = "0.3.20", features = [
 ] }
 tracy-client = { version = "0.18.2", default-features = false }
 wayland-backend = "0.3.11"
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
 wayland-scanner = "0.31.7"
 xcursor = "0.3.10"
 xdg = "^3.0"
