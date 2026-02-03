@@ -594,6 +594,8 @@ pub struct Shell {
     home_only_surfaces: std::collections::HashSet<u32>,
     /// Surface IDs that should be hidden when in home mode (inverse of home_only)
     hide_on_home_surfaces: std::collections::HashSet<u32>,
+    /// Surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
+    hidden_surfaces: std::collections::HashSet<u32>,
     /// Surfaces minimized by home mode (to restore when exiting)
     home_minimized_surfaces: Vec<CosmicSurface>,
 
@@ -1929,6 +1931,7 @@ impl Shell {
             },
             home_only_surfaces: std::collections::HashSet::new(),
             hide_on_home_surfaces: std::collections::HashSet::new(),
+            hidden_surfaces: std::collections::HashSet::new(),
             home_minimized_surfaces: Vec::new(),
 
             // Voice mode state
@@ -2840,6 +2843,32 @@ impl Shell {
     pub fn remove_surface_visibility(&mut self, surface_id: u32) {
         self.home_only_surfaces.remove(&surface_id);
         self.hide_on_home_surfaces.remove(&surface_id);
+    }
+
+    // Client-hidden surface methods (layer_surface_visibility protocol)
+
+    /// Get the set of explicitly hidden surface IDs
+    pub fn hidden_surfaces(&self) -> &std::collections::HashSet<u32> {
+        &self.hidden_surfaces
+    }
+
+    /// Set a surface's hidden state (via layer_surface_visibility protocol)
+    pub fn set_surface_hidden(&mut self, surface_id: u32, hidden: bool) {
+        if hidden {
+            self.hidden_surfaces.insert(surface_id);
+        } else {
+            self.hidden_surfaces.remove(&surface_id);
+        }
+    }
+
+    /// Check if a surface is explicitly hidden
+    pub fn is_surface_hidden(&self, surface_id: u32) -> bool {
+        self.hidden_surfaces.contains(&surface_id)
+    }
+
+    /// Remove a surface from hidden tracking (called when surface is destroyed)
+    pub fn remove_hidden_surface(&mut self, surface_id: u32) {
+        self.hidden_surfaces.remove(&surface_id);
     }
 
     // Voice mode methods

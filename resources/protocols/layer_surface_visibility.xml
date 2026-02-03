@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="cosmic_layer_surface_visibility_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="client-controlled visibility for layer surfaces">
+    This protocol allows layer-shell clients to hide and show their surfaces
+    without destroying them. This is useful for popup menus and panels that
+    need instant visibility toggling without the overhead of surface
+    creation/destruction.
+    
+    Hidden surfaces:
+    - Are not rendered or composited (saves GPU resources)
+    - Do not receive input events
+    - Maintain their layer shell configuration (anchor, size, etc.)
+    - Can be shown instantly without Wayland roundtrip overhead
+  </description>
+
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="1">
+    <description summary="manager for layer surface visibility">
+      This interface allows layer-shell clients to control the visibility
+      of their surfaces.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy this manager object. Does not affect any visibility
+        controllers that were created.
+      </description>
+    </request>
+
+    <request name="get_visibility_controller">
+      <description summary="get visibility controller for a layer surface">
+        Create a visibility controller for the given wl_surface.
+        The surface must be a layer-shell surface (zwlr_layer_surface_v1).
+        
+        Only one controller can exist per surface. Creating a second
+        controller for the same surface is a protocol error.
+      </description>
+      <arg name="id" type="new_id" interface="zcosmic_layer_surface_visibility_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="zcosmic_layer_surface_visibility_v1" version="1">
+    <description summary="visibility controller for a layer surface">
+      This interface controls whether a layer surface is visible or hidden.
+      
+      By default, surfaces are visible. Use set_hidden to hide the surface
+      and set_visible to show it again.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy this controller">
+        Destroy this visibility controller. The surface becomes visible
+        if it was hidden.
+      </description>
+    </request>
+
+    <request name="set_hidden">
+      <description summary="hide the surface">
+        Hide this layer surface. The surface will not be rendered or
+        receive input events until set_visible is called.
+        
+        The surface maintains its configuration and can be shown instantly.
+        This is more efficient than destroying and recreating the surface.
+      </description>
+    </request>
+
+    <request name="set_visible">
+      <description summary="show the surface">
+        Show this layer surface if it was previously hidden.
+        
+        The surface will be rendered and can receive input events again.
+      </description>
+    </request>
+
+    <event name="visibility_changed">
+      <description summary="visibility state changed">
+        Sent when the visibility state changes, either due to a client
+        request or compositor action. Also sent immediately after the
+        controller is created to provide the initial state.
+      </description>
+      <arg name="visible" type="uint" summary="1 if visible, 0 if hidden"/>
+    </event>
+  </interface>
+</protocol>

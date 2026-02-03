@@ -25,6 +25,7 @@ use crate::{
             image_capture_source::ImageCaptureSourceState,
             layer_corner_radius::LayerCornerRadiusState,
             layer_shadow::LayerShadowManagerState,
+            layer_surface_visibility::LayerSurfaceVisibilityState,
             output_configuration::OutputConfigurationState,
             output_power::OutputPowerState,
             overlap_notify::OverlapNotifyState,
@@ -265,6 +266,7 @@ pub struct Common {
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
     pub home_visibility_state: HomeVisibilityState,
+    pub layer_surface_visibility_state: LayerSurfaceVisibilityState,
     pub voice_mode_state: VoiceModeState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
@@ -661,6 +663,7 @@ impl State {
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
         let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
+        let layer_surface_visibility_state = LayerSurfaceVisibilityState::new::<Self>(dh);
         let voice_mode_state = VoiceModeState::new::<Self>(dh);
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(dh);
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
@@ -787,6 +790,7 @@ impl State {
                 dmabuf_state,
                 exclusive_mode_state,
                 home_visibility_state,
+                layer_surface_visibility_state,
                 voice_mode_state,
                 fractional_scale_state,
                 idle_notifier_state,

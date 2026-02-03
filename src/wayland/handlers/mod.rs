@@ -26,6 +26,7 @@ pub mod keyboard_shortcuts_inhibit;
 pub mod layer_corner_radius;
 pub mod layer_shadow;
 pub mod layer_shell;
+pub mod layer_surface_visibility;
 pub mod output;
 pub mod output_configuration;
 pub mod output_power;

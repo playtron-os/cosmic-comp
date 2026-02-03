@@ -947,6 +947,8 @@ pub struct HomeVisibilityContext {
     pub home_only_surfaces: std::collections::HashSet<u32>,
     /// Set of surface IDs that are "hide-on-home" (hidden when in home mode)
     pub hide_on_home_surfaces: std::collections::HashSet<u32>,
+    /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
+    pub hidden_surfaces: std::collections::HashSet<u32>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
     /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
@@ -962,6 +964,7 @@ impl HomeVisibilityContext {
         Self {
             home_only_surfaces: shell.home_only_surfaces().clone(),
             hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
+            hidden_surfaces: shell.hidden_surfaces().clone(),
             home_alpha: shell.home_alpha(),
             voice_mode_alpha: shell.voice_mode_window_alpha(),
             voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
@@ -987,6 +990,11 @@ impl HomeVisibilityContext {
         namespace: Option<&str>,
     ) -> (bool, f32) {
         use smithay::wayland::shell::wlr_layer::Layer;
+
+        // Check if surface is explicitly hidden via layer_surface_visibility protocol
+        if self.hidden_surfaces.contains(&surface_id) {
+            return (false, 0.0);
+        }
 
         // Skip voice mode alpha for:
         // - Background layer surfaces (wallpaper like cosmic-bg)

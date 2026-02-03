@@ -126,7 +126,13 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        let surface_id = surface.wl_surface().id().protocol_id();
         let mut shell = self.common.shell.write();
+
+        // Clean up visibility tracking for this surface
+        shell.remove_surface_visibility(surface_id);
+        shell.remove_hidden_surface(surface_id);
+
         let maybe_output = shell
             .outputs()
             .find(|o| {
