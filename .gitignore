@@ -15,3 +15,5 @@ vendor.tar
 *.log
 /result
 dist/
+.task
+.cache
