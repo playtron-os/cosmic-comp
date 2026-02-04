@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/playtron-os/cosmic-comp/compare/v1.1.0...v1.2.0) (2026-02-04)
+
+
+### Features
+
+* implement force_close in top level protocol ([ebccfdf](https://github.com/playtron-os/cosmic-comp/commit/ebccfdf89d61ced9e836d891b0a55dbc5bdc2df8))
+
 # [1.1.0](https://github.com/playtron-os/cosmic-comp/compare/v1.0.1...v1.1.0) (2026-02-04)
 
 
