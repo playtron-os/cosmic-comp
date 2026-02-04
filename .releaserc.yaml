@@ -21,21 +21,13 @@ plugins:
 
   # Replace version strings in the project. The 'git' plugin is needed to
   # commit the version strings to the repository.
-  - - "@google/semantic-release-replace-plugin"
-    - replacements:
-        - files:
-            - Cargo.toml
-          from: '^version = "[0-9]+\.[0-9]+\.[0-9]+"$'
-          to: 'version = "${nextRelease.version}"'
-        - files:
-            - pkg/rpm/cosmic-comp.spec
-          from: "^Version: .*$"
-          to: "Version: ${nextRelease.version}"
-
-  # Execute commands to build the project
+  # Using exec + sed for Cargo.toml to only replace the FIRST version match (package version)
+  # The replace plugin would replace ALL matches including dependency versions
   - - "@semantic-release/exec"
     - shell: true
       prepareCmd: |
+        sed -i '0,/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"$/s//version = "${nextRelease.version}"/' Cargo.toml
+        sed -i 's/^Version: .*/Version: ${nextRelease.version}/' pkg/rpm/cosmic-comp.spec
         task docker:run TARGET=dist:all ARCH=x86_64 TARGET_ARCH=x86_64-unknown-linux-gnu
         task docker:run TARGET=dist:all ARCH=aarch64 TARGET_ARCH=aarch64-unknown-linux-gnu
 
