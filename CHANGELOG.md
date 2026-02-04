@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/playtron-os/cosmic-comp/compare/v1.0.1...v1.1.0) (2026-02-04)
+
+
+### Features
+
+* add layer_surface_dismiss protocol ([25e87fb](https://github.com/playtron-os/cosmic-comp/commit/25e87fbcc867254c989b6b723cb5ab59751514be))
+
 ## [1.0.1](https://github.com/playtron-os/cosmic-comp/compare/v1.0.0...v1.0.1) (2026-02-04)
 
 
