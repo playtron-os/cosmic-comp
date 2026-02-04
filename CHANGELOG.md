@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/playtron-os/cosmic-comp/compare/v1.0.0...v1.0.1) (2026-02-04)
+
+
+### Bug Fixes
+
+* add missing release CI permission for PR/issues ([d464435](https://github.com/playtron-os/cosmic-comp/commit/d4644353a11d2ae31736fbdea31b9a43f0c2f8b2))
+
 # 1.0.0 (2026-02-04)
 
 
