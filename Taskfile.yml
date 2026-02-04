@@ -138,7 +138,7 @@ tasks:
     vars:
       BUCKET: playtron-dev2-global-os-public
       BUCKET_PATH: repos/playtron-app/{{.ARCH}}
-      FILE: "dist/{{.NAME}}-{{.VERSION}}-0.{{.ARCH}}.rpm"
+      FILE: "dist/{{.NAME}}-{{.VERSION}}-1.{{.ARCH}}.rpm"
     preconditions:
       - sh: ls {{.FILE}}
         msg: "File to upload does not exist: {{.FILE}}"

@@ -46,3 +46,6 @@ plugins:
         - Cargo.toml
         - Cargo.lock
         - pkg/rpm/cosmic-comp.spec
+
+  # Create a GitHub release
+  - "@semantic-release/github"
