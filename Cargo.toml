@@ -95,7 +95,8 @@ branch = "feature/copy_clone"
 git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
-version = "0.7.0"
+git = "https://github.com/Smithay/smithay.git"
+rev = "f106c6200f7a31c4b25f1b8027d9f87570c84a9e"
 default-features = false
 features = [
     "backend_drm",
@@ -145,6 +146,3 @@ lto = "fat"
 [patch."https://github.com/pop-os/cosmic-protocols"]
 cosmic-protocols = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
 cosmic-client-toolkit = { git = "https://github.com/pop-os//cosmic-protocols", branch = "main" }
-
-[patch.crates-io]
-smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "ae14fa1" }
