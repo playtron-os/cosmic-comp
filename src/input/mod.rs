@@ -713,6 +713,40 @@ impl State {
 
                 let mut pass_event = !seat.supressed_buttons().remove(button);
                 if event.state() == ButtonState::Pressed {
+                    // Check for layer surface dismiss notifications
+                    // Get the surface that was clicked and check if any armed dismiss controllers
+                    // should be notified
+                    {
+                        let ptr = seat.get_pointer().unwrap();
+                        let pointer_location = ptr.current_location().as_global();
+                        let output = seat.active_output();
+
+                        // Get the surface under the pointer
+                        let clicked_surface_id = {
+                            let shell = self.common.shell.read();
+                            State::surface_under(pointer_location, &output, &shell)
+                                .and_then(|(target, _)| {
+                                    WaylandFocus::wl_surface(&target).map(|s| s.id().protocol_id())
+                                })
+                        };
+
+                        if let Some(surface_id) = clicked_surface_id {
+                            let controllers = self.common.dismiss_controller_registry.get_all();
+                            let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
+                                surface_id,
+                                &controllers,
+                            );
+                            if !to_dismiss.is_empty() {
+                                tracing::debug!(
+                                    clicked_surface_id = surface_id,
+                                    dismiss_count = to_dismiss.len(),
+                                    "Firing dismiss for armed controllers"
+                                );
+                                crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(to_dismiss);
+                            }
+                        }
+                    }
+
                     // change the keyboard focus unless the pointer is grabbed
                     // We test for any matching surface type here but always use the root
                     // (in case of a window the toplevel) surface for the focus.
@@ -1274,7 +1308,29 @@ impl State {
                     let under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
 
+                    // Check for layer surface dismiss on touch down
+                    let clicked_surface_id = under.as_ref().and_then(|(target, _)| {
+                        WaylandFocus::wl_surface(target).map(|s| s.id().protocol_id())
+                    });
+
                     std::mem::drop(shell);
+
+                    // Fire dismiss if touch is outside armed surfaces
+                    if let Some(surface_id) = clicked_surface_id {
+                        let controllers = self.common.dismiss_controller_registry.get_all();
+                        let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
+                            surface_id,
+                            &controllers,
+                        );
+                        if !to_dismiss.is_empty() {
+                            tracing::debug!(
+                                clicked_surface_id = surface_id,
+                                dismiss_count = to_dismiss.len(),
+                                "Firing dismiss for armed controllers (touch)"
+                            );
+                            crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(to_dismiss);
+                        }
+                    }
 
                     let serial = SERIAL_COUNTER.next_serial();
                     let touch = seat.get_touch().unwrap();

@@ -1,0 +1,150 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="cosmic_layer_surface_dismiss_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="dismiss notifications for layer surface popups">
+    This protocol allows layer-shell clients to receive notifications when
+    user interaction occurs outside their surfaces. This enables "close on
+    click outside" behavior for popup menus without changing keyboard focus.
+
+    Unlike xdg_popup which has built-in grab semantics, layer-shell surfaces
+    need an external mechanism to detect outside interactions. This protocol
+    provides that mechanism while:
+    - Not changing keyboard focus (app-specific menus still work)
+    - Not affecting the focused application state
+    - Working with multiple related surfaces (e.g., panel bar + popup)
+
+    Typical usage:
+    1. Panel opens a popup layer surface
+    2. Panel registers the popup for dismiss notifications
+    3. User clicks on an application window
+    4. Compositor sends dismiss_requested to the popup
+    5. Panel closes the popup
+  </description>
+
+  <interface name="zcosmic_layer_surface_dismiss_manager_v1" version="1">
+    <description summary="manager for layer surface dismiss notifications">
+      This interface allows layer-shell clients to register surfaces for
+      dismiss notifications when interaction occurs outside them.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy this manager object. Does not affect any dismiss
+        controllers that were created.
+      </description>
+    </request>
+
+    <request name="get_dismiss_controller">
+      <description summary="get dismiss controller for a layer surface">
+        Create a dismiss controller for the given wl_surface.
+        The surface must be a layer-shell surface (zwlr_layer_surface_v1).
+        
+        Only one controller can exist per surface. Creating a second
+        controller for the same surface is a protocol error.
+      </description>
+      <arg name="id" type="new_id" interface="zcosmic_layer_surface_dismiss_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+             summary="the surface already has a dismiss controller"/>
+      <entry name="invalid_surface" value="1"
+             summary="the surface is not a layer-shell surface"/>
+    </enum>
+  </interface>
+
+  <interface name="zcosmic_layer_surface_dismiss_v1" version="1">
+    <description summary="dismiss controller for a layer surface">
+      This interface controls dismiss notifications for a specific
+      layer-shell surface. When armed, the compositor will send a
+      dismiss_requested event when the user interacts with any surface
+      outside the registered surface group.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the dismiss controller">
+        Destroy this dismiss controller. The surface will no longer
+        receive dismiss notifications.
+      </description>
+    </request>
+
+    <request name="arm">
+      <description summary="start listening for outside interactions">
+        Arm the dismiss notification. After this call, the compositor
+        will monitor for pointer button presses and touch events.
+        
+        When the user interacts with a surface that is NOT:
+        - This surface
+        - Any surface in the same dismiss group (see add_to_group)
+        
+        The compositor will send a dismiss_requested event.
+        
+        The dismiss notification automatically disarms after firing.
+        Call arm() again to re-arm if needed.
+      </description>
+    </request>
+
+    <request name="disarm">
+      <description summary="stop listening for outside interactions">
+        Disarm the dismiss notification. No dismiss_requested events
+        will be sent until arm() is called again.
+      </description>
+    </request>
+
+    <request name="add_to_group">
+      <description summary="add another surface to the dismiss group">
+        Add another surface to this controller's dismiss group.
+        Interactions with surfaces in the same group will NOT trigger
+        dismiss_requested events.
+        
+        This is useful when a panel has multiple related surfaces
+        (e.g., the panel bar and its popup) and clicking the panel
+        bar should not dismiss the popup.
+        
+        The added surface does not need its own dismiss controller.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="remove_from_group">
+      <description summary="remove a surface from the dismiss group">
+        Remove a surface from this controller's dismiss group.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <event name="dismiss_requested">
+      <description summary="interaction occurred outside the surface group">
+        Sent when the user interacts (pointer button press, touch down)
+        with a surface outside the dismiss group while armed.
+        
+        The client should typically close the popup in response.
+        The dismiss notification is automatically disarmed after this
+        event is sent.
+      </description>
+    </event>
+  </interface>
+</protocol>

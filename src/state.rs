@@ -13,7 +13,11 @@ use crate::{
     shell::{CosmicSurface, SeatExt, Shell, grabs::SeatMoveGrabState},
     utils::prelude::OutputExt,
     wayland::{
-        handlers::{data_device::get_dnd_icon, screencopy::SessionHolder},
+        handlers::{
+            data_device::get_dnd_icon,
+            layer_surface_dismiss::DismissControllerRegistry,
+            screencopy::SessionHolder,
+        },
         protocols::{
             a11y::A11yState,
             animated_resize::AnimatedResizeState,
@@ -25,6 +29,7 @@ use crate::{
             image_capture_source::ImageCaptureSourceState,
             layer_corner_radius::LayerCornerRadiusState,
             layer_shadow::LayerShadowManagerState,
+            layer_surface_dismiss::LayerSurfaceDismissState,
             layer_surface_visibility::LayerSurfaceVisibilityState,
             output_configuration::OutputConfigurationState,
             output_power::OutputPowerState,
@@ -266,6 +271,8 @@ pub struct Common {
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
     pub home_visibility_state: HomeVisibilityState,
+    pub layer_surface_dismiss_state: LayerSurfaceDismissState,
+    pub dismiss_controller_registry: DismissControllerRegistry,
     pub layer_surface_visibility_state: LayerSurfaceVisibilityState,
     pub voice_mode_state: VoiceModeState,
     pub fractional_scale_state: FractionalScaleManagerState,
@@ -663,6 +670,8 @@ impl State {
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
         let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
+        let layer_surface_dismiss_state = LayerSurfaceDismissState::new::<Self>(dh);
+        let dismiss_controller_registry = DismissControllerRegistry::new();
         let layer_surface_visibility_state = LayerSurfaceVisibilityState::new::<Self>(dh);
         let voice_mode_state = VoiceModeState::new::<Self>(dh);
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(dh);
@@ -790,6 +799,8 @@ impl State {
                 dmabuf_state,
                 exclusive_mode_state,
                 home_visibility_state,
+                layer_surface_dismiss_state,
+                dismiss_controller_registry,
                 layer_surface_visibility_state,
                 voice_mode_state,
                 fractional_scale_state,

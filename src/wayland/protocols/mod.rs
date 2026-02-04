@@ -10,6 +10,7 @@ pub mod home_visibility;
 pub mod image_capture_source;
 pub mod layer_corner_radius;
 pub mod layer_shadow;
+pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
 pub mod output_configuration;
 pub mod output_power;
