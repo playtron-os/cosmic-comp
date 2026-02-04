@@ -48,6 +48,19 @@ where
     }
     fn close(&mut self, dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {}
 
+    /// Forcefully terminate the process associated with a toplevel using SIGKILL.
+    /// This is for force-quitting unresponsive applications.
+    ///
+    /// The `client` parameter is the Wayland client making the request, allowing
+    /// implementations to authorize only trusted clients (e.g., panel, dock).
+    fn force_close(
+        &mut self,
+        dh: &DisplayHandle,
+        window: &<Self as ToplevelInfoHandler>::Window,
+        client: &Client,
+    ) {
+    }
+
     fn fullscreen(
         &mut self,
         dh: &DisplayHandle,
@@ -116,7 +129,7 @@ impl ToplevelManagementState {
         F: for<'a> Fn(&'a Client) -> bool + Send + Sync + 'static,
     {
         let global = dh.create_global::<D, ZcosmicToplevelManagerV1, _>(
-            4,
+            5,
             ToplevelManagerGlobalData {
                 filter: Box::new(client_filter),
             },
@@ -263,6 +276,10 @@ where
                         state.move_to_workspace(dh, &window, workspace_handle, output);
                     }
                 }
+            }
+            zcosmic_toplevel_manager_v1::Request::ForceClose { toplevel } => {
+                let window = window_from_handle(toplevel).unwrap();
+                state.force_close(dh, &window, _client);
             }
             _ => unreachable!(),
         }

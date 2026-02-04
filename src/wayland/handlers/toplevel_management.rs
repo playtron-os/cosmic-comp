@@ -4,10 +4,11 @@ use smithay::{
     desktop::{WindowSurfaceType, layer_map_for_output},
     input::{Seat, pointer::MotionEvent},
     output::Output,
-    reexports::wayland_server::DisplayHandle,
+    reexports::wayland_server::{DisplayHandle, Resource},
     utils::{Point, Rectangle, SERIAL_COUNTER, Size},
     wayland::seat::WaylandFocus,
 };
+use tracing::{info, warn};
 
 use crate::{
     shell::{CosmicSurface, Shell, WorkspaceDelta, focus::target::KeyboardFocusTarget},
@@ -136,6 +137,105 @@ impl ToplevelManagementHandler for State {
 
     fn close(&mut self, _dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {
         window.close();
+    }
+
+    fn force_close(
+        &mut self,
+        _dh: &DisplayHandle,
+        window: &<Self as ToplevelInfoHandler>::Window,
+        calling_client: &smithay::reexports::wayland_server::Client,
+    ) {
+        // Security: Only allow trusted clients to force-close applications
+        // Check the calling client's executable against an allowlist
+        let caller_creds = match calling_client.get_credentials(&self.common.display_handle) {
+            Ok(c) => c,
+            Err(_) => {
+                warn!("force_close: could not get calling client credentials - denied");
+                return;
+            }
+        };
+
+        // Get the executable name of the calling process
+        let caller_exe = std::fs::read_link(format!("/proc/{}/exe", caller_creds.pid))
+            .ok()
+            .and_then(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            });
+
+        // Allowlist of executables that can use force_close
+        // Configurable via COSMIC_FORCE_CLOSE_ALLOWED env var (comma-separated list)
+        // Default: only the panel and dock are trusted to force-quit applications
+        let allowed_executables: Vec<&str> = match std::env::var("COSMIC_FORCE_CLOSE_ALLOWED").ok()
+        {
+            Some(val) => val.leak().split(',').map(|s| s.trim()).collect(),
+            None => vec![],
+        };
+
+        let is_authorized = caller_exe
+            .as_ref()
+            .is_some_and(|exe| allowed_executables.contains(&exe.as_str()));
+
+        if !is_authorized {
+            warn!(
+                caller_pid = caller_creds.pid,
+                caller_exe = ?caller_exe,
+                "force_close: unauthorized client - only panel/dock may force-quit apps"
+            );
+            return;
+        }
+
+        info!(
+            caller_pid = caller_creds.pid,
+            caller_exe = ?caller_exe,
+            "force_close: authorized client"
+        );
+
+        // Get the client PID from the window's surface
+        let Some(wl_surface) = window.wl_surface() else {
+            warn!("force_close: window has no wl_surface");
+            return;
+        };
+
+        let target_client = match self.common.display_handle.get_client(wl_surface.id()) {
+            Ok(c) => c,
+            Err(_) => {
+                warn!("force_close: could not get client from surface");
+                return;
+            }
+        };
+
+        let target_creds = match target_client.get_credentials(&self.common.display_handle) {
+            Ok(c) => c,
+            Err(_) => {
+                warn!("force_close: could not get target client credentials");
+                return;
+            }
+        };
+
+        let pid = target_creds.pid;
+        let app_id = window.app_id();
+
+        info!(
+            pid,
+            app_id = %app_id,
+            "Force closing toplevel with SIGKILL"
+        );
+
+        // Send SIGKILL to the process
+        // SAFETY: We're sending a signal to a process we know exists (the Wayland client)
+        #[cfg(unix)]
+        {
+            // Use kill(2) syscall to send SIGKILL
+            let result = unsafe { libc::kill(pid, libc::SIGKILL) };
+            if result != 0 {
+                let err = std::io::Error::last_os_error();
+                warn!(pid, error = %err, "Failed to send SIGKILL");
+            } else {
+                info!(pid, "Successfully sent SIGKILL");
+            }
+        }
     }
 
     fn move_to_workspace(
