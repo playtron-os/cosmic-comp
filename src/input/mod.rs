@@ -724,10 +724,11 @@ impl State {
                         // Get the surface under the pointer
                         let clicked_surface_id = {
                             let shell = self.common.shell.read();
-                            State::surface_under(pointer_location, &output, &shell)
-                                .and_then(|(target, _)| {
+                            State::surface_under(pointer_location, &output, &shell).and_then(
+                                |(target, _)| {
                                     WaylandFocus::wl_surface(&target).map(|s| s.id().protocol_id())
-                                })
+                                },
+                            )
                         };
 
                         if let Some(surface_id) = clicked_surface_id {
@@ -742,7 +743,9 @@ impl State {
                                     dismiss_count = to_dismiss.len(),
                                     "Firing dismiss for armed controllers"
                                 );
-                                crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(to_dismiss);
+                                crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(
+                                    to_dismiss,
+                                );
                             }
                         }
                     }
@@ -1328,7 +1331,9 @@ impl State {
                                 dismiss_count = to_dismiss.len(),
                                 "Firing dismiss for armed controllers (touch)"
                             );
-                            crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(to_dismiss);
+                            crate::wayland::protocols::layer_surface_dismiss::fire_dismiss(
+                                to_dismiss,
+                            );
                         }
                     }
 
@@ -1806,11 +1811,27 @@ impl State {
                             shell.find_layer_surface_by_wl_surface(&surface_to_focus)
                         {
                             drop(shell);
-                            // Enter home mode to minimize all windows and show home widgets
-                            tracing::info!(
-                                "Entering home mode and setting keyboard focus to default receiver layer surface"
-                            );
-                            self.common.shell.write().enter_home();
+                            // Decide how to handle the tap:
+                            // - If HOME_ENABLED: enter full home mode (minimizes windows + triggers HideOnHome animations)
+                            // - If no voice windows: just minimize windows (don't hide humainos-dock)
+                            // - Otherwise: just set focus without minimizing
+                            let has_voice_windows =
+                                self.common.voice_mode_state.has_non_default_receivers();
+                            if crate::shell::home_enabled() {
+                                tracing::info!(
+                                    "Entering home mode and setting keyboard focus to default receiver layer surface"
+                                );
+                                self.common.shell.write().enter_home();
+                            } else if !has_voice_windows {
+                                tracing::info!(
+                                    "Minimizing windows (no voice windows open) and setting keyboard focus to layer surface"
+                                );
+                                self.common.shell.write().minimize_all_windows_only();
+                            } else {
+                                tracing::info!(
+                                    "Setting keyboard focus to layer surface (home mode disabled, voice windows exist)"
+                                );
+                            }
                             let focus_target = KeyboardFocusTarget::from(layer_surface);
                             Shell::set_focus(self, Some(&focus_target), seat, None, false);
                         } else {

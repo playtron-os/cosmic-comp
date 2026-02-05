@@ -2748,6 +2748,23 @@ impl Shell {
         self.minimize_all_windows();
     }
 
+    /// Minimize all visible windows without entering home mode.
+    /// 
+    /// Use this when you want to clear the screen without triggering
+    /// the home mode animation (which affects HideOnHome surfaces like humainos-dock).
+    pub fn minimize_all_windows_only(&mut self) {
+        // If voice mode is active and attached to a window, transition to floating
+        // since the window will be minimized
+        if self.voice_orb_state.orb_state
+            == crate::wayland::protocols::voice_mode::OrbState::Attached
+        {
+            self.voice_orb_state.transition_to_floating();
+        }
+
+        // Minimize all visible windows across all workspaces
+        self.minimize_all_windows();
+    }
+
     /// Minimize all visible windows across all workspaces
     fn minimize_all_windows(&mut self) {
         // Clear any previously tracked surfaces

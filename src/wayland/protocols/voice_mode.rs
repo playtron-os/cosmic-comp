@@ -320,6 +320,15 @@ impl VoiceModeState {
         self.find_receiver_by_surface(surface).is_some()
     }
 
+    /// Check if there are any non-default receivers registered
+    /// Returns true if at least one voice receiver window (not the default) is registered
+    pub fn has_non_default_receivers(&self) -> bool {
+        let receivers = self.receivers.lock().unwrap();
+        receivers
+            .iter()
+            .any(|r| !r.is_default && r.surface.upgrade().is_ok())
+    }
+
     /// Send start event to a specific surface's receiver
     pub fn send_start_to_surface(&self, surface: &WlSurface, orb_state: OrbState) -> bool {
         *self.current_orb_state.lock().unwrap() = orb_state;
@@ -582,6 +591,21 @@ impl VoiceModeState {
             receivers.retain(|r| !r.is_default);
             receivers.push(receiver);
         } else {
+            // For non-default receivers, set as last_focused ONLY if there isn't
+            // already a valid last_focused receiver. This ensures:
+            // 1. Newly spawned windows like chat-ui can receive focus_input immediately
+            // 2. We don't override the user's actual last-focused window if one exists
+            let should_set_last_focused = {
+                let last_focused = self.last_focused_receiver.lock().unwrap();
+                // Set if there's no last_focused, or it's no longer valid
+                last_focused
+                    .as_ref()
+                    .and_then(|w| w.upgrade().ok())
+                    .is_none()
+            };
+            if should_set_last_focused {
+                *self.last_focused_receiver.lock().unwrap() = Some(receiver.surface.clone());
+            }
             self.receivers.lock().unwrap().push(receiver);
         }
     }
