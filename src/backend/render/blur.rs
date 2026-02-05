@@ -64,8 +64,8 @@ pub const BLUR_DOWNSAMPLE_FACTOR: i32 = 8;
 
 // Blur backdrop styling constants
 pub const BLUR_TINT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-/// Strength of the tint overlay (0.10 = 10% opacity)
-pub const BLUR_TINT_STRENGTH: f32 = 0.10;
+/// Strength of the tint overlay (0.90 = 90% opacity)
+pub const BLUR_TINT_STRENGTH: f32 = 0.90;
 /// Alpha for fallback solid color when blur texture not available
 pub const BLUR_FALLBACK_ALPHA: f32 = 0.25;
 /// Fallback color when blur texture not available (light gray-blue)
