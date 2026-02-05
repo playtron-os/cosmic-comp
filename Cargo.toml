@@ -146,3 +146,7 @@ lto = "fat"
 [patch."https://github.com/pop-os/cosmic-protocols"]
 cosmic-protocols = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
 cosmic-client-toolkit = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
+
+[patch.crates-io]
+smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
+smithay = { git = "https://github.com/Smithay/smithay.git", rev = "f106c6200f7a31c4b25f1b8027d9f87570c84a9e" }

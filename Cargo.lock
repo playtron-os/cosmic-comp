@@ -881,7 +881,7 @@ dependencies = [
  "sendfd",
  "serde",
  "serde_json",
- "smithay 0.7.0 (git+https://github.com/Smithay/smithay.git?rev=f106c6200f7a31c4b25f1b8027d9f87570c84a9e)",
+ "smithay",
  "smithay-egui",
  "thiserror 2.0.17",
  "time",
@@ -1268,7 +1268,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1578,7 +1578,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2875,7 +2875,7 @@ version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d463f34ca3c400fde3a054da0e0b8c6ffa21e4590922f3e18281bb5eeef4cbdc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3499,7 +3499,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4685,7 +4685,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4992,41 +4992,6 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "740cea6927892bc182d5bf70c8f79806c8bc9f68f2fb96e55a30be171b63af98"
-dependencies = [
- "appendlist",
- "atomic_float",
- "bitflags 2.9.4",
- "calloop 0.14.3",
- "cgmath",
- "cursor-icon",
- "downcast-rs",
- "drm-fourcc",
- "errno",
- "gl_generator",
- "glow 0.16.0",
- "indexmap 2.11.4",
- "libc",
- "libloading",
- "profiling",
- "rand 0.9.2",
- "rustix 1.1.2",
- "sha2",
- "smallvec",
- "tempfile",
- "thiserror 2.0.17",
- "tracing",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
- "wayland-server",
- "xkbcommon 0.8.0",
-]
-
-[[package]]
-name = "smithay"
-version = "0.7.0"
 source = "git+https://github.com/Smithay/smithay.git?rev=f106c6200f7a31c4b25f1b8027d9f87570c84a9e#f106c6200f7a31c4b25f1b8027d9f87570c84a9e"
 dependencies = [
  "aliasable",
@@ -5145,8 +5110,7 @@ dependencies = [
 [[package]]
 name = "smithay-egui"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6794c95b83518f9f91ae8c2faee52302d521c0d541d016b4ed632374041d9c42"
+source = "git+https://github.com/Smithay/smithay-egui.git#f15cdfa9a494f4422aab9fe339f2e558555a0a36"
 dependencies = [
  "cgmath",
  "egui",
@@ -5155,7 +5119,7 @@ dependencies = [
  "image",
  "log",
  "memoffset",
- "smithay 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smithay",
  "xkbcommon 0.8.0",
 ]
 
@@ -5366,7 +5330,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6265,7 +6229,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
- "parking_lot 0.12.5",
+ "parking_lot 0.11.2",
  "profiling",
  "raw-window-handle",
  "smallvec",
@@ -6293,7 +6257,7 @@ dependencies = [
  "log",
  "naga",
  "once_cell",
- "parking_lot 0.12.5",
+ "parking_lot 0.11.2",
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",
@@ -6334,7 +6298,7 @@ dependencies = [
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
  "once_cell",
- "parking_lot 0.12.5",
+ "parking_lot 0.11.2",
  "profiling",
  "range-alloc",
  "raw-window-handle",
@@ -6387,7 +6351,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
