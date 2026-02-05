@@ -57,6 +57,19 @@ install-voice-mode:
 	mkdir -p "$(VOICE_MODE_DIR)"
 	install -m0644 data/voice-mode/* "$(VOICE_MODE_DIR)/"
 
+uninstall-voice-mode:
+	rm -rf "$(VOICE_MODE_DIR)"
+
+# Local user config targets (for development)
+LOCAL_VOICE_MODE_DIR = $(HOME)/.config/cosmic/com.playtron.VoiceMode/v1
+
+install-voice-mode-local:
+	mkdir -p "$(LOCAL_VOICE_MODE_DIR)"
+	install -m0644 data/voice-mode/* "$(LOCAL_VOICE_MODE_DIR)/"
+
+uninstall-voice-mode-local:
+	rm -rf "$(LOCAL_VOICE_MODE_DIR)"
+
 install-bare-session: install
 	install -Dm0644 "data/cosmic.desktop" "$(DESTDIR)$(sharedir)/wayland-sessions/cosmic.desktop"
 	install -Dm0644 "data/cosmic-session.target" "$(DESTDIR)$(libdir)/systemd/user/cosmic-session.target"
