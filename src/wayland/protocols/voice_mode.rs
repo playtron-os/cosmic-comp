@@ -157,6 +157,10 @@ pub struct VoiceModeState {
     /// Last focused non-default receiver surface (for tap-to-focus when unfocused)
     /// This is updated whenever a non-default receiver's surface gains keyboard focus
     last_focused_receiver: Mutex<Option<Weak<WlSurface>>>,
+    /// Whether voice mode was activated on demand (e.g., button click) rather than key hold.
+    /// When true, releasing the voice hotkey will simply deactivate voice mode
+    /// without triggering focus_input behavior.
+    activated_on_demand: Mutex<bool>,
 }
 
 impl std::fmt::Debug for VoiceModeState {
@@ -198,6 +202,7 @@ impl VoiceModeState {
             key_press_time: Mutex::new(None),
             voice_activated_this_press: Mutex::new(false),
             last_focused_receiver: Mutex::new(None),
+            activated_on_demand: Mutex::new(false),
         }
     }
 
@@ -277,6 +282,21 @@ impl VoiceModeState {
         } else {
             false
         }
+    }
+
+    /// Mark that voice mode was activated on demand (e.g., button click)
+    pub fn mark_activated_on_demand(&self) {
+        *self.activated_on_demand.lock().unwrap() = true;
+    }
+
+    /// Check if voice mode was activated on demand
+    pub fn is_activated_on_demand(&self) -> bool {
+        *self.activated_on_demand.lock().unwrap()
+    }
+
+    /// Clear the on-demand activation flag
+    pub fn clear_on_demand(&self) {
+        *self.activated_on_demand.lock().unwrap() = false;
     }
 
     /// Check if voice mode is currently active
@@ -367,6 +387,7 @@ impl VoiceModeState {
         *self.current_orb_state.lock().unwrap() = OrbState::Hidden;
         *self.active_receiver_surface.lock().unwrap() = None;
         *self.pending_stop.lock().unwrap() = None;
+        *self.activated_on_demand.lock().unwrap() = false;
         self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
@@ -458,6 +479,7 @@ impl VoiceModeState {
         *self.current_orb_state.lock().unwrap() = OrbState::Hidden;
         *self.active_receiver_surface.lock().unwrap() = None;
         *self.pending_stop.lock().unwrap() = None;
+        *self.activated_on_demand.lock().unwrap() = false;
         self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
@@ -672,6 +694,10 @@ pub trait VoiceModeHandler {
     /// Called when client sends dismiss request to hide the frozen orb
     /// This happens when transcription completes with empty result or error
     fn dismiss_orb(&mut self);
+
+    /// Called when a client requests voice mode activation on demand (e.g., button click)
+    /// The surface parameter is the requesting surface's wl_surface
+    fn request_activate_voice_mode(&mut self, surface: &WlSurface);
 }
 
 impl<D> GlobalDispatch<zcosmic_voice_mode_manager_v1::ZcosmicVoiceModeManagerV1, (), D>
@@ -797,6 +823,15 @@ where
                     state.dismiss_orb();
                 } else {
                     debug!("Dismiss request ignored - orb not in frozen state");
+                }
+            }
+            zcosmic_voice_mode_v1::Request::RequestActivate => {
+                info!("Client request_activate received - on-demand voice mode activation");
+                // Only activate if voice mode is not already active
+                if !state.voice_mode_state().is_active() {
+                    state.request_activate_voice_mode(&data.surface);
+                } else {
+                    debug!("request_activate ignored - voice mode already active");
                 }
             }
         }

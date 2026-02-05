@@ -363,6 +363,24 @@ impl VoiceModeHandler for State {
         self.common.voice_mode_state.set_orb_state(OrbState::Hidden);
         self.common.voice_mode_state.reset_audio_level();
     }
+
+    fn request_activate_voice_mode(&mut self, surface: &WlSurface) {
+        info!("On-demand voice mode activation requested by client");
+
+        // Mark as on-demand activation so key release behavior changes
+        self.common.voice_mode_state.mark_activated_on_demand();
+
+        // Activate voice mode using the requesting surface
+        let orb_state = self.activate_voice_mode(Some(surface));
+        if orb_state != OrbState::Hidden {
+            self.common.voice_mode_state.mark_voice_activated();
+            info!(?orb_state, "Voice mode activated on demand (button click)");
+        } else {
+            // Activation failed, clear on-demand flag
+            self.common.voice_mode_state.clear_on_demand();
+            info!("On-demand voice mode activation failed - no suitable receiver");
+        }
+    }
 }
 
 delegate_voice_mode!(State);

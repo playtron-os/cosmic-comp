@@ -1726,6 +1726,32 @@ impl State {
                 return FilterResult::Intercept(None);
             }
 
+            // Check if voice mode was activated on demand (button click).
+            // When on-demand is active, any voice key press/release simply deactivates
+            // voice mode without triggering focus_input or tap detection.
+            let is_on_demand = self.common.voice_mode_state.is_activated_on_demand();
+
+            if is_on_demand && voice_mode_active {
+                std::mem::drop(shell); // Release shell lock before protocol calls
+
+                if event.state() == KeyState::Pressed {
+                    // Suppress the key press so we also get the release
+                    tracing::debug!(
+                        "Voice key pressed while on-demand voice active - suppressing for deactivation on release"
+                    );
+                    seat.supressed_keys().add(&handle, None);
+                } else if event.state() == KeyState::Released {
+                    // Deactivate voice mode - no focus_input, no tap detection
+                    tracing::debug!(
+                        "Voice key released while on-demand voice active - deactivating voice mode"
+                    );
+                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+                    self.common.voice_mode_state.clear_key_press();
+                    self.deactivate_voice_mode();
+                }
+                return FilterResult::Intercept(None);
+            }
+
             std::mem::drop(shell); // Release shell lock before protocol calls
 
             if event.state() == KeyState::Pressed {

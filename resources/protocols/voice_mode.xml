@@ -137,6 +137,22 @@
       </description>
     </request>
 
+    <request name="request_activate">
+      <description summary="request voice mode activation on demand">
+        Request the compositor to activate voice mode on demand (e.g., from a
+        button click in the UI). This is an alternative to the hotkey-based
+        activation controlled by the compositor.
+        
+        When voice mode is activated on demand, subsequent presses of the voice
+        hotkey (e.g., Super/Copilot key) will deactivate voice mode on release
+        without triggering the focus_input behavior.
+        
+        If voice mode is already active, this request is ignored.
+        The compositor decides whether to honor this request based on the
+        current state and which surface is making the request.
+      </description>
+    </request>
+
     <event name="start">
       <description summary="voice input started">
         Sent when voice input has started and this surface should begin
