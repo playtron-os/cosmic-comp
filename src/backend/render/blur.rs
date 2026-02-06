@@ -158,66 +158,17 @@ impl Default for BlurRenderState {
 }
 
 impl BlurRenderState {
-    /// Create or resize blur textures if needed.
-    /// Creates full-size background texture and optionally downsampled blur textures.
-    ///
-    /// Returns `Ok(true)` if textures are ready, `Ok(false)` if allocation was previously
-    /// marked as failed (skipped), or `Err` on new failure.
-    pub fn ensure_textures<R: AsGlowRenderer + Offscreen<GlesTexture>>(
+    /// Internal helper to create all blur textures with a specific format.
+    /// Returns Ok(()) on success, or Err with the error on failure.
+    fn create_textures_with_format<R: AsGlowRenderer + Offscreen<GlesTexture>>(
         &mut self,
         renderer: &mut R,
         format: Fourcc,
         size: Size<i32, Physical>,
         scale: Scale<f64>,
-    ) -> Result<bool, R::Error> {
-        // If allocation has previously failed permanently, skip without error
-        if self.allocation_failed {
-            return Ok(false);
-        }
-
-        let downsample_enabled = blur_downsample_enabled();
-
-        // Calculate blur size (downsampled if enabled, full size otherwise)
-        let blur_size: Size<i32, Physical> = if downsample_enabled {
-            Size::from((
-                (size.w / BLUR_DOWNSAMPLE_FACTOR).max(1),
-                (size.h / BLUR_DOWNSAMPLE_FACTOR).max(1),
-            ))
-        } else {
-            size
-        };
-
-        // Only recreate if size changed
-        let textures_valid = if downsample_enabled {
-            self.screen_size == size
-                && self.texture_a.is_some()
-                && self.texture_b.is_some()
-                && self.layer_texture_a.is_some()
-                && self.layer_texture_b.is_some()
-                && self.background_texture.is_some()
-                && self.downsampled_texture.is_some()
-        } else {
-            self.screen_size == size
-                && self.texture_a.is_some()
-                && self.texture_b.is_some()
-                && self.layer_texture_a.is_some()
-                && self.layer_texture_b.is_some()
-                && self.background_texture.is_some()
-        };
-
-        if textures_valid {
-            return Ok(true);
-        }
-
-        tracing::debug!(
-            screen_w = size.w,
-            screen_h = size.h,
-            blur_w = blur_size.w,
-            blur_h = blur_size.h,
-            downsample_enabled = downsample_enabled,
-            "Creating blur textures"
-        );
-
+        downsample_enabled: bool,
+        blur_size: Size<i32, Physical>,
+    ) -> Result<(), R::Error> {
         // Full-size background texture (stores previous frame for blur source)
         let full_buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
         let bg_tex = Offscreen::<GlesTexture>::create_buffer(renderer, format, full_buffer_size)?;
@@ -296,7 +247,115 @@ impl BlurRenderState {
         self.texture_size = blur_size;
         self.scale = scale;
         self.blur_applied = false;
-        Ok(true)
+        Ok(())
+    }
+
+    /// Create or resize blur textures if needed.
+    /// Creates full-size background texture and optionally downsampled blur textures.
+    ///
+    /// If the requested format is not supported (e.g., 10-bit formats on software renderers),
+    /// this will automatically fall back to Argb8888.
+    ///
+    /// Returns `Ok(true)` if textures are ready, `Ok(false)` if allocation was previously
+    /// marked as failed (skipped), or `Err` on new failure.
+    pub fn ensure_textures<R: AsGlowRenderer + Offscreen<GlesTexture>>(
+        &mut self,
+        renderer: &mut R,
+        format: Fourcc,
+        size: Size<i32, Physical>,
+        scale: Scale<f64>,
+    ) -> Result<bool, R::Error> {
+        // If allocation has previously failed permanently, skip without error
+        if self.allocation_failed {
+            return Ok(false);
+        }
+
+        let downsample_enabled = blur_downsample_enabled();
+
+        // Calculate blur size (downsampled if enabled, full size otherwise)
+        let blur_size: Size<i32, Physical> = if downsample_enabled {
+            Size::from((
+                (size.w / BLUR_DOWNSAMPLE_FACTOR).max(1),
+                (size.h / BLUR_DOWNSAMPLE_FACTOR).max(1),
+            ))
+        } else {
+            size
+        };
+
+        // Only recreate if size changed
+        let textures_valid = if downsample_enabled {
+            self.screen_size == size
+                && self.texture_a.is_some()
+                && self.texture_b.is_some()
+                && self.layer_texture_a.is_some()
+                && self.layer_texture_b.is_some()
+                && self.background_texture.is_some()
+                && self.downsampled_texture.is_some()
+        } else {
+            self.screen_size == size
+                && self.texture_a.is_some()
+                && self.texture_b.is_some()
+                && self.layer_texture_a.is_some()
+                && self.layer_texture_b.is_some()
+                && self.background_texture.is_some()
+        };
+
+        if textures_valid {
+            return Ok(true);
+        }
+
+        tracing::debug!(
+            screen_w = size.w,
+            screen_h = size.h,
+            blur_w = blur_size.w,
+            blur_h = blur_size.h,
+            downsample_enabled = downsample_enabled,
+            "Creating blur textures"
+        );
+
+        // Try to create textures with the requested format first
+        match self.create_textures_with_format(
+            renderer,
+            format,
+            size,
+            scale,
+            downsample_enabled,
+            blur_size,
+        ) {
+            Ok(()) => return Ok(true),
+            Err(err) => {
+                // Check if this is an unsupported pixel format error
+                let err_str = format!("{:?}", err);
+                if err_str.contains("UnsupportedPixelFormat") && format != Fourcc::Argb8888 {
+                    // Clear any partially created textures before retry
+                    self.background_texture = None;
+                    self.downsampled_texture = None;
+                    self.texture_a = None;
+                    self.texture_b = None;
+                    self.layer_texture_a = None;
+                    self.layer_texture_b = None;
+                    self.damage_tracker = None;
+
+                    tracing::info!(
+                        ?format,
+                        "Blur texture format not supported, falling back to Argb8888"
+                    );
+
+                    // Try again with Argb8888 as fallback (universally supported)
+                    self.create_textures_with_format(
+                        renderer,
+                        Fourcc::Argb8888,
+                        size,
+                        scale,
+                        downsample_enabled,
+                        blur_size,
+                    )?;
+                    return Ok(true);
+                }
+                // Other errors are returned as-is
+                return Err(err);
+            }
+        }
     }
 
     /// Get background texture (previous frame content at full resolution)
