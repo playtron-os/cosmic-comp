@@ -1,3 +1,17 @@
+# [1.3.0](https://github.com/playtron-os/cosmic-comp/compare/v1.2.0...v1.3.0) (2026-02-06)
+
+
+### Bug Fixes
+
+* patch smithay packages for make run-debug to work properly ([b080bfa](https://github.com/playtron-os/cosmic-comp/commit/b080bfa060602a5347d536a4b1ca49befa2e8592))
+* super key pressing interaction with home mode ([72b25d4](https://github.com/playtron-os/cosmic-comp/commit/72b25d478627caf7a862b6699fdeceebebee3e32))
+
+
+### Features
+
+* add option to activate voice mode via button from client ([4d15dae](https://github.com/playtron-os/cosmic-comp/commit/4d15daec42e08221a73eabdec62714e4ac90c006))
+* update blur window white opacity to 0.9% ([9722159](https://github.com/playtron-os/cosmic-comp/commit/9722159203379c83a832385ac399764f2cd612b1))
+
 # [1.2.0](https://github.com/playtron-os/cosmic-comp/compare/v1.1.0...v1.2.0) (2026-02-04)
 
 
