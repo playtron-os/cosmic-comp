@@ -27,8 +27,9 @@ use smithay::{
 
 use crate::{
     backend::render::{
-        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
-        BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
+        BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR,
+        BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader, ElementFilter,
+        IndicatorShader, Key, Usage,
         element::AsGlowRenderer,
         get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
@@ -3312,6 +3313,17 @@ impl FloatingLayout {
                         BLUR_TINT_STRENGTH,
                         false, // No blur border for regular windows
                     );
+
+                    // Additional 90% white backdrop on top of blur
+                    let white_backdrop = BackdropShader::element(
+                        renderer,
+                        Key::Window(Usage::BlurBackdrop, elem.key()),
+                        blur_geometry,
+                        corner_radius,
+                        alpha * BLUR_BACKDROP_ALPHA,
+                        BLUR_BACKDROP_COLOR,
+                    );
+                    window_elements.push(white_backdrop.into());
                     window_elements.push(blur_backdrop.into());
                 } else {
                     tracing::debug!(

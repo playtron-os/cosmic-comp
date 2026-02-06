@@ -137,11 +137,12 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 
 // Blur module re-exports
 pub use blur::{
-    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
-    BLUR_THROTTLE_INTERVAL, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext,
-    BlurRenderState, BlurredTextureInfo, CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur,
-    LayerBlurSurfaceInfo, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
-    cache_blur_texture_for_window, clear_blur_textures_for_output, clear_cached_layer_surfaces,
+    BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA,
+    BLUR_FALLBACK_COLOR, BLUR_ITERATIONS, BLUR_THROTTLE_INTERVAL, BLUR_TINT_COLOR,
+    BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+    CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur, LayerBlurSurfaceInfo, apply_blur_passes,
+    blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
+    clear_blur_textures_for_output, clear_cached_layer_surfaces,
     clear_layer_blur_textures_for_output, compute_element_content_hash,
     copy_blur_texture_for_cache, downsample_texture, get_blur_group_content_hash,
     get_cached_blur_texture_for_layer, get_cached_blur_texture_for_window,
@@ -163,6 +164,7 @@ pub struct IndicatorShader(pub GlesPixelProgram);
 pub enum Usage {
     OverviewBackdrop,
     Overlay,
+    BlurBackdrop,
     MoveGrabIndicator,
     FocusIndicator,
     PotentialGroupIndicator,
@@ -1518,6 +1520,22 @@ where
                                 BLUR_TINT_STRENGTH,
                                 true, // Enable border for layer shells
                             );
+
+                            // Additional 90% white backdrop on top of blur
+                            // Must be pushed BEFORE blur — later elements have lower z-order
+                            let white_backdrop = BackdropShader::element(
+                                renderer,
+                                Key::LayerSurface(surface_id),
+                                local_geo,
+                                corner_radius,
+                                alpha * BLUR_BACKDROP_ALPHA,
+                                BLUR_BACKDROP_COLOR,
+                            );
+                            let white_element: WorkspaceRenderElement<R> =
+                                Into::<CosmicMappedRenderElement<R>>::into(white_backdrop).into();
+                            if let Some(cropped) = crop_to_output(white_element) {
+                                elements.push(cropped.into());
+                            }
 
                             let backdrop_element: WorkspaceRenderElement<R> =
                                 Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();

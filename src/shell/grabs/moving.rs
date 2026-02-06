@@ -2,9 +2,12 @@
 
 use crate::{
     backend::render::{
-        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
-        BackdropShader, BlurredBackdropShader, IndicatorShader, Key, Usage, cursor::CursorState,
-        element::AsGlowRenderer, get_cached_blur_texture_for_window,
+        BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR,
+        BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader,
+        IndicatorShader, Key, Usage,
+        cursor::CursorState,
+        element::AsGlowRenderer,
+        get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
     },
     shell::{
@@ -207,13 +210,19 @@ impl MoveGrabState {
         };
 
         // Render blur backdrop if the window has blur enabled
-        let blur_backdrop_element: Option<CosmicMappedRenderElement<R>> = if self.window.has_blur()
-        {
+        let blur_backdrop_element: Vec<CosmicMappedRenderElement<R>> = if self.window.has_blur() {
             let window_geo = self.window.geometry();
             // Compute window corner radius from theme: radius_s + 4 for values >= 4
             let radius_s = theme.radius_s()[0];
-            let window_radius = (if radius_s < 4.0 { radius_s } else { radius_s + 4.0 }).round() as u8;
-            let corner_radius = self.window.blur_corner_radius(window_geo.size.as_logical(), window_radius);
+            let window_radius = (if radius_s < 4.0 {
+                radius_s
+            } else {
+                radius_s + 4.0
+            })
+            .round() as u8;
+            let corner_radius = self
+                .window
+                .blur_corner_radius(window_geo.size.as_logical(), window_radius);
 
             let output_name = output.name();
             let window_key = self.window.key();
@@ -228,35 +237,43 @@ impl MoveGrabState {
             let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
 
             if let Some(blur_info) = blur_info {
-                Some(CosmicMappedRenderElement::from(
-                    BlurredBackdropShader::element(
-                        renderer,
-                        &blur_info.texture,
-                        backdrop_geometry,
-                        blur_info.size,
-                        blur_info.screen_size,
-                        output_scale_f,
-                        output_transform,
-                        corner_radius,
-                        alpha,
-                        BLUR_TINT_COLOR,
-                        BLUR_TINT_STRENGTH,
-                        false, // No blur border for moving windows
-                    ),
-                ))
+                let blur_elem = CosmicMappedRenderElement::from(BlurredBackdropShader::element(
+                    renderer,
+                    &blur_info.texture,
+                    backdrop_geometry,
+                    blur_info.size,
+                    blur_info.screen_size,
+                    output_scale_f,
+                    output_transform,
+                    corner_radius,
+                    alpha,
+                    BLUR_TINT_COLOR,
+                    BLUR_TINT_STRENGTH,
+                    false, // No blur border for moving windows
+                ));
+                // Additional 90% white backdrop on top of blur
+                let white_backdrop = CosmicMappedRenderElement::from(BackdropShader::element(
+                    renderer,
+                    Key::Window(Usage::BlurBackdrop, self.window.key()),
+                    backdrop_geometry,
+                    corner_radius,
+                    alpha * BLUR_BACKDROP_ALPHA,
+                    BLUR_BACKDROP_COLOR,
+                ));
+                vec![white_backdrop, blur_elem]
             } else {
                 // Fallback when no blur texture is cached
-                Some(CosmicMappedRenderElement::from(BackdropShader::element(
+                vec![CosmicMappedRenderElement::from(BackdropShader::element(
                     renderer,
                     Key::Window(Usage::Overlay, self.window.key()),
                     backdrop_geometry,
                     corner_radius,
                     alpha * BLUR_FALLBACK_ALPHA,
                     BLUR_FALLBACK_COLOR,
-                )))
+                ))]
             }
         } else {
-            None
+            vec![]
         };
 
         let w_elements = self
@@ -317,29 +334,39 @@ impl MoveGrabState {
             .collect();
 
         // Render voice orb if attached to this window
-        let orb_element: Option<CosmicMappedRenderElement<R>> = attached_orb_state
-            .and_then(|orb_state| {
+        let orb_element: Option<CosmicMappedRenderElement<R>> =
+            attached_orb_state.and_then(|orb_state| {
                 // Check if orb is attached to this window
                 if let Some(attached_surface_id) = orb_state.attached_surface_id_for_render() {
-                    let window_surface_id = self.window
+                    let window_surface_id = self
+                        .window
                         .active_window()
                         .wl_surface()
                         .map(|s| s.id().to_string());
-                    
+
                     if window_surface_id.as_deref() == Some(attached_surface_id) {
                         // Get output geometry for orb rendering
                         let output_geo = output.geometry().as_logical();
-                        
+
                         // Calculate the current window geometry for the grabbed window
                         let current_window_geo = Rectangle::new(
                             render_location,
-                            self.window.geometry().size.to_f64().upscale(scale).to_i32_round(),
+                            self.window
+                                .geometry()
+                                .size
+                                .to_f64()
+                                .upscale(scale)
+                                .to_i32_round(),
                         );
 
                         // Compute window corner radius from theme: radius_s + 4 for values >= 4
                         let radius_s = theme.radius_s()[0];
-                        let window_border_radius = if radius_s < 4.0 { radius_s } else { radius_s + 4.0 };
-                        
+                        let window_border_radius = if radius_s < 4.0 {
+                            radius_s
+                        } else {
+                            radius_s + 4.0
+                        };
+
                         // Create the voice orb element with current window geometry
                         VoiceOrbShader::element_with_window_override(
                             renderer,
@@ -347,7 +374,8 @@ impl MoveGrabState {
                             output_geo,
                             Some(current_window_geo),
                             Some(window_border_radius),
-                        ).map(|e| CosmicMappedRenderElement::from(e))
+                        )
+                        .map(|e| CosmicMappedRenderElement::from(e))
                     } else {
                         None
                     }
@@ -403,7 +431,7 @@ impl MoveGrabState {
                             }),
                     )
                     .chain(orb_element)
-                    .chain(blur_backdrop_element)
+                    .chain(blur_backdrop_element.into_iter())
                     .chain(snapping_indicator),
             )
             .map(I::from)
