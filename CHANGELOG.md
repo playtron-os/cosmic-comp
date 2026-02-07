@@ -1,3 +1,11 @@
+# [1.4.0](https://github.com/playtron-os/cosmic-comp/compare/v1.3.0...v1.4.0) (2026-02-07)
+
+
+### Features
+
+* add an additional backdrop on top of blur for extra effect ([89e52fc](https://github.com/playtron-os/cosmic-comp/commit/89e52fce7e5547341101609465b5b5d2986db72b))
+* support fallback for blur effect in software rendering ([b5f10b1](https://github.com/playtron-os/cosmic-comp/commit/b5f10b186178fab058db7d464a57215550fa5ee6))
+
 # [1.3.0](https://github.com/playtron-os/cosmic-comp/compare/v1.2.0...v1.3.0) (2026-02-06)
 
 
