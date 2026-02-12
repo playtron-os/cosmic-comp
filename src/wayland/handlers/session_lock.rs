@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{shell::SessionLock, state::State, utils::prelude::*};
 use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+use crate::{shell::SessionLock, state::State, utils::prelude::*};
 use smithay::{
     delegate_session_lock,
     output::Output,
