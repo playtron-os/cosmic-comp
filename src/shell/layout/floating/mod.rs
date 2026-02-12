@@ -1172,6 +1172,15 @@ impl FloatingLayout {
         }
 
         let position = position
+            .map(|pos| {
+                // Clamp the position so the window stays within the non-exclusive zone.
+                // This prevents windows from being dropped behind layer-shell panels.
+                let geo = output_geometry.as_local();
+                Point::from((
+                    pos.x.max(geo.loc.x),
+                    pos.y.max(geo.loc.y),
+                ))
+            })
             .or_else(|| last_geometry.map(|g| g.loc))
             .unwrap_or_else(|| {
                 // cleanup moved windows
