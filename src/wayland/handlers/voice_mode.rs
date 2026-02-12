@@ -22,6 +22,12 @@ impl VoiceModeHandler for State {
     }
 
     fn activate_voice_mode(&mut self, focused_surface: Option<&WlSurface>) -> OrbState {
+        // Block voice mode activation during session lock (idle/login screen)
+        if self.common.shell.read().session_lock.is_some() {
+            info!("Voice mode activation blocked - session is locked");
+            return OrbState::Hidden;
+        }
+
         info!(?focused_surface, "Activating voice mode");
 
         // Exit home mode when voice mode activates (orb should appear over everything)

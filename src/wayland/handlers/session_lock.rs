@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{shell::SessionLock, state::State, utils::prelude::*};
+use crate::wayland::protocols::voice_mode::VoiceModeHandler;
 use smithay::{
     delegate_session_lock,
     output::Output,
@@ -18,6 +19,11 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, locker: SessionLocker) {
+        // Force-cancel voice mode if active before locking
+        if self.common.voice_mode_state.is_active() {
+            self.cancel_voice_mode();
+        }
+
         let mut shell = self.common.shell.write();
 
         // Reject lock if sesion lock exists and is still valid

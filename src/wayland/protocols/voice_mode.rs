@@ -828,6 +828,7 @@ where
             zcosmic_voice_mode_v1::Request::RequestActivate => {
                 info!("Client request_activate received - on-demand voice mode activation");
                 // Only activate if voice mode is not already active
+                // Session lock check is handled inside activate_voice_mode()
                 if !state.voice_mode_state().is_active() {
                     state.request_activate_voice_mode(&data.surface);
                 } else {

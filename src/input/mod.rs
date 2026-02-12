@@ -1708,6 +1708,12 @@ impl State {
         );
 
         if voice_config.enabled && (matches || is_voice_key_release) {
+            // Block voice key handling entirely during session lock (idle/login screen)
+            if shell.session_lock.is_some() {
+                tracing::debug!("Voice key ignored - session is locked");
+                return FilterResult::Intercept(None);
+            }
+
             tracing::debug!("Voice key binding matched! Processing...");
             // Check if voice mode is in a non-interruptible state (frozen, transitioning)
             // During these states, pressing the key again will cancel voice mode
