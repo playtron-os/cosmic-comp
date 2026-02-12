@@ -419,6 +419,11 @@ impl State {
                         );
                         std::mem::drop(shell);
 
+                        // After mapping, if this window is an embedded child, ensure it's
+                        // on the same output as its parent (it may have been placed on the
+                        // wrong output based on cursor position).
+                        self.ensure_embedded_on_parent_output(&window);
+
                         if let Some(target) = res {
                             let shell = self.common.shell.read();
                             let seat = shell.seats.last_active().clone();

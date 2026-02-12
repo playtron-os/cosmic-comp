@@ -874,6 +874,111 @@ impl State {
         self.find_window_for_surface(surface).map(|w| w.geometry())
     }
 
+    /// After a window has been mapped, check if it is an embedded child and move it
+    /// to the same output/workspace as its parent. This must be called AFTER map_window
+    /// because the embedded window needs to be in a workspace before it can be moved.
+    pub fn ensure_embedded_on_parent_output(&mut self, window: &CosmicSurface) {
+        if !is_surface_embedded(window) {
+            return;
+        }
+
+        let Some(parent_surface_id) = get_parent_surface_id(window) else {
+            return;
+        };
+
+        // Find which workspaces the parent and embedded windows are in
+        let (parent_handle, embedded_handle, embedded_mapped) = {
+            let shell = self.common.shell.read();
+
+            // Find parent's workspace by surface ID
+            let parent_mapped = shell.element_for_surface_id(&parent_surface_id);
+            let parent_workspace = parent_mapped.and_then(|m| shell.space_for(m));
+            let parent_handle = parent_workspace.map(|w| w.handle.clone());
+
+            // Find embedded's workspace
+            let embedded_mapped = shell.element_for_surface(window).cloned();
+            let embedded_workspace = embedded_mapped.as_ref().and_then(|m| shell.space_for(m));
+            let embedded_handle = embedded_workspace.map(|w| w.handle.clone());
+
+            (parent_handle, embedded_handle, embedded_mapped)
+        };
+
+        if let (Some(parent_handle), Some(embedded_handle), Some(embedded_mapped)) =
+            (parent_handle, embedded_handle, embedded_mapped)
+        {
+            if parent_handle != embedded_handle {
+                info!(
+                    embedded_app_id = %window.app_id(),
+                    parent_surface_id = %parent_surface_id,
+                    from = ?embedded_handle,
+                    to = ?parent_handle,
+                    "ensure_embedded_on_parent_output: moving embedded child to parent's workspace"
+                );
+
+                let mut workspace_state = self.common.workspace_state.update();
+                let mut shell = self.common.shell.write();
+                let _ = shell.move_element(
+                    None,
+                    &embedded_mapped,
+                    &embedded_handle,
+                    &parent_handle,
+                    false,
+                    None,
+                    &mut workspace_state,
+                );
+            } else {
+                debug!(
+                    embedded_app_id = %window.app_id(),
+                    "ensure_embedded_on_parent_output: already on correct workspace"
+                );
+            }
+
+            // After moving (or if already on correct workspace), reconfigure the
+            // embedded window to match the embed geometry. The window may have been
+            // initially configured with a default size for the wrong output.
+            if let Some(embed_info) = get_embed_render_info(window) {
+                // Calculate actual geometry using anchor config if present
+                let actual_geometry = if let Some(ref config) = embed_info.anchor_config {
+                    // Get parent window size for anchor calculation
+                    let parent_size = {
+                        let shell = self.common.shell.read();
+                        shell
+                            .element_for_surface_id(&parent_surface_id)
+                            .map(|m| m.active_window().geometry().size)
+                    };
+                    if let Some(size) = parent_size {
+                        config.calculate_geometry(size.w, size.h)
+                    } else {
+                        embed_info.geometry
+                    }
+                } else {
+                    embed_info.geometry
+                };
+
+                info!(
+                    embedded_app_id = %window.app_id(),
+                    geometry = ?actual_geometry,
+                    "ensure_embedded_on_parent_output: reconfiguring embedded window to match embed geometry"
+                );
+
+                let global_geo = smithay::utils::Rectangle::new(
+                    (actual_geometry.loc.x, actual_geometry.loc.y).into(),
+                    (actual_geometry.size.w, actual_geometry.size.h).into(),
+                );
+                window.set_geometry(global_geo, 0);
+                window.force_configure();
+            }
+        } else {
+            info!(
+                embedded_app_id = %window.app_id(),
+                parent_surface_id = %parent_surface_id,
+                parent_found = parent_handle.is_some(),
+                embedded_found = embedded_handle.is_some(),
+                "ensure_embedded_on_parent_output: could not find workspaces"
+            );
+        }
+    }
+
     /// Check if a newly mapped window matches any pending PID-based embed requests
     /// and fulfill them if so.
     pub fn check_pending_pid_embeds_for_window(&mut self, window: &CosmicSurface) {

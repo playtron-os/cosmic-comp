@@ -3847,7 +3847,7 @@ impl Shell {
             map.map_layer(&pending.surface).unwrap();
         }
         for workspace in self.workspaces.spaces_mut() {
-            workspace.tiling_layer.recalculate();
+            workspace.recalculate();
         }
 
         wants_focus.then(|| pending.surface.into())
