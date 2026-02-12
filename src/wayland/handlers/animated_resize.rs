@@ -217,28 +217,31 @@ impl AnimatedResizeHandler for State {
             return;
         };
 
-        // Get output geometry for boundary clamping
-        let output_geo = active_output.geometry();
+        // Get non-exclusive zone for boundary clamping (respects layer-shell panels)
+        let usable_zone =
+            smithay::desktop::layer_map_for_output(&active_output).non_exclusive_zone();
 
-        // Clamp position to keep window within output bounds
+        // Clamp position to keep window within usable bounds (excluding panels)
         let mut clamped_x = target_x;
         let mut clamped_y = target_y;
 
         // Check right edge overflow
-        if clamped_x + target_width > output_geo.size.w {
-            clamped_x = (output_geo.size.w - target_width).max(0);
+        if clamped_x + target_width > usable_zone.size.w + usable_zone.loc.x {
+            clamped_x =
+                (usable_zone.size.w + usable_zone.loc.x - target_width).max(usable_zone.loc.x);
         }
         // Check bottom edge overflow
-        if clamped_y + target_height > output_geo.size.h {
-            clamped_y = (output_geo.size.h - target_height).max(0);
+        if clamped_y + target_height > usable_zone.size.h + usable_zone.loc.y {
+            clamped_y =
+                (usable_zone.size.h + usable_zone.loc.y - target_height).max(usable_zone.loc.y);
         }
         // Check left edge
-        if clamped_x < 0 {
-            clamped_x = 0;
+        if clamped_x < usable_zone.loc.x {
+            clamped_x = usable_zone.loc.x;
         }
         // Check top edge
-        if clamped_y < 0 {
-            clamped_y = 0;
+        if clamped_y < usable_zone.loc.y {
+            clamped_y = usable_zone.loc.y;
         }
 
         let clamped_loc: Point<i32, Local> = (clamped_x, clamped_y).into();

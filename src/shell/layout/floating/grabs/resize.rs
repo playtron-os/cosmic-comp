@@ -11,6 +11,7 @@ use crate::{
     },
     utils::prelude::*,
 };
+use smithay::desktop::layer_map_for_output;
 use smithay::{
     backend::input::ButtonState,
     desktop::{WindowSurface, space::SpaceElement},
@@ -95,6 +96,12 @@ impl ResizeSurfaceGrab {
 
         let mut location_diff = Point::default();
 
+        // Use the non-exclusive zone (area excluding layer-shell panels) for edge snapping
+        // so windows can't be resized behind panels.
+        let usable_zone = layer_map_for_output(&self.output)
+            .non_exclusive_zone()
+            .as_local();
+
         if self.edges.intersects(left_right) {
             if self.edges.intersects(ResizeEdge::LEFT) {
                 location_diff.x += dx;
@@ -103,23 +110,22 @@ impl ResizeSurfaceGrab {
 
             new_window_width = (self.initial_window_size.w as f64 + dx) as i32;
 
-            // If the resizing vertical edge is close to our output's edge in the same direction, snap to it.
-            let output_geom = self.output.geometry().to_local(&self.output);
+            // If the resizing vertical edge is close to the usable zone edge, snap to it.
             if self.edges.intersects(ResizeEdge::LEFT) {
-                if (self.initial_window_location.x - dx as i32 - output_geom.loc.x).unsigned_abs()
+                if (self.initial_window_location.x - dx as i32 - usable_zone.loc.x).unsigned_abs()
                     < self.edge_snap_threshold
                 {
-                    new_window_width = self.initial_window_size.w - output_geom.loc.x
+                    new_window_width = self.initial_window_size.w - usable_zone.loc.x
                         + self.initial_window_location.x;
                 }
             } else if (self.initial_window_location.x + self.initial_window_size.w + dx as i32
-                - output_geom.loc.x
-                - output_geom.size.w)
+                - usable_zone.loc.x
+                - usable_zone.size.w)
                 .unsigned_abs()
                 < self.edge_snap_threshold
             {
                 new_window_width =
-                    output_geom.loc.x - self.initial_window_location.x + output_geom.size.w;
+                    usable_zone.loc.x - self.initial_window_location.x + usable_zone.size.w;
             }
         }
 
@@ -131,23 +137,22 @@ impl ResizeSurfaceGrab {
 
             new_window_height = (self.initial_window_size.h as f64 + dy) as i32;
 
-            // If the resizing horizontal edge is close to our output's edge in the same direction, snap to it.
-            let output_geom = self.output.geometry().to_local(&self.output);
+            // If the resizing horizontal edge is close to the usable zone edge, snap to it.
             if self.edges.intersects(ResizeEdge::TOP) {
-                if (self.initial_window_location.y - dy as i32 - output_geom.loc.y).unsigned_abs()
+                if (self.initial_window_location.y - dy as i32 - usable_zone.loc.y).unsigned_abs()
                     < self.edge_snap_threshold
                 {
-                    new_window_height = self.initial_window_size.h - output_geom.loc.y
+                    new_window_height = self.initial_window_size.h - usable_zone.loc.y
                         + self.initial_window_location.y;
                 }
             } else if (self.initial_window_location.y + self.initial_window_size.h + dy as i32
-                - output_geom.loc.y
-                - output_geom.size.h)
+                - usable_zone.loc.y
+                - usable_zone.size.h)
                 .unsigned_abs()
                 < self.edge_snap_threshold
             {
                 new_window_height =
-                    output_geom.loc.y - self.initial_window_location.y + output_geom.size.h;
+                    usable_zone.loc.y - self.initial_window_location.y + usable_zone.size.h;
             }
         }
 
@@ -160,6 +165,43 @@ impl ResizeSurfaceGrab {
 
         new_window_width = new_window_width.max(min_width).min(max_width);
         new_window_height = new_window_height.max(min_height).min(max_height);
+
+        // Hard-clamp so the window can never extend behind layer-shell panels.
+        // This catches the case where the user resizes past the snap threshold.
+        if self.edges.intersects(ResizeEdge::TOP) {
+            let new_top = self.initial_window_location.y + location_diff.y as i32;
+            if new_top < usable_zone.loc.y {
+                location_diff.y = (usable_zone.loc.y - self.initial_window_location.y) as f64;
+                new_window_height =
+                    self.initial_window_size.h + self.initial_window_location.y - usable_zone.loc.y;
+            }
+        }
+        if self.edges.intersects(ResizeEdge::BOTTOM) {
+            let new_bottom = self.initial_window_location.y + new_window_height;
+            let zone_bottom = usable_zone.loc.y + usable_zone.size.h;
+            if new_bottom > zone_bottom {
+                new_window_height = zone_bottom - self.initial_window_location.y;
+            }
+        }
+        if self.edges.intersects(ResizeEdge::LEFT) {
+            let new_left = self.initial_window_location.x + location_diff.x as i32;
+            if new_left < usable_zone.loc.x {
+                location_diff.x = (usable_zone.loc.x - self.initial_window_location.x) as f64;
+                new_window_width =
+                    self.initial_window_size.w + self.initial_window_location.x - usable_zone.loc.x;
+            }
+        }
+        if self.edges.intersects(ResizeEdge::RIGHT) {
+            let new_right = self.initial_window_location.x + new_window_width;
+            let zone_right = usable_zone.loc.x + usable_zone.size.w;
+            if new_right > zone_right {
+                new_window_width = zone_right - self.initial_window_location.x;
+            }
+        }
+
+        // Re-enforce minimum size after zone clamping
+        new_window_width = new_window_width.max(min_width);
+        new_window_height = new_window_height.max(min_height);
 
         self.last_window_size = (new_window_width, new_window_height).into();
 
