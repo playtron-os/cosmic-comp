@@ -37,6 +37,7 @@ pub mod pointer_gestures;
 pub mod presentation;
 pub mod primary_selection;
 pub mod relative_pointer;
+pub mod layer_auto_hide;
 pub mod screencopy;
 pub mod seat;
 pub mod security_context;

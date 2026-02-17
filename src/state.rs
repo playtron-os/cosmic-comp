@@ -28,6 +28,7 @@ use crate::{
             home_visibility::HomeVisibilityState,
             image_capture_source::ImageCaptureSourceState,
             layer_corner_radius::LayerCornerRadiusState,
+            layer_auto_hide::LayerAutoHideState,
             layer_shadow::LayerShadowManagerState,
             layer_surface_dismiss::LayerSurfaceDismissState,
             layer_surface_visibility::LayerSurfaceVisibilityState,
@@ -267,6 +268,7 @@ pub struct Common {
     pub corner_radius_state: CornerRadiusState,
     pub layer_corner_radius_state: LayerCornerRadiusState,
     pub layer_shadow_state: LayerShadowManagerState,
+    pub layer_auto_hide_state: LayerAutoHideState,
     pub data_device_state: DataDeviceState,
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
@@ -666,6 +668,7 @@ impl State {
         let corner_radius_state = CornerRadiusState::new::<Self>(dh);
         let layer_corner_radius_state = LayerCornerRadiusState::new::<Self>(dh);
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
+        let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
@@ -795,6 +798,7 @@ impl State {
                 corner_radius_state,
                 layer_corner_radius_state,
                 layer_shadow_state,
+                layer_auto_hide_state,
                 data_device_state,
                 dmabuf_state,
                 exclusive_mode_state,

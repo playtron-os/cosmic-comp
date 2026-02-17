@@ -375,6 +375,16 @@ impl State {
                         .map(|(target, pos)| (target, pos.as_logical()));
 
                     std::mem::drop(shell);
+
+                    // Update compositor-driven auto-hide cursor tracking.
+                    {
+                        let cursor_surface_id = new_under.as_ref().and_then(|(target, _)| {
+                            target.wl_surface().map(|s| s.id().protocol_id())
+                        });
+                        let mut shell = self.common.shell.write();
+                        shell.update_auto_hide_cursor(cursor_surface_id, position);
+                    }
+
                     ptr.relative_motion(
                         self,
                         under.clone(),
@@ -638,8 +648,19 @@ impl State {
                         )
                         .as_global();
                     let serial = SERIAL_COUNTER.next_serial();
-                    let under = State::surface_under(position, &output, &self.common.shell.write())
+                    let shell_guard = self.common.shell.write();
+                    let under = State::surface_under(position, &output, &shell_guard)
                         .map(|(target, pos)| (target, pos.as_logical()));
+                    drop(shell_guard);
+
+                    // Update compositor-driven auto-hide cursor tracking.
+                    {
+                        let cursor_surface_id = under.as_ref().and_then(|(target, _)| {
+                            target.wl_surface().map(|s| s.id().protocol_id())
+                        });
+                        let mut shell = self.common.shell.write();
+                        shell.update_auto_hide_cursor(cursor_surface_id, position);
+                    }
 
                     let ptr = seat.get_pointer().unwrap();
                     ptr.motion(
@@ -2457,10 +2478,20 @@ impl State {
                     Stage::LayerSurface {
                         layer, location, ..
                     } => {
+                        // Apply auto-hide offset so hidden surfaces
+                        // don't intercept keyboard focus.
+                        let surface_id = layer.wl_surface().id().protocol_id();
+                        let layer_geo = layer.bbox();
+                        let (ox, oy) = shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                        let input_location = if ox != 0 || oy != 0 {
+                            location + smithay::utils::Point::from((ox, oy))
+                        } else {
+                            location
+                        };
                         if under_from_surface_tree(
                             layer.wl_surface(),
                             global_pos.as_logical(),
-                            location.as_logical(),
+                            input_location.as_logical(),
                             WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                         )
                         .is_some()
@@ -2615,11 +2646,23 @@ impl State {
                     Stage::LayerSurface {
                         layer, location, ..
                     } => {
+                        // Apply auto-hide offset so hidden/animating
+                        // surfaces don't intercept pointer input at
+                        // their original position.
+                        let surface_id = layer.wl_surface().id().protocol_id();
+                        let layer_geo = layer.bbox();
+                        let (ox, oy) = shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                        let input_location = if ox != 0 || oy != 0 {
+                            location + smithay::utils::Point::from((ox, oy))
+                        } else {
+                            location
+                        };
+
                         let surface = layer.wl_surface();
                         if let Some((surface, surface_loc)) = under_from_surface_tree(
                             surface,
                             global_pos.as_logical(),
-                            location.as_logical(),
+                            input_location.as_logical(),
                             WindowSurfaceType::ALL,
                         ) {
                             return ControlFlow::Break(Ok(Some((

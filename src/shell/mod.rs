@@ -93,6 +93,7 @@ use crate::{
     },
 };
 
+pub mod auto_hide;
 pub mod element;
 pub mod focus;
 pub mod grabs;
@@ -603,6 +604,9 @@ pub struct Shell {
     voice_mode: VoiceMode,
     /// Voice orb rendering state
     pub voice_orb_state: crate::backend::render::voice_orb::VoiceOrbState,
+
+    /// Surfaces registered for compositor-driven auto-hide.
+    pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
 
     #[cfg(feature = "debug")]
     pub debug_active: bool,
@@ -1938,6 +1942,9 @@ impl Shell {
             voice_mode: VoiceMode::None,
             voice_orb_state: Default::default(),
 
+            // Compositor-driven auto-hide surfaces
+            auto_hide_surfaces: Vec::new(),
+
             #[cfg(feature = "debug")]
             debug_active: false,
         }
@@ -2634,6 +2641,10 @@ impl Shell {
                         .is_some_and(|state| state.lock().unwrap().is_animating())
                 })
             })
+            || self
+                .auto_hide_surfaces
+                .iter()
+                .any(|s| s.visibility.is_animating())
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -2656,7 +2667,402 @@ impl Shell {
         if was_shrinking_from_attached && !self.voice_orb_state.shrinking_from_attached {
             self.voice_mode.exit_from_attached();
         }
+        // Update auto-hide animations and send visibility events
+        self.update_auto_hide_animations();
         clients
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-hide methods
+    // -----------------------------------------------------------------------
+
+    /// Register a surface for compositor-driven auto-hide.
+    pub fn register_auto_hide(&mut self, surface: &WlSurface, edge: auto_hide::AutoHideEdge) {
+        let surface_id = surface.id().protocol_id();
+        // Remove any existing registration for this surface.
+        self.auto_hide_surfaces
+            .retain(|s| s.surface_id != surface_id);
+
+        let mut entry = auto_hide::AutoHideSurface::new(surface, edge);
+
+        // Check if there are already maximized/fullscreen windows on the same
+        // output — if so, start hidden immediately.
+        if let Some(output) = self.auto_hide_surface_output(surface_id) {
+            if self.output_has_maximized_or_fullscreen(&output) {
+                entry.visibility.start_hide(false);
+            }
+        }
+
+        tracing::info!(surface_id, ?edge, "auto_hide: registered surface");
+        self.auto_hide_surfaces.push(entry);
+    }
+
+    /// Unregister a surface from auto-hide. Shows it immediately if hidden.
+    pub fn unregister_auto_hide(&mut self, surface: &WlSurface) {
+        let surface_id = surface.id().protocol_id();
+        self.auto_hide_surfaces
+            .retain(|s| s.surface_id != surface_id);
+        tracing::info!(surface_id, "auto_hide: unregistered surface");
+    }
+
+    /// Check whether any toplevel on an output is maximized or fullscreen.
+    pub fn output_has_maximized_or_fullscreen(&self, output: &Output) -> bool {
+        if let Some(workspace) = self.active_space(output) {
+            if workspace.get_fullscreen().is_some() {
+                return true;
+            }
+            // Check pending state (true) so we detect windows that are being
+            // maximized but haven't committed the new state yet.
+            return workspace.mapped().any(|m| m.is_maximized(true));
+        }
+        false
+    }
+
+    /// Find which output a layer surface belongs to.
+    fn auto_hide_surface_output(&self, surface_id: u32) -> Option<Output> {
+        for output in self.outputs() {
+            let layer_map = layer_map_for_output(output);
+            for layer in layer_map.layers() {
+                if layer.wl_surface().id().protocol_id() == surface_id {
+                    return Some(output.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the height of an auto-hide layer surface from the layer map.
+    #[allow(dead_code)]
+    fn auto_hide_surface_height(&self, surface_id: u32) -> Option<i32> {
+        for output in self.outputs() {
+            let layer_map = layer_map_for_output(output);
+            for layer in layer_map.layers() {
+                if layer.wl_surface().id().protocol_id() == surface_id {
+                    return layer_map.layer_geometry(layer).map(|geo| geo.size.h);
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the margin rectangle between an auto-hide surface and the output
+    /// edge.  For a bottom-edge dock with a bottom margin, this is the gap
+    /// between the surface's bottom edge and the screen bottom.
+    /// Returns the rectangle in global coordinates.
+    fn auto_hide_surface_margin_rect(&self, surface_id: u32) -> Option<Rectangle<i32, Global>> {
+        for output in self.outputs() {
+            let layer_map = layer_map_for_output(output);
+            for layer in layer_map.layers() {
+                if layer.wl_surface().id().protocol_id() == surface_id {
+                    let local_geo = layer_map.layer_geometry(layer)?;
+                    // Convert from Logical (output-local) to Global.
+                    let global_geo = local_geo.as_local().to_global(output);
+                    let output_geo = output.geometry();
+                    let surface_bottom = global_geo.loc.y + global_geo.size.h;
+                    let output_bottom = output_geo.loc.y + output_geo.size.h;
+                    let margin_height = output_bottom - surface_bottom;
+                    if margin_height <= 0 {
+                        return None;
+                    }
+                    return Some(Rectangle::new(
+                        Point::from((global_geo.loc.x, surface_bottom)),
+                        Size::from((global_geo.size.w, margin_height)),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the edge zone rectangle for an auto-hide surface.
+    /// This is the thin strip at the screen edge used to trigger showing the
+    /// dock when it is hidden.  Returns `None` when the surface has no edge
+    /// zone configured or when the surface cannot be found.
+    fn auto_hide_edge_zone_rect(
+        &self,
+        surface_id: u32,
+    ) -> Option<Rectangle<i32, Global>> {
+        for output in self.outputs() {
+            let layer_map = layer_map_for_output(output);
+            for layer in layer_map.layers() {
+                if layer.wl_surface().id().protocol_id() == surface_id {
+                    let edge_zone =
+                        crate::wayland::protocols::layer_auto_hide::get_surface_edge_zone(
+                            layer.wl_surface(),
+                        );
+                    if edge_zone == 0 {
+                        return None;
+                    }
+                    let local_geo = layer_map.layer_geometry(layer)?;
+                    let global_geo = local_geo.as_local().to_global(output);
+                    let output_geo = output.geometry();
+                    let output_bottom = output_geo.loc.y + output_geo.size.h;
+                    let zone_top = output_bottom - edge_zone as i32;
+                    return Some(Rectangle::new(
+                        Point::from((global_geo.loc.x, zone_top)),
+                        Size::from((global_geo.size.w, edge_zone as i32)),
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// Called after maximize/fullscreen state changes to update all auto-hide
+    /// surfaces on the affected output.
+    pub fn update_auto_hide_for_output(&mut self, output: &Output) {
+        let has_max = self.output_has_maximized_or_fullscreen(output);
+        let output_id = output.name();
+
+        // Find which auto-hide surfaces belong to this output.
+        let matching_surface_ids: Vec<u32> = self
+            .auto_hide_surfaces
+            .iter()
+            .filter_map(|s| {
+                let Ok(wl) = s.surface.upgrade() else {
+                    return None;
+                };
+                let layer_map = layer_map_for_output(output);
+                for layer in layer_map.layers() {
+                    if layer.wl_surface().id() == wl.id() {
+                        return Some(s.surface_id);
+                    }
+                }
+                None
+            })
+            .collect();
+
+        for surface in &mut self.auto_hide_surfaces {
+            if !matching_surface_ids.contains(&surface.surface_id) {
+                continue;
+            }
+            if has_max {
+                // Maximize detected — hide (with delay if cursor is on the surface).
+                if !surface.cursor_over {
+                    surface.visibility.start_hide(false);
+                } else {
+                    // Cursor is on the dock; delay the hide until cursor leaves.
+                    surface.visibility.start_hide(true);
+                }
+            } else {
+                // No maximized/fullscreen windows — show immediately.
+                surface.visibility.force_show();
+            }
+            tracing::debug!(
+                surface_id = surface.surface_id,
+                has_maximized = has_max,
+                output = %output_id,
+                "auto_hide: output maximized state changed"
+            );
+        }
+    }
+
+    /// Called when the cursor enters or leaves an auto-hide surface or its edge zone.
+    pub fn update_auto_hide_cursor(
+        &mut self,
+        cursor_surface_id: Option<u32>,
+        cursor_pos: Point<f64, Global>,
+    ) {
+        if self.auto_hide_surfaces.is_empty() {
+            return;
+        }
+
+        // Pre-compute per-output maximized state.
+        let outputs_maximized: Vec<(Output, bool)> = self
+            .workspaces
+            .sets
+            .keys()
+            .map(|output| {
+                let has_max = self.output_has_maximized_or_fullscreen(output);
+                (output.clone(), has_max)
+            })
+            .collect();
+
+        // Pre-compute surface-to-output mapping to avoid borrow issues.
+        let surface_outputs: Vec<(u32, Option<Output>)> = self
+            .auto_hide_surfaces
+            .iter()
+            .map(|s| (s.surface_id, self.auto_hide_surface_output(s.surface_id)))
+            .collect();
+
+        // Pre-compute margin rects (gap between surface bottom and output
+        // bottom) so we can suppress hide when cursor is in that area.
+        let margin_rects: Vec<(u32, Option<Rectangle<i32, Global>>)> = self
+            .auto_hide_surfaces
+            .iter()
+            .map(|s| {
+                (
+                    s.surface_id,
+                    self.auto_hide_surface_margin_rect(s.surface_id),
+                )
+            })
+            .collect();
+
+        // Pre-compute edge zone rects (thin strip at output bottom) so we
+        // can trigger show when the cursor enters the edge zone while the
+        // surface is hidden.  This replaces the old approach of returning
+        // the dock surface as a pointer hit target from surface_under().
+        let edge_zone_rects: Vec<(u32, Option<Rectangle<i32, Global>>)> = self
+            .auto_hide_surfaces
+            .iter()
+            .map(|s| {
+                (
+                    s.surface_id,
+                    self.auto_hide_edge_zone_rect(s.surface_id),
+                )
+            })
+            .collect();
+
+        for surface in &mut self.auto_hide_surfaces {
+            // Cursor is "over" the surface if it's directly on the surface
+            // OR if it's hovering the edge zone strip at the output bottom.
+            let in_edge_zone = edge_zone_rects
+                .iter()
+                .find(|(id, _)| *id == surface.surface_id)
+                .and_then(|(_, rect)| rect.as_ref())
+                .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
+            let is_over = cursor_surface_id == Some(surface.surface_id) || in_edge_zone;
+            let was_over = surface.cursor_over;
+
+            if is_over && !was_over {
+                // Cursor entered auto-hide surface/edge zone → show.
+                surface.cursor_over = true;
+                surface.visibility.start_show(true);
+                tracing::debug!(surface_id = surface.surface_id, "auto_hide: cursor entered");
+            } else if !is_over && was_over {
+                // Cursor left the surface itself, but check if it moved
+                // into the margin gap between surface and output edge.
+                let in_margin = margin_rects
+                    .iter()
+                    .find(|(id, _)| *id == surface.surface_id)
+                    .and_then(|(_, rect)| rect.as_ref())
+                    .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
+
+                if in_margin {
+                    // Keep cursor_over true — cursor is still in the
+                    // dock's margin area, don't trigger hide.
+                    tracing::debug!(
+                        surface_id = surface.surface_id,
+                        "auto_hide: cursor in margin area, suppressing hide"
+                    );
+                } else {
+                    surface.cursor_over = false;
+                    // Only hide if maximized windows exist on this output.
+                    let output = surface_outputs
+                        .iter()
+                        .find(|(id, _)| *id == surface.surface_id)
+                        .and_then(|(_, o)| o.as_ref());
+                    let has_max = output
+                        .and_then(|o| {
+                            outputs_maximized
+                                .iter()
+                                .find(|(out, _)| out == o)
+                                .map(|(_, m)| *m)
+                        })
+                        .unwrap_or(false);
+
+                    if has_max {
+                        surface.visibility.start_hide(true);
+                        tracing::debug!(
+                            surface_id = surface.surface_id,
+                            "auto_hide: cursor left, starting hide"
+                        );
+                    }
+                }
+            } else if !is_over && !was_over {
+                // Cursor is not over the surface and wasn't before.
+                // But check: was cursor_over kept true due to margin
+                // suppression?  If so, verify cursor is still in margin.
+                if surface.cursor_over {
+                    let still_in_margin = margin_rects
+                        .iter()
+                        .find(|(id, _)| *id == surface.surface_id)
+                        .and_then(|(_, rect)| rect.as_ref())
+                        .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
+
+                    if !still_in_margin {
+                        surface.cursor_over = false;
+                        let output = surface_outputs
+                            .iter()
+                            .find(|(id, _)| *id == surface.surface_id)
+                            .and_then(|(_, o)| o.as_ref());
+                        let has_max = output
+                            .and_then(|o| {
+                                outputs_maximized
+                                    .iter()
+                                    .find(|(out, _)| out == o)
+                                    .map(|(_, m)| *m)
+                            })
+                            .unwrap_or(false);
+
+                        if has_max {
+                            surface.visibility.start_hide(true);
+                            tracing::debug!(
+                                surface_id = surface.surface_id,
+                                "auto_hide: cursor left margin area, starting hide"
+                            );
+                        }
+                    }
+                }
+            } else {
+                // is_over && was_over — no change needed.
+                surface.cursor_over = true;
+            }
+        }
+    }
+
+    /// Update auto-hide animation state and send visibility events.
+    fn update_auto_hide_animations(&mut self) {
+        // Remove dead surfaces.
+        self.auto_hide_surfaces
+            .retain(|s| s.surface.upgrade().is_ok());
+
+        for surface in &mut self.auto_hide_surfaces {
+            if let Some(visible) = surface.visibility.update() {
+                // State transition completed — send visibility_changed event.
+                if let Ok(wl_surface) = surface.surface.upgrade() {
+                    crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(
+                        &wl_surface,
+                        visible,
+                    );
+                    tracing::debug!(
+                        surface_id = surface.surface_id,
+                        visible,
+                        "auto_hide: visibility_changed event sent"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Get the auto-hide render offset for a surface. Returns (0, 0) if the
+    /// surface is not registered for auto-hide or is fully visible.
+    pub fn get_auto_hide_offset(&self, surface_id: u32, surface_height: i32) -> (i32, i32) {
+        for s in &self.auto_hide_surfaces {
+            if s.surface_id == surface_id {
+                return s.render_offset(surface_height);
+            }
+        }
+        (0, 0)
+    }
+
+    /// Whether a surface is registered for compositor-driven auto-hide.
+    pub fn is_auto_hide_surface(&self, surface_id: u32) -> bool {
+        self.auto_hide_surfaces
+            .iter()
+            .any(|s| s.surface_id == surface_id)
+    }
+
+    /// Re-evaluate auto-hide state for all outputs. Call after any
+    /// maximize/fullscreen/un-maximize/un-fullscreen transition.
+    pub fn refresh_auto_hide(&mut self) {
+        if self.auto_hide_surfaces.is_empty() {
+            return;
+        }
+        let outputs: Vec<Output> = self.outputs().cloned().collect();
+        for output in outputs {
+            self.update_auto_hide_for_output(&output);
+        }
     }
 
     pub fn set_overview_mode(
@@ -2749,7 +3155,7 @@ impl Shell {
     }
 
     /// Minimize all visible windows without entering home mode.
-    /// 
+    ///
     /// Use this when you want to clear the screen without triggering
     /// the home mode animation (which affects HideOnHome surfaces like humainos-dock).
     pub fn minimize_all_windows_only(&mut self) {
@@ -5283,6 +5689,8 @@ impl Shell {
             } else {
                 floating_layer.map_maximized(mapped.clone(), original_geometry, animate);
             }
+            // Trigger auto-hide for surfaces on the same output.
+            self.refresh_auto_hide();
         }
     }
 
@@ -5329,14 +5737,19 @@ impl Shell {
                         );
                     }
                 }
+                // Trigger auto-hide update after unmaximize.
+                self.refresh_auto_hide();
                 Some(state.original_geometry.size.as_logical())
             } else {
                 None
             }
         } else if let Some(workspace) = self.space_for_mut(mapped) {
-            workspace
+            let result = workspace
                 .unmaximize_request_with_options(mapped, client_driven)
-                .map(|geo| geo.size.as_logical())
+                .map(|geo| geo.size.as_logical());
+            // Trigger auto-hide update after unmaximize.
+            self.refresh_auto_hide();
+            result
         } else {
             None
         }
@@ -5800,6 +6213,9 @@ impl Shell {
             self.remap_unfullscreened_window(old_fullscreen, restore, loop_handle);
         }
 
+        // Trigger auto-hide for surfaces on the same output.
+        self.refresh_auto_hide();
+
         Some(KeyboardFocusTarget::Fullscreen(window))
     }
 
@@ -5823,6 +6239,8 @@ impl Shell {
             toplevel_leave_workspace(&old_fullscreen, &workspace.handle);
 
             let window = self.remap_unfullscreened_window(old_fullscreen, restore, loop_handle);
+            // Trigger auto-hide update after un-fullscreen.
+            self.refresh_auto_hide();
             Some(KeyboardFocusTarget::Element(window))
         } else {
             None

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="layer_auto_hide">
+  <copyright><![CDATA[
+    Copyright © 2024 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="compositor-driven auto-hide for layer surfaces">
+    This protocol allows layer shell surfaces to register for compositor-driven
+    auto-hide behavior. When any toplevel window on the same output is maximized
+    or fullscreen, the compositor animates registered surfaces off the specified
+    screen edge. The compositor handles all animation and hover detection
+    internally, providing smooth 60fps transitions synchronized with the render
+    loop.
+  </description>
+
+  <interface name="layer_auto_hide_manager_v1" version="1">
+    <description summary="auto-hide manager for layer surfaces">
+      Manager for creating auto-hide objects for layer shell surfaces.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Existing auto-hide objects remain valid until destroyed.
+      </description>
+    </request>
+
+    <request name="get_auto_hide">
+      <description summary="create auto-hide object for a surface">
+        Create an auto-hide controller for the given wl_surface.
+
+        If the given wl_surface already has a layer_auto_hide_v1 object
+        associated, the already_exists protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="layer_auto_hide_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="surface already has an auto-hide object"/>
+    </enum>
+  </interface>
+
+  <interface name="layer_auto_hide_v1" version="1">
+    <description summary="auto-hide controller for a surface">
+      Controls compositor-driven auto-hide for a layer shell surface.
+
+      When auto-hide is active, the compositor:
+      - Hides the surface (slides it off-screen) when any toplevel on the
+        same output is maximized or fullscreen
+      - Shows the surface when the pointer enters the edge zone
+      - Hides the surface again when the pointer leaves (while maximized
+        windows exist)
+      - Shows the surface when no maximized/fullscreen windows remain
+
+      All animations run at compositor frame rate for smooth 60fps transitions.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the auto-hide object">
+        Disables auto-hide and destroys this object. If the surface is
+        currently hidden, it will be shown immediately.
+      </description>
+    </request>
+
+    <enum name="edge">
+      <description summary="screen edge for auto-hide">
+        Specifies which output edge the surface slides toward when hidden.
+      </description>
+      <entry name="bottom" value="0" summary="slide off the bottom edge"/>
+    </enum>
+
+    <request name="set_auto_hide">
+      <description summary="enable auto-hide">
+        Enable compositor-driven auto-hide for this surface. The surface will
+        slide off the specified edge when maximized/fullscreen windows are
+        present on the same output.
+
+        The edge_zone parameter specifies how many pixels at the screen edge
+        will trigger hover-to-show when the surface is hidden. This should
+        be a small value (e.g. 2-8 pixels).
+
+        Calling this again replaces the previous configuration.
+      </description>
+      <arg name="edge" type="uint" enum="edge"
+        summary="which edge to slide off"/>
+      <arg name="edge_zone" type="uint"
+        summary="hover detection zone in pixels"/>
+    </request>
+
+    <request name="unset_auto_hide">
+      <description summary="disable auto-hide">
+        Disables auto-hide. If the surface is currently hidden, it will be
+        shown immediately.
+      </description>
+    </request>
+
+    <event name="visibility_changed">
+      <description summary="visibility state changed">
+        Sent by the compositor when the auto-hide visibility state changes.
+        The client can use this to adjust behavior (e.g. skip expensive
+        rendering when hidden, update input regions).
+
+        Only sent while auto-hide is active.
+      </description>
+      <arg name="visible" type="uint"
+        summary="1 if fully visible, 0 if fully hidden"/>
+    </event>
+
+    <enum name="error">
+      <entry name="surface_destroyed" value="0"
+        summary="the associated surface has been destroyed"/>
+    </enum>
+  </interface>
+</protocol>

@@ -1445,12 +1445,25 @@ where
                     alpha,
                     skip_blur: _,
                 } => {
+                    // Apply auto-hide render offset.
+                    // Input hit-testing is also offset (in surface_under)
+                    // so hidden surfaces don't intercept clicks.
+                    let surface_id = layer.wl_surface().id().protocol_id();
+                    let layer_geo = layer.bbox();
+                    let (offset_x, offset_y) =
+                        shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                    let render_location = if offset_x != 0 || offset_y != 0 {
+                        location + smithay::utils::Point::from((offset_x, offset_y))
+                    } else {
+                        location
+                    };
+
                     // First render the layer surface content
                     elements.extend(
                         render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
                             renderer,
                             layer.wl_surface(),
-                            location
+                            render_location
                                 .to_local(output)
                                 .as_logical()
                                 .to_physical_precise_round(scale),
@@ -1463,10 +1476,8 @@ where
                         .map(Into::into),
                     );
 
-                    let surface_id = layer.wl_surface().id().protocol_id();
-                    let layer_geo = layer.bbox();
                     let local_geo =
-                        Rectangle::new(location.to_local(output), layer_geo.size.as_local());
+                        Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
 
                     // Get corner radius from the surface (same as windows)
                     let corner_radius =
