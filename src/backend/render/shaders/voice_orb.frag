@@ -27,12 +27,12 @@ const float noiseScale = 0.65;     // Turbulence
 const float speed = 1.2;           // Temporal Speed
 
 // Colors (converted from RGB 0-255 to 0-1)
-const vec3 color1 = vec3(0.349, 0.859, 0.702);      // Primary pulse: 89, 219, 179
-const vec3 color2 = vec3(0.580, 0.980, 0.780);      // Secondary flow: 148, 250, 199
-const vec3 color3 = vec3(1.0, 1.0, 0.941);          // Core depth: 255, 255, 240
-const vec3 haloColor = vec3(0.859, 1.0, 1.0);       // Halo ascent: 219, 255, 255
-const vec3 bgColor = vec3(1.0, 1.0, 1.0);           // Background A: 255, 255, 255
-const vec3 bgColor2 = vec3(0.961, 1.0, 0.980);      // Background B: 245, 255, 250
+const vec3 color1 = vec3(0.051, 0.808, 0.580);      // Primary pulse: 13, 206, 148
+const vec3 color2 = vec3(0.129, 0.690, 0.494);      // Secondary flow: 33, 176, 126
+const vec3 color3 = vec3(0.047, 0.275, 0.196);      // Core depth: 12, 70, 50
+const vec3 haloColor = vec3(0.106, 0.714, 0.510);   // Halo accent: 27, 182, 130
+const vec3 bgColor = vec3(0.859, 1.0, 0.957);       // Background A: 219, 255, 244
+const vec3 bgColor2 = vec3(1.0, 1.0, 1.0);          // Background B: 255, 255, 255
 
 const float PI = 3.14159265359;
 
