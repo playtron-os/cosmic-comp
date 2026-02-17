@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::shell::auto_hide::AutoHideEdge;
+use crate::shell::auto_hide::{AutoHideEdge, AutoHideMode};
 use crate::state::State;
 use crate::wayland::protocols::layer_auto_hide::{
     LayerAutoHideHandler, LayerAutoHideState, delegate_layer_auto_hide,
@@ -12,9 +12,9 @@ impl LayerAutoHideHandler for State {
         &mut self.common.layer_auto_hide_state
     }
 
-    fn auto_hide_registered(&mut self, surface: &WlSurface, edge: AutoHideEdge) {
+    fn auto_hide_registered(&mut self, surface: &WlSurface, edge: AutoHideEdge, mode: AutoHideMode) {
         let mut shell = self.common.shell.write();
-        shell.register_auto_hide(surface, edge);
+        shell.register_auto_hide(surface, edge, mode);
     }
 
     fn auto_hide_unregistered(&mut self, surface: &WlSurface) {

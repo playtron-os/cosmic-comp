@@ -56,6 +56,27 @@ impl AutoHideEdge {
 }
 
 // ---------------------------------------------------------------------------
+// Mode enum – controls when auto-hide triggers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoHideMode {
+    /// Always hide when cursor leaves the surface.
+    Always,
+    /// Only hide when maximized/fullscreen windows exist on the same output.
+    OnMaximize,
+}
+
+impl AutoHideMode {
+    pub fn from_protocol(value: u32) -> Self {
+        match value {
+            1 => AutoHideMode::OnMaximize,
+            _ => AutoHideMode::Always, // 0 or unknown defaults to Always
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Visibility state machine
 // ---------------------------------------------------------------------------
 
@@ -243,10 +264,12 @@ impl AutoHideVisibility {
 pub struct AutoHideSurface {
     /// Weak reference to the underlying wl_surface.
     pub surface: Weak<WlSurface>,
-    /// Protocol ID of the wl_surface (for fast comparison).
+    /// Protocol ID of the wl_surface (for logging).
     pub surface_id: u32,
     /// Which edge the surface hides toward.
     pub edge: AutoHideEdge,
+    /// When to trigger auto-hide.
+    pub mode: AutoHideMode,
     /// Current animation state.
     pub visibility: AutoHideVisibility,
     /// Whether the cursor is currently over this surface or its edge zone.
@@ -254,11 +277,12 @@ pub struct AutoHideSurface {
 }
 
 impl AutoHideSurface {
-    pub fn new(surface: &WlSurface, edge: AutoHideEdge) -> Self {
+    pub fn new(surface: &WlSurface, edge: AutoHideEdge, mode: AutoHideMode) -> Self {
         Self {
             surface: surface.downgrade(),
             surface_id: surface.id().protocol_id(),
             edge,
+            mode,
             visibility: AutoHideVisibility::Visible,
             cursor_over: false,
         }

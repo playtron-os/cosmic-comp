@@ -90,11 +90,24 @@
       <entry name="bottom" value="0" summary="slide off the bottom edge"/>
     </enum>
 
+    <enum name="mode">
+      <description summary="auto-hide trigger mode">
+        Controls when the compositor hides the surface.
+      </description>
+      <entry name="always" value="0"
+        summary="always auto-hide when cursor leaves the surface"/>
+      <entry name="on_maximize" value="1"
+        summary="only auto-hide when a toplevel on the same output is maximized or fullscreen"/>
+    </enum>
+
     <request name="set_auto_hide">
       <description summary="enable auto-hide">
-        Enable compositor-driven auto-hide for this surface. The surface will
-        slide off the specified edge when maximized/fullscreen windows are
-        present on the same output.
+        Enable compositor-driven auto-hide for this surface.
+
+        The mode parameter controls when hiding is triggered:
+        - always: the surface hides whenever the cursor leaves it
+        - on_maximize: the surface hides only when maximized/fullscreen
+          windows are present on the same output
 
         The edge_zone parameter specifies how many pixels at the screen edge
         will trigger hover-to-show when the surface is hidden. This should
@@ -106,6 +119,8 @@
         summary="which edge to slide off"/>
       <arg name="edge_zone" type="uint"
         summary="hover detection zone in pixels"/>
+      <arg name="mode" type="uint" enum="mode"
+        summary="when to auto-hide the surface"/>
     </request>
 
     <request name="unset_auto_hide">

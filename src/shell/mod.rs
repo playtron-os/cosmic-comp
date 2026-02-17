@@ -1957,7 +1957,7 @@ impl Shell {
         workspace_delta: WorkspaceDelta,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
-        match &mut self.workspaces.mode {
+        let result = match &mut self.workspaces.mode {
             WorkspaceMode::OutputBound => {
                 if let Some(set) = self.workspaces.sets.get_mut(output) {
                     if matches!(
@@ -1984,7 +1984,15 @@ impl Shell {
                 let output_geo = output.geometry();
                 Ok(output_geo.loc + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)))
             }
+        };
+
+        // Re-evaluate auto-hide state after workspace switch — the new
+        // workspace may or may not have maximized/fullscreen windows.
+        if result.is_ok() {
+            self.refresh_auto_hide();
         }
+
+        result
     }
 
     pub fn update_workspace_delta(&mut self, output: &Output, delta: f64, forward: bool) {
@@ -2008,95 +2016,101 @@ impl Shell {
         velocity: f64,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
-        match &mut self.workspaces.mode {
-            WorkspaceMode::OutputBound => {
-                if let Some(set) = self.workspaces.sets.get_mut(output) {
-                    if matches!(
-                        self.overview_mode.active_trigger(),
-                        Some(Trigger::Pointer(_) | Trigger::Touch(_))
-                    ) {
-                        set.workspaces[set.active].tiling_layer.cleanup_drag();
-                    }
-                    if let Some((
-                        _,
-                        WorkspaceDelta::Gesture {
-                            percentage: delta,
-                            forward,
-                        },
-                    )) = set.previously_active
-                    {
-                        if (velocity > 0.0 && velocity.abs() >= GESTURE_VELOCITY_THRESHOLD)
-                            || (velocity.abs() < GESTURE_VELOCITY_THRESHOLD
-                                && delta.abs() > GESTURE_POSITION_THRESHOLD)
+        let result =
+            match &mut self.workspaces.mode {
+                WorkspaceMode::OutputBound => {
+                    if let Some(set) = self.workspaces.sets.get_mut(output) {
+                        if matches!(
+                            self.overview_mode.active_trigger(),
+                            Some(Trigger::Pointer(_) | Trigger::Touch(_))
+                        ) {
+                            set.workspaces[set.active].tiling_layer.cleanup_drag();
+                        }
+                        if let Some((
+                            _,
+                            WorkspaceDelta::Gesture {
+                                percentage: delta,
+                                forward,
+                            },
+                        )) = set.previously_active
                         {
-                            set.activate(
-                                set.active,
-                                WorkspaceDelta::new_gesture_end(
-                                    delta.abs(),
-                                    velocity.abs(),
-                                    forward,
-                                ),
-                                workspace_state,
-                            )?;
-                        } else {
-                            set.activate_previous(
-                                WorkspaceDelta::new_gesture_end(
-                                    1.0 - delta.abs(),
-                                    velocity.abs(),
-                                    !forward,
-                                ),
-                                workspace_state,
-                            )?;
+                            if (velocity > 0.0 && velocity.abs() >= GESTURE_VELOCITY_THRESHOLD)
+                                || (velocity.abs() < GESTURE_VELOCITY_THRESHOLD
+                                    && delta.abs() > GESTURE_POSITION_THRESHOLD)
+                            {
+                                set.activate(
+                                    set.active,
+                                    WorkspaceDelta::new_gesture_end(
+                                        delta.abs(),
+                                        velocity.abs(),
+                                        forward,
+                                    ),
+                                    workspace_state,
+                                )?;
+                            } else {
+                                set.activate_previous(
+                                    WorkspaceDelta::new_gesture_end(
+                                        1.0 - delta.abs(),
+                                        velocity.abs(),
+                                        !forward,
+                                    ),
+                                    workspace_state,
+                                )?;
+                            }
+                        }
+
+                        let output_geo = output.geometry();
+                        Ok(output_geo.loc
+                            + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)))
+                    } else {
+                        Err(InvalidWorkspaceIndex)
+                    }
+                }
+                WorkspaceMode::Global => {
+                    for set in self.workspaces.sets.values_mut() {
+                        if let Some((
+                            _,
+                            WorkspaceDelta::Gesture {
+                                percentage: delta,
+                                forward,
+                            },
+                        )) = set.previously_active
+                        {
+                            if (velocity > 0.0 && velocity.abs() >= GESTURE_VELOCITY_THRESHOLD)
+                                || (velocity.abs() < GESTURE_VELOCITY_THRESHOLD
+                                    && delta.abs() > GESTURE_POSITION_THRESHOLD)
+                            {
+                                set.activate(
+                                    set.active,
+                                    WorkspaceDelta::new_gesture_end(
+                                        delta.abs(),
+                                        velocity.abs(),
+                                        forward,
+                                    ),
+                                    workspace_state,
+                                )?;
+                            } else {
+                                set.activate_previous(
+                                    WorkspaceDelta::new_gesture_end(
+                                        1.0 - delta.abs(),
+                                        velocity.abs(),
+                                        !forward,
+                                    ),
+                                    workspace_state,
+                                )?;
+                            }
                         }
                     }
-
-                    let output_geo = output.geometry();
-                    Ok(
-                        output_geo.loc
-                            + Point::from((output_geo.size.w / 2, output_geo.size.h / 2)),
-                    )
-                } else {
                     Err(InvalidWorkspaceIndex)
                 }
-            }
-            WorkspaceMode::Global => {
-                for set in self.workspaces.sets.values_mut() {
-                    if let Some((
-                        _,
-                        WorkspaceDelta::Gesture {
-                            percentage: delta,
-                            forward,
-                        },
-                    )) = set.previously_active
-                    {
-                        if (velocity > 0.0 && velocity.abs() >= GESTURE_VELOCITY_THRESHOLD)
-                            || (velocity.abs() < GESTURE_VELOCITY_THRESHOLD
-                                && delta.abs() > GESTURE_POSITION_THRESHOLD)
-                        {
-                            set.activate(
-                                set.active,
-                                WorkspaceDelta::new_gesture_end(
-                                    delta.abs(),
-                                    velocity.abs(),
-                                    forward,
-                                ),
-                                workspace_state,
-                            )?;
-                        } else {
-                            set.activate_previous(
-                                WorkspaceDelta::new_gesture_end(
-                                    1.0 - delta.abs(),
-                                    velocity.abs(),
-                                    !forward,
-                                ),
-                                workspace_state,
-                            )?;
-                        }
-                    }
-                }
-                Err(InvalidWorkspaceIndex)
-            }
+            };
+
+        // Re-evaluate auto-hide state after workspace swipe completes.
+        if result.is_ok() {
+            self.refresh_auto_hide();
         }
+
+        result
     }
 
     pub fn active_space(&self, output: &Output) -> Option<&Workspace> {
@@ -2677,31 +2691,45 @@ impl Shell {
     // -----------------------------------------------------------------------
 
     /// Register a surface for compositor-driven auto-hide.
-    pub fn register_auto_hide(&mut self, surface: &WlSurface, edge: auto_hide::AutoHideEdge) {
+    pub fn register_auto_hide(
+        &mut self,
+        surface: &WlSurface,
+        edge: auto_hide::AutoHideEdge,
+        mode: auto_hide::AutoHideMode,
+    ) {
         let surface_id = surface.id().protocol_id();
         // Remove any existing registration for this surface.
-        self.auto_hide_surfaces
-            .retain(|s| s.surface_id != surface_id);
+        // Compare by WlSurface identity (ObjectId), not protocol_id which
+        // is only unique per-client.
+        self.auto_hide_surfaces.retain(|s| s.surface != *surface);
 
-        let mut entry = auto_hide::AutoHideSurface::new(surface, edge);
+        let mut entry = auto_hide::AutoHideSurface::new(surface, edge, mode);
 
-        // Check if there are already maximized/fullscreen windows on the same
-        // output — if so, start hidden immediately.
-        if let Some(output) = self.auto_hide_surface_output(surface_id) {
-            if self.output_has_maximized_or_fullscreen(&output) {
-                entry.visibility.start_hide(false);
+        // For "Always" mode, start hidden immediately (no animation).
+        // For "OnMaximize" mode, start hidden if maximized/fullscreen windows exist.
+        let should_start_hidden = match mode {
+            auto_hide::AutoHideMode::Always => true,
+            auto_hide::AutoHideMode::OnMaximize => {
+                self.auto_hide_surface_output(surface)
+                    .is_some_and(|output| self.output_has_maximized_or_fullscreen(&output))
             }
+        };
+
+        if should_start_hidden {
+            // Start fully hidden — no animation, no visible flash on startup.
+            entry.visibility = auto_hide::AutoHideVisibility::Hidden;
+            // Notify the client that it's hidden so it can set empty input region.
+            crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(surface, false);
         }
 
-        tracing::info!(surface_id, ?edge, "auto_hide: registered surface");
+        tracing::info!(surface_id, ?edge, ?mode, should_start_hidden, "auto_hide: registered surface");
         self.auto_hide_surfaces.push(entry);
     }
 
     /// Unregister a surface from auto-hide. Shows it immediately if hidden.
     pub fn unregister_auto_hide(&mut self, surface: &WlSurface) {
         let surface_id = surface.id().protocol_id();
-        self.auto_hide_surfaces
-            .retain(|s| s.surface_id != surface_id);
+        self.auto_hide_surfaces.retain(|s| s.surface != *surface);
         tracing::info!(surface_id, "auto_hide: unregistered surface");
     }
 
@@ -2719,11 +2747,12 @@ impl Shell {
     }
 
     /// Find which output a layer surface belongs to.
-    fn auto_hide_surface_output(&self, surface_id: u32) -> Option<Output> {
+    fn auto_hide_surface_output(&self, surface: &WlSurface) -> Option<Output> {
+        let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
-                if layer.wl_surface().id().protocol_id() == surface_id {
+                if layer.wl_surface().id() == target_id {
                     return Some(output.clone());
                 }
             }
@@ -2733,11 +2762,12 @@ impl Shell {
 
     /// Get the height of an auto-hide layer surface from the layer map.
     #[allow(dead_code)]
-    fn auto_hide_surface_height(&self, surface_id: u32) -> Option<i32> {
+    fn auto_hide_surface_height(&self, surface: &WlSurface) -> Option<i32> {
+        let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
-                if layer.wl_surface().id().protocol_id() == surface_id {
+                if layer.wl_surface().id() == target_id {
                     return layer_map.layer_geometry(layer).map(|geo| geo.size.h);
                 }
             }
@@ -2749,11 +2779,12 @@ impl Shell {
     /// edge.  For a bottom-edge dock with a bottom margin, this is the gap
     /// between the surface's bottom edge and the screen bottom.
     /// Returns the rectangle in global coordinates.
-    fn auto_hide_surface_margin_rect(&self, surface_id: u32) -> Option<Rectangle<i32, Global>> {
+    fn auto_hide_surface_margin_rect(&self, surface: &WlSurface) -> Option<Rectangle<i32, Global>> {
+        let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
-                if layer.wl_surface().id().protocol_id() == surface_id {
+                if layer.wl_surface().id() == target_id {
                     let local_geo = layer_map.layer_geometry(layer)?;
                     // Convert from Logical (output-local) to Global.
                     let global_geo = local_geo.as_local().to_global(output);
@@ -2778,14 +2809,12 @@ impl Shell {
     /// This is the thin strip at the screen edge used to trigger showing the
     /// dock when it is hidden.  Returns `None` when the surface has no edge
     /// zone configured or when the surface cannot be found.
-    fn auto_hide_edge_zone_rect(
-        &self,
-        surface_id: u32,
-    ) -> Option<Rectangle<i32, Global>> {
+    fn auto_hide_edge_zone_rect(&self, surface: &WlSurface) -> Option<Rectangle<i32, Global>> {
+        let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
-                if layer.wl_surface().id().protocol_id() == surface_id {
+                if layer.wl_surface().id() == target_id {
                     let edge_zone =
                         crate::wayland::protocols::layer_auto_hide::get_surface_edge_zone(
                             layer.wl_surface(),
@@ -2815,7 +2844,8 @@ impl Shell {
         let output_id = output.name();
 
         // Find which auto-hide surfaces belong to this output.
-        let matching_surface_ids: Vec<u32> = self
+        // Use ObjectId for comparison (globally unique across clients).
+        let matching_object_ids: Vec<smithay::reexports::wayland_server::backend::ObjectId> = self
             .auto_hide_surfaces
             .iter()
             .filter_map(|s| {
@@ -2825,7 +2855,7 @@ impl Shell {
                 let layer_map = layer_map_for_output(output);
                 for layer in layer_map.layers() {
                     if layer.wl_surface().id() == wl.id() {
-                        return Some(s.surface_id);
+                        return Some(s.surface.id());
                     }
                 }
                 None
@@ -2833,9 +2863,16 @@ impl Shell {
             .collect();
 
         for surface in &mut self.auto_hide_surfaces {
-            if !matching_surface_ids.contains(&surface.surface_id) {
+            if !matching_object_ids.contains(&surface.surface.id()) {
                 continue;
             }
+
+            // "Always" mode ignores maximize state — hide/show is purely
+            // cursor-driven. Only process maximize events for "OnMaximize" mode.
+            if surface.mode == auto_hide::AutoHideMode::Always {
+                continue;
+            }
+
             if has_max {
                 // Maximize detected — hide (with delay if cursor is on the surface).
                 if !surface.cursor_over {
@@ -2860,12 +2897,16 @@ impl Shell {
     /// Called when the cursor enters or leaves an auto-hide surface or its edge zone.
     pub fn update_auto_hide_cursor(
         &mut self,
-        cursor_surface_id: Option<u32>,
+        cursor_surface: Option<&WlSurface>,
         cursor_pos: Point<f64, Global>,
     ) {
+        use smithay::reexports::wayland_server::backend::ObjectId;
+
         if self.auto_hide_surfaces.is_empty() {
             return;
         }
+
+        let cursor_object_id: Option<ObjectId> = cursor_surface.map(|s| s.id());
 
         // Pre-compute per-output maximized state.
         let outputs_maximized: Vec<(Output, bool)> = self
@@ -2879,22 +2920,26 @@ impl Shell {
             .collect();
 
         // Pre-compute surface-to-output mapping to avoid borrow issues.
-        let surface_outputs: Vec<(u32, Option<Output>)> = self
+        // Use ObjectId (globally unique) for lookup keys.
+        let surface_outputs: Vec<(ObjectId, Option<Output>)> = self
             .auto_hide_surfaces
             .iter()
-            .map(|s| (s.surface_id, self.auto_hide_surface_output(s.surface_id)))
+            .filter_map(|s| {
+                let wl = s.surface.upgrade().ok()?;
+                let output = self.auto_hide_surface_output(&wl);
+                Some((s.surface.id(), output))
+            })
             .collect();
 
         // Pre-compute margin rects (gap between surface bottom and output
         // bottom) so we can suppress hide when cursor is in that area.
-        let margin_rects: Vec<(u32, Option<Rectangle<i32, Global>>)> = self
+        let margin_rects: Vec<(ObjectId, Option<Rectangle<i32, Global>>)> = self
             .auto_hide_surfaces
             .iter()
-            .map(|s| {
-                (
-                    s.surface_id,
-                    self.auto_hide_surface_margin_rect(s.surface_id),
-                )
+            .filter_map(|s| {
+                let wl = s.surface.upgrade().ok()?;
+                let rect = self.auto_hide_surface_margin_rect(&wl);
+                Some((s.surface.id(), rect))
             })
             .collect();
 
@@ -2902,26 +2947,26 @@ impl Shell {
         // can trigger show when the cursor enters the edge zone while the
         // surface is hidden.  This replaces the old approach of returning
         // the dock surface as a pointer hit target from surface_under().
-        let edge_zone_rects: Vec<(u32, Option<Rectangle<i32, Global>>)> = self
+        let edge_zone_rects: Vec<(ObjectId, Option<Rectangle<i32, Global>>)> = self
             .auto_hide_surfaces
             .iter()
-            .map(|s| {
-                (
-                    s.surface_id,
-                    self.auto_hide_edge_zone_rect(s.surface_id),
-                )
+            .filter_map(|s| {
+                let wl = s.surface.upgrade().ok()?;
+                let rect = self.auto_hide_edge_zone_rect(&wl);
+                Some((s.surface.id(), rect))
             })
             .collect();
 
         for surface in &mut self.auto_hide_surfaces {
+            let obj_id = surface.surface.id();
             // Cursor is "over" the surface if it's directly on the surface
             // OR if it's hovering the edge zone strip at the output bottom.
             let in_edge_zone = edge_zone_rects
                 .iter()
-                .find(|(id, _)| *id == surface.surface_id)
+                .find(|(id, _)| *id == obj_id)
                 .and_then(|(_, rect)| rect.as_ref())
                 .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
-            let is_over = cursor_surface_id == Some(surface.surface_id) || in_edge_zone;
+            let is_over = cursor_object_id.as_ref() == Some(&obj_id) || in_edge_zone;
             let was_over = surface.cursor_over;
 
             if is_over && !was_over {
@@ -2934,7 +2979,7 @@ impl Shell {
                 // into the margin gap between surface and output edge.
                 let in_margin = margin_rects
                     .iter()
-                    .find(|(id, _)| *id == surface.surface_id)
+                    .find(|(id, _)| *id == obj_id)
                     .and_then(|(_, rect)| rect.as_ref())
                     .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
 
@@ -2947,21 +2992,28 @@ impl Shell {
                     );
                 } else {
                     surface.cursor_over = false;
-                    // Only hide if maximized windows exist on this output.
-                    let output = surface_outputs
-                        .iter()
-                        .find(|(id, _)| *id == surface.surface_id)
-                        .and_then(|(_, o)| o.as_ref());
-                    let has_max = output
-                        .and_then(|o| {
-                            outputs_maximized
-                                .iter()
-                                .find(|(out, _)| out == o)
-                                .map(|(_, m)| *m)
-                        })
-                        .unwrap_or(false);
 
-                    if has_max {
+                    // For "Always" mode, hide immediately when cursor leaves.
+                    // For "OnMaximize" mode, only hide if maximized windows exist.
+                    let should_hide = match surface.mode {
+                        auto_hide::AutoHideMode::Always => true,
+                        auto_hide::AutoHideMode::OnMaximize => {
+                            let output = surface_outputs
+                                .iter()
+                                .find(|(id, _)| *id == obj_id)
+                                .and_then(|(_, o)| o.as_ref());
+                            output
+                                .and_then(|o| {
+                                    outputs_maximized
+                                        .iter()
+                                        .find(|(out, _)| out == o)
+                                        .map(|(_, m)| *m)
+                                })
+                                .unwrap_or(false)
+                        }
+                    };
+
+                    if should_hide {
                         surface.visibility.start_hide(true);
                         tracing::debug!(
                             surface_id = surface.surface_id,
@@ -2976,26 +3028,34 @@ impl Shell {
                 if surface.cursor_over {
                     let still_in_margin = margin_rects
                         .iter()
-                        .find(|(id, _)| *id == surface.surface_id)
+                        .find(|(id, _)| *id == obj_id)
                         .and_then(|(_, rect)| rect.as_ref())
                         .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
 
                     if !still_in_margin {
                         surface.cursor_over = false;
-                        let output = surface_outputs
-                            .iter()
-                            .find(|(id, _)| *id == surface.surface_id)
-                            .and_then(|(_, o)| o.as_ref());
-                        let has_max = output
-                            .and_then(|o| {
-                                outputs_maximized
-                                    .iter()
-                                    .find(|(out, _)| out == o)
-                                    .map(|(_, m)| *m)
-                            })
-                            .unwrap_or(false);
 
-                        if has_max {
+                        // For "Always" mode, hide immediately when cursor leaves margin.
+                        // For "OnMaximize" mode, only hide if maximized windows exist.
+                        let should_hide = match surface.mode {
+                            auto_hide::AutoHideMode::Always => true,
+                            auto_hide::AutoHideMode::OnMaximize => {
+                                let output = surface_outputs
+                                    .iter()
+                                    .find(|(id, _)| *id == obj_id)
+                                    .and_then(|(_, o)| o.as_ref());
+                                output
+                                    .and_then(|o| {
+                                        outputs_maximized
+                                            .iter()
+                                            .find(|(out, _)| out == o)
+                                            .map(|(_, m)| *m)
+                                    })
+                                    .unwrap_or(false)
+                            }
+                        };
+
+                        if should_hide {
                             surface.visibility.start_hide(true);
                             tracing::debug!(
                                 surface_id = surface.surface_id,
@@ -3037,9 +3097,9 @@ impl Shell {
 
     /// Get the auto-hide render offset for a surface. Returns (0, 0) if the
     /// surface is not registered for auto-hide or is fully visible.
-    pub fn get_auto_hide_offset(&self, surface_id: u32, surface_height: i32) -> (i32, i32) {
+    pub fn get_auto_hide_offset(&self, surface: &WlSurface, surface_height: i32) -> (i32, i32) {
         for s in &self.auto_hide_surfaces {
-            if s.surface_id == surface_id {
+            if s.surface == *surface {
                 return s.render_offset(surface_height);
             }
         }
@@ -3047,10 +3107,10 @@ impl Shell {
     }
 
     /// Whether a surface is registered for compositor-driven auto-hide.
-    pub fn is_auto_hide_surface(&self, surface_id: u32) -> bool {
+    pub fn is_auto_hide_surface(&self, surface: &WlSurface) -> bool {
         self.auto_hide_surfaces
             .iter()
-            .any(|s| s.surface_id == surface_id)
+            .any(|s| s.surface == *surface)
     }
 
     /// Re-evaluate auto-hide state for all outputs. Call after any
@@ -4323,6 +4383,9 @@ impl Shell {
 
             if let Some(surface) = surface {
                 toplevel_info.remove_toplevel(&surface);
+                // Re-evaluate auto-hide — the unmapped window may have been
+                // the last maximized/fullscreen window on its output.
+                self.refresh_auto_hide();
                 return Some(PendingWindow {
                     surface,
                     seat: seat.clone(),

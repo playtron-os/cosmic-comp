@@ -1451,7 +1451,7 @@ where
                     let surface_id = layer.wl_surface().id().protocol_id();
                     let layer_geo = layer.bbox();
                     let (offset_x, offset_y) =
-                        shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                        shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                     let render_location = if offset_x != 0 || offset_y != 0 {
                         location + smithay::utils::Point::from((offset_x, offset_y))
                     } else {

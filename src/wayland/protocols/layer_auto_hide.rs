@@ -33,7 +33,7 @@ use smithay::{
 };
 use std::sync::Mutex;
 
-use crate::shell::auto_hide::AutoHideEdge;
+use crate::shell::auto_hide::{AutoHideEdge, AutoHideMode};
 
 type SurfaceHookId = Mutex<
     Option<(
@@ -140,7 +140,7 @@ pub trait LayerAutoHideHandler {
     fn layer_auto_hide_state(&mut self) -> &mut LayerAutoHideState;
 
     /// Called when a surface registers for compositor-driven auto-hide.
-    fn auto_hide_registered(&mut self, surface: &WlSurface, edge: AutoHideEdge);
+    fn auto_hide_registered(&mut self, surface: &WlSurface, edge: AutoHideEdge, mode: AutoHideMode);
 
     /// Called when a surface unregisters from auto-hide.
     fn auto_hide_unregistered(&mut self, surface: &WlSurface);
@@ -284,7 +284,7 @@ where
                 drop(guard);
                 state.auto_hide_unregistered(&surface);
             }
-            layer_auto_hide_v1::Request::SetAutoHide { edge, edge_zone } => {
+            layer_auto_hide_v1::Request::SetAutoHide { edge, edge_zone, mode } => {
                 let guard = data.lock().unwrap();
                 let Ok(surface) = guard.surface.upgrade() else {
                     resource.post_error(
@@ -300,6 +300,11 @@ where
                 let Some(auto_edge) = AutoHideEdge::from_protocol(edge_value) else {
                     return;
                 };
+                let mode_value: u32 = match mode {
+                    smithay::reexports::wayland_server::WEnum::Value(v) => v as u32,
+                    smithay::reexports::wayland_server::WEnum::Unknown(v) => v,
+                };
+                let auto_mode = AutoHideMode::from_protocol(mode_value);
                 // Store auto-hide in surface cached state
                 with_states(&surface, |s| {
                     let mut cached = s.cached_state.get::<CacheableAutoHide>();
@@ -314,7 +319,7 @@ where
                 });
                 drop(guard);
                 // Notify compositor to register auto-hide tracking
-                state.auto_hide_registered(&surface, auto_edge);
+                state.auto_hide_registered(&surface, auto_edge, auto_mode);
             }
             layer_auto_hide_v1::Request::UnsetAutoHide => {
                 let guard = data.lock().unwrap();

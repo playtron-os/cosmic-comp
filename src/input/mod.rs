@@ -378,11 +378,11 @@ impl State {
 
                     // Update compositor-driven auto-hide cursor tracking.
                     {
-                        let cursor_surface_id = new_under.as_ref().and_then(|(target, _)| {
-                            target.wl_surface().map(|s| s.id().protocol_id())
-                        });
+                        let cursor_surface = new_under
+                            .as_ref()
+                            .and_then(|(target, _)| target.wl_surface());
                         let mut shell = self.common.shell.write();
-                        shell.update_auto_hide_cursor(cursor_surface_id, position);
+                        shell.update_auto_hide_cursor(cursor_surface.as_deref(), position);
                     }
 
                     ptr.relative_motion(
@@ -655,11 +655,10 @@ impl State {
 
                     // Update compositor-driven auto-hide cursor tracking.
                     {
-                        let cursor_surface_id = under.as_ref().and_then(|(target, _)| {
-                            target.wl_surface().map(|s| s.id().protocol_id())
-                        });
+                        let cursor_surface =
+                            under.as_ref().and_then(|(target, _)| target.wl_surface());
                         let mut shell = self.common.shell.write();
-                        shell.update_auto_hide_cursor(cursor_surface_id, position);
+                        shell.update_auto_hide_cursor(cursor_surface.as_deref(), position);
                     }
 
                     let ptr = seat.get_pointer().unwrap();
@@ -2480,9 +2479,9 @@ impl State {
                     } => {
                         // Apply auto-hide offset so hidden surfaces
                         // don't intercept keyboard focus.
-                        let surface_id = layer.wl_surface().id().protocol_id();
                         let layer_geo = layer.bbox();
-                        let (ox, oy) = shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                        let (ox, oy) =
+                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                         let input_location = if ox != 0 || oy != 0 {
                             location + smithay::utils::Point::from((ox, oy))
                         } else {
@@ -2649,9 +2648,9 @@ impl State {
                         // Apply auto-hide offset so hidden/animating
                         // surfaces don't intercept pointer input at
                         // their original position.
-                        let surface_id = layer.wl_surface().id().protocol_id();
                         let layer_geo = layer.bbox();
-                        let (ox, oy) = shell.get_auto_hide_offset(surface_id, layer_geo.size.h);
+                        let (ox, oy) =
+                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                         let input_location = if ox != 0 || oy != 0 {
                             location + smithay::utils::Point::from((ox, oy))
                         } else {
