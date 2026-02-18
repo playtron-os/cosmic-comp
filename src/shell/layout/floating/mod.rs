@@ -3210,8 +3210,6 @@ impl FloatingLayout {
                             Some(current_window_geo),
                             Some(window_border_radius),
                         ) {
-                            let orb_geo = orb_element
-                                .geometry(output.current_scale().fractional_scale().into());
                             window_elements.push(orb_element.into());
                         }
                     }
