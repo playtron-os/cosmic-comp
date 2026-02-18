@@ -29,6 +29,7 @@ use crate::{
     wayland::{
         handlers::xdg_shell::popup::get_popup_toplevel,
         protocols::{
+            backdrop_color::get_surface_backdrop_color,
             toplevel_info::{
                 toplevel_enter_output, toplevel_enter_workspace, toplevel_leave_output,
                 toplevel_leave_workspace,
@@ -5685,6 +5686,27 @@ where
                             BLUR_FALLBACK_COLOR,
                         )),
                     );
+                }
+
+                // Add backdrop color for windows using the backdrop_color protocol
+                if !mapped.has_blur() {
+                    if let Some(wl_surface) = mapped.active_window().wl_surface() {
+                        if let Some(color) = get_surface_backdrop_color(&wl_surface) {
+                            let corner_radius =
+                                mapped.blur_corner_radius(geo.size.as_logical(), 8);
+                            elements.insert(
+                                0,
+                                CosmicMappedRenderElement::Overlay(BackdropShader::element(
+                                    renderer,
+                                    Key::Window(Usage::Overlay, mapped.key()),
+                                    geo,
+                                    corner_radius,
+                                    alpha * color.alpha_f32(),
+                                    color.to_rgb_f32(),
+                                )),
+                            );
+                        }
+                    }
                 }
 
                 let (behavior, align) = if is_overview {

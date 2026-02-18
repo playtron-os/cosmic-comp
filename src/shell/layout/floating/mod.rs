@@ -34,6 +34,7 @@ use crate::{
         get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
     },
+    wayland::protocols::backdrop_color::get_surface_backdrop_color,
     shell::{
         CosmicSurface, Direction, ManagedLayer, MoveResult, ResizeMode,
         element::{
@@ -3181,6 +3182,42 @@ impl FloatingLayout {
                 None
             };
 
+            // Compute window border radius from theme (used by both orb and blur)
+            let radius_s = theme.radius_s()[0];
+            let window_border_radius = if radius_s < 4.0 {
+                radius_s
+            } else {
+                radius_s + 4.0
+            };
+
+            // If this window has the attached voice orb, insert it behind window content
+            // (In front-to-back rendering: content -> shadow -> orb -> backdrop)
+            if let Some(orb_state) = attached_orb_state {
+                if let Some(attached_surface_id) = orb_state.attached_surface_id_for_render() {
+                    let window_surface_id = elem
+                        .active_window()
+                        .wl_surface()
+                        .map(|s| s.id().to_string());
+
+                    if window_surface_id.as_deref() == Some(attached_surface_id) {
+                        let output_geo = output.geometry().as_logical();
+                        let current_window_geo = geometry.as_logical();
+
+                        if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
+                            renderer,
+                            orb_state,
+                            output_geo,
+                            Some(current_window_geo),
+                            Some(window_border_radius),
+                        ) {
+                            let orb_geo = orb_element
+                                .geometry(output.current_scale().fractional_scale().into());
+                            window_elements.push(orb_element.into());
+                        }
+                    }
+                }
+            }
+
             // Add blur backdrop for windows that request KDE blur (independent of focus state)
             // Design spec: background: rgba(255, 255, 255, 0.10), backdrop-filter: blur(50px)
             // Skip adding backdrop if we're capturing background for blur
@@ -3237,16 +3274,15 @@ impl FloatingLayout {
                     geometry
                 };
 
-                // Compute window corner radius from theme: radius_s + 4 for values >= 4
-                let radius_s = theme.radius_s()[0];
-                let window_border_radius = if radius_s < 4.0 {
-                    radius_s
-                } else {
-                    radius_s + 4.0
-                };
                 let corner_radius = elem.blur_corner_radius(
                     blur_geometry.size.as_logical(),
                     window_border_radius.round() as u8,
+                );
+
+                // Also get the window rendering corner radius for comparison
+                let window_render_radius = elem.corner_radius(
+                    geometry.size.as_logical(),
+                    indicator_thickness,
                 );
 
                 // Get the output name for looking up cached blur texture
@@ -3254,54 +3290,6 @@ impl FloatingLayout {
                 let window_key = elem.key();
                 let output_transform = output.current_transform();
                 let output_scale = output.current_scale().fractional_scale();
-
-                // If this window has the attached voice orb, insert it BEFORE blur
-                // (In front-to-back rendering: content -> shadow -> orb -> blur)
-                // This makes orb visible in front of blur but behind window content
-                if let Some(orb_state) = attached_orb_state {
-                    if let Some(attached_surface_id) = orb_state.attached_surface_id_for_render() {
-                        // Compare window surface ID with attached surface ID for reliable matching
-                        let window_surface_id = elem
-                            .active_window()
-                            .wl_surface()
-                            .map(|s| s.id().to_string());
-
-                        if window_surface_id.as_deref() == Some(attached_surface_id) {
-                            // Get output geometry for orb rendering
-                            let output_geo = output.geometry().as_logical();
-
-                            // Get the current window geometry for orb positioning
-                            // Use the render geometry (which tracks the window during drag)
-                            let current_window_geo = geometry.as_logical();
-
-                            // Create the voice orb element with current window geometry
-                            if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
-                                renderer,
-                                orb_state,
-                                output_geo,
-                                Some(current_window_geo),
-                                Some(window_border_radius),
-                            ) {
-                                // Insert orb element before blur (behind window content, in front of blur)
-                                let orb_geo = orb_element
-                                    .geometry(output.current_scale().fractional_scale().into());
-                                tracing::debug!(
-                                    surface_id = %attached_surface_id,
-                                    orb_geo_x = orb_geo.loc.x,
-                                    orb_geo_y = orb_geo.loc.y,
-                                    orb_geo_w = orb_geo.size.w,
-                                    orb_geo_h = orb_geo.size.h,
-                                    orb_scale = orb_state.scale,
-                                    is_burst = orb_state.is_in_burst_phase(),
-                                    shrinking_from_attached = orb_state.shrinking_from_attached,
-                                    window_elements_count = window_elements.len(),
-                                    "Voice orb element created for attached window"
-                                );
-                                window_elements.push(orb_element.into());
-                            }
-                        }
-                    }
-                }
 
                 // Get per-window blur texture (iterative multi-pass blur)
                 let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
@@ -3349,6 +3337,26 @@ impl FloatingLayout {
                         BLUR_FALLBACK_COLOR,
                     );
                     window_elements.push(blur_backdrop.into());
+                }
+            }
+
+            // Render backdrop color for windows that set the backdrop_color protocol
+            // (only when blur is not already providing a backdrop)
+            if !elem.has_blur() || blur_ctx.is_some() {
+                if let Some(wl_surface) = elem.active_window().wl_surface() {
+                    if let Some(color) = get_surface_backdrop_color(&wl_surface) {
+                        let corner_radius =
+                            elem.blur_corner_radius(geometry.size.as_logical(), indicator_thickness);
+                        let backdrop = BackdropShader::element(
+                            renderer,
+                            Key::Window(Usage::Overlay, elem.key()),
+                            geometry,
+                            corner_radius,
+                            alpha * color.alpha_f32(),
+                            color.to_rgb_f32(),
+                        );
+                        window_elements.push(backdrop.into());
+                    }
                 }
             }
 

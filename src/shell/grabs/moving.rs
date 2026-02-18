@@ -25,7 +25,10 @@ use crate::{
             EmbedRenderInfo, get_embedded_surface_ids_for_parent, mark_parent_grabbed,
             unmark_parent_grabbed,
         },
-        protocols::toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
+        protocols::{
+            backdrop_color::get_surface_backdrop_color,
+            toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
+        },
     },
 };
 
@@ -276,6 +279,43 @@ impl MoveGrabState {
             vec![]
         };
 
+        // Render backdrop color for windows using the backdrop_color protocol
+        // (only when blur is not already providing a backdrop)
+        let backdrop_color_element: Vec<CosmicMappedRenderElement<R>> = if !self.window.has_blur() {
+            if let Some(wl_surface) = self.window.active_window().wl_surface() {
+                if let Some(color) = get_surface_backdrop_color(&wl_surface) {
+                    let window_geo = self.window.geometry();
+                    let radius_s = theme.radius_s()[0];
+                    let window_radius = (if radius_s < 4.0 {
+                        radius_s
+                    } else {
+                        radius_s + 4.0
+                    })
+                    .round() as u8;
+                    let corner_radius = self
+                        .window
+                        .blur_corner_radius(window_geo.size.as_logical(), window_radius);
+                    let scaled_size = window_geo.size.to_f64().upscale(scale).to_i32_round();
+                    let backdrop_geometry =
+                        Rectangle::new(render_location, scaled_size).as_local();
+                    vec![CosmicMappedRenderElement::from(BackdropShader::element(
+                        renderer,
+                        Key::Window(Usage::Overlay, self.window.key()),
+                        backdrop_geometry,
+                        corner_radius,
+                        alpha * color.alpha_f32(),
+                        color.to_rgb_f32(),
+                    ))]
+                } else {
+                    vec![]
+                }
+            } else {
+                vec![]
+            }
+        } else {
+            vec![]
+        };
+
         let w_elements = self
             .window
             .render_elements::<R, CosmicMappedRenderElement<R>>(
@@ -432,6 +472,7 @@ impl MoveGrabState {
                     )
                     .chain(orb_element)
                     .chain(blur_backdrop_element.into_iter())
+                    .chain(backdrop_color_element.into_iter())
                     .chain(snapping_indicator),
             )
             .map(I::from)

@@ -201,10 +201,14 @@ impl CosmicWindowInternal {
         let is_maximized = self.window.is_maximized(false);
         let appearance = self.appearance_conf.lock().unwrap();
 
-        let clip = ((!is_tiled && appearance.clip_floating_windows)
-            || (is_tiled && appearance.clip_tiled_windows))
-            && !is_maximized;
-        let round = (!is_tiled || appearance.clip_tiled_windows) && !is_maximized;
+        // Maximized windows always have 0 corner radius
+        if is_maximized {
+            return [0; 4];
+        }
+
+        let clip = (!is_tiled && appearance.clip_floating_windows)
+            || (is_tiled && appearance.clip_tiled_windows);
+        let round = !is_tiled || appearance.clip_tiled_windows;
         let radii = round
             .then(|| {
                 self.theme
@@ -217,9 +221,10 @@ impl CosmicWindowInternal {
             })
             .unwrap_or([0; 4]);
 
+        let surface_corners = self.window.corner_radius(geometry_size);
         let result = match (has_ssd, clip) {
             (has_ssd, true) => {
-                let mut corners = self.window.corner_radius(geometry_size).unwrap_or(radii);
+                let mut corners = surface_corners.unwrap_or(radii);
 
                 corners[0] = radii[0].max(corners[0]);
                 corners[1] = if has_ssd {
@@ -236,15 +241,10 @@ impl CosmicWindowInternal {
 
                 corners
             }
-            (true, false) => self
-                .window
-                .corner_radius(geometry_size)
+            (true, false) => surface_corners
                 .map(|[a, _, c, _]| [a, radii[1], c, radii[3]])
                 .unwrap_or([default_radius, radii[1], default_radius, radii[3]]),
-            (false, false) => self
-                .window
-                .corner_radius(geometry_size)
-                .unwrap_or([default_radius; 4]),
+            (false, false) => surface_corners.unwrap_or([default_radius; 4]),
         };
 
         result
@@ -531,19 +531,12 @@ impl CosmicWindow {
         let embed_corner_radius = embed_render_info.map(|info| info.corner_radius);
 
         let (has_ssd, is_tiled, is_maximized, mut radii, appearance) = self.0.with_program(|p| {
+            let geo_size = SpaceElement::geometry(&p.window).size;
             (
                 p.has_ssd(false),
                 p.is_tiled(),
                 p.window.is_maximized(false),
-                embed_corner_radius.unwrap_or_else(|| {
-                    p.theme
-                        .lock()
-                        .unwrap()
-                        .cosmic()
-                        .radius_s()
-                        .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                        .map(|x| x.round() as u8)
-                }),
+                embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
                 *p.appearance_conf.lock().unwrap(),
             )
         });
@@ -569,12 +562,9 @@ impl CosmicWindow {
 
         let mut elements = Vec::new();
 
-        let (mut geo, bg_divider) = self.0.with_program(|p| {
-            (
-                SpaceElement::geometry(&p.window).to_f64(),
-                p.theme.lock().unwrap().cosmic().bg_divider(),
-            )
-        });
+        let mut geo = self
+            .0
+            .with_program(|p| SpaceElement::geometry(&p.window).to_f64());
         geo.loc += location.to_f64().to_logical(scale);
         if has_ssd && !is_embedded {
             geo.size.h += SSD_HEIGHT as f64;
@@ -587,16 +577,17 @@ impl CosmicWindow {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 
-            let (r, g, b, a) = bg_divider.into_components();
+            // TODO: Update this
+            let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
             let elem = CosmicWindowRenderElement::Border(IndicatorShader::element(
                 renderer,
                 Key::Window(Usage::Border, window_key.clone()),
                 geo.to_i32_round().as_local(),
                 1,
                 radii,
-                a * alpha,
+                1.0 * alpha,
                 scale.x,
-                [r, g, b],
+                border_color,
             ));
             elements.push(elem);
         }

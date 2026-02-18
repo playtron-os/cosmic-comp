@@ -21,6 +21,7 @@ use crate::{
         protocols::{
             a11y::A11yState,
             animated_resize::AnimatedResizeState,
+            backdrop_color::BackdropColorState,
             blur::BlurState,
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
@@ -263,6 +264,7 @@ pub struct Common {
 
     // wayland state
     pub animated_resize_state: AnimatedResizeState,
+    pub backdrop_color_state: BackdropColorState,
     pub blur_state: BlurState,
     pub compositor_state: CompositorState,
     pub corner_radius_state: CornerRadiusState,
@@ -663,6 +665,7 @@ impl State {
         let clock = Clock::new();
         let config = Config::load(&handle);
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
+        let backdrop_color_state = BackdropColorState::new::<Self>(dh);
         let blur_state = BlurState::new::<Self>(dh);
         let compositor_state = CompositorState::new::<Self>(dh);
         let corner_radius_state = CornerRadiusState::new::<Self>(dh);
@@ -793,6 +796,7 @@ impl State {
                 theme: cosmic::theme::system_preference(),
 
                 animated_resize_state,
+                backdrop_color_state,
                 blur_state,
                 compositor_state,
                 corner_radius_state,

@@ -790,16 +790,17 @@ impl CosmicStack {
                 CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0)));
 
             let border = (!maximized && !is_embedded).then(|| {
-                let (r, g, b, a) = theme.cosmic().bg_divider().into_components();
+                // TODO: Update this
+                let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
                 CosmicStackRenderElement::Border(IndicatorShader::element(
                     renderer,
                     Key::Window(Usage::Border, window_key.clone()),
                     geo.to_i32_round().as_local(),
                     1,
                     radii.unwrap_or([0, 0, 0, 0]),
-                    a * alpha,
+                    1.0 * alpha,
                     scale.x,
-                    [r, g, b],
+                    border_color,
                 ))
             });
 

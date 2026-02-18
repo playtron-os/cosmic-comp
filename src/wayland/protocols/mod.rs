@@ -2,6 +2,7 @@
 
 pub mod a11y;
 pub mod animated_resize;
+pub mod backdrop_color;
 pub mod blur;
 pub mod corner_radius;
 pub mod drm;

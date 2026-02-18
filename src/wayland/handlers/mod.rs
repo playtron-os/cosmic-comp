@@ -3,6 +3,7 @@
 pub mod a11y;
 pub mod alpha_modifier;
 pub mod animated_resize;
+pub mod backdrop_color;
 pub mod blur;
 pub mod buffer;
 pub mod compositor;
