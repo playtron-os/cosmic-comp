@@ -537,14 +537,6 @@ fn layer_surfaces<'a>(
     };
 
     layers.into_iter().filter_map(move |(s, loc)| {
-        // Skip 1x1 (or smaller) layer surfaces — clients use this as a
-        // placeholder during initialization before the real size is known.
-        // Rendering them would cause a brief visible flash.
-        let bbox = s.bbox();
-        if bbox.size.w <= 1 && bbox.size.h <= 1 {
-            return None;
-        }
-
         // Filter out workspace overview namespace
         if *element_filter == ElementFilter::ExcludeWorkspaceOverview
             && s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE
