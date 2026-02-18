@@ -1087,6 +1087,7 @@ impl Workspace {
                     x => {
                         let use_geometry = !matches!(x, ManagedLayer::Tiling);
                         elem.set_maximized(false);
+                        elem.set_tiled(false);
 
                         if animate_client_driven && use_geometry {
                             self.floating_layer
