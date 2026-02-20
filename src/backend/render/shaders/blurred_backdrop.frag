@@ -23,7 +23,7 @@ uniform sampler2D tex;
 varying vec2 v_coords;
 
 // Custom uniforms
-uniform float alpha;           // Overall opacity
+uniform float blur_opacity;    // Overall opacity for blur backdrop (named to avoid conflict with built-in 'alpha')
 uniform vec2 size;             // Element size in pixels
 uniform vec2 screen_size;      // Full screen size for coordinate mapping
 uniform vec2 element_pos;      // Element position on screen
@@ -100,6 +100,6 @@ void main() {
     // Final output with premultiplied alpha
     // cosmic-comp uses premultiplied alpha throughout the pipeline
     // Both RGB and A must be multiplied by alpha for correct blending
-    float final_alpha = blurred.a * alpha * mask;
+    float final_alpha = blurred.a * blur_opacity * mask;
     gl_FragColor = vec4(final_color * final_alpha, final_alpha);
 }

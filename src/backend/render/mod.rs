@@ -8,6 +8,7 @@ use std::{
     sync::{Arc, Weak},
     time::Instant,
 };
+use wayland_backend::server::ObjectId;
 
 #[cfg(feature = "debug")]
 use crate::debug::fps_ui;
@@ -137,12 +138,11 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 
 // Blur module re-exports
 pub use blur::{
-    BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA,
-    BLUR_FALLBACK_COLOR, BLUR_ITERATIONS, BLUR_THROTTLE_INTERVAL, BLUR_TINT_COLOR,
-    BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
-    CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur, LayerBlurSurfaceInfo, apply_blur_passes,
-    blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
-    clear_blur_textures_for_output, clear_cached_layer_surfaces,
+    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
+    BLUR_THROTTLE_INTERVAL, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext,
+    BlurRenderState, BlurredTextureInfo, CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur,
+    LayerBlurSurfaceInfo, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
+    cache_blur_texture_for_window, clear_blur_textures_for_output, clear_cached_layer_surfaces,
     clear_layer_blur_textures_for_output, compute_element_content_hash,
     copy_blur_texture_for_cache, downsample_texture, get_blur_group_content_hash,
     get_cached_blur_texture_for_layer, get_cached_blur_texture_for_window,
@@ -608,10 +608,13 @@ impl BlurredBackdropShader {
         // specifies the logical output dimensions.
         let output_size = Size::<i32, Logical>::from((element_geo.size.w, element_geo.size.h));
 
+        // IMPORTANT: Pass None for alpha here - the shader handles alpha via uniform.
+        // Passing Some(alpha) would cause Smithay to pre-multiply alpha before the
+        // shader runs, resulting in double-application of alpha.
         let source_elem = TextureRenderElement::from_texture_render_buffer(
             location,
             blurred_texture,
-            Some(alpha),
+            None,
             Some(src_rect),
             Some(output_size),
             Kind::Unspecified,
@@ -629,7 +632,7 @@ impl BlurredBackdropShader {
             source_elem,
             shader,
             vec![
-                Uniform::new("alpha", alpha),
+                Uniform::new("blur_opacity", alpha),
                 // Use physical size for shader calculations (corner radius, etc.)
                 // The shader operates in physical pixel space
                 Uniform::new("size", [phys_geo.size.w as f32, phys_geo.size.h as f32]),
@@ -737,7 +740,7 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
     let blurred_backdrop_shader = renderer.compile_custom_texture_shader(
         BLURRED_BACKDROP_SHADER,
         &[
-            UniformName::new("alpha", UniformType::_1f),
+            UniformName::new("blur_opacity", UniformType::_1f),
             UniformName::new("size", UniformType::_2f),
             UniformName::new("screen_size", UniformType::_2f),
             UniformName::new("element_pos", UniformType::_2f),
@@ -946,11 +949,11 @@ pub type EguiState = ();
 #[derive(Clone, PartialEq)]
 pub struct HomeVisibilityContext {
     /// Set of surface IDs that are "home-only" (only visible when in home mode)
-    pub home_only_surfaces: std::collections::HashSet<u32>,
+    pub home_only_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that are "hide-on-home" (hidden when in home mode)
-    pub hide_on_home_surfaces: std::collections::HashSet<u32>,
+    pub hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
-    pub hidden_surfaces: std::collections::HashSet<u32>,
+    pub hidden_surfaces: std::collections::HashSet<ObjectId>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
     /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
@@ -958,6 +961,8 @@ pub struct HomeVisibilityContext {
     /// Current voice mode layer shell alpha (0 during burst transition, otherwise same as voice_mode_alpha)
     /// Layer shells wait until burst animation completes so windows fade in first
     pub voice_mode_layer_alpha: f32,
+    /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
+    pub layer_fade_in_alphas: std::collections::HashMap<ObjectId, f32>,
 }
 
 impl HomeVisibilityContext {
@@ -970,6 +975,7 @@ impl HomeVisibilityContext {
             home_alpha: shell.home_alpha(),
             voice_mode_alpha: shell.voice_mode_window_alpha(),
             voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
+            layer_fade_in_alphas: shell.layer_fade_in_alphas(),
         }
     }
 
@@ -987,7 +993,7 @@ impl HomeVisibilityContext {
     /// during burst transition so windows fade in first.
     pub fn surface_visibility(
         &self,
-        surface_id: u32,
+        surface_id: &ObjectId,
         layer: Option<smithay::wayland::shell::wlr_layer::Layer>,
         namespace: Option<&str>,
     ) -> (bool, f32) {
@@ -1422,10 +1428,14 @@ where
                 Stage::LayerPopup {
                     popup, location, ..
                 } => {
+                    let popup_wl_surface = popup.wl_surface();
+                    let popup_geo = popup.geometry();
+
+                    // Render the popup surface content
                     elements.extend(
                         render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
                             renderer,
-                            popup.wl_surface(),
+                            popup_wl_surface,
                             location
                                 .to_local(output)
                                 .as_logical()
@@ -1438,17 +1448,77 @@ where
                         .flat_map(crop_to_output)
                         .map(Into::into),
                     );
+
+                    let local_geo =
+                        Rectangle::new(location.to_local(output), popup_geo.size.as_local());
+
+                    // Get corner radius from the popup surface
+                    let corner_radius = get_surface_corner_radius(popup_wl_surface, popup_geo.size);
+
+                    // Render shadow behind the popup if enabled via protocol
+                    let popup_surface_id = popup_wl_surface.id();
+                    if surface_has_shadow(popup_wl_surface) {
+                        let is_dark = theme.cosmic().is_dark;
+                        let shadow_radius = corner_radius.map(|r| r.round() as u8);
+
+                        let shadow_element = ShadowShader::layer_element(
+                            renderer,
+                            &popup_surface_id,
+                            local_geo,
+                            shadow_radius,
+                            1.0,
+                            scale,
+                            is_dark,
+                        );
+
+                        let shadow: WorkspaceRenderElement<R> =
+                            Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
+                        if let Some(cropped) = crop_to_output(shadow) {
+                            elements.push(cropped.into());
+                        }
+                    }
+
+                    // Render blur backdrop behind the popup if enabled
+                    if surface_has_blur(popup_wl_surface) {
+                        let output_name = output.name();
+
+                        if let Some(blur_info) =
+                            get_cached_blur_texture_for_layer(&output_name, &popup_surface_id)
+                        {
+                            let output_transform = output.current_transform();
+                            let blurred_element = BlurredBackdropShader::element(
+                                renderer,
+                                &blur_info.texture,
+                                local_geo,
+                                blur_info.size,
+                                blur_info.screen_size,
+                                blur_info.scale.x,
+                                output_transform,
+                                corner_radius,
+                                1.0,
+                                BLUR_TINT_COLOR,
+                                BLUR_TINT_STRENGTH,
+                                true, // Enable border for popups
+                            );
+
+                            let backdrop_element: WorkspaceRenderElement<R> =
+                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
+                            if let Some(cropped) = crop_to_output(backdrop_element) {
+                                elements.push(cropped.into());
+                            }
+                        }
+                    }
                 }
                 Stage::LayerSurface {
                     layer,
                     location,
                     alpha,
-                    skip_blur: _,
+                    blur_alpha,
                 } => {
                     // Apply auto-hide render offset.
                     // Input hit-testing is also offset (in surface_under)
                     // so hidden surfaces don't intercept clicks.
-                    let surface_id = layer.wl_surface().id().protocol_id();
+                    let surface_id = layer.wl_surface().id();
                     let layer_geo = layer.bbox();
                     let (offset_x, offset_y) =
                         shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
@@ -1491,7 +1561,7 @@ where
 
                         let shadow_element = ShadowShader::layer_element(
                             renderer,
-                            surface_id,
+                            &surface_id,
                             local_geo,
                             shadow_radius,
                             alpha,
@@ -1507,13 +1577,13 @@ where
                     }
 
                     // Then render blur backdrop behind the layer surface (and shadow)
-                    // Alpha handles fading for home visibility surfaces
-                    if surface_has_blur(layer.wl_surface()) {
+                    // blur_alpha may be more aggressively reduced than surface alpha during fade-in
+                    if blur_alpha > 0.001 && surface_has_blur(layer.wl_surface()) {
                         let output_name = output.name();
 
                         // Try to get cached blur texture for this layer surface
                         if let Some(blur_info) =
-                            get_cached_blur_texture_for_layer(&output_name, surface_id)
+                            get_cached_blur_texture_for_layer(&output_name, &surface_id)
                         {
                             // Use the blurred backdrop shader with the cached texture
                             let output_transform = output.current_transform();
@@ -1526,27 +1596,11 @@ where
                                 blur_info.scale.x,
                                 output_transform,
                                 corner_radius,
-                                alpha,
+                                blur_alpha,
                                 BLUR_TINT_COLOR,
                                 BLUR_TINT_STRENGTH,
                                 true, // Enable border for layer shells
                             );
-
-                            // Additional 90% white backdrop on top of blur
-                            // Must be pushed BEFORE blur — later elements have lower z-order
-                            let white_backdrop = BackdropShader::element(
-                                renderer,
-                                Key::LayerSurface(surface_id),
-                                local_geo,
-                                corner_radius,
-                                alpha * BLUR_BACKDROP_ALPHA,
-                                BLUR_BACKDROP_COLOR,
-                            );
-                            let white_element: WorkspaceRenderElement<R> =
-                                Into::<CosmicMappedRenderElement<R>>::into(white_backdrop).into();
-                            if let Some(cropped) = crop_to_output(white_element) {
-                                elements.push(cropped.into());
-                            }
 
                             let backdrop_element: WorkspaceRenderElement<R> =
                                 Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
@@ -1933,7 +1987,7 @@ where
     // Get layer blur surfaces from cache (populated by main thread, safe for render thread)
     use smithay::wayland::shell::wlr_layer::Layer;
     let cached_layer_blur = get_layer_blur_surfaces(&output.name());
-    let layer_blur_surfaces: Vec<(u32, Rectangle<i32, Local>, Layer)> = cached_layer_blur
+    let layer_blur_surfaces: Vec<(ObjectId, Rectangle<i32, Local>, Layer)> = cached_layer_blur
         .into_iter()
         .map(|info| {
             let geo = info.geometry.as_local();
@@ -2425,13 +2479,13 @@ where
                 }
             };
 
-            let mut surfaces_by_layer: StdHashMap<u8, Vec<(u32, Rectangle<i32, Local>)>> =
+            let mut surfaces_by_layer: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Local>)>> =
                 StdHashMap::new();
             for (surface_id, geo, layer) in &layer_blur_surfaces {
                 surfaces_by_layer
                     .entry(layer_to_key(*layer))
                     .or_default()
-                    .push((*surface_id, *geo));
+                    .push((surface_id.clone(), *geo));
             }
 
             let layer_blur_start = std::time::Instant::now();
@@ -2443,7 +2497,7 @@ where
 
                 // Check if all surfaces in this layer have valid cached blur textures
                 let all_cached = surfaces.iter().all(|(surface_id, _)| {
-                    get_cached_blur_texture_for_layer(&output_name, *surface_id).is_some()
+                    get_cached_blur_texture_for_layer(&output_name, surface_id).is_some()
                 });
 
                 // Capture elements below this layer using LayerBlurCapture filter
@@ -2591,7 +2645,7 @@ where
                         for (surface_id, _geo) in surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
-                                *surface_id,
+                                surface_id.clone(),
                                 BlurredTextureInfo {
                                     texture: pong.clone(),
                                     size: blur_size,
@@ -2601,7 +2655,7 @@ where
                                 },
                             );
                             tracing::debug!(
-                                surface_id = surface_id,
+                                ?surface_id,
                                 layer = ?layer_type,
                                 "Cached blur texture for layer surface"
                             );

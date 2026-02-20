@@ -2,9 +2,8 @@
 
 use crate::{
     backend::render::{
-        BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR,
-        BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader,
-        IndicatorShader, Key, Usage,
+        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
+        BackdropShader, BlurredBackdropShader, IndicatorShader, Key, Usage,
         cursor::CursorState,
         element::AsGlowRenderer,
         get_cached_blur_texture_for_window,
@@ -254,16 +253,7 @@ impl MoveGrabState {
                     BLUR_TINT_STRENGTH,
                     false, // No blur border for moving windows
                 ));
-                // Additional 90% white backdrop on top of blur
-                let white_backdrop = CosmicMappedRenderElement::from(BackdropShader::element(
-                    renderer,
-                    Key::Window(Usage::BlurBackdrop, self.window.key()),
-                    backdrop_geometry,
-                    corner_radius,
-                    alpha * BLUR_BACKDROP_ALPHA,
-                    BLUR_BACKDROP_COLOR,
-                ));
-                vec![white_backdrop, blur_elem]
+                vec![blur_elem]
             } else {
                 // Fallback when no blur texture is cached
                 vec![CosmicMappedRenderElement::from(BackdropShader::element(
@@ -296,8 +286,7 @@ impl MoveGrabState {
                         .window
                         .blur_corner_radius(window_geo.size.as_logical(), window_radius);
                     let scaled_size = window_geo.size.to_f64().upscale(scale).to_i32_round();
-                    let backdrop_geometry =
-                        Rectangle::new(render_location, scaled_size).as_local();
+                    let backdrop_geometry = Rectangle::new(render_location, scaled_size).as_local();
                     vec![CosmicMappedRenderElement::from(BackdropShader::element(
                         renderer,
                         Key::Window(Usage::Overlay, self.window.key()),
@@ -728,6 +717,15 @@ impl PointerGrab<State> for MoveGrab {
 
         // While the grab is active, no client has pointer focus
         handle.motion(state, None, event);
+
+        // Re-assert the Grabbing cursor each motion event.
+        // handle.motion(state, None, ..) triggers leave() on the previous focus,
+        // which calls unset_shape() and resets the cursor to Default.
+        {
+            let cursor_state = self.seat.user_data().get::<CursorState>().unwrap();
+            cursor_state.lock().unwrap().set_shape(CursorIcon::Grabbing);
+        }
+
         if !self.window.alive() {
             handle.unset_grab(self, state, event.serial, event.time, true);
         }

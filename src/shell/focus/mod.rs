@@ -682,6 +682,7 @@ fn focus_target_is_valid(
         return if let KeyboardFocusTarget::LayerSurface(layer_surface) = target {
             let data = layer_surface.cached_state();
             (data.keyboard_interactivity, data.layer) == (KeyboardInteractivity::Exclusive, layer)
+                && !shell.is_surface_hidden(&layer_surface.wl_surface().id())
         } else {
             false
         };
@@ -758,6 +759,8 @@ fn update_focus_target(
                 let data = layer_surface.cached_state();
                 (data.keyboard_interactivity, data.layer)
                     == (KeyboardInteractivity::Exclusive, layer)
+                    // Skip hidden surfaces — they should not receive focus
+                    && !shell.is_surface_hidden(&layer_surface.wl_surface().id())
             })
             .cloned()
             .map(KeyboardFocusTarget::from)
@@ -824,6 +827,10 @@ fn exclusive_layer_surface_layer(shell: &Shell) -> Option<Layer> {
     let mut layer = None;
     for output in shell.outputs() {
         for layer_surface in layer_map_for_output(output).layers() {
+            // Skip hidden surfaces — they should not claim exclusive focus
+            if shell.is_surface_hidden(&layer_surface.wl_surface().id()) {
+                continue;
+            }
             let data = layer_surface.cached_state();
             if data.keyboard_interactivity == KeyboardInteractivity::Exclusive
                 && data.layer as u32 >= layer.unwrap_or(Layer::Top) as u32

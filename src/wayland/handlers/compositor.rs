@@ -367,6 +367,13 @@ impl CompositorHandler for State {
             if changed {
                 shell.workspaces.recalculate();
             }
+
+            // If this surface was just un-hidden and had a deferred fade-in,
+            // start the blur animation now that the client has committed
+            // a fresh buffer with actual content.
+            let surface_id = surface.id();
+            shell.activate_pending_fade_in(&surface_id);
+
             // Update layer blur cache when layer surfaces are committed
             // (blur protocol state may have changed)
             crate::wayland::handlers::layer_shell::update_layer_blur_state(&output);
@@ -446,7 +453,21 @@ impl State {
         {
             if !layer_surface_check_inital_configure(&layer_surface) {
                 // compute initial dimensions by mapping
-                if let Some(target) = shell.map_layer(&layer_surface) {
+                let target = shell.map_layer(&layer_surface);
+
+                let map_output = shell
+                    .outputs()
+                    .find(|o| {
+                        let map = layer_map_for_output(o);
+                        map.layer_for_surface(layer_surface.wl_surface(), WindowSurfaceType::ALL)
+                            .is_some()
+                    })
+                    .cloned();
+                if let Some(output) = map_output {
+                    crate::wayland::handlers::layer_shell::update_layer_blur_state(&output);
+                }
+
+                if let Some(target) = target {
                     let seat = shell.seats.last_active().clone();
                     std::mem::drop(shell);
                     Shell::set_focus(self, Some(&target), &seat, None, false);

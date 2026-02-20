@@ -188,10 +188,10 @@ where
 
                 let pending_region = data.pending_region.lock().unwrap().take();
 
-                tracing::debug!(
+                tracing::trace!(
                     surface_id = surface.id().protocol_id(),
                     has_region = pending_region.is_some(),
-                    "Client committed blur effect for surface"
+                    "[BLUR-TIMING] 1/5 Client committed blur protocol for surface"
                 );
 
                 with_states(&surface, |surface_data| {

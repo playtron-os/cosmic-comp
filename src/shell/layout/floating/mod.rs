@@ -13,7 +13,7 @@ use smithay::{
     backend::renderer::{
         ImportAll, ImportMem, Renderer,
         element::{
-            AsRenderElements, Element, RenderElement,
+            AsRenderElements, RenderElement,
             utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
         },
     },
@@ -27,14 +27,12 @@ use smithay::{
 
 use crate::{
     backend::render::{
-        BLUR_BACKDROP_ALPHA, BLUR_BACKDROP_COLOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR,
-        BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader, ElementFilter,
-        IndicatorShader, Key, Usage,
+        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
+        BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
         element::AsGlowRenderer,
         get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
     },
-    wayland::protocols::backdrop_color::get_surface_backdrop_color,
     shell::{
         CosmicSurface, Direction, ManagedLayer, MoveResult, ResizeMode,
         element::{
@@ -52,6 +50,7 @@ use crate::{
     state::State,
     utils::{prelude::*, tween::EaseRectangle},
     wayland::handlers::xdg_shell::popup::get_popup_toplevel,
+    wayland::protocols::backdrop_color::get_surface_backdrop_color,
 };
 
 mod grabs;
@@ -1177,10 +1176,7 @@ impl FloatingLayout {
                 // Clamp the position so the window stays within the non-exclusive zone.
                 // This prevents windows from being dropped behind layer-shell panels.
                 let geo = output_geometry.as_local();
-                Point::from((
-                    pos.x.max(geo.loc.x),
-                    pos.y.max(geo.loc.y),
-                ))
+                Point::from((pos.x.max(geo.loc.x), pos.y.max(geo.loc.y)))
             })
             .or_else(|| last_geometry.map(|g| g.loc))
             .unwrap_or_else(|| {
@@ -3278,10 +3274,8 @@ impl FloatingLayout {
                 );
 
                 // Also get the window rendering corner radius for comparison
-                let window_render_radius = elem.corner_radius(
-                    geometry.size.as_logical(),
-                    indicator_thickness,
-                );
+                let window_render_radius =
+                    elem.corner_radius(geometry.size.as_logical(), indicator_thickness);
 
                 // Get the output name for looking up cached blur texture
                 let output_name = output.name();
@@ -3309,16 +3303,6 @@ impl FloatingLayout {
                         false, // No blur border for regular windows
                     );
 
-                    // Additional 90% white backdrop on top of blur
-                    let white_backdrop = BackdropShader::element(
-                        renderer,
-                        Key::Window(Usage::BlurBackdrop, elem.key()),
-                        blur_geometry,
-                        corner_radius,
-                        alpha * BLUR_BACKDROP_ALPHA,
-                        BLUR_BACKDROP_COLOR,
-                    );
-                    window_elements.push(white_backdrop.into());
                     window_elements.push(blur_backdrop.into());
                 } else {
                     tracing::debug!(
@@ -3343,8 +3327,8 @@ impl FloatingLayout {
             if !elem.has_blur() || blur_ctx.is_some() {
                 if let Some(wl_surface) = elem.active_window().wl_surface() {
                     if let Some(color) = get_surface_backdrop_color(&wl_surface) {
-                        let corner_radius =
-                            elem.blur_corner_radius(geometry.size.as_logical(), indicator_thickness);
+                        let corner_radius = elem
+                            .blur_corner_radius(geometry.size.as_logical(), indicator_thickness);
                         let backdrop = BackdropShader::element(
                             renderer,
                             Key::Window(Usage::Overlay, elem.key()),

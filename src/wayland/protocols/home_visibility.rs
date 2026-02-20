@@ -32,6 +32,7 @@ use smithay::reexports::wayland_server::{
 };
 use std::sync::Mutex;
 use tracing::{debug, info};
+use wayland_backend::server::ObjectId;
 
 /// Visibility mode for a layer surface
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -169,10 +170,10 @@ pub trait HomeVisibilityHandler {
     fn home_visibility_state(&self) -> &HomeVisibilityState;
 
     /// Set a surface's visibility mode in the Shell
-    fn set_surface_visibility_mode(&mut self, surface_id: u32, mode: VisibilityMode);
+    fn set_surface_visibility_mode(&mut self, surface_id: ObjectId, mode: VisibilityMode);
 
     /// Remove a surface from visibility tracking in the Shell
-    fn remove_surface_visibility(&mut self, surface_id: u32);
+    fn remove_surface_visibility(&mut self, surface_id: ObjectId);
 }
 
 impl<D> GlobalDispatch<zcosmic_home_visibility_manager_v1::ZcosmicHomeVisibilityManagerV1, (), D>
@@ -257,9 +258,9 @@ where
             zcosmic_home_visibility_v1::Request::Destroy => {
                 // Remove surface from home-only tracking in Shell
                 if let Some(surface) = data.surface.upgrade().ok() {
-                    let surface_id = surface.id().protocol_id();
-                    state.remove_surface_visibility(surface_id);
-                    debug!(surface_id, "Home visibility controller destroyed");
+                    let surface_id = surface.id();
+                    state.remove_surface_visibility(surface_id.clone());
+                    debug!(?surface_id, "Home visibility controller destroyed");
                 }
             }
             zcosmic_home_visibility_v1::Request::SetVisibilityMode { mode } => {
@@ -267,10 +268,10 @@ where
                 *data.mode.lock().unwrap() = visibility_mode;
 
                 if let Some(surface) = data.surface.upgrade().ok() {
-                    let surface_id = surface.id().protocol_id();
-                    state.set_surface_visibility_mode(surface_id, visibility_mode);
+                    let surface_id = surface.id();
+                    state.set_surface_visibility_mode(surface_id.clone(), visibility_mode);
                     debug!(
-                        surface_id,
+                        ?surface_id,
                         ?visibility_mode,
                         "Surface visibility mode changed"
                     );

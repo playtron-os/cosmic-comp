@@ -13,7 +13,10 @@ use cosmic::{
         event::Event,
         futures::{FutureExt, StreamExt},
         keyboard::{Event as KeyboardEvent, Modifiers as IcedModifiers},
-        mouse::{Button as MouseButton, Cursor, Event as MouseEvent, ScrollDelta},
+        mouse::{
+            Button as MouseButton, Cursor, Event as MouseEvent, Interaction as MouseInteraction,
+            ScrollDelta,
+        },
         touch::{Event as TouchEvent, Finger},
         window::Event as WindowEvent,
     },
@@ -388,6 +391,11 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
     pub fn queue_message(&self, msg: P::Message) {
         self.0.lock().unwrap().state.queue_message(msg);
+    }
+
+    /// Returns the current mouse interaction state from the iced widget tree.
+    pub fn mouse_interaction(&self) -> MouseInteraction {
+        self.0.lock().unwrap().state.mouse_interaction()
     }
 }
 

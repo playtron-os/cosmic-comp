@@ -51,7 +51,7 @@ pub fn update_layer_blur_state(output: &Output) {
         .filter_map(|layer| {
             let geometry = layer_map.layer_geometry(layer)?;
             let layer_type = layer.layer();
-            let surface_id = layer.wl_surface().id().protocol_id();
+            let surface_id = layer.wl_surface().id();
 
             Some(LayerBlurSurfaceInfo {
                 surface_id,
@@ -61,11 +61,19 @@ pub fn update_layer_blur_state(output: &Output) {
         })
         .collect();
 
-    tracing::trace!(
-        output = output.name(),
-        blur_surface_count = blur_surfaces.len(),
-        "Updated layer blur surfaces"
-    );
+    if !blur_surfaces.is_empty() {
+        tracing::trace!(
+            output = output.name(),
+            blur_surface_count = blur_surfaces.len(),
+            "[BLUR-TIMING] 4/5 update_layer_blur_state() populated cache with blur surfaces"
+        );
+    } else {
+        tracing::trace!(
+            output = output.name(),
+            blur_surface_count = blur_surfaces.len(),
+            "Updated layer blur surfaces"
+        );
+    }
 
     set_layer_blur_surfaces(&output.name(), blur_surfaces);
 
@@ -126,12 +134,13 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
-        let surface_id = surface.wl_surface().id().protocol_id();
+        let surface_id = surface.wl_surface().id();
         let mut shell = self.common.shell.write();
 
         // Clean up visibility tracking for this surface
-        shell.remove_surface_visibility(surface_id);
-        shell.remove_hidden_surface(surface_id);
+        shell.remove_surface_visibility(surface_id.clone());
+        shell.remove_hidden_surface(&surface_id);
+        shell.remove_layer_fade_in(&surface_id);
 
         let maybe_output = shell
             .outputs()

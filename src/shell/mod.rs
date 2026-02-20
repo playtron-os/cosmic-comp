@@ -9,7 +9,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use wayland_backend::server::ClientId;
+use wayland_backend::server::{ClientId, ObjectId};
 
 /// Check if home mode feature is enabled via HOME_ENABLED env var.
 /// This is cached on first access.
@@ -124,6 +124,7 @@ use self::{
 };
 
 const ANIMATION_DURATION: Duration = Duration::from_millis(200);
+const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
 const GESTURE_VELOCITY_THRESHOLD: f64 = 0.02;
@@ -592,11 +593,11 @@ pub struct Shell {
     /// Home mode state for animation (fading in/out of home screen)
     home_mode: HomeMode,
     /// Surface IDs that should only be visible when in home mode
-    home_only_surfaces: std::collections::HashSet<u32>,
+    home_only_surfaces: std::collections::HashSet<ObjectId>,
     /// Surface IDs that should be hidden when in home mode (inverse of home_only)
-    hide_on_home_surfaces: std::collections::HashSet<u32>,
+    hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
     /// Surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
-    hidden_surfaces: std::collections::HashSet<u32>,
+    hidden_surfaces: std::collections::HashSet<ObjectId>,
     /// Surfaces minimized by home mode (to restore when exiting)
     home_minimized_surfaces: Vec<CosmicSurface>,
 
@@ -604,6 +605,12 @@ pub struct Shell {
     voice_mode: VoiceMode,
     /// Voice orb rendering state
     pub voice_orb_state: crate::backend::render::voice_orb::VoiceOrbState,
+
+    /// Layer surfaces currently fading in (surface ObjectId -> map instant)
+    layer_fade_in: std::collections::HashMap<ObjectId, Instant>,
+    /// Layer surfaces waiting for a buffer commit before starting their fade-in.
+    /// Moved to `layer_fade_in` when the surface next commits a buffer.
+    pending_layer_fade_in: std::collections::HashSet<ObjectId>,
 
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
@@ -1942,6 +1949,10 @@ impl Shell {
             voice_mode: VoiceMode::None,
             voice_orb_state: Default::default(),
 
+            // Layer surface fade-in tracking
+            layer_fade_in: std::collections::HashMap::new(),
+            pending_layer_fade_in: std::collections::HashSet::new(),
+
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),
 
@@ -2659,6 +2670,8 @@ impl Shell {
                 .auto_hide_surfaces
                 .iter()
                 .any(|s| s.visibility.is_animating())
+            || !self.layer_fade_in.is_empty()
+            || !self.pending_layer_fade_in.is_empty()
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -2683,6 +2696,8 @@ impl Shell {
         }
         // Update auto-hide animations and send visibility events
         self.update_auto_hide_animations();
+        // Clean up completed layer surface fade-ins
+        self.cleanup_layer_fade_ins();
         clients
     }
 
@@ -2709,10 +2724,9 @@ impl Shell {
         // For "OnMaximize" mode, start hidden if maximized/fullscreen windows exist.
         let should_start_hidden = match mode {
             auto_hide::AutoHideMode::Always => true,
-            auto_hide::AutoHideMode::OnMaximize => {
-                self.auto_hide_surface_output(surface)
-                    .is_some_and(|output| self.output_has_maximized_or_fullscreen(&output))
-            }
+            auto_hide::AutoHideMode::OnMaximize => self
+                .auto_hide_surface_output(surface)
+                .is_some_and(|output| self.output_has_maximized_or_fullscreen(&output)),
         };
 
         if should_start_hidden {
@@ -2722,7 +2736,13 @@ impl Shell {
             crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(surface, false);
         }
 
-        tracing::info!(surface_id, ?edge, ?mode, should_start_hidden, "auto_hide: registered surface");
+        tracing::info!(
+            surface_id,
+            ?edge,
+            ?mode,
+            should_start_hidden,
+            "auto_hide: registered surface"
+        );
         self.auto_hide_surfaces.push(entry);
     }
 
@@ -3288,19 +3308,19 @@ impl Shell {
     }
 
     /// Get the set of home-only surface IDs
-    pub fn home_only_surfaces(&self) -> &std::collections::HashSet<u32> {
+    pub fn home_only_surfaces(&self) -> &std::collections::HashSet<ObjectId> {
         &self.home_only_surfaces
     }
 
     /// Get the set of hide-on-home surface IDs
-    pub fn hide_on_home_surfaces(&self) -> &std::collections::HashSet<u32> {
+    pub fn hide_on_home_surfaces(&self) -> &std::collections::HashSet<ObjectId> {
         &self.hide_on_home_surfaces
     }
 
     /// Set a surface's visibility mode
     pub fn set_surface_visibility_mode(
         &mut self,
-        surface_id: u32,
+        surface_id: ObjectId,
         mode: crate::wayland::protocols::home_visibility::VisibilityMode,
     ) {
         use crate::wayland::protocols::home_visibility::VisibilityMode;
@@ -3323,7 +3343,7 @@ impl Shell {
     }
 
     /// Remove a surface from visibility tracking
-    pub fn remove_surface_visibility(&mut self, surface_id: u32) {
+    pub fn remove_surface_visibility(&mut self, surface_id: ObjectId) {
         self.home_only_surfaces.remove(&surface_id);
         self.hide_on_home_surfaces.remove(&surface_id);
     }
@@ -3331,27 +3351,125 @@ impl Shell {
     // Client-hidden surface methods (layer_surface_visibility protocol)
 
     /// Get the set of explicitly hidden surface IDs
-    pub fn hidden_surfaces(&self) -> &std::collections::HashSet<u32> {
+    pub fn hidden_surfaces(&self) -> &std::collections::HashSet<ObjectId> {
         &self.hidden_surfaces
     }
 
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
-    pub fn set_surface_hidden(&mut self, surface_id: u32, hidden: bool) {
+    pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
         if hidden {
-            self.hidden_surfaces.insert(surface_id);
+            self.hidden_surfaces.insert(surface_id.clone());
+            // Cancel any pending fade-in if we're hiding again
+            self.pending_layer_fade_in.remove(&surface_id);
         } else {
-            self.hidden_surfaces.remove(&surface_id);
+            let was_hidden = self.hidden_surfaces.remove(&surface_id);
+            // Defer blur fade-in until the surface commits its first buffer
+            // after becoming visible. This prevents the blur animating over
+            // stale/empty content while the client renders its first frame.
+            if was_hidden {
+                tracing::debug!(
+                    ?surface_id,
+                    "set_surface_hidden: deferring fade-in until next buffer commit"
+                );
+                self.pending_layer_fade_in.insert(surface_id);
+            }
         }
     }
 
     /// Check if a surface is explicitly hidden
-    pub fn is_surface_hidden(&self, surface_id: u32) -> bool {
+    pub fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {
         self.hidden_surfaces.contains(&surface_id)
     }
 
     /// Remove a surface from hidden tracking (called when surface is destroyed)
-    pub fn remove_hidden_surface(&mut self, surface_id: u32) {
-        self.hidden_surfaces.remove(&surface_id);
+    pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
+        self.hidden_surfaces.remove(surface_id);
+    }
+
+    // Layer fade-in methods
+
+    /// Get the map of layer surfaces currently fading in with their alpha values (read-only).
+    pub fn layer_fade_in_alphas(&self) -> std::collections::HashMap<ObjectId, f32> {
+        let now = Instant::now();
+        let mut result: std::collections::HashMap<ObjectId, f32> = self
+            .layer_fade_in
+            .iter()
+            .filter_map(|(surface_id, start)| {
+                let elapsed = now.saturating_duration_since(*start);
+                let progress =
+                    (elapsed.as_secs_f32() / LAYER_FADE_IN_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                if progress >= 1.0 {
+                    None
+                } else {
+                    // Ease-out cubic
+                    let eased = 1.0 - (1.0 - progress).powi(3);
+                    tracing::debug!(
+                        ?surface_id,
+                        ?progress,
+                        ?eased,
+                        "layer_fade_in_alphas: surface still fading"
+                    );
+                    Some((surface_id.clone(), eased))
+                }
+            })
+            .collect();
+        // Surfaces waiting for a buffer commit before their fade-in starts
+        // are held at alpha=0 so neither content nor blur is visible yet.
+        for surface_id in &self.pending_layer_fade_in {
+            result.entry(surface_id.clone()).or_insert(0.0);
+        }
+        if !result.is_empty() {
+            tracing::debug!(
+                count = result.len(),
+                "layer_fade_in_alphas: returning fading surfaces"
+            );
+        }
+        result
+    }
+
+    /// Remove completed layer fade-in entries (called from update_animations)
+    fn cleanup_layer_fade_ins(&mut self) {
+        let now = Instant::now();
+        self.layer_fade_in.retain(|_, start| {
+            let elapsed = now.saturating_duration_since(*start);
+            elapsed < LAYER_FADE_IN_DURATION
+        });
+    }
+
+    /// Remove a surface from fade-in tracking (called when surface is destroyed)
+    pub fn remove_layer_fade_in(&mut self, surface_id: &ObjectId) {
+        self.layer_fade_in.remove(surface_id);
+        self.pending_layer_fade_in.remove(surface_id);
+    }
+
+    /// Activate a pending fade-in for a surface.
+    /// Called from the compositor `commit()` handler when a layer surface commits
+    /// a buffer.  If the surface has a pending fade-in (was just un-hidden),
+    /// this starts the actual animation so the blur fades in together with the
+    /// freshly rendered content.
+    pub fn activate_pending_fade_in(&mut self, surface_id: &ObjectId) {
+        if self.pending_layer_fade_in.remove(surface_id) {
+            tracing::debug!(
+                ?surface_id,
+                "activate_pending_fade_in: starting blur fade-in on buffer commit"
+            );
+            self.layer_fade_in
+                .insert(surface_id.clone(), Instant::now());
+        }
+    }
+
+    /// Restart the fade-in timer for a surface.
+    /// Used when blur is first committed: the original timer starts at map_layer()
+    /// time which is before the client commits any buffer, so by the time blur
+    /// is ready the animation has expired. Restarting ensures a visible fade-in.
+    /// Unconditionally inserts because the original entry may have already been
+    /// cleaned up by cleanup_layer_fade_ins() if the animation expired.
+    pub fn restart_layer_fade_in(&mut self, surface_id: ObjectId) {
+        tracing::debug!(
+            ?surface_id,
+            "restart_layer_fade_in: restarting fade-in for blur"
+        );
+        self.layer_fade_in.insert(surface_id, Instant::now());
     }
 
     // Voice mode methods
@@ -3542,7 +3660,7 @@ impl Shell {
 
     /// Check if a surface should be rendered (for filtering)
     /// Returns (visible, alpha) where alpha is for animation blending
-    pub fn surface_home_visibility(&self, surface_id: u32) -> (bool, f32) {
+    pub fn surface_home_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible when at home or animating
             let alpha = self.home_mode.alpha();
@@ -3558,7 +3676,7 @@ impl Shell {
     }
 
     /// Check if a surface should be rendered (for filtering)
-    pub fn should_surface_be_visible(&self, surface_id: u32, is_home: bool) -> bool {
+    pub fn should_surface_be_visible(&self, surface_id: &ObjectId, is_home: bool) -> bool {
         if self.home_only_surfaces.contains(&surface_id) {
             // Home-only surface: visible when at home or during animation
             is_home || self.home_mode.alpha() > 0.0
@@ -4300,13 +4418,27 @@ impl Shell {
             .unwrap();
         let pending = self.pending_layers.remove(pos);
 
-        let wants_focus = {
+        let surface_id = pending.surface.wl_surface().id();
+        let is_hidden = self.hidden_surfaces.contains(&surface_id);
+
+        let wants_focus = if is_hidden {
+            // Surface was hidden before it was mapped (e.g. launcher daemon
+            // GPU warm-up).  Don't grant focus to hidden surfaces.
+            false
+        } else {
             with_states(pending.surface.wl_surface(), |states| {
                 let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
                 matches!(state.current().layer, Layer::Top | Layer::Overlay)
                     && state.current().keyboard_interactivity != KeyboardInteractivity::None
             })
         };
+
+        // Only start fade-in animation for visible surfaces.  Hidden surfaces
+        // will get a fresh fade-in when they transition to visible via the
+        // layer_surface_visibility protocol (restart_layer_fade_in).
+        if !is_hidden {
+            self.layer_fade_in.insert(surface_id, Instant::now());
+        }
 
         {
             let mut map = layer_map_for_output(&pending.output);

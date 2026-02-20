@@ -94,6 +94,7 @@ use smithay::{
     },
 };
 use tracing::{error, info, trace, warn};
+use wayland_backend::server::ObjectId;
 
 use std::{
     borrow::{Borrow, BorrowMut},
@@ -707,7 +708,7 @@ fn process_blur(
     if has_layer_blur {
         tracing::trace!(
             output = %output_name,
-            "Layer surface with blur detected (from cache)"
+            "[BLUR-TIMING] KMS process_blur() sees has_layer_blur=true"
         );
     }
 
@@ -1088,20 +1089,20 @@ fn process_blur(
             }
         };
 
-        let mut surfaces_by_layer: StdHashMap<u8, Vec<(u32, Rectangle<i32, Logical>)>> =
+        let mut surfaces_by_layer: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Logical>)>> =
             StdHashMap::new();
         for layer_info in &layer_blur_surfaces {
             surfaces_by_layer
                 .entry(layer_to_key(layer_info.layer))
                 .or_default()
-                .push((layer_info.surface_id, layer_info.geometry));
+                .push((layer_info.surface_id.clone(), layer_info.geometry));
         }
 
         tracing::debug!(
             output = %output_name,
             total_layer_surfaces = layer_blur_surfaces.len(),
             layer_groups = surfaces_by_layer.len(),
-            "Processing layer blur surfaces (grouped by layer)"
+            "[BLUR-TIMING] KMS layer blur processing starting"
         );
 
         // Process each layer type that has blur surfaces
@@ -1116,10 +1117,16 @@ fn process_blur(
             )
             .entered();
 
-            // Check if all surfaces in this layer have valid cached blur textures
-            let all_cached = surfaces.iter().all(|(surface_id, _)| {
-                get_cached_blur_texture_for_layer(&output_name, *surface_id).is_some()
-            });
+            // Check which surfaces don't have cached blur textures yet
+            // so we can reset their fade-in timers after first cache
+            let uncached_surfaces: Vec<ObjectId> = surfaces
+                .iter()
+                .filter(|(surface_id, _)| {
+                    get_cached_blur_texture_for_layer(&output_name, surface_id).is_none()
+                })
+                .map(|(surface_id, _)| surface_id.clone())
+                .collect();
+            let all_cached = uncached_surfaces.is_empty();
 
             // Layer blur capture: capture all elements below this layer
             let capture_filter =
@@ -1285,7 +1292,7 @@ fn process_blur(
                         for (surface_id, _geo) in &surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
-                                *surface_id,
+                                surface_id.clone(),
                                 BlurredTextureInfo {
                                     texture: cached_texture.clone(),
                                     size: blur_size,
@@ -1295,6 +1302,25 @@ fn process_blur(
                                 },
                             );
                         }
+
+                        // Reset fade-in for surfaces that just got their first
+                        // blur texture so the animation starts from alpha=0
+                        // instead of wherever the timer has drifted to.
+                        if !uncached_surfaces.is_empty() {
+                            tracing::debug!(
+                                output = %output_name,
+                                layer = ?layer_type,
+                                uncached_count = uncached_surfaces.len(),
+                                blur_total_us = blur_start.elapsed().as_micros(),
+                                layer_group_us = layer_group_start.elapsed().as_micros(),
+                                "[BLUR-TIMING] 5/5 First blur texture cached for layer surfaces"
+                            );
+                            let mut shell_guard = shell.write();
+                            for surface_id in &uncached_surfaces {
+                                shell_guard.restart_layer_fade_in(surface_id.clone());
+                            }
+                        }
+
                         any_blur_applied = true;
                     }
                 }

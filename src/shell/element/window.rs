@@ -20,7 +20,7 @@ use crate::{
     wayland::handlers::surface_embed::{get_embed_render_info, is_surface_embedded},
 };
 use calloop::LoopHandle;
-use cosmic::iced::{Color, Task};
+use cosmic::iced::{Color, Task, mouse::Interaction as MouseInteraction};
 use cosmic_comp_config::AppearanceConfig;
 use smithay::{
     backend::{
@@ -70,7 +70,7 @@ use wayland_backend::server::ObjectId;
 
 use super::CosmicSurface;
 
-pub const SSD_HEIGHT: i32 = 36;
+pub const SSD_HEIGHT: i32 = 55;
 pub const RESIZE_BORDER: i32 = 10;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -91,6 +91,8 @@ pub struct CosmicWindowInternal {
     /// TODO: This needs to be per seat
     pointer_entered: AtomicU8,
     last_title: Mutex<String>,
+    /// Cached app icon handle, resolved once and refreshed when app_id changes.
+    cached_icon: Mutex<(String, Option<cosmic::widget::icon::Handle>)>,
     tiled: AtomicBool,
     theme: Mutex<cosmic::Theme>,
     appearance_conf: Mutex<AppearanceConfig>,
@@ -163,6 +165,80 @@ impl Focus {
     }
 }
 
+/// Maps an iced `mouse::Interaction` to a smithay `CursorIcon` so the
+/// compositor can display the correct cursor for SSD header bar widgets.
+fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon {
+    match interaction {
+        MouseInteraction::Pointer => CursorIcon::Pointer,
+        MouseInteraction::Grab => CursorIcon::Grab,
+        MouseInteraction::Grabbing => CursorIcon::Grabbing,
+        MouseInteraction::Text => CursorIcon::Text,
+        MouseInteraction::Crosshair => CursorIcon::Crosshair,
+        MouseInteraction::NotAllowed => CursorIcon::NotAllowed,
+        MouseInteraction::ResizingHorizontally => CursorIcon::ColResize,
+        MouseInteraction::ResizingVertically => CursorIcon::RowResize,
+        MouseInteraction::Move => CursorIcon::Move,
+        MouseInteraction::Copy => CursorIcon::Copy,
+        MouseInteraction::Help => CursorIcon::Help,
+        MouseInteraction::Cell => CursorIcon::Cell,
+        MouseInteraction::Working => CursorIcon::Progress,
+        MouseInteraction::ZoomIn => CursorIcon::ZoomIn,
+        MouseInteraction::ZoomOut => CursorIcon::ZoomOut,
+        _ => CursorIcon::Default,
+    }
+}
+
+/// Resolve an application icon for the SSD header bar.
+///
+/// Lookup order:
+///   1. XDG icon theme via `from_name(app_id)` (exact match)
+///   2. XDG icon theme via `from_name(app_id.to_lowercase())` (case-insensitive)
+///   3. `/usr/share/pixmaps/{name}.{ext}` for common extensions (covers apps
+///      like Slack whose `.desktop` files point to an absolute pixmap path)
+fn resolve_app_icon(app_id: &str) -> Option<cosmic::widget::icon::Handle> {
+    use std::path::Path;
+
+    // 1. Exact name in icon theme
+    let named = cosmic::widget::icon::from_name(app_id).size(128);
+    if named.clone().path().is_some() {
+        return Some(named.handle());
+    }
+
+    // 2. Lower-case fallback (e.g. app_id "Slack" → icon name "slack")
+    let lower = app_id.to_lowercase();
+    if lower != app_id {
+        let named_lower = cosmic::widget::icon::from_name(&*lower).size(128);
+        if named_lower.clone().path().is_some() {
+            return Some(named_lower.handle());
+        }
+    }
+
+    // 3. Direct pixmap lookup
+    for ext in &["png", "svg", "xpm"] {
+        let pixmap = format!("/usr/share/pixmaps/{lower}.{ext}");
+        if Path::new(&pixmap).exists() {
+            let handle = if *ext == "svg" {
+                cosmic::widget::icon::Handle {
+                    symbolic: false,
+                    data: cosmic::widget::icon::Data::Svg(
+                        cosmic::iced_core::svg::Handle::from_path(&pixmap),
+                    ),
+                }
+            } else {
+                cosmic::widget::icon::Handle {
+                    symbolic: false,
+                    data: cosmic::widget::icon::Data::Image(
+                        cosmic::iced_core::image::Handle::from_path(&pixmap),
+                    ),
+                }
+            };
+            return Some(handle);
+        }
+    }
+
+    None
+}
+
 impl CosmicWindowInternal {
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
         let value = focus.map_or(0, |x| x as u8);
@@ -223,27 +299,17 @@ impl CosmicWindowInternal {
 
         let surface_corners = self.window.corner_radius(geometry_size);
         let result = match (has_ssd, clip) {
-            (has_ssd, true) => {
+            (_has_ssd, true) => {
                 let mut corners = surface_corners.unwrap_or(radii);
 
                 corners[0] = radii[0].max(corners[0]);
-                corners[1] = if has_ssd {
-                    radii[1]
-                } else {
-                    radii[1].max(corners[1])
-                };
+                corners[1] = radii[1].max(corners[1]);
                 corners[2] = radii[2].max(corners[2]);
-                corners[3] = if has_ssd {
-                    radii[3]
-                } else {
-                    radii[3].max(corners[3])
-                };
+                corners[3] = radii[3].max(corners[3]);
 
                 corners
             }
-            (true, false) => surface_corners
-                .map(|[a, _, c, _]| [a, radii[1], c, radii[3]])
-                .unwrap_or([default_radius, radii[1], default_radius, radii[3]]),
+            (true, false) => surface_corners.unwrap_or([default_radius; 4]),
             (false, false) => surface_corners.unwrap_or([default_radius; 4]),
         };
 
@@ -261,6 +327,8 @@ impl CosmicWindow {
         let window = window.into();
         let width = window.geometry().size.w;
         let last_title = window.title();
+        let app_id = window.app_id();
+        let icon = resolve_app_icon(&app_id);
 
         // Note: We intentionally do NOT set_tiled based on clip_floating_windows.
         // The tiled protocol state should only reflect actual tiling status,
@@ -272,6 +340,7 @@ impl CosmicWindow {
                 activated: AtomicBool::new(false),
                 pointer_entered: AtomicU8::new(0),
                 last_title: Mutex::new(last_title),
+                cached_icon: Mutex::new((app_id, icon)),
                 tiled: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
@@ -742,6 +811,12 @@ impl Program for CosmicWindowInternal {
                                     seat.get_pointer()
                                         .unwrap()
                                         .set_grab(state, grab, serial, focus);
+                                    // Re-set Grabbing cursor after set_grab(), because
+                                    // Focus::Clear triggers leave() on the SSD header
+                                    // which calls unset_shape() and resets the cursor.
+                                    let cursor_state =
+                                        seat.user_data().get::<CursorState>().unwrap();
+                                    cursor_state.lock().unwrap().set_shape(CursorIcon::Grabbing);
                                 }
                             }
                         });
@@ -819,12 +894,8 @@ impl Program for CosmicWindowInternal {
         Task::none()
     }
 
-    fn background_color(&self, theme: &cosmic::Theme) -> Color {
-        if self.window.is_maximized(false) {
-            theme.cosmic().background.base.into()
-        } else {
-            Color::TRANSPARENT
-        }
+    fn background_color(&self, _theme: &cosmic::Theme) -> Color {
+        Color::TRANSPARENT
     }
 
     fn view(&self) -> cosmic::Element<'_, Self::Message> {
@@ -840,15 +911,30 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         let sharp_corners = win.window.is_maximized(false)
             || (win.is_tiled() && !win.appearance_conf.lock().unwrap().clip_tiled_windows);
 
+        // Compute the actual corner radius the compositor will apply to this window,
+        // and pass it to the header bar so its background clips to the same radii.
+        let geo_size = SpaceElement::geometry(&win.window).size;
+        let radii = win.compute_corner_radius(geo_size, 0);
+        let corner_radius_f32 = radii.map(|r| r as f32);
+
         let mut header = cosmic::widget::header_bar()
             .title(win.last_title.lock().unwrap().clone())
             .on_drag(Message::DragStart)
             .on_close(Message::Close)
             .focused(win.window.is_activated(false))
+            .maximized(win.window.is_maximized(false))
             .on_double_click(Message::Maximize)
             .on_right_click(Message::Menu)
             .is_ssd(true)
-            .sharp_corners(sharp_corners);
+            .sharp_corners(sharp_corners)
+            .corner_radius(corner_radius_f32);
+
+        // Use cached app icon (resolved once, refreshed in refresh() when app_id changes).
+        let cached = win.cached_icon.lock().unwrap();
+        if let Some(ref icon_handle) = cached.1 {
+            header = header.app_icon(icon_handle.clone());
+        }
+        drop(cached);
 
         if cosmic::config::show_minimize() {
             header = header.on_minimize(Message::Minimize)
@@ -936,12 +1022,24 @@ impl SpaceElement for CosmicWindow {
 
             let title = p.window.title();
             let mut last_title = p.last_title.lock().unwrap();
-            if *last_title != title {
+            let title_changed = if *last_title != title {
                 *last_title = title;
                 true
             } else {
                 false
+            };
+
+            // Refresh cached icon if app_id changed
+            let app_id = p.window.app_id();
+            let mut cached = p.cached_icon.lock().unwrap();
+            if cached.0 != app_id {
+                cached.1 = resolve_app_icon(&app_id);
+                cached.0 = app_id;
+                return true; // force redraw
             }
+            drop(cached);
+
+            title_changed
         }) {
             self.0.force_update();
         } else {
@@ -992,9 +1090,9 @@ impl KeyboardTarget<State> for CosmicWindow {
 impl PointerTarget<State> for CosmicWindow {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
-        self.0.with_program(|p| {
+        let is_header = self.0.with_program(|p| {
             if is_surface_embedded(&p.window) {
-                return;
+                return false;
             }
 
             let has_ssd = p.has_ssd(false);
@@ -1005,27 +1103,43 @@ impl PointerTarget<State> for CosmicWindow {
                     if has_ssd { SSD_HEIGHT } else { 0 },
                     event.location,
                 ) else {
-                    return;
+                    return false;
                 };
 
                 let old_focus = p.swap_focus(Some(next));
                 assert_eq!(old_focus, None);
 
-                let cursor_state = seat.user_data().get::<CursorState>().unwrap();
-                cursor_state.lock().unwrap().set_shape(next.cursor_shape());
-                seat.set_cursor_image_status(CursorImageStatus::default_named());
+                // For Header focus, let the iced widget tree control the cursor
+                // (grab for drag area, pointer for buttons)
+                if !matches!(next, Focus::Header) {
+                    let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+                    cursor_state.lock().unwrap().set_shape(next.cursor_shape());
+                    seat.set_cursor_image_status(CursorImageStatus::default_named());
+                }
+
+                return matches!(next, Focus::Header);
             }
+            false
         });
 
         event.location -= self.0.with_program(|p| p.window.geometry().loc.to_f64());
-        PointerTarget::enter(&self.0, seat, data, &event)
+        PointerTarget::enter(&self.0, seat, data, &event);
+
+        // After iced processes the event, read the mouse_interaction from the
+        // widget tree and map it to a compositor cursor for the SSD header.
+        if is_header {
+            let cursor_icon = mouse_interaction_to_cursor_icon(self.0.mouse_interaction());
+            let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+            cursor_state.lock().unwrap().set_shape(cursor_icon);
+            seat.set_cursor_image_status(CursorImageStatus::default_named());
+        }
     }
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
-        self.0.with_program(|p| {
+        let is_header = self.0.with_program(|p| {
             if is_surface_embedded(&p.window) {
-                return;
+                return false;
             }
 
             let has_ssd = p.has_ssd(false);
@@ -1036,18 +1150,34 @@ impl PointerTarget<State> for CosmicWindow {
                     if has_ssd { SSD_HEIGHT } else { 0 },
                     event.location,
                 ) else {
-                    return;
+                    return false;
                 };
                 let _previous = p.swap_focus(Some(next));
 
-                let cursor_state = seat.user_data().get::<CursorState>().unwrap();
-                cursor_state.lock().unwrap().set_shape(next.cursor_shape());
-                seat.set_cursor_image_status(CursorImageStatus::default_named());
+                // For Header focus, let the iced widget tree control the cursor
+                // (grab for drag area, pointer for buttons)
+                if !matches!(next, Focus::Header) {
+                    let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+                    cursor_state.lock().unwrap().set_shape(next.cursor_shape());
+                    seat.set_cursor_image_status(CursorImageStatus::default_named());
+                }
+
+                return matches!(next, Focus::Header);
             }
+            false
         });
 
         event.location -= self.0.with_program(|p| p.window.geometry().loc.to_f64());
-        PointerTarget::motion(&self.0, seat, data, &event)
+        PointerTarget::motion(&self.0, seat, data, &event);
+
+        // After iced processes the event, read the mouse_interaction from the
+        // widget tree and map it to a compositor cursor for the SSD header.
+        if is_header {
+            let cursor_icon = mouse_interaction_to_cursor_icon(self.0.mouse_interaction());
+            let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+            cursor_state.lock().unwrap().set_shape(cursor_icon);
+            seat.set_cursor_image_status(CursorImageStatus::default_named());
+        }
     }
 
     fn relative_motion(

@@ -10,6 +10,7 @@ use smithay::{
     },
     utils::{Coordinate, IsAlive, Point, Rectangle, Size},
 };
+use wayland_backend::server::ObjectId;
 
 use crate::{
     backend::render::element::AsGlowRenderer,
@@ -29,8 +30,8 @@ pub struct ShadowParameters {
     dark_mode: bool,
 }
 type ShadowCache = RefCell<HashMap<CosmicMappedKey, (ShadowParameters, PixelShaderElement)>>;
-/// Cache for layer surface shadows (keyed by WlSurface protocol ID)
-type LayerShadowCache = RefCell<HashMap<u32, (ShadowParameters, PixelShaderElement)>>;
+/// Cache for layer surface shadows (keyed by WlSurface ObjectId)
+type LayerShadowCache = RefCell<HashMap<ObjectId, (ShadowParameters, PixelShaderElement)>>;
 
 impl ShadowShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
@@ -278,7 +279,7 @@ impl ShadowShader {
     /// Create a shadow element for layer surfaces (uses surface ID for caching)
     pub fn layer_element<R: AsGlowRenderer>(
         renderer: &R,
-        surface_id: u32,
+        surface_id: &ObjectId,
         geo: Rectangle<i32, Local>,
         radius: [u8; 4],
         alpha: f32,
@@ -501,9 +502,9 @@ impl ShadowShader {
                 Kind::Unspecified,
             );
 
-            cache.insert(surface_id, (params, element));
+            cache.insert(surface_id.clone(), (params, element));
         }
 
-        cache.get(&surface_id).unwrap().1.clone()
+        cache.get(surface_id).unwrap().1.clone()
     }
 }

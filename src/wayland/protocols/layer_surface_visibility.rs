@@ -30,6 +30,7 @@ use smithay::reexports::wayland_server::{
 };
 use std::sync::Mutex;
 use tracing::{debug, info, warn};
+use wayland_backend::server::ObjectId;
 
 /// User data for the visibility controller
 pub struct LayerSurfaceVisibilityControllerData {
@@ -86,10 +87,10 @@ pub trait LayerSurfaceVisibilityHandler {
     fn layer_surface_visibility_state(&self) -> &LayerSurfaceVisibilityState;
 
     /// Set a surface's hidden state in the Shell
-    fn set_surface_hidden(&mut self, surface_id: u32, hidden: bool);
+    fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool);
 
     /// Check if a surface is hidden
-    fn is_surface_hidden(&self, surface_id: u32) -> bool;
+    fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool;
 }
 
 impl<D>
@@ -161,9 +162,9 @@ where
                 id,
                 surface,
             } => {
-                let surface_id = surface.id().protocol_id();
+                let surface_id = surface.id();
                 debug!(
-                    surface_id,
+                    ?surface_id,
                     "Creating visibility controller for layer surface"
                 );
 
@@ -175,7 +176,7 @@ where
                 let controller = data_init.init(id, controller_data);
 
                 // Send initial visibility state
-                let is_hidden = state.is_surface_hidden(surface_id);
+                let is_hidden = state.is_surface_hidden(&surface_id);
                 controller.visibility_changed(if is_hidden { 0 } else { 1 });
             }
         }
@@ -208,14 +209,14 @@ where
             zcosmic_layer_surface_visibility_v1::Request::Destroy => {
                 // When controller is destroyed, make surface visible again
                 if let Ok(surface) = data.surface.upgrade() {
-                    let surface_id = surface.id().protocol_id();
+                    let surface_id = surface.id();
                     state.set_surface_hidden(surface_id, false);
                 }
             }
             zcosmic_layer_surface_visibility_v1::Request::SetHidden => {
                 if let Ok(surface) = data.surface.upgrade() {
-                    let surface_id = surface.id().protocol_id();
-                    info!(surface_id, "Layer surface hidden by client");
+                    let surface_id = surface.id();
+                    info!(?surface_id, "Layer surface hidden by client");
                     *data.hidden.lock().unwrap() = true;
                     state.set_surface_hidden(surface_id, true);
                     resource.visibility_changed(0);
@@ -225,8 +226,8 @@ where
             }
             zcosmic_layer_surface_visibility_v1::Request::SetVisible => {
                 if let Ok(surface) = data.surface.upgrade() {
-                    let surface_id = surface.id().protocol_id();
-                    info!(surface_id, "Layer surface shown by client");
+                    let surface_id = surface.id();
+                    info!(?surface_id, "Layer surface shown by client");
                     *data.hidden.lock().unwrap() = false;
                     state.set_surface_hidden(surface_id, false);
                     resource.visibility_changed(1);

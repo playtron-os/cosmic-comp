@@ -44,6 +44,7 @@ use smithay::{
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
+use wayland_backend::server::ObjectId;
 
 use super::element::AsGlowRenderer;
 use crate::shell::element::{CosmicMapped, CosmicMappedKey};
@@ -53,7 +54,7 @@ use crate::shell::element::{CosmicMapped, CosmicMappedKey};
 // =============================================================================
 
 /// Default blur radius in pixels
-pub const DEFAULT_BLUR_RADIUS: f32 = 100.0;
+pub const DEFAULT_BLUR_RADIUS: f32 = 60.0;
 
 /// Number of blur iterations.
 pub const BLUR_ITERATIONS: u32 = 12;
@@ -64,14 +65,10 @@ pub const BLUR_DOWNSAMPLE_FACTOR: i32 = 8;
 
 // Blur backdrop styling constants
 pub const BLUR_TINT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-/// Strength of the tint overlay (0.90 = 90% opacity)
-pub const BLUR_TINT_STRENGTH: f32 = 0.90;
-/// Color for the additional white backdrop overlay on top of blur
-pub const BLUR_BACKDROP_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
-/// Alpha for the additional white backdrop overlay (0.90 = 90% opacity)
-pub const BLUR_BACKDROP_ALPHA: f32 = 0.90;
+/// Strength of the tint overlay (0.30 = 30% opacity)
+pub const BLUR_TINT_STRENGTH: f32 = 0.15;
 /// Alpha for fallback solid color when blur texture not available
-pub const BLUR_FALLBACK_ALPHA: f32 = 0.25;
+pub const BLUR_FALLBACK_ALPHA: f32 = 0.95;
 /// Fallback color when blur texture not available (light gray-blue)
 pub const BLUR_FALLBACK_COLOR: [f32; 3] = [0.9, 0.9, 0.95];
 
@@ -483,7 +480,7 @@ pub fn clear_blur_textures_for_output(output_name: &str) {
 // =============================================================================
 
 /// Cache key for layer surface blur: (output_name, surface_id)
-type LayerBlurCacheKey = (String, u32);
+type LayerBlurCacheKey = (String, ObjectId);
 
 /// Global cache of blurred textures for layer surfaces per output.
 pub static LAYER_BLUR_TEXTURE_CACHE: LazyLock<
@@ -491,7 +488,11 @@ pub static LAYER_BLUR_TEXTURE_CACHE: LazyLock<
 > = LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Store a blurred texture for a specific layer surface on an output.
-pub fn cache_blur_texture_for_layer(output_name: &str, surface_id: u32, info: BlurredTextureInfo) {
+pub fn cache_blur_texture_for_layer(
+    output_name: &str,
+    surface_id: ObjectId,
+    info: BlurredTextureInfo,
+) {
     let key = (output_name.to_string(), surface_id);
     if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.write() {
         cache.insert(key, info);
@@ -501,9 +502,9 @@ pub fn cache_blur_texture_for_layer(output_name: &str, surface_id: u32, info: Bl
 /// Get the cached blurred texture for a specific layer surface on an output.
 pub fn get_cached_blur_texture_for_layer(
     output_name: &str,
-    surface_id: u32,
+    surface_id: &ObjectId,
 ) -> Option<BlurredTextureInfo> {
-    let key = (output_name.to_string(), surface_id);
+    let key = (output_name.to_string(), surface_id.clone());
     if let Ok(cache) = LAYER_BLUR_TEXTURE_CACHE.read() {
         cache.get(&key).cloned()
     } else {
@@ -521,8 +522,8 @@ pub fn clear_layer_blur_textures_for_output(output_name: &str) {
 /// Information about a layer surface with blur, cached from the main thread.
 #[derive(Debug, Clone)]
 pub struct LayerBlurSurfaceInfo {
-    /// Surface protocol ID for cache key
-    pub surface_id: u32,
+    /// Surface ObjectId for cache key
+    pub surface_id: ObjectId,
     /// Geometry of the layer surface
     pub geometry: Rectangle<i32, Logical>,
     /// Layer type (Bottom, Top, Overlay, Background)
