@@ -17,7 +17,7 @@ cosmic-comp-config = { path = "cosmic-comp-config", features = [
     "libdisplay-info",
     "output",
 ] }
-cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00", features = [
+cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642", features = [
     "calloop",
     "macro",
 ] }
@@ -39,11 +39,11 @@ i18n-embed = { version = "0.16", features = [
     "desktop-requester",
 ] }
 i18n-embed-fl = "0.10"
-iced_tiny_skia = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
+iced_tiny_skia = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
 indexmap = "2.11"
 keyframe = "1.1.1"
 libc = "0.2.177"
-libcosmic = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00", default-features = false }
+libcosmic = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642", default-features = false }
 libsystemd = { version = "0.7", optional = true }
 log-panics = { version = "2", features = ["with-backtrace"] }
 ordered-float = "5.1"
@@ -148,11 +148,11 @@ cosmic-protocols = { git = "https://github.com/playtron-os//cosmic-protocols", r
 cosmic-client-toolkit = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
 
 [patch."https://github.com/pop-os/libcosmic/"]
-cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
-cosmic-config-derive = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
-cosmic-theme = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
-iced_core = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
-iced_futures = { git = "https://github.com/playtron-os/libcosmic.git", rev = "760a8dd00" }
+cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
+cosmic-config-derive = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
+cosmic-theme = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
+iced_core = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
+iced_futures = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
 
 [patch.crates-io]
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
