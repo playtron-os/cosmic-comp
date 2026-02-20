@@ -1,3 +1,26 @@
+# [1.5.0](https://github.com/playtron-os/cosmic-comp/compare/v1.4.0...v1.5.0) (2026-02-20)
+
+
+### Bug Fixes
+
+* correctly move embedded children to same output as parent and reconfigure size on start ([f32fd1c](https://github.com/playtron-os/cosmic-comp/commit/f32fd1c7833ba1ffb0ea10cafe35d0c0601c7c4c))
+* do not allow voice mode while session is locked ([0c43581](https://github.com/playtron-os/cosmic-comp/commit/0c435814379ecb361dd6597d5a40df48edf5ae35))
+* dont skip 1x1 pixel surfaces ([3d4da11](https://github.com/playtron-os/cosmic-comp/commit/3d4da1168f0896aea35a57232fb8dfd7051153a2))
+* prevent window resize past area bounds ([b188595](https://github.com/playtron-os/cosmic-comp/commit/b188595e09fd3dddeb2374fae05025e0f5606379))
+* prevent windows from being dropped behind exclusive zone surfaces ([d39bf46](https://github.com/playtron-os/cosmic-comp/commit/d39bf463f40df146da26cef6f7547f8849dc957a))
+* shadows not rendering for unmazimied windows ([100764b](https://github.com/playtron-os/cosmic-comp/commit/100764ba5176b0045ccce7728961b8c65b012f3f))
+
+
+### Features
+
+* add mode to layer auto hide protocol and implement always hidden mode ([65d957e](https://github.com/playtron-os/cosmic-comp/commit/65d957eda7065c511b50afd5be6fb3862f72ac83))
+* implement backdrop color protocol ([c856a52](https://github.com/playtron-os/cosmic-comp/commit/c856a52348766fb81cb55c9c299bf9b6ffb42959))
+* implement layer auto hide protocol ([e493166](https://github.com/playtron-os/cosmic-comp/commit/e493166e61bc0243400efb0697372925f62e7260))
+* improve header icons by pre downscaling them with Lanczos3 ([7479359](https://github.com/playtron-os/cosmic-comp/commit/74793598bb862ec561e4d25a94867755de01cf0b))
+* SSD header bar with custom styling, cursor handling, icon caching, and corner radius ([039adc8](https://github.com/playtron-os/cosmic-comp/commit/039adc8feeb478e6b41282fb01cb19dfae4c24d4))
+* update libcosmic ([9de6b14](https://github.com/playtron-os/cosmic-comp/commit/9de6b143e5d7232c88cda800dde2312ce3e377ed))
+* update voice orb shader colors ([1f3bd9f](https://github.com/playtron-os/cosmic-comp/commit/1f3bd9f62ac0f36b9c2c7d0ba48148566c25d71a))
+
 # [1.4.0](https://github.com/playtron-os/cosmic-comp/compare/v1.3.0...v1.4.0) (2026-02-07)
 
 
