@@ -130,7 +130,7 @@ use smithay::{
     xwayland::XWaylandClientData,
 };
 use time::UtcOffset;
-use tracing::warn;
+use tracing::{error, warn};
 
 #[cfg(feature = "systemd")]
 use std::os::fd::OwnedFd;
@@ -187,7 +187,22 @@ impl ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, client_id: ClientId, _reason: DisconnectReason) {
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        match &reason {
+            DisconnectReason::ConnectionClosed => {
+                warn!(?client_id, "Client disconnected: connection closed");
+            }
+            DisconnectReason::ProtocolError(protocol_error) => {
+                error!(
+                    ?client_id,
+                    code = protocol_error.code,
+                    object_id = protocol_error.object_id,
+                    object_interface = %protocol_error.object_interface,
+                    message = %protocol_error.message,
+                    "Client disconnected due to protocol error"
+                );
+            }
+        }
         self.evlh.insert_idle(move |state| {
             if let BackendData::Kms(kms_state) = &mut state.backend {
                 for device in kms_state.drm_devices.values_mut() {
