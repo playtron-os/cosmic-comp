@@ -863,6 +863,7 @@ dependencies = [
  "i18n-embed-fl",
  "iced_tiny_skia",
  "id_tree",
+ "image",
  "indexmap 2.13.0",
  "keyframe",
  "libc",

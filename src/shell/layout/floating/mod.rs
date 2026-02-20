@@ -3273,10 +3273,6 @@ impl FloatingLayout {
                     window_border_radius.round() as u8,
                 );
 
-                // Also get the window rendering corner radius for comparison
-                let window_render_radius =
-                    elem.corner_radius(geometry.size.as_logical(), indicator_thickness);
-
                 // Get the output name for looking up cached blur texture
                 let output_name = output.name();
                 let window_key = elem.key();

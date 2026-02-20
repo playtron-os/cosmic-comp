@@ -188,6 +188,12 @@ fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon
     }
 }
 
+/// Target size (in pixels) for pre-scaling raster icons.
+/// Set to 2× the SSD icon display size (18px in header_bar.rs) so that on
+/// HiDPI displays (scale 2.0) tiny_skia does a 1:1 blit, and on 1× displays
+/// it only needs a clean 2:1 bilinear downscale.
+const ICON_PRESCALE_SIZE: u32 = 36;
+
 /// Resolve an application icon for the SSD header bar.
 ///
 /// Lookup order:
@@ -195,21 +201,26 @@ fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon
 ///   2. XDG icon theme via `from_name(app_id.to_lowercase())` (case-insensitive)
 ///   3. `/usr/share/pixmaps/{name}.{ext}` for common extensions (covers apps
 ///      like Slack whose `.desktop` files point to an absolute pixmap path)
+///
+/// For ALL raster icons (PNG from theme or pixmaps), the image is pre-scaled
+/// to ICON_PRESCALE_SIZE using Lanczos3 filtering. This avoids relying on
+/// tiny_skia's bilinear downscale, which produces poor results for large
+/// downscale ratios (e.g. 512→24).
 fn resolve_app_icon(app_id: &str) -> Option<cosmic::widget::icon::Handle> {
     use std::path::Path;
 
     // 1. Exact name in icon theme
     let named = cosmic::widget::icon::from_name(app_id).size(128);
-    if named.clone().path().is_some() {
-        return Some(named.handle());
+    if let Some(path) = named.clone().path() {
+        return Some(prescale_icon_from_path(&path.to_string_lossy()));
     }
 
     // 2. Lower-case fallback (e.g. app_id "Slack" → icon name "slack")
     let lower = app_id.to_lowercase();
     if lower != app_id {
         let named_lower = cosmic::widget::icon::from_name(&*lower).size(128);
-        if named_lower.clone().path().is_some() {
-            return Some(named_lower.handle());
+        if let Some(path) = named_lower.clone().path() {
+            return Some(prescale_icon_from_path(&path.to_string_lossy()));
         }
     }
 
@@ -217,26 +228,54 @@ fn resolve_app_icon(app_id: &str) -> Option<cosmic::widget::icon::Handle> {
     for ext in &["png", "svg", "xpm"] {
         let pixmap = format!("/usr/share/pixmaps/{lower}.{ext}");
         if Path::new(&pixmap).exists() {
-            let handle = if *ext == "svg" {
-                cosmic::widget::icon::Handle {
-                    symbolic: false,
-                    data: cosmic::widget::icon::Data::Svg(
-                        cosmic::iced_core::svg::Handle::from_path(&pixmap),
-                    ),
-                }
-            } else {
-                cosmic::widget::icon::Handle {
-                    symbolic: false,
-                    data: cosmic::widget::icon::Data::Image(
-                        cosmic::iced_core::image::Handle::from_path(&pixmap),
-                    ),
-                }
-            };
-            return Some(handle);
+            return Some(prescale_icon_from_path(&pixmap));
         }
     }
 
     None
+}
+
+/// Load an icon from a file path, applying Lanczos3 pre-scaling for raster
+/// images (PNG) and passing SVGs through directly.
+fn prescale_icon_from_path(path: &str) -> cosmic::widget::icon::Handle {
+    // SVGs are rasterized by iced's vector pipeline at exact size — no
+    // prescaling needed, and the vector renderer uses Bicubic quality.
+    if path.ends_with(".svg") || path.ends_with(".svgz") {
+        return cosmic::widget::icon::Handle {
+            symbolic: false,
+            data: cosmic::widget::icon::Data::Svg(cosmic::iced_core::svg::Handle::from_path(path)),
+        };
+    }
+
+    // Raster image: pre-scale with Lanczos3 for crisp rendering
+    prescale_raster_icon(path).unwrap_or_else(|| {
+        // Fallback: let iced load from disk (bilinear, but at least something)
+        cosmic::widget::icon::Handle {
+            symbolic: false,
+            data: cosmic::widget::icon::Data::Image(cosmic::iced_core::image::Handle::from_path(
+                path,
+            )),
+        }
+    })
+}
+
+/// Load a raster image and pre-scale it to ICON_PRESCALE_SIZE using
+/// Lanczos3 filtering. Returns RGBA pixels wrapped in an iced Handle.
+fn prescale_raster_icon(path: &str) -> Option<cosmic::widget::icon::Handle> {
+    use image::imageops::FilterType;
+
+    let img = image::open(path).ok()?;
+    let resized = img.resize(ICON_PRESCALE_SIZE, ICON_PRESCALE_SIZE, FilterType::Lanczos3);
+    let rgba = resized.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let pixels = rgba.into_raw();
+
+    Some(cosmic::widget::icon::Handle {
+        symbolic: false,
+        data: cosmic::widget::icon::Data::Image(cosmic::iced_core::image::Handle::from_rgba(
+            w, h, pixels,
+        )),
+    })
 }
 
 impl CosmicWindowInternal {

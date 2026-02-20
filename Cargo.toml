@@ -40,6 +40,7 @@ i18n-embed = { version = "0.16", features = [
 ] }
 i18n-embed-fl = "0.10"
 iced_tiny_skia = { git = "https://github.com/playtron-os/libcosmic.git", rev = "ade8c7642" }
+image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.11"
 keyframe = "1.1.1"
 libc = "0.2.177"
