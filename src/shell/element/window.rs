@@ -70,7 +70,7 @@ use wayland_backend::server::ObjectId;
 
 use super::CosmicSurface;
 
-pub const SSD_HEIGHT: i32 = 55;
+pub const SSD_HEIGHT: i32 = 49;
 pub const RESIZE_BORDER: i32 = 10;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
