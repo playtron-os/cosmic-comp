@@ -22,6 +22,26 @@ impl LayerSurfaceVisibilityHandler for State {
         let mut shell = self.common.shell.write();
         shell.set_surface_hidden(surface_id.clone(), hidden);
 
+        // Update layer blur cache for all outputs that have this surface.
+        // When hiding, this removes the surface from blur processing.
+        // When showing, it re-adds it.
+        {
+            let outputs_with_surface: Vec<_> = shell
+                .outputs()
+                .filter(|o| {
+                    let map = layer_map_for_output(o);
+                    map.layers().any(|l| l.wl_surface().id() == surface_id)
+                })
+                .cloned()
+                .collect();
+            for output in &outputs_with_surface {
+                crate::wayland::handlers::layer_shell::update_layer_blur_state(
+                    output,
+                    shell.hidden_surfaces(),
+                );
+            }
+        }
+
         if hidden {
             // When hiding a surface, clear keyboard focus from it so it
             // doesn't steal interactivity while invisible.

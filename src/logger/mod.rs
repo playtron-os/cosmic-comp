@@ -53,5 +53,13 @@ pub fn init_logger() -> Result<()> {
         );
     }
 
+    // Log performance profiling environment variables
+    info!("Performance profiling env vars:");
+    info!("  COSMIC_PERF_LOG={} (set =1 for periodic frame stats)", std::env::var("COSMIC_PERF_LOG").unwrap_or_else(|_| "unset".into()));
+    info!("  COSMIC_GPU_DIAG={} (set =1 for GPU diagnostics at startup)", std::env::var("COSMIC_GPU_DIAG").unwrap_or_else(|_| "unset".into()));
+    info!("  COSMIC_BLUR_ITERATIONS={} (override blur iteration count)", std::env::var("COSMIC_BLUR_ITERATIONS").unwrap_or_else(|_| "auto".into()));
+    info!("  COSMIC_BLUR_DOWNSAMPLE_FACTOR={} (override blur downsample)", std::env::var("COSMIC_BLUR_DOWNSAMPLE_FACTOR").unwrap_or_else(|_| "auto".into()));
+    info!("  COSMIC_BLUR_DOWNSAMPLE={} (set =0 to disable blur downsampling)", std::env::var("COSMIC_BLUR_DOWNSAMPLE").unwrap_or_else(|_| "unset".into()));
+
     Ok(())
 }

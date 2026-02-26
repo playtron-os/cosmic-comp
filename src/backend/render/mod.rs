@@ -92,6 +92,7 @@ pub mod clipped_surface;
 
 pub mod cursor;
 pub mod element;
+pub mod gpu_profiler;
 pub mod shadow;
 pub mod voice_orb;
 use self::element::{AsGlowRenderer, CosmicElement};
@@ -139,7 +140,7 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 // Blur module re-exports
 pub use blur::{
     BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
-    BLUR_THROTTLE_INTERVAL, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext,
+    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext,
     BlurRenderState, BlurredTextureInfo, CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur,
     LayerBlurSurfaceInfo, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
     cache_blur_texture_for_window, clear_blur_textures_for_output, clear_cached_layer_surfaces,
@@ -148,8 +149,8 @@ pub use blur::{
     get_cached_blur_texture_for_layer, get_cached_blur_texture_for_window,
     get_cached_layer_surfaces, get_layer_blur_content_hash, get_layer_blur_surfaces,
     output_has_layer_blur, set_cached_layer_surfaces, set_layer_blur_surfaces,
-    should_throttle_blur, store_blur_group_content_hash, store_blur_group_last_update,
-    store_layer_blur_content_hash,
+    should_throttle_blur, should_throttle_layer_blur, store_blur_group_content_hash,
+    store_blur_group_last_update, store_layer_blur_content_hash, store_layer_blur_last_update,
 };
 
 /// Shader for applying blur effects to surfaces
@@ -1211,6 +1212,11 @@ where
     CosmicMappedRenderElement<R>: RenderElement<R>,
     WorkspaceRenderElement<R>: RenderElement<R>,
 {
+    let _ws_span = tracing::debug_span!(
+        "workspace_elements",
+        output = %output.name(),
+    ).entered();
+    let ws_start = std::time::Instant::now();
     let mut elements = Vec::new();
 
     let shell_ref = shell.read();
@@ -1774,6 +1780,24 @@ where
             ControlFlow::Continue(())
         },
     )?;
+
+    let ws_elapsed = ws_start.elapsed();
+    // Only log at debug level when workspace_elements takes a long time (>2ms)
+    if ws_elapsed.as_micros() > 2000 {
+        tracing::debug!(
+            output = %output.name(),
+            element_count = elements.len(),
+            duration_us = ws_elapsed.as_micros() as u64,
+            "workspace_elements SLOW composition"
+        );
+    } else {
+        tracing::trace!(
+            output = %output.name(),
+            element_count = elements.len(),
+            duration_us = ws_elapsed.as_micros() as u64,
+            "workspace_elements composed"
+        );
+    }
 
     Ok(elements)
 }
@@ -2372,6 +2396,7 @@ where
                     blur_state.texture_a.as_mut(),
                     blur_state.texture_b.as_mut(),
                 ) {
+                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,
@@ -2379,7 +2404,7 @@ where
                         pong,
                         blur_size,
                         scale,
-                        BLUR_ITERATIONS,
+                        blur_iterations,
                     );
 
                     if blur_result.is_ok() {
@@ -2500,6 +2525,13 @@ where
                     get_cached_blur_texture_for_layer(&output_name, surface_id).is_some()
                 });
 
+                // EARLY THROTTLE CHECK: Skip capture entirely if all cached and recent
+                let hash_key = format!("{}_{:?}", output_name, layer_type);
+                if all_cached && should_throttle_layer_blur(&hash_key) {
+                    any_blur_applied = true;
+                    continue;
+                }
+
                 // Capture elements below this layer using LayerBlurCapture filter
                 let capture_filter =
                     ElementFilter::LayerBlurCapture(layer_type, grabbed_window_key.clone());
@@ -2522,7 +2554,6 @@ where
                 let content_hash = compute_element_content_hash(0, &layer_capture_elements, scale);
 
                 // Check if content has changed since last blur
-                let hash_key = format!("{}_{:?}", output_name, layer_type);
                 let stored_hash = get_layer_blur_content_hash(&hash_key);
                 let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
@@ -2539,6 +2570,18 @@ where
                     continue;
                 }
 
+                // Content changed: apply throttle if we have cached textures
+                let is_dragging = grabbed_window_key.is_some();
+                let throttled = content_changed
+                    && all_cached
+                    && !is_dragging
+                    && should_throttle_layer_blur(&hash_key);
+
+                if throttled {
+                    any_blur_applied = true;
+                    continue;
+                }
+
                 tracing::debug!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
@@ -2549,8 +2592,9 @@ where
                     "Re-blurring layer group"
                 );
 
-                // Store the new content hash
+                // Store the new content hash and update timestamp for throttling
                 store_layer_blur_content_hash(&hash_key, content_hash);
+                store_layer_blur_last_update(&hash_key);
 
                 // Render captured elements to background texture
                 let bg_render_start = std::time::Instant::now();
@@ -2630,6 +2674,7 @@ where
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
+                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,
@@ -2637,7 +2682,7 @@ where
                         pong,
                         blur_size,
                         scale,
-                        BLUR_ITERATIONS,
+                        blur_iterations,
                     );
 
                     if blur_result.is_ok() {

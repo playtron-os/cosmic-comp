@@ -2733,8 +2733,8 @@ impl FloatingLayout {
         let space_element_count = self.space.elements().count();
         let total_count = minimizing_count + space_element_count;
 
-        // Debug: Log window counts to track z-order stability
-        tracing::debug!(
+        // Trace: Log window counts to track z-order stability
+        tracing::trace!(
             minimizing_count,
             space_element_count,
             total_count,

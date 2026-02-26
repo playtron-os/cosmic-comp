@@ -31,6 +31,7 @@ use smithay::{
         renderer::glow::GlowRenderer,
         session::Session,
     },
+    reexports::glow::{self, HasContext},
     desktop::utils::OutputPresentationFeedback,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
@@ -869,6 +870,34 @@ impl InnerDevice {
                     .context("Failed to create GL renderer")?
                 };
                 init_shaders(renderer.borrow_mut()).context("Failed to compile shaders")?;
+
+                // Detect GPU info for profiling and Adreno/tiler optimizations
+                {
+                    use crate::backend::render::gpu_profiler::{GpuInfo, get_gpu_info, set_gpu_info};
+                    if get_gpu_info().is_none() {
+                        // Query actual GL strings from the glow context
+                        let (gl_renderer_str, gl_version_str, gl_vendor_str) = renderer
+                            .with_context(|gl| unsafe {
+                                let r = gl.get_parameter_string(glow::RENDERER);
+                                let v = gl.get_parameter_string(glow::VERSION);
+                                let ve = gl.get_parameter_string(glow::VENDOR);
+                                (r, v, ve)
+                            })
+                            .unwrap_or_else(|_| (
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            ));
+                        let gpu_info = GpuInfo::detect(
+                            self.render_node.minor(),
+                            &gl_renderer_str,
+                            &gl_version_str,
+                            &gl_vendor_str,
+                        );
+                        set_gpu_info(gpu_info);
+                    }
+                }
+
                 api.add_node(
                     self.render_node,
                     GbmAllocator::new(

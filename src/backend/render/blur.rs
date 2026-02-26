@@ -74,8 +74,10 @@ pub const BLUR_FALLBACK_COLOR: [f32; 3] = [0.9, 0.9, 0.95];
 
 /// Minimum interval between blur updates when only content changes (e.g., cursor blink).
 /// This throttles blur re-computation to reduce GPU load from high-frequency updates.
-/// 100ms = 10 blur updates per second max when background is animating.
-pub const BLUR_THROTTLE_INTERVAL: Duration = Duration::from_millis(100);
+pub fn blur_throttle_interval() -> Duration {
+    use super::gpu_profiler::get_tiler_opts;
+    get_tiler_opts().blur_throttle_interval
+}
 
 // =============================================================================
 // Environment Configuration
@@ -270,10 +272,11 @@ impl BlurRenderState {
         let downsample_enabled = blur_downsample_enabled();
 
         // Calculate blur size (downsampled if enabled, full size otherwise)
+        let downsample_factor = crate::backend::render::gpu_profiler::effective_blur_downsample_factor();
         let blur_size: Size<i32, Physical> = if downsample_enabled {
             Size::from((
-                (size.w / BLUR_DOWNSAMPLE_FACTOR).max(1),
-                (size.h / BLUR_DOWNSAMPLE_FACTOR).max(1),
+                (size.w / downsample_factor).max(1),
+                (size.h / downsample_factor).max(1),
             ))
         } else {
             size
@@ -746,10 +749,32 @@ pub fn store_blur_group_last_update(output_name: &str, capture_z_threshold: usiz
 /// Returns true if we should skip re-blurring this frame.
 pub fn should_throttle_blur(output_name: &str, capture_z_threshold: usize) -> bool {
     if let Some(last_update) = get_blur_group_last_update(output_name, capture_z_threshold) {
-        last_update.elapsed() < BLUR_THROTTLE_INTERVAL
+        last_update.elapsed() < blur_throttle_interval()
     } else {
         false
     }
+}
+
+/// Layer blur last update timestamps: hash_key -> Instant
+static LAYER_BLUR_LAST_UPDATE: LazyLock<RwLock<HashMap<String, Instant>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Store the last layer blur update time
+pub fn store_layer_blur_last_update(hash_key: &str) {
+    if let Ok(mut cache) = LAYER_BLUR_LAST_UPDATE.write() {
+        cache.insert(hash_key.to_string(), Instant::now());
+    }
+}
+
+/// Check if layer blur should be throttled (content changed but update was too recent).
+/// Returns true if we should skip re-blurring this frame.
+pub fn should_throttle_layer_blur(hash_key: &str) -> bool {
+    if let Ok(cache) = LAYER_BLUR_LAST_UPDATE.read() {
+        if let Some(last_update) = cache.get(hash_key) {
+            return last_update.elapsed() < blur_throttle_interval();
+        }
+    }
+    false
 }
 
 /// Copy a blur texture to a new texture for caching.

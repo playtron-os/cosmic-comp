@@ -2,7 +2,7 @@
 
 use crate::{
     backend::render::{
-        BLUR_ITERATIONS, BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR,
+        BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR,
         CursorMode, ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
         PostprocessShader, PostprocessState, apply_blur_passes, blur_downsample_enabled,
         cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
@@ -10,8 +10,10 @@ use crate::{
         element::{CosmicElement, DamageElement},
         get_blur_group_content_hash, get_cached_blur_texture_for_layer,
         get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
-        init_shaders, output_elements, should_throttle_blur, store_blur_group_content_hash,
-        store_blur_group_last_update, store_layer_blur_content_hash, workspace_elements,
+        init_shaders, output_elements, should_throttle_blur, should_throttle_layer_blur,
+        store_blur_group_content_hash,
+        store_blur_group_last_update, store_layer_blur_content_hash,
+        store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
     shell::{Shell, grabs::SeatMoveGrabState},
@@ -176,6 +178,9 @@ pub struct SurfaceThreadState {
     /// Plot name for the presentation misprediction plot.
     presentation_misprediction_plot_name: tracy_client::PlotName,
     sequence_delta_plot_name: tracy_client::PlotName,
+
+    /// Per-output frame profiler for performance analysis.
+    frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler,
 }
 
 pub type GbmDrmOutput = DrmOutput<
@@ -567,6 +572,8 @@ fn surface_thread(
         time_since_presentation_plot_name,
         presentation_misprediction_plot_name,
         sequence_delta_plot_name,
+
+        frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler::new(&name),
     };
 
     let signal = event_loop.get_signal();
@@ -982,6 +989,7 @@ fn process_blur(
                 blur_state.texture_a.as_mut(),
                 blur_state.texture_b.as_mut(),
             ) {
+                let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
                 let blur_result = apply_blur_passes(
                     renderer,
                     &src,
@@ -989,7 +997,7 @@ fn process_blur(
                     pong,
                     blur_size,
                     scale,
-                    BLUR_ITERATIONS,
+                    blur_iterations,
                 );
 
                 if blur_result.is_ok() {
@@ -1128,6 +1136,20 @@ fn process_blur(
                 .collect();
             let all_cached = uncached_surfaces.is_empty();
 
+            // EARLY THROTTLE CHECK: Skip the expensive capture + hash + blur entirely
+            // if we already have cached textures and the last blur was recent enough.
+            // This avoids the workspace_elements() call (~100-900us) on throttled frames.
+            let hash_key = format!("{}_{:?}", output_name, layer_type);
+            if all_cached && should_throttle_layer_blur(&hash_key) {
+                tracing::trace!(
+                    layer = ?layer_type,
+                    surfaces = surfaces.len(),
+                    "Skipping layer blur - throttled (all cached, recent update)"
+                );
+                any_blur_applied = true;
+                continue;
+            }
+
             // Layer blur capture: capture all elements below this layer
             let capture_filter =
                 ElementFilter::LayerBlurCapture(layer_type, grabbed_window_key.clone());
@@ -1164,16 +1186,35 @@ fn process_blur(
                 compute_element_content_hash(layer_z + 1000, &capture_elements, scale);
 
             // Check if content has changed since last blur
-            let hash_key = format!("{}_{:?}", output_name, layer_type);
             let stored_hash = get_layer_blur_content_hash(&hash_key);
             let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
+            // If content unchanged and all cached, skip
             if !content_changed && all_cached {
                 tracing::debug!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
                     capture_us = capture_elapsed.as_micros(),
                     "Skipping layer blur - cache valid (content unchanged)"
+                );
+                any_blur_applied = true;
+                continue;
+            }
+
+            // Content changed: apply throttle if we have cached textures
+            // (don't throttle when textures are missing - need first render immediately)
+            let is_dragging = grabbed_window_key.is_some();
+            let throttled = content_changed
+                && all_cached
+                && !is_dragging
+                && should_throttle_layer_blur(&hash_key);
+
+            if throttled {
+                tracing::trace!(
+                    layer = ?layer_type,
+                    surfaces = surfaces.len(),
+                    capture_us = capture_elapsed.as_micros(),
+                    "Skipping layer blur - throttled (content changed but too recent)"
                 );
                 any_blur_applied = true;
                 continue;
@@ -1189,8 +1230,9 @@ fn process_blur(
                 "Re-blurring layer group"
             );
 
-            // Store the new content hash
+            // Store the new content hash and update timestamp for throttling
             store_layer_blur_content_hash(&hash_key, content_hash);
+            store_layer_blur_last_update(&hash_key);
 
             // Render captured elements to background texture
             let bg_render_start = std::time::Instant::now();
@@ -1259,6 +1301,7 @@ fn process_blur(
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
+                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,
@@ -1266,7 +1309,7 @@ fn process_blur(
                         pong,
                         blur_size,
                         scale,
-                        BLUR_ITERATIONS,
+                        blur_iterations,
                     );
 
                     if blur_result.is_ok() {
@@ -1400,6 +1443,15 @@ impl SurfaceThreadState {
         let interval =
             Duration::from_secs_f64(1_000. / drm_helpers::calculate_refresh_rate(mode) as f64);
         self.timings.set_refresh_interval(Some(interval));
+
+        // Update profiler target FPS based on display refresh rate
+        let target_fps = 1.0 / interval.as_secs_f64();
+        self.frame_profiler.set_target_fps(target_fps);
+        info!(
+            output = %self.output.name(),
+            refresh_hz = format!("{:.1}", target_fps),
+            "Output refresh rate configured for profiler"
+        );
 
         const SAFETY_MARGIN: u32 = 2; // Magic two frames margin taken from kwin to not trigger low-framerate-compensation
         let min_min_refresh_interval = Duration::from_secs_f64(1. / 30.); // 30Hz
@@ -1693,6 +1745,10 @@ impl SurfaceThreadState {
             return Ok(());
         };
 
+        let frame_start = std::time::Instant::now();
+        let mut profile = crate::backend::render::gpu_profiler::FrameProfile::default();
+        profile.frame_start = frame_start;
+
         let render_node = render_node_for_output(
             self.mirroring.as_ref().unwrap_or(&self.output),
             self.primary_node
@@ -1754,6 +1810,7 @@ impl SurfaceThreadState {
         // Process blur for windows that request it
         let output_ref = self.mirroring.as_ref().unwrap_or(&self.output);
         let blur_format = compositor.format();
+        let blur_phase_start = std::time::Instant::now();
         process_blur(
             &mut renderer,
             &mut self.blur_state,
@@ -1763,7 +1820,21 @@ impl SurfaceThreadState {
             &render_node,
             blur_format,
         );
+        profile.blur_duration = blur_phase_start.elapsed();
 
+        // Capture blur window count for profiling
+        {
+            let shell_ref = self.shell.read();
+            if let Some((_, workspace_ref)) = shell_ref.workspaces.active(output_ref) {
+                profile.blur_window_count = workspace_ref
+                    .blur_windows_grouped(1.0)
+                    .iter()
+                    .map(|g| g.windows.len())
+                    .sum();
+            }
+        }
+
+        let elements_phase_start = std::time::Instant::now();
         let mut elements = output_elements(
             Some(&render_node),
             &mut renderer,
@@ -1779,6 +1850,8 @@ impl SurfaceThreadState {
         .map_err(|err| {
             anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
         })?;
+        profile.elements_duration = elements_phase_start.elapsed();
+        profile.element_count = elements.len();
 
         if vrr && fullscreen_drives_refresh_rate && !self.timings.past_min_render_time(&self.clock)
         {
@@ -1797,6 +1870,7 @@ impl SurfaceThreadState {
             .unwrap_or_default();
 
         // actual rendering
+        let draw_phase_start = std::time::Instant::now();
         let source_output = self
             .mirroring
             .as_ref()
@@ -2008,7 +2082,9 @@ impl SurfaceThreadState {
             )
         };
         self.timings.draw_done(&self.clock);
+        profile.draw_duration = draw_phase_start.elapsed();
 
+        let submit_phase_start = std::time::Instant::now();
         match res {
             Ok(frame_result) => {
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -2124,6 +2200,12 @@ impl SurfaceThreadState {
         for device in self.api.devices_mut()? {
             device.renderer_mut().cleanup_texture_cache()?;
         }
+
+        // Record frame profile for performance analysis
+        profile.submit_duration = submit_phase_start.elapsed();
+        profile.total_duration = frame_start.elapsed();
+        self.frame_profiler.record(profile);
+        self.frame_profiler.maybe_report();
 
         Ok(())
     }

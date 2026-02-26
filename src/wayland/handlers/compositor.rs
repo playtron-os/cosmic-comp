@@ -376,7 +376,10 @@ impl CompositorHandler for State {
 
             // Update layer blur cache when layer surfaces are committed
             // (blur protocol state may have changed)
-            crate::wayland::handlers::layer_shell::update_layer_blur_state(&output);
+            crate::wayland::handlers::layer_shell::update_layer_blur_state(
+                &output,
+                shell.hidden_surfaces(),
+            );
         }
     }
 }
@@ -464,7 +467,10 @@ impl State {
                     })
                     .cloned();
                 if let Some(output) = map_output {
-                    crate::wayland::handlers::layer_shell::update_layer_blur_state(&output);
+                    crate::wayland::handlers::layer_shell::update_layer_blur_state(
+                        &output,
+                        shell.hidden_surfaces(),
+                    );
                 }
 
                 if let Some(target) = target {

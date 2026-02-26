@@ -29,7 +29,14 @@ const CACHED_LAYERS: [Layer; 4] = [Layer::Background, Layer::Bottom, Layer::Top,
 /// Update the layer surface caches for an output.
 /// Called from the main thread when layer surfaces change.
 /// Populates both the blur cache and the general layer surface cache for render thread.
-pub fn update_layer_blur_state(output: &Output) {
+///
+/// `hidden_surfaces` should be the set of surface ObjectIds that are currently
+/// hidden via the layer_surface_visibility protocol. Hidden surfaces are
+/// excluded from blur processing to avoid wasting GPU time.
+pub fn update_layer_blur_state(
+    output: &Output,
+    hidden_surfaces: &std::collections::HashSet<wayland_backend::server::ObjectId>,
+) {
     let layer_map = layer_map_for_output(output);
 
     // Update blur surfaces cache
@@ -39,14 +46,16 @@ pub fn update_layer_blur_state(output: &Output) {
             let surface = layer.wl_surface();
             let alive = surface.alive();
             let has_blur = surface_has_blur(surface);
+            let is_hidden = hidden_surfaces.contains(&surface.id());
             tracing::trace!(
                 surface_id = surface.id().protocol_id(),
                 alive,
                 has_blur,
+                is_hidden,
                 layer = ?layer.layer(),
                 "Checking layer surface for blur"
             );
-            alive && has_blur
+            alive && has_blur && !is_hidden
         })
         .filter_map(|layer| {
             let geometry = layer_map.layer_geometry(layer)?;
@@ -162,7 +171,7 @@ impl WlrLayerShellHandler for State {
             }
 
             // Update layer blur cache after unmapping
-            update_layer_blur_state(&output);
+            update_layer_blur_state(&output, shell.hidden_surfaces());
 
             shell.workspaces.recalculate();
 
