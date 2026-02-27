@@ -1,3 +1,17 @@
+# [1.6.0](https://github.com/playtron-os/cosmic-comp/compare/v1.5.0...v1.6.0) (2026-02-27)
+
+
+### Bug Fixes
+
+* adjust SSD header height ([4f8c9d1](https://github.com/playtron-os/cosmic-comp/commit/4f8c9d150b55bd036cbd6ff910c4fc35bdc926fc))
+* handle error logging for wayland disconnect ([2f89004](https://github.com/playtron-os/cosmic-comp/commit/2f8900480327dba1705bc2a3b0fbce4559d1418e))
+* update height of SSD header ([083788f](https://github.com/playtron-os/cosmic-comp/commit/083788f51d789e1fc52946aa737d35306e044354))
+
+
+### Features
+
+* perf improvements for blur and gpu detection for qualcom socs ([3ba519f](https://github.com/playtron-os/cosmic-comp/commit/3ba519f7c1ef98da1b48c49be695efc99041f97d))
+
 # [1.5.0](https://github.com/playtron-os/cosmic-comp/compare/v1.4.0...v1.5.0) (2026-02-20)
 
 
