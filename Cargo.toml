@@ -97,7 +97,7 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "f106c6200f7a31c4b25f1b8027d9f87570c84a9e"
+rev = "c3f6fa75f7bbed5598f90556fb46e52086384341"
 default-features = false
 features = [
     "backend_drm",
@@ -157,4 +157,4 @@ iced_futures = { git = "https://github.com/playtron-os/libcosmic.git", rev = "48
 
 [patch.crates-io]
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
-smithay = { git = "https://github.com/Smithay/smithay.git", rev = "f106c6200f7a31c4b25f1b8027d9f87570c84a9e" }
+smithay = { git = "https://github.com/Smithay/smithay.git", rev = "c3f6fa75f7bbed5598f90556fb46e52086384341" }
