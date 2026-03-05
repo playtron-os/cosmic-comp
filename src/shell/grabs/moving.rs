@@ -1063,7 +1063,7 @@ impl Drop for MoveGrab {
                         }
                     }
 
-                    match previous {
+                    let drop_result = match previous {
                         ManagedLayer::Sticky => {
                             grab_state.window.set_geometry(Rectangle::new(
                                 window_location,
@@ -1140,7 +1140,11 @@ impl Drop for MoveGrab {
                             }
                             Some((window, location.to_global(&output)))
                         }
-                    }
+                    };
+                    // Re-evaluate auto-hide — window was dropped on a
+                    // (possibly different) output after a drag.
+                    shell.refresh_auto_hide();
+                    drop_result
                 } else {
                     let mut shell = state.common.shell.write();
                     shell

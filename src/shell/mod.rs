@@ -2720,10 +2720,13 @@ impl Shell {
 
         let mut entry = auto_hide::AutoHideSurface::new(surface, edge, mode);
 
-        // For "Always" mode, start hidden immediately (no animation).
+        // For "Always" mode, start hidden unless the workspace has no visible
+        // windows (so the dock stays visible on an empty desktop).
         // For "OnMaximize" mode, start hidden if maximized/fullscreen windows exist.
         let should_start_hidden = match mode {
-            auto_hide::AutoHideMode::Always => true,
+            auto_hide::AutoHideMode::Always => self
+                .auto_hide_surface_output(surface)
+                .is_some_and(|output| self.output_has_visible_windows(&output)),
             auto_hide::AutoHideMode::OnMaximize => self
                 .auto_hide_surface_output(surface)
                 .is_some_and(|output| self.output_has_maximized_or_fullscreen(&output)),
@@ -2762,6 +2765,18 @@ impl Shell {
             // Check pending state (true) so we detect windows that are being
             // maximized but haven't committed the new state yet.
             return workspace.mapped().any(|m| m.is_maximized(true));
+        }
+        false
+    }
+
+    /// Check whether the active workspace on an output has any visible
+    /// (non-minimized) windows.
+    pub fn output_has_visible_windows(&self, output: &Output) -> bool {
+        if let Some(workspace) = self.active_space(output) {
+            if workspace.get_fullscreen().is_some() {
+                return true;
+            }
+            return workspace.mapped().next().is_some();
         }
         false
     }
@@ -2857,10 +2872,11 @@ impl Shell {
         None
     }
 
-    /// Called after maximize/fullscreen state changes to update all auto-hide
-    /// surfaces on the affected output.
+    /// Called after maximize/fullscreen/map/unmap/minimize state changes to
+    /// update all auto-hide surfaces on the affected output.
     pub fn update_auto_hide_for_output(&mut self, output: &Output) {
         let has_max = self.output_has_maximized_or_fullscreen(output);
+        let has_windows = self.output_has_visible_windows(output);
         let output_id = output.name();
 
         // Find which auto-hide surfaces belong to this output.
@@ -2887,30 +2903,45 @@ impl Shell {
                 continue;
             }
 
-            // "Always" mode ignores maximize state — hide/show is purely
-            // cursor-driven. Only process maximize events for "OnMaximize" mode.
-            if surface.mode == auto_hide::AutoHideMode::Always {
-                continue;
-            }
-
-            if has_max {
-                // Maximize detected — hide (with delay if cursor is on the surface).
-                if !surface.cursor_over {
-                    surface.visibility.start_hide(false);
-                } else {
-                    // Cursor is on the dock; delay the hide until cursor leaves.
-                    surface.visibility.start_hide(true);
+            match surface.mode {
+                auto_hide::AutoHideMode::Always => {
+                    // "Always" mode: show the dock when the workspace has no
+                    // visible windows (empty desktop), hide when windows exist.
+                    if !has_windows {
+                        // No visible windows — show the dock.
+                        surface.visibility.force_show();
+                    } else if !surface.cursor_over {
+                        // Windows exist and cursor is not on the dock — hide.
+                        surface.visibility.start_hide(false);
+                    }
+                    tracing::debug!(
+                        surface_id = surface.surface_id,
+                        has_windows,
+                        output = %output_id,
+                        "auto_hide: output window state changed (Always mode)"
+                    );
                 }
-            } else {
-                // No maximized/fullscreen windows — show immediately.
-                surface.visibility.force_show();
+                auto_hide::AutoHideMode::OnMaximize => {
+                    if has_max {
+                        // Maximize detected — hide (with delay if cursor is on the surface).
+                        if !surface.cursor_over {
+                            surface.visibility.start_hide(false);
+                        } else {
+                            // Cursor is on the dock; delay the hide until cursor leaves.
+                            surface.visibility.start_hide(true);
+                        }
+                    } else {
+                        // No maximized/fullscreen windows — show immediately.
+                        surface.visibility.force_show();
+                    }
+                    tracing::debug!(
+                        surface_id = surface.surface_id,
+                        has_maximized = has_max,
+                        output = %output_id,
+                        "auto_hide: output maximized state changed (OnMaximize mode)"
+                    );
+                }
             }
-            tracing::debug!(
-                surface_id = surface.surface_id,
-                has_maximized = has_max,
-                output = %output_id,
-                "auto_hide: output maximized state changed"
-            );
         }
     }
 
@@ -2928,7 +2959,7 @@ impl Shell {
 
         let cursor_object_id: Option<ObjectId> = cursor_surface.map(|s| s.id());
 
-        // Pre-compute per-output maximized state.
+        // Pre-compute per-output state to avoid borrow issues.
         let outputs_maximized: Vec<(Output, bool)> = self
             .workspaces
             .sets
@@ -2939,8 +2970,17 @@ impl Shell {
             })
             .collect();
 
-        // Pre-compute surface-to-output mapping to avoid borrow issues.
-        // Use ObjectId (globally unique) for lookup keys.
+        let outputs_has_windows: Vec<(Output, bool)> = self
+            .workspaces
+            .sets
+            .keys()
+            .map(|output| {
+                let has_win = self.output_has_visible_windows(output);
+                (output.clone(), has_win)
+            })
+            .collect();
+
+        // Pre-compute surface-to-output mapping.
         let surface_outputs: Vec<(ObjectId, Option<Output>)> = self
             .auto_hide_surfaces
             .iter()
@@ -2976,6 +3016,32 @@ impl Shell {
                 Some((s.surface.id(), rect))
             })
             .collect();
+
+        // Helper: determine whether to hide based on mode and output state.
+        let should_auto_hide = |mode: auto_hide::AutoHideMode, obj_id: &ObjectId| -> bool {
+            let output = surface_outputs
+                .iter()
+                .find(|(id, _)| id == obj_id)
+                .and_then(|(_, o)| o.as_ref());
+            match mode {
+                auto_hide::AutoHideMode::Always => output
+                    .and_then(|o| {
+                        outputs_has_windows
+                            .iter()
+                            .find(|(out, _)| out == o)
+                            .map(|(_, has)| *has)
+                    })
+                    .unwrap_or(false),
+                auto_hide::AutoHideMode::OnMaximize => output
+                    .and_then(|o| {
+                        outputs_maximized
+                            .iter()
+                            .find(|(out, _)| out == o)
+                            .map(|(_, m)| *m)
+                    })
+                    .unwrap_or(false),
+            }
+        };
 
         for surface in &mut self.auto_hide_surfaces {
             let obj_id = surface.surface.id();
@@ -3013,27 +3079,7 @@ impl Shell {
                 } else {
                     surface.cursor_over = false;
 
-                    // For "Always" mode, hide immediately when cursor leaves.
-                    // For "OnMaximize" mode, only hide if maximized windows exist.
-                    let should_hide = match surface.mode {
-                        auto_hide::AutoHideMode::Always => true,
-                        auto_hide::AutoHideMode::OnMaximize => {
-                            let output = surface_outputs
-                                .iter()
-                                .find(|(id, _)| *id == obj_id)
-                                .and_then(|(_, o)| o.as_ref());
-                            output
-                                .and_then(|o| {
-                                    outputs_maximized
-                                        .iter()
-                                        .find(|(out, _)| out == o)
-                                        .map(|(_, m)| *m)
-                                })
-                                .unwrap_or(false)
-                        }
-                    };
-
-                    if should_hide {
+                    if should_auto_hide(surface.mode, &obj_id) {
                         surface.visibility.start_hide(true);
                         tracing::debug!(
                             surface_id = surface.surface_id,
@@ -3055,27 +3101,7 @@ impl Shell {
                     if !still_in_margin {
                         surface.cursor_over = false;
 
-                        // For "Always" mode, hide immediately when cursor leaves margin.
-                        // For "OnMaximize" mode, only hide if maximized windows exist.
-                        let should_hide = match surface.mode {
-                            auto_hide::AutoHideMode::Always => true,
-                            auto_hide::AutoHideMode::OnMaximize => {
-                                let output = surface_outputs
-                                    .iter()
-                                    .find(|(id, _)| *id == obj_id)
-                                    .and_then(|(_, o)| o.as_ref());
-                                output
-                                    .and_then(|o| {
-                                        outputs_maximized
-                                            .iter()
-                                            .find(|(out, _)| out == o)
-                                            .map(|(_, m)| *m)
-                                    })
-                                    .unwrap_or(false)
-                            }
-                        };
-
-                        if should_hide {
+                        if should_auto_hide(surface.mode, &obj_id) {
                             surface.visibility.start_hide(true);
                             tracing::debug!(
                                 surface_id = surface.surface_id,
@@ -3237,7 +3263,7 @@ impl Shell {
     /// Minimize all visible windows without entering home mode.
     ///
     /// Use this when you want to clear the screen without triggering
-    /// the home mode animation (which affects HideOnHome surfaces like humainos-dock).
+    /// the home mode animation.
     pub fn minimize_all_windows_only(&mut self) {
         // If voice mode is active and attached to a window, transition to floating
         // since the window will be minimized
@@ -4392,6 +4418,9 @@ impl Shell {
             self.update_reactive_popups(mapped);
         }
 
+        // Re-evaluate auto-hide — a new window was mapped.
+        self.refresh_auto_hide();
+
         new_target
     }
 
@@ -4866,6 +4895,9 @@ impl Shell {
             self.update_reactive_popups(&mapped);
         }
 
+        // Re-evaluate auto-hide — window moved between outputs/workspaces.
+        self.refresh_auto_hide();
+
         new_pos.map(|pos| (focus_target, pos))
     }
 
@@ -4958,6 +4990,9 @@ impl Shell {
             }
             toplevel_enter_workspace(&toplevel, to);
         }
+
+        // Re-evaluate auto-hide — element moved between outputs/workspaces.
+        self.refresh_auto_hide();
 
         new_pos.map(|pos| (focus_target, pos))
     }
@@ -5748,6 +5783,8 @@ impl Shell {
                 workspace.minimized_windows.push(minimized);
             }
         }
+        // Re-evaluate auto-hide — minimizing may leave the workspace empty.
+        self.refresh_auto_hide();
     }
 
     pub fn unminimize_request<S>(
@@ -5798,6 +5835,8 @@ impl Shell {
                 self.remap_unfullscreened_window(surface, restore, loop_handle);
             }
         }
+        // Re-evaluate auto-hide — unminimizing adds a visible window.
+        self.refresh_auto_hide();
     }
 
     pub fn maximize_request(
