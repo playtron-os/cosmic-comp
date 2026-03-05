@@ -1,3 +1,11 @@
+# [1.7.0](https://github.com/playtron-os/cosmic-comp/compare/v1.6.0...v1.7.0) (2026-03-05)
+
+
+### Features
+
+* show hidden surfaces if there are no windows left on that display ([1cca745](https://github.com/playtron-os/cosmic-comp/commit/1cca74596c4a03f866dc9309c83bcdb56b524e1d))
+* update smithay ([883dc73](https://github.com/playtron-os/cosmic-comp/commit/883dc73add460eb65ea6f8ba4ea596bb3d032ac3))
+
 # [1.6.0](https://github.com/playtron-os/cosmic-comp/compare/v1.5.0...v1.6.0) (2026-02-27)
 
 
