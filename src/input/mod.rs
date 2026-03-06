@@ -385,6 +385,24 @@ impl State {
                         shell.update_auto_hide_cursor(cursor_surface.as_deref(), position);
                     }
 
+                    // Update compositor-driven tooltip positions.
+                    {
+                        let cursor_surface = new_under
+                            .as_ref()
+                            .and_then(|(target, _)| target.wl_surface());
+                        let cursor_in_parent = new_under
+                            .as_ref()
+                            .map(|(_, loc)| smithay::utils::Point::<i32, smithay::utils::Logical>::from((
+                                (position.x - loc.x).round() as i32,
+                                (position.y - loc.y).round() as i32,
+                            )));
+                        self.common.tooltip_state.update_positions(
+                            cursor_surface.as_deref(),
+                            position,
+                            cursor_in_parent,
+                        );
+                    }
+
                     ptr.relative_motion(
                         self,
                         under.clone(),
@@ -659,6 +677,23 @@ impl State {
                             under.as_ref().and_then(|(target, _)| target.wl_surface());
                         let mut shell = self.common.shell.write();
                         shell.update_auto_hide_cursor(cursor_surface.as_deref(), position);
+                    }
+
+                    // Update compositor-driven tooltip positions.
+                    {
+                        let cursor_surface =
+                            under.as_ref().and_then(|(target, _)| target.wl_surface());
+                        let cursor_in_parent = under
+                            .as_ref()
+                            .map(|(_, loc)| smithay::utils::Point::<i32, smithay::utils::Logical>::from((
+                                (position.x - loc.x).round() as i32,
+                                (position.y - loc.y).round() as i32,
+                            )));
+                        self.common.tooltip_state.update_positions(
+                            cursor_surface.as_deref(),
+                            position,
+                            cursor_in_parent,
+                        );
                     }
 
                     let ptr = seat.get_pointer().unwrap();

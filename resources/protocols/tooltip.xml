@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="zcosmic_tooltip_v1">
+  <copyright><![CDATA[
+    Copyright © 2025 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="compositor-driven pointer-following tooltips">
+    This protocol allows clients to create tooltip surfaces that the compositor
+    positions relative to the pointer cursor automatically. Instead of the
+    client receiving pointer motion events and issuing xdg_popup.reposition()
+    round-trips, the compositor tracks the pointer position internally and
+    repositions the tooltip surface each frame, eliminating latency.
+
+    The client provides a tooltip surface and a parent surface. While the
+    pointer is over the parent surface, the compositor positions the tooltip
+    at pointer_position + offset. The client configures the offset and anchor
+    via requests on the tooltip object.
+  </description>
+
+  <interface name="zcosmic_tooltip_manager_v1" version="1">
+    <description summary="tooltip manager">
+      Manager for creating compositor-driven tooltip objects.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Existing tooltip objects remain valid until destroyed.
+      </description>
+    </request>
+
+    <request name="get_tooltip">
+      <description summary="create a tooltip object">
+        Create a compositor-driven tooltip controller for the given surface.
+
+        The tooltip_surface is the wl_surface that will be displayed as the
+        tooltip. The parent_surface is the wl_surface that the tooltip is
+        associated with — the compositor will position the tooltip relative
+        to the pointer only while the pointer is over the parent surface.
+
+        If the given tooltip_surface already has a zcosmic_tooltip_v1 object
+        associated, the already_exists protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="zcosmic_tooltip_v1"/>
+      <arg name="tooltip_surface" type="object" interface="wl_surface"/>
+      <arg name="parent_surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="tooltip_surface already has a tooltip object"/>
+    </enum>
+  </interface>
+
+  <interface name="zcosmic_tooltip_v1" version="1">
+    <description summary="compositor-driven tooltip">
+      Controls a compositor-driven tooltip surface. The compositor positions
+      the tooltip surface at the pointer position plus the configured offset,
+      constrained to the output boundaries.
+
+      The tooltip is shown when the pointer enters the parent surface and
+      hidden when the pointer leaves. The client must still commit content
+      to the tooltip surface — the compositor only handles positioning.
+
+      All position values are in surface-local coordinates of the parent.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the tooltip object">
+        Destroys the tooltip controller. The tooltip surface will be hidden
+        immediately.
+      </description>
+    </request>
+
+    <request name="set_offset">
+      <description summary="set tooltip offset from pointer">
+        Set the offset in logical pixels from the pointer position to the
+        tooltip surface's top-left corner. This is double-buffered and
+        applied on the next wl_surface.commit of the tooltip surface.
+
+        Default offset is (0, 0).
+      </description>
+      <arg name="x" type="int" summary="horizontal offset in logical pixels"/>
+      <arg name="y" type="int" summary="vertical offset in logical pixels"/>
+    </request>
+
+    <request name="set_anchor">
+      <description summary="set tooltip anchor point">
+        Set which corner of the tooltip surface is anchored to the pointer
+        position (plus offset). This is double-buffered and applied on the
+        next wl_surface.commit of the tooltip surface.
+
+        Default anchor is top_left.
+      </description>
+      <arg name="anchor" type="uint" enum="anchor" summary="anchor point"/>
+    </request>
+
+    <request name="set_show_delay">
+      <description summary="set delay before showing the tooltip">
+        Set the delay in milliseconds before the tooltip is shown after the
+        pointer enters the parent surface. If set to 0 (the default), the
+        tooltip is shown immediately when the pointer enters the parent.
+
+        When a non-zero delay is set, the tooltip remains hidden until the
+        pointer has been over the parent surface continuously for the
+        specified duration. If the pointer leaves the parent surface before
+        the delay expires, the timer resets.
+
+        When a delay is set, the tooltip is positioned at the pointer
+        location at the moment the delay expires. The tooltip stays at
+        that fixed position (it does not follow the pointer) until it is
+        hidden when the pointer leaves the parent surface.
+
+        This is double-buffered and applied on the next wl_surface.commit
+        of the tooltip surface.
+      </description>
+      <arg name="milliseconds" type="uint" summary="delay in milliseconds (0 = immediate)"/>
+    </request>
+
+    <enum name="anchor">
+      <description summary="tooltip anchor point">
+        Which corner of the tooltip is placed at pointer + offset.
+      </description>
+      <entry name="top_left" value="0" summary="top-left corner"/>
+      <entry name="top_right" value="1" summary="top-right corner"/>
+      <entry name="bottom_left" value="2" summary="bottom-left corner"/>
+      <entry name="bottom_right" value="3" summary="bottom-right corner"/>
+    </enum>
+
+    <event name="reposition">
+      <description summary="tooltip was repositioned">
+        Sent by the compositor when the tooltip surface has been repositioned.
+        The x and y values are the position in the parent surface's coordinate
+        space. This event is sent each time the compositor updates the tooltip
+        position (i.e. on each pointer motion frame).
+
+        The client may use this for informational purposes but does not need
+        to respond — the compositor handles all positioning.
+      </description>
+      <arg name="x" type="int" summary="x position relative to parent"/>
+      <arg name="y" type="int" summary="y position relative to parent"/>
+    </event>
+
+    <enum name="error">
+      <entry name="surface_destroyed" value="0"
+        summary="the associated surface has been destroyed"/>
+    </enum>
+  </interface>
+</protocol>

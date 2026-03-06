@@ -49,6 +49,7 @@ pub mod single_pixel_buffer;
 pub mod surface_embed;
 pub mod tablet_manager;
 pub mod text_input;
+pub mod tooltip;
 pub mod toplevel_info;
 pub mod toplevel_management;
 pub mod viewporter;

@@ -32,6 +32,7 @@ use crate::{
             layer_auto_hide::LayerAutoHideState,
             layer_shadow::LayerShadowManagerState,
             layer_surface_dismiss::LayerSurfaceDismissState,
+            tooltip::TooltipManagerState,
             layer_surface_visibility::LayerSurfaceVisibilityState,
             output_configuration::OutputConfigurationState,
             output_power::OutputPowerState,
@@ -286,6 +287,7 @@ pub struct Common {
     pub layer_corner_radius_state: LayerCornerRadiusState,
     pub layer_shadow_state: LayerShadowManagerState,
     pub layer_auto_hide_state: LayerAutoHideState,
+    pub tooltip_state: TooltipManagerState,
     pub data_device_state: DataDeviceState,
     pub dmabuf_state: DmabufState,
     pub exclusive_mode_state: ExclusiveModeState,
@@ -687,6 +689,7 @@ impl State {
         let layer_corner_radius_state = LayerCornerRadiusState::new::<Self>(dh);
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
         let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
+        let tooltip_state = TooltipManagerState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let dmabuf_state = DmabufState::new();
         let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
@@ -818,6 +821,7 @@ impl State {
                 layer_corner_radius_state,
                 layer_shadow_state,
                 layer_auto_hide_state,
+                tooltip_state,
                 data_device_state,
                 dmabuf_state,
                 exclusive_mode_state,

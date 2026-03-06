@@ -48,7 +48,8 @@ use smithay::{
         compositor::{SurfaceData, TraversalAction, with_states, with_surface_tree_downward},
         seat::WaylandFocus,
         shell::xdg::{
-            SurfaceCachedState, ToplevelCachedState, ToplevelSurface, XdgToplevelSurfaceData,
+            SurfaceCachedState, ToplevelCachedState, ToplevelSurface, XdgPopupSurfaceData,
+            XdgToplevelSurfaceData,
         },
     },
     xwayland::{X11Surface, xwm::X11Relatable},
@@ -790,13 +791,67 @@ impl CosmicSurface {
                 let surface = toplevel.wl_surface();
                 PopupManager::popups_for_surface(surface)
                     .flat_map(move |(popup, popup_offset)| {
-                        let offset = (self.0.geometry().loc + popup_offset - popup.geometry().loc)
-                            .to_physical_precise_round(scale);
+                        // Check for compositor-driven tooltip position override
+                        let tooltip_override =
+                            crate::wayland::protocols::tooltip::get_tooltip_position(
+                                popup.wl_surface(),
+                            );
+
+                        let render_pos = if let Some(override_data) = tooltip_override
+                        {
+                            // During show-delay the override has a future show_at —
+                            // produce zero elements so the popup is invisible until then.
+                            if let Some(show_at) = override_data.show_at {
+                                if std::time::Instant::now() < show_at {
+                                    return Vec::new();
+                                }
+                            }
+
+                            let popup_geo = popup.geometry();
+
+                            let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
+                                popup_geo.size
+                            } else {
+                                with_states(popup.wl_surface(), |states| {
+                                    states
+                                        .data_map
+                                        .get::<XdgPopupSurfaceData>()
+                                        .and_then(|data| {
+                                            let attrs = data.lock().ok()?;
+                                            let size =
+                                                attrs.current_server_state().geometry.size;
+                                            if size.w > 0 && size.h > 0 {
+                                                Some(size)
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .unwrap_or_default()
+                                })
+                            };
+
+                            let mut pos = override_data.parent_relative;
+                            // Adjust for popup geometry offset
+                            pos.x -= popup_geo.loc.x;
+                            pos.y -= popup_geo.loc.y;
+
+                            // Apply anchor-based offset so the correct corner aligns.
+                            override_data.anchor.adjust_position(
+                                &mut pos.x, &mut pos.y, popup_size.w, popup_size.h,
+                            );
+
+                            location + pos.to_physical_precise_round(scale)
+                        } else {
+                            let offset =
+                                (self.0.geometry().loc + popup_offset - popup.geometry().loc)
+                                    .to_physical_precise_round(scale);
+                            location + offset
+                        };
 
                         render_elements_from_surface_tree(
                             renderer,
                             popup.wl_surface(),
-                            location + offset,
+                            render_pos,
                             scale,
                             alpha,
                             FRAME_TIME_FILTER,
