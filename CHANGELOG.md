@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/playtron-os/cosmic-comp/compare/v1.7.0...v1.8.0) (2026-03-10)
+
+
+### Features
+
+* implement custom tooltip protocol ([cc0ad50](https://github.com/playtron-os/cosmic-comp/commit/cc0ad50f0edf476896abc9ffced06633eb260fb4))
+
 # [1.7.0](https://github.com/playtron-os/cosmic-comp/compare/v1.6.0...v1.7.0) (2026-03-05)
 
 
