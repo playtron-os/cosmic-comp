@@ -190,6 +190,23 @@ impl CosmicSurface {
         }
     }
 
+    /// Returns the number of configures sent but not yet ack'd by the client.
+    pub fn pending_configure_count(&self) -> usize {
+        match self.0.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .pending_configures()
+                    .len()
+            }),
+            WindowSurface::X11(_) => 0,
+        }
+    }
+
     pub fn global_geometry(&self) -> Option<Rectangle<i32, Global>> {
         *self
             .0
@@ -797,8 +814,7 @@ impl CosmicSurface {
                                 popup.wl_surface(),
                             );
 
-                        let render_pos = if let Some(override_data) = tooltip_override
-                        {
+                        let render_pos = if let Some(override_data) = tooltip_override {
                             // During show-delay the override has a future show_at —
                             // produce zero elements so the popup is invisible until then.
                             if let Some(show_at) = override_data.show_at {
@@ -818,8 +834,7 @@ impl CosmicSurface {
                                         .get::<XdgPopupSurfaceData>()
                                         .and_then(|data| {
                                             let attrs = data.lock().ok()?;
-                                            let size =
-                                                attrs.current_server_state().geometry.size;
+                                            let size = attrs.current_server_state().geometry.size;
                                             if size.w > 0 && size.h > 0 {
                                                 Some(size)
                                             } else {
@@ -837,14 +852,17 @@ impl CosmicSurface {
 
                             // Apply anchor-based offset so the correct corner aligns.
                             override_data.anchor.adjust_position(
-                                &mut pos.x, &mut pos.y, popup_size.w, popup_size.h,
+                                &mut pos.x,
+                                &mut pos.y,
+                                popup_size.w,
+                                popup_size.h,
                             );
 
                             location + pos.to_physical_precise_round(scale)
                         } else {
-                            let offset =
-                                (self.0.geometry().loc + popup_offset - popup.geometry().loc)
-                                    .to_physical_precise_round(scale);
+                            let offset = (self.0.geometry().loc + popup_offset
+                                - popup.geometry().loc)
+                                .to_physical_precise_round(scale);
                             location + offset
                         };
 

@@ -2556,7 +2556,14 @@ impl FloatingLayout {
                     let throttle_ok = final_size_needed
                         || now.duration_since(*last_configure_time) >= frame_interval;
 
-                    if (size_changed || final_size_needed) && throttle_ok {
+                    // Back-pressure: skip if the client has too many unacked configures.
+                    // This prevents flooding the Wayland socket buffer when the client
+                    // is busy (e.g. during wgpu surface reconfigure), which would cause
+                    // the compositor to kill the connection with EPIPE.
+                    let client_keeping_up =
+                        final_size_needed || mapped.active_window().pending_configure_count() < 5;
+
+                    if (size_changed || final_size_needed) && throttle_ok && client_keeping_up {
                         let geometry_to_send = if is_complete {
                             *target_geometry
                         } else {
