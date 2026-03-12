@@ -96,6 +96,8 @@ enum Animation {
         target_geometry: Rectangle<i32, Local>,
         /// Last size we sent in a configure (for change detection)
         last_sent_size: Size<i32, Local>,
+        /// Last time we sent a configure (for throttling)
+        last_configure_time: Instant,
     },
     /// Fade-in animation for newly mapped maximized windows.
     /// Window starts at 0% opacity and fades to 100% over ANIMATION_DURATION.
@@ -932,13 +934,15 @@ impl FloatingLayout {
                 true, // record for animation
             );
 
+            let now = Instant::now();
             self.animations.insert(
                 mapped.clone(),
                 Animation::ClientDrivenResize {
-                    start: Instant::now(),
+                    start: now,
                     previous_geometry,
                     target_geometry,
                     last_sent_size: previous_geometry.size,
+                    last_configure_time: now,
                 },
             );
             mapped.set_geometry(previous_geometry.to_global(&output));
@@ -1082,13 +1086,15 @@ impl FloatingLayout {
         );
 
         // Start animation from current to target
+        let now = Instant::now();
         self.animations.insert(
             mapped.clone(),
             Animation::ClientDrivenResize {
-                start: Instant::now(),
+                start: now,
                 previous_geometry: current_geometry,
                 target_geometry,
                 last_sent_size: current_geometry.size,
+                last_configure_time: now,
             },
         );
 
@@ -2494,6 +2500,14 @@ impl FloatingLayout {
         // Get output for geometry conversion (needed for client-driven animations)
         let output = self.space.outputs().next().cloned();
 
+        // Calculate frame interval from display refresh rate for configure throttling.
+        // Falls back to 60fps (16ms) if the output mode is unavailable.
+        let frame_interval = output
+            .as_ref()
+            .and_then(|o| o.current_mode())
+            .map(|mode| Duration::from_secs_f64(1_000.0 / mode.refresh as f64))
+            .unwrap_or(Duration::from_millis(16));
+
         // For client-driven resize animations:
         // Calculate animated geometry and send configures at each frame.
         // The render position is calculated separately in render_elements
@@ -2509,6 +2523,7 @@ impl FloatingLayout {
                     previous_geometry,
                     target_geometry,
                     last_sent_size,
+                    last_configure_time,
                     ..
                 } = anim
                 {
@@ -2535,7 +2550,13 @@ impl FloatingLayout {
                     let size_changed = current_geometry.size != *last_sent_size;
                     let final_size_needed = is_complete && *last_sent_size != target_geometry.size;
 
-                    if size_changed || final_size_needed {
+                    // Throttle configures to the display's frame rate
+                    // to avoid flooding the client's Wayland socket buffer.
+                    // Always allow the final configure to ensure we reach the target.
+                    let throttle_ok = final_size_needed
+                        || now.duration_since(*last_configure_time) >= frame_interval;
+
+                    if (size_changed || final_size_needed) && throttle_ok {
                         let geometry_to_send = if is_complete {
                             *target_geometry
                         } else {
@@ -2557,16 +2578,18 @@ impl FloatingLayout {
                 mapped.set_geometry(geometry.to_global(output));
                 mapped.force_configure();
 
-                // Update last_sent_size and get animation info for embedded lookahead
+                // Update last_sent_size/time and get animation info for embedded lookahead
                 let (previous_geometry, target_geometry) =
                     if let Some(Animation::ClientDrivenResize {
                         last_sent_size,
+                        last_configure_time,
                         previous_geometry,
                         target_geometry,
                         ..
                     }) = self.animations.get_mut(mapped)
                     {
                         *last_sent_size = geometry.size;
+                        *last_configure_time = Instant::now();
                         (*previous_geometry, *target_geometry)
                     } else {
                         continue;
