@@ -140,10 +140,10 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 // Blur module re-exports
 pub use blur::{
     BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
-    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext,
-    BlurRenderState, BlurredTextureInfo, CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur,
-    LayerBlurSurfaceInfo, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
-    cache_blur_texture_for_window, clear_blur_textures_for_output, clear_cached_layer_surfaces,
+    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+    CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur, LayerBlurSurfaceInfo, apply_blur_passes,
+    blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
+    clear_blur_textures_for_output, clear_cached_layer_surfaces,
     clear_layer_blur_textures_for_output, compute_element_content_hash,
     copy_blur_texture_for_cache, downsample_texture, get_blur_group_content_hash,
     get_cached_blur_texture_for_layer, get_cached_blur_texture_for_window,
@@ -1215,7 +1215,8 @@ where
     let _ws_span = tracing::debug_span!(
         "workspace_elements",
         output = %output.name(),
-    ).entered();
+    )
+    .entered();
     let ws_start = std::time::Instant::now();
     let mut elements = Vec::new();
 
@@ -2396,7 +2397,8 @@ where
                     blur_state.texture_a.as_mut(),
                     blur_state.texture_b.as_mut(),
                 ) {
-                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
+                    let blur_iterations =
+                        crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,
@@ -2674,7 +2676,8 @@ where
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
-                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
+                    let blur_iterations =
+                        crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,

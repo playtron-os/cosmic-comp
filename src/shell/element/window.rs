@@ -638,16 +638,18 @@ impl CosmicWindow {
         let is_embedded = embed_render_info.is_some();
         let embed_corner_radius = embed_render_info.map(|info| info.corner_radius);
 
-        let (has_ssd, is_tiled, is_maximized, mut radii, appearance) = self.0.with_program(|p| {
-            let geo_size = SpaceElement::geometry(&p.window).size;
-            (
-                p.has_ssd(false),
-                p.is_tiled(),
-                p.window.is_maximized(false),
-                embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
-                *p.appearance_conf.lock().unwrap(),
-            )
-        });
+        let (has_ssd, is_tiled, is_maximized, mut radii, appearance, has_blur) =
+            self.0.with_program(|p| {
+                let geo_size = SpaceElement::geometry(&p.window).size;
+                (
+                    p.has_ssd(false),
+                    p.is_tiled(),
+                    p.window.is_maximized(false),
+                    embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
+                    *p.appearance_conf.lock().unwrap(),
+                    p.window.has_blur(),
+                )
+            });
         let clip = ((!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows))
             && !is_maximized;
@@ -681,7 +683,7 @@ impl CosmicWindow {
             geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
         }
 
-        if ((has_ssd || clip) && !is_maximized) || is_embedded {
+        if ((has_ssd || clip) && !is_maximized && !has_blur) || is_embedded {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 

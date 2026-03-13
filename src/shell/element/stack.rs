@@ -789,7 +789,7 @@ impl CosmicStack {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0)));
 
-            let border = (!maximized && !is_embedded).then(|| {
+            let border = (!maximized && !is_embedded && !windows[active].has_blur()).then(|| {
                 // TODO: Update this
                 let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
                 CosmicStackRenderElement::Border(IndicatorShader::element(

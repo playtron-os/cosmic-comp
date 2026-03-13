@@ -4,8 +4,7 @@ use cosmic_comp_config::workspace::WorkspaceLayout;
 use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::{
     desktop::{
-        LayerSurface, PopupKind, PopupManager, layer_map_for_output,
-        utils::bbox_from_surface_tree,
+        LayerSurface, PopupKind, PopupManager, layer_map_for_output, utils::bbox_from_surface_tree,
     },
     output::{Output, OutputNoMode},
     reexports::wayland_server::Resource,
@@ -474,58 +473,54 @@ fn layer_popups<'a>(
                     let standard_location = location_clone + standard_offset;
 
                     // Check for compositor-driven tooltip position override
-                    let tooltip_override =
-                            crate::wayland::protocols::tooltip::get_tooltip_position(
-                                popup.wl_surface(),
-                            );
+                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
+                        popup.wl_surface(),
+                    );
 
                     tracing::trace!(
                         "[tooltip-layer-render] popup has_override={} standard_loc=({},{})",
                         tooltip_override.is_some(),
-                        standard_location.x, standard_location.y,
+                        standard_location.x,
+                        standard_location.y,
                     );
 
-                    let final_location =
-                        if let Some(override_data) = tooltip_override
-                        {
-                            let popup_geo = popup.geometry();
-                            // popup.geometry() returns (0,0,0,0) when the client
-                            // hasn't called xdg_surface.set_window_geometry.
-                            // Fall back to the surface tree bounding box.
-                            let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
-                                popup_geo.size
-                            } else {
-                                let bbox = bbox_from_surface_tree(popup.wl_surface(), (0, 0));
-                                bbox.size
-                            };
-                            let mut pos = override_data.position;
-
-                            // Adjust for popup geometry offset (content may not start at surface origin)
-                            pos.x -= popup_geo.loc.x;
-                            pos.y -= popup_geo.loc.y;
-
-                            // Apply anchor-based offset so the correct corner aligns.
-                            override_data.anchor.adjust_position(
-                                &mut pos.x, &mut pos.y, popup_size.w, popup_size.h,
-                            );
-
-                            // Clamp to output bounds so the tooltip stays on-screen
-                            let max_x = output_geo.loc.x + output_geo.size.w - popup_size.w;
-                            let max_y = output_geo.loc.y + output_geo.size.h - popup_size.h;
-                            pos.x = pos.x.max(output_geo.loc.x).min(max_x);
-                            pos.y = pos.y.max(output_geo.loc.y).min(max_y);
-
-                            pos
+                    let final_location = if let Some(override_data) = tooltip_override {
+                        let popup_geo = popup.geometry();
+                        // popup.geometry() returns (0,0,0,0) when the client
+                        // hasn't called xdg_surface.set_window_geometry.
+                        // Fall back to the surface tree bounding box.
+                        let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
+                            popup_geo.size
                         } else {
-                            standard_location
+                            let bbox = bbox_from_surface_tree(popup.wl_surface(), (0, 0));
+                            bbox.size
                         };
+                        let mut pos = override_data.position;
 
-                    (
-                        surface_clone.clone(),
-                        popup,
-                        final_location,
-                        alpha,
-                    )
+                        // Adjust for popup geometry offset (content may not start at surface origin)
+                        pos.x -= popup_geo.loc.x;
+                        pos.y -= popup_geo.loc.y;
+
+                        // Apply anchor-based offset so the correct corner aligns.
+                        override_data.anchor.adjust_position(
+                            &mut pos.x,
+                            &mut pos.y,
+                            popup_size.w,
+                            popup_size.h,
+                        );
+
+                        // Clamp to output bounds so the tooltip stays on-screen
+                        let max_x = output_geo.loc.x + output_geo.size.w - popup_size.w;
+                        let max_y = output_geo.loc.y + output_geo.size.h - popup_size.h;
+                        pos.x = pos.x.max(output_geo.loc.x).min(max_x);
+                        pos.y = pos.y.max(output_geo.loc.y).min(max_y);
+
+                        pos
+                    } else {
+                        standard_location
+                    };
+
+                    (surface_clone.clone(), popup, final_location, alpha)
                 },
             )
         },

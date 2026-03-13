@@ -127,7 +127,8 @@ pub fn get_tooltip_position(surface: &WlSurface) -> Option<TooltipOverrideData> 
     });
     tracing::debug!(
         "[tooltip] get_tooltip_position surface={:?} => {:?}",
-        surface.id(), result,
+        surface.id(),
+        result,
     );
     result
 }
@@ -142,13 +143,24 @@ pub fn set_tooltip_position(
 ) {
     tracing::debug!(
         "[tooltip] set_tooltip_position surface={:?} pos=({},{}) parent_rel=({},{}) anchor={:?} show_at={:?}",
-        surface.id(), position.x, position.y, parent_relative.x, parent_relative.y, anchor, show_at,
+        surface.id(),
+        position.x,
+        position.y,
+        parent_relative.x,
+        parent_relative.y,
+        anchor,
+        show_at,
     );
     with_states(surface, |states| {
         let data = states
             .data_map
             .get_or_insert_threadsafe(|| TooltipPositionOverride(Mutex::new(None)));
-        *data.0.lock().unwrap() = Some(TooltipOverrideData { position, parent_relative, anchor, show_at });
+        *data.0.lock().unwrap() = Some(TooltipOverrideData {
+            position,
+            parent_relative,
+            anchor,
+            show_at,
+        });
     });
 }
 
@@ -249,8 +261,7 @@ impl TooltipManagerState {
             self.cached_cursor = Some(CachedCursorState {
                 position,
                 surface_id: surface.id(),
-                cursor_in_parent: cursor_in_parent
-                    .unwrap_or_else(|| Point::from((0, 0))),
+                cursor_in_parent: cursor_in_parent.unwrap_or_else(|| Point::from((0, 0))),
             });
         } else {
             self.cached_cursor = None;
@@ -271,17 +282,17 @@ impl TooltipManagerState {
                 }
             }
 
-            let pointer_over_parent = cursor_surface
-                .map_or(false, |s| s.id() == reg.parent_surface.id());
+            let pointer_over_parent =
+                cursor_surface.map_or(false, |s| s.id() == reg.parent_surface.id());
 
             if pointer_over_parent {
                 // Apply offset in the direction the tooltip expands,
                 // so it always pushes AWAY from the cursor.
                 let (eff_ox, eff_oy) = match reg.anchor {
-                    TooltipAnchor::BottomRight => ( reg.offset_x,  reg.offset_y),
-                    TooltipAnchor::BottomLeft  => (-reg.offset_x,  reg.offset_y),
-                    TooltipAnchor::TopRight    => ( reg.offset_x, -reg.offset_y),
-                    TooltipAnchor::TopLeft     => (-reg.offset_x, -reg.offset_y),
+                    TooltipAnchor::BottomRight => (reg.offset_x, reg.offset_y),
+                    TooltipAnchor::BottomLeft => (-reg.offset_x, reg.offset_y),
+                    TooltipAnchor::TopRight => (reg.offset_x, -reg.offset_y),
+                    TooltipAnchor::TopLeft => (-reg.offset_x, -reg.offset_y),
                 };
                 let pos = Point::from((
                     position.x.round() as i32 + eff_ox,
@@ -299,7 +310,11 @@ impl TooltipManagerState {
                     if let Some(show_at) = reg.show_at {
                         if std::time::Instant::now() < show_at {
                             set_tooltip_position(
-                                &reg.tooltip_surface, pos, parent_rel, reg.anchor, Some(show_at),
+                                &reg.tooltip_surface,
+                                pos,
+                                parent_rel,
+                                reg.anchor,
+                                Some(show_at),
                             );
                             continue;
                         }
@@ -307,14 +322,16 @@ impl TooltipManagerState {
                         reg.show_at = None;
                         reg.position_committed = true;
                         set_tooltip_position(
-                            &reg.tooltip_surface, pos, parent_rel, reg.anchor, None,
+                            &reg.tooltip_surface,
+                            pos,
+                            parent_rel,
+                            reg.anchor,
+                            None,
                         );
                     }
                 } else {
                     // Immediate tooltip — follow cursor
-                    set_tooltip_position(
-                        &reg.tooltip_surface, pos, parent_rel, reg.anchor, None,
-                    );
+                    set_tooltip_position(&reg.tooltip_surface, pos, parent_rel, reg.anchor, None);
                 }
             } else {
                 // Cursor left parent — reset delay timer and position lock
@@ -357,8 +374,7 @@ where
     }
 }
 
-impl<D> Dispatch<zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, (), D>
-    for TooltipManagerState
+impl<D> Dispatch<zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, (), D> for TooltipManagerState
 where
     D: GlobalDispatch<zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, ()>
         + Dispatch<zcosmic_tooltip_manager_v1::ZcosmicTooltipManagerV1, ()>
@@ -419,7 +435,8 @@ where
                 // Register
                 tracing::debug!(
                     "[tooltip] GetTooltip: registering tooltip_surface={:?} parent_surface={:?}",
-                    tooltip_surface.id(), parent_surface.id(),
+                    tooltip_surface.id(),
+                    parent_surface.id(),
                 );
 
                 let tooltip_state = state.tooltip_state();
@@ -476,7 +493,10 @@ where
                 // was already destroyed (weak ref upgrade fails).
                 let tooltip_surface_weak = internal.tooltip_surface.clone();
                 if let Ok(surface) = tooltip_surface_weak.upgrade() {
-                    tracing::debug!("[tooltip] Destroy: surface {:?} still alive, clearing position", surface.id());
+                    tracing::debug!(
+                        "[tooltip] Destroy: surface {:?} still alive, clearing position",
+                        surface.id()
+                    );
                     clear_tooltip_position(&surface);
                     let surface_id = surface.id();
                     drop(internal);
@@ -510,7 +530,10 @@ where
                         reg.offset_x = x;
                         reg.offset_y = y;
                     } else {
-                        tracing::warn!("[tooltip] SetOffset: no registration found for surface {:?}", surface_id);
+                        tracing::warn!(
+                            "[tooltip] SetOffset: no registration found for surface {:?}",
+                            surface_id
+                        );
                     }
                 } else {
                     tracing::warn!("[tooltip] SetOffset: tooltip_surface upgrade failed");
@@ -555,7 +578,10 @@ where
                     {
                         reg.show_delay_ms = milliseconds;
                     } else {
-                        tracing::warn!("[tooltip] SetShowDelay: no registration found for surface {:?}", surface_id);
+                        tracing::warn!(
+                            "[tooltip] SetShowDelay: no registration found for surface {:?}",
+                            surface_id
+                        );
                     }
                 } else {
                     tracing::warn!("[tooltip] SetShowDelay: tooltip_surface upgrade failed");

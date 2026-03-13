@@ -176,7 +176,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
             use crate::wayland::protocols::voice_mode::VoiceModeHandler;
             state.check_pending_stop_timeout();
         }
-        
+
         // Sync audio level from voice mode protocol to orb renderer
         let audio_level = state.common.voice_mode_state.audio_level();
         let (clients, transition_completed) = {
@@ -185,14 +185,17 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
             let transition_completed = shell.voice_orb_state.transition_just_completed;
             (shell.update_animations(), transition_completed)
         };
-        
+
         // Sync protocol state when attach_and_transition animation completes
         if transition_completed {
             use crate::wayland::protocols::voice_mode::OrbState;
-            state.common.voice_mode_state.set_orb_state(OrbState::Hidden);
+            state
+                .common
+                .voice_mode_state
+                .set_orb_state(OrbState::Hidden);
             state.common.voice_mode_state.reset_audio_level();
         }
-        
+
         {
             let dh = state.common.display_handle.clone();
             for client in clients.values() {

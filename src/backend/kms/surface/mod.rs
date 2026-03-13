@@ -2,17 +2,16 @@
 
 use crate::{
     backend::render::{
-        BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR,
-        CursorMode, ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
-        PostprocessShader, PostprocessState, apply_blur_passes, blur_downsample_enabled,
-        cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
-        copy_blur_texture_for_cache, downsample_texture,
+        BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR, CursorMode,
+        ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig, PostprocessShader,
+        PostprocessState, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
+        cache_blur_texture_for_window, compute_element_content_hash, copy_blur_texture_for_cache,
+        downsample_texture,
         element::{CosmicElement, DamageElement},
         get_blur_group_content_hash, get_cached_blur_texture_for_layer,
         get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
         init_shaders, output_elements, should_throttle_blur, should_throttle_layer_blur,
-        store_blur_group_content_hash,
-        store_blur_group_last_update, store_layer_blur_content_hash,
+        store_blur_group_content_hash, store_blur_group_last_update, store_layer_blur_content_hash,
         store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
@@ -989,7 +988,8 @@ fn process_blur(
                 blur_state.texture_a.as_mut(),
                 blur_state.texture_b.as_mut(),
             ) {
-                let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
+                let blur_iterations =
+                    crate::backend::render::gpu_profiler::effective_blur_iterations();
                 let blur_result = apply_blur_passes(
                     renderer,
                     &src,
@@ -1301,7 +1301,8 @@ fn process_blur(
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
-                    let blur_iterations = crate::backend::render::gpu_profiler::effective_blur_iterations();
+                    let blur_iterations =
+                        crate::backend::render::gpu_profiler::effective_blur_iterations();
                     let blur_result = apply_blur_passes(
                         renderer,
                         &src,

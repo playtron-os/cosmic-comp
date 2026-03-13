@@ -3,8 +3,8 @@
 use crate::delegate_layer_surface_dismiss;
 use crate::state::State;
 use crate::wayland::protocols::layer_surface_dismiss::{
-    zcosmic_layer_surface_dismiss_v1, LayerSurfaceDismissControllerData, LayerSurfaceDismissHandler,
-    LayerSurfaceDismissState,
+    LayerSurfaceDismissControllerData, LayerSurfaceDismissHandler, LayerSurfaceDismissState,
+    zcosmic_layer_surface_dismiss_v1,
 };
 use smithay::reexports::wayland_server::Resource;
 use std::collections::HashMap;
@@ -13,9 +13,8 @@ use std::sync::Mutex;
 /// Runtime state for tracking armed dismiss controllers
 pub struct DismissControllerRegistry {
     /// Map from surface ID to dismiss controller
-    controllers: Mutex<
-        HashMap<u32, zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1>,
-    >,
+    controllers:
+        Mutex<HashMap<u32, zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1>>,
 }
 
 impl std::fmt::Debug for DismissControllerRegistry {
@@ -44,7 +43,10 @@ impl DismissControllerRegistry {
         if let Some(data) = controller.data::<LayerSurfaceDismissControllerData>() {
             if let Ok(surface) = data.surface.upgrade() {
                 let surface_id = surface.id().protocol_id();
-                self.controllers.lock().unwrap().insert(surface_id, controller);
+                self.controllers
+                    .lock()
+                    .unwrap()
+                    .insert(surface_id, controller);
             }
         }
     }
@@ -71,7 +73,9 @@ impl LayerSurfaceDismissHandler for State {
     }
 
     fn unregister_dismiss_controller(&mut self, surface_id: u32) {
-        self.common.dismiss_controller_registry.unregister(surface_id);
+        self.common
+            .dismiss_controller_registry
+            .unregister(surface_id);
     }
 
     fn get_armed_dismiss_controllers(

@@ -272,7 +272,8 @@ impl BlurRenderState {
         let downsample_enabled = blur_downsample_enabled();
 
         // Calculate blur size (downsampled if enabled, full size otherwise)
-        let downsample_factor = crate::backend::render::gpu_profiler::effective_blur_downsample_factor();
+        let downsample_factor =
+            crate::backend::render::gpu_profiler::effective_blur_downsample_factor();
         let blur_size: Size<i32, Physical> = if downsample_enabled {
             Size::from((
                 (size.w / downsample_factor).max(1),

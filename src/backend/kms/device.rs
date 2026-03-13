@@ -31,9 +31,9 @@ use smithay::{
         renderer::glow::GlowRenderer,
         session::Session,
     },
-    reexports::glow::{self, HasContext},
     desktop::utils::OutputPresentationFeedback,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
+    reexports::glow::{self, HasContext},
     reexports::{
         calloop::{LoopHandle, RegistrationToken},
         drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc},
@@ -873,7 +873,9 @@ impl InnerDevice {
 
                 // Detect GPU info for profiling and Adreno/tiler optimizations
                 {
-                    use crate::backend::render::gpu_profiler::{GpuInfo, get_gpu_info, set_gpu_info};
+                    use crate::backend::render::gpu_profiler::{
+                        GpuInfo, get_gpu_info, set_gpu_info,
+                    };
                     if get_gpu_info().is_none() {
                         // Query actual GL strings from the glow context
                         let (gl_renderer_str, gl_version_str, gl_vendor_str) = renderer
@@ -883,11 +885,7 @@ impl InnerDevice {
                                 let ve = gl.get_parameter_string(glow::VENDOR);
                                 (r, v, ve)
                             })
-                            .unwrap_or_else(|_| (
-                                String::new(),
-                                String::new(),
-                                String::new(),
-                            ));
+                            .unwrap_or_else(|_| (String::new(), String::new(), String::new()));
                         let gpu_info = GpuInfo::detect(
                             self.render_node.minor(),
                             &gl_renderer_str,

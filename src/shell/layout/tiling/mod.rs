@@ -5692,8 +5692,7 @@ where
                 if !mapped.has_blur() {
                     if let Some(wl_surface) = mapped.active_window().wl_surface() {
                         if let Some(color) = get_surface_backdrop_color(&wl_surface) {
-                            let corner_radius =
-                                mapped.blur_corner_radius(geo.size.as_logical(), 8);
+                            let corner_radius = mapped.blur_corner_radius(geo.size.as_logical(), 8);
                             elements.insert(
                                 0,
                                 CosmicMappedRenderElement::Overlay(BackdropShader::element(

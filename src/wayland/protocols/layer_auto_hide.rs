@@ -35,12 +35,7 @@ use std::sync::Mutex;
 
 use crate::shell::auto_hide::{AutoHideEdge, AutoHideMode};
 
-type SurfaceHookId = Mutex<
-    Option<(
-        HookId,
-        Weak<layer_auto_hide_v1::LayerAutoHideV1>,
-    )>,
->;
+type SurfaceHookId = Mutex<Option<(HookId, Weak<layer_auto_hide_v1::LayerAutoHideV1>)>>;
 
 /// Cacheable edge zone size for surface cached state.
 /// When non-zero the compositor extends the surface's effective input area by
@@ -114,17 +109,12 @@ impl LayerAutoHideState {
     where
         D: GlobalDispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
             + Dispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
-            + Dispatch<
-                layer_auto_hide_v1::LayerAutoHideV1,
-                LayerAutoHideData,
-            > + LayerAutoHideHandler
+            + Dispatch<layer_auto_hide_v1::LayerAutoHideV1, LayerAutoHideData>
+            + LayerAutoHideHandler
             + 'static,
     {
-        let global = dh
-            .create_global::<D, layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _>(
-                1,
-                (),
-            );
+        let global =
+            dh.create_global::<D, layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _>(1, ());
         LayerAutoHideState { global }
     }
 
@@ -167,8 +157,7 @@ where
     }
 }
 
-impl<D> Dispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, (), D>
-    for LayerAutoHideState
+impl<D> Dispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, (), D> for LayerAutoHideState
 where
     D: GlobalDispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
         + Dispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
@@ -234,9 +223,7 @@ where
     }
 }
 
-impl<D>
-    Dispatch<layer_auto_hide_v1::LayerAutoHideV1, LayerAutoHideData, D>
-    for LayerAutoHideState
+impl<D> Dispatch<layer_auto_hide_v1::LayerAutoHideV1, LayerAutoHideData, D> for LayerAutoHideState
 where
     D: GlobalDispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
         + Dispatch<layer_auto_hide_manager_v1::LayerAutoHideManagerV1, ()>
@@ -284,7 +271,11 @@ where
                 drop(guard);
                 state.auto_hide_unregistered(&surface);
             }
-            layer_auto_hide_v1::Request::SetAutoHide { edge, edge_zone, mode } => {
+            layer_auto_hide_v1::Request::SetAutoHide {
+                edge,
+                edge_zone,
+                mode,
+            } => {
                 let guard = data.lock().unwrap();
                 let Ok(surface) = guard.surface.upgrade() else {
                     resource.post_error(

@@ -380,7 +380,9 @@ impl Timings {
         // Qualcomm Adreno drivers can also exhibit similar early-return behavior on some SoCs.
         if self.vendor == Some(0x10de) || self.vendor == Some(0x5143) {
             if self.vendor == Some(0x5143) {
-                debug!("Adreno GPU: skipping render time optimization (driver returns commit early)");
+                debug!(
+                    "Adreno GPU: skipping render time optimization (driver returns commit early)"
+                );
             }
             return Duration::ZERO;
         }

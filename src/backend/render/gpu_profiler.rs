@@ -72,7 +72,12 @@ impl Default for GpuInfo {
 
 impl GpuInfo {
     /// Detect GPU info from DRM node sysfs and GL strings.
-    pub fn detect(drm_node_minor: u32, gl_renderer: &str, gl_version: &str, gl_vendor: &str) -> Self {
+    pub fn detect(
+        drm_node_minor: u32,
+        gl_renderer: &str,
+        gl_version: &str,
+        gl_vendor: &str,
+    ) -> Self {
         let sysfs_base = format!("/sys/class/drm/renderD{}/device", drm_node_minor);
 
         let vendor_id = read_sysfs_hex(&format!("{}/vendor", sysfs_base));
@@ -88,15 +93,19 @@ impl GpuInfo {
             None => "Unknown".into(),
         };
 
-        let driver_name = std::fs::read_to_string(format!("{}/driver/module/description", sysfs_base))
-            .or_else(|_| {
-                // Try reading the driver symlink name
-                std::fs::read_link(format!("{}/driver", sysfs_base))
-                    .map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
-            })
-            .unwrap_or_else(|_| "unknown".into())
-            .trim()
-            .to_string();
+        let driver_name =
+            std::fs::read_to_string(format!("{}/driver/module/description", sysfs_base))
+                .or_else(|_| {
+                    // Try reading the driver symlink name
+                    std::fs::read_link(format!("{}/driver", sysfs_base)).map(|p| {
+                        p.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default()
+                    })
+                })
+                .unwrap_or_else(|_| "unknown".into())
+                .trim()
+                .to_string();
 
         let gl_renderer_lower = gl_renderer.to_lowercase();
         let gl_vendor_lower = gl_vendor.to_lowercase();
@@ -153,17 +162,40 @@ impl GpuInfo {
         info!("║              GPU DIAGNOSTICS REPORT                        ║");
         info!("╠══════════════════════════════════════════════════════════════╣");
         info!("║ Vendor:      {:>46} ║", self.vendor_name);
-        info!("║ Vendor ID:   {:>46} ║",
-            self.vendor_id.map(|v| format!("0x{:04x}", v)).unwrap_or_else(|| "N/A".into()));
-        info!("║ Device ID:   {:>46} ║",
-            self.device_id.map(|d| format!("0x{:04x}", d)).unwrap_or_else(|| "N/A".into()));
+        info!(
+            "║ Vendor ID:   {:>46} ║",
+            self.vendor_id
+                .map(|v| format!("0x{:04x}", v))
+                .unwrap_or_else(|| "N/A".into())
+        );
+        info!(
+            "║ Device ID:   {:>46} ║",
+            self.device_id
+                .map(|d| format!("0x{:04x}", d))
+                .unwrap_or_else(|| "N/A".into())
+        );
         info!("║ Driver:      {:>46} ║", self.driver_name);
-        info!("║ GL Renderer: {:>46} ║", truncate_str(&self.gl_renderer, 46));
-        info!("║ GL Version:  {:>46} ║", truncate_str(&self.gl_version, 46));
+        info!(
+            "║ GL Renderer: {:>46} ║",
+            truncate_str(&self.gl_renderer, 46)
+        );
+        info!(
+            "║ GL Version:  {:>46} ║",
+            truncate_str(&self.gl_version, 46)
+        );
         info!("║ GL Vendor:   {:>46} ║", truncate_str(&self.gl_vendor, 46));
-        info!("║ Tile-based:  {:>46} ║", if self.is_tiler { "YES" } else { "no" });
-        info!("║ Adreno:      {:>46} ║", if self.is_adreno { "YES" } else { "no" });
-        info!("║ Software:    {:>46} ║", if self.is_software { "YES" } else { "no" });
+        info!(
+            "║ Tile-based:  {:>46} ║",
+            if self.is_tiler { "YES" } else { "no" }
+        );
+        info!(
+            "║ Adreno:      {:>46} ║",
+            if self.is_adreno { "YES" } else { "no" }
+        );
+        info!(
+            "║ Software:    {:>46} ║",
+            if self.is_software { "YES" } else { "no" }
+        );
         info!("╚══════════════════════════════════════════════════════════════╝");
 
         if self.is_adreno {
@@ -333,19 +365,35 @@ impl FrameProfiler {
             )
         };
 
-        let max_total = self.profiles.iter().map(|p| p.total_duration).max().unwrap_or_default();
-        let min_total = self.profiles.iter().map(|p| p.total_duration).min().unwrap_or_default();
+        let max_total = self
+            .profiles
+            .iter()
+            .map(|p| p.total_duration)
+            .max()
+            .unwrap_or_default();
+        let min_total = self
+            .profiles
+            .iter()
+            .map(|p| p.total_duration)
+            .min()
+            .unwrap_or_default();
 
         let p99_total = {
             let mut sorted: Vec<_> = self.profiles.iter().map(|p| p.total_duration).collect();
             sorted.sort();
-            sorted.get(sorted.len() * 99 / 100).copied().unwrap_or_default()
+            sorted
+                .get(sorted.len() * 99 / 100)
+                .copied()
+                .unwrap_or_default()
         };
 
         let p95_total = {
             let mut sorted: Vec<_> = self.profiles.iter().map(|p| p.total_duration).collect();
             sorted.sort();
-            sorted.get(sorted.len() * 95 / 100).copied().unwrap_or_default()
+            sorted
+                .get(sorted.len() * 95 / 100)
+                .copied()
+                .unwrap_or_default()
         };
 
         let avg_fps = if avg_total.as_secs_f64() > 0.0 {
@@ -360,9 +408,24 @@ impl FrameProfiler {
             0.0
         };
 
-        let avg_elements: f64 = self.profiles.iter().map(|p| p.element_count as f64).sum::<f64>() / window_size as f64;
-        let avg_blur_wins: f64 = self.profiles.iter().map(|p| p.blur_window_count as f64).sum::<f64>() / window_size as f64;
-        let avg_damage: f64 = self.profiles.iter().map(|p| p.damage_rects as f64).sum::<f64>() / window_size as f64;
+        let avg_elements: f64 = self
+            .profiles
+            .iter()
+            .map(|p| p.element_count as f64)
+            .sum::<f64>()
+            / window_size as f64;
+        let avg_blur_wins: f64 = self
+            .profiles
+            .iter()
+            .map(|p| p.blur_window_count as f64)
+            .sum::<f64>()
+            / window_size as f64;
+        let avg_damage: f64 = self
+            .profiles
+            .iter()
+            .map(|p| p.damage_rects as f64)
+            .sum::<f64>()
+            / window_size as f64;
 
         info!(
             "┌─── PERF REPORT: {} ({} frames) ──────────────────────────────",
@@ -393,9 +456,7 @@ impl FrameProfiler {
             "│ Load:    elements={:.0}  blur_windows={:.1}  damage_rects={:.0}",
             avg_elements, avg_blur_wins, avg_damage,
         );
-        info!(
-            "└──────────────────────────────────────────────────────────────"
-        );
+        info!("└──────────────────────────────────────────────────────────────");
     }
 }
 
@@ -403,7 +464,10 @@ fn avg_elements_ms(profiles: &VecDeque<FrameProfile>) -> f64 {
     if profiles.is_empty() {
         return 0.0;
     }
-    let sum: f64 = profiles.iter().map(|p| p.elements_duration.as_secs_f64() * 1000.0).sum();
+    let sum: f64 = profiles
+        .iter()
+        .map(|p| p.elements_duration.as_secs_f64() * 1000.0)
+        .sum();
     sum / profiles.len() as f64
 }
 
