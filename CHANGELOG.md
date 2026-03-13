@@ -1,3 +1,13 @@
+## [1.8.1](https://github.com/playtron-os/cosmic-comp/compare/v1.8.0...v1.8.1) (2026-03-13)
+
+
+### Bug Fixes
+
+* animated resize not working on non active outputs ([30d2e46](https://github.com/playtron-os/cosmic-comp/commit/30d2e46552c221a328add782e66ff35a77bf4537))
+* prevent too many reconfigure events from killing client wayland connection ([2ce0f7d](https://github.com/playtron-os/cosmic-comp/commit/2ce0f7d5fe8595ddfba3c95fc427db62f8347c4b))
+* remove blurred windows borders and run fmt ([7e8a842](https://github.com/playtron-os/cosmic-comp/commit/7e8a8422ac51dcac325c5a96101af952456364b7))
+* throttle reconfigure events during animated resize ([e5fbda8](https://github.com/playtron-os/cosmic-comp/commit/e5fbda850ad8dab247775d21db74a5317f64a0b4))
+
 # [1.8.0](https://github.com/playtron-os/cosmic-comp/compare/v1.7.0...v1.8.0) (2026-03-10)
 
 
