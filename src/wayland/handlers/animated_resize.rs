@@ -37,6 +37,15 @@ impl AnimatedResizeHandler for State {
             return;
         };
 
+        // Find the output that actually contains this window (not the cursor's output)
+        let Some(window_output) = shell.visible_output_for_surface(surface).cloned() else {
+            warn!(
+                surface_id = surface.id().protocol_id(),
+                "Could not find output for surface"
+            );
+            return;
+        };
+
         // Check if the window is maximized - if so, update the restore geometry instead of animating
         {
             let mut maximized_state = mapped.maximized_state.lock().unwrap();
@@ -46,8 +55,7 @@ impl AnimatedResizeHandler for State {
                 let target_size: Size<i32, Local> = (target_width, target_height).into();
 
                 // Get output geometry to center the window
-                let active_output = shell.seats.last_active().active_output();
-                let output_geo = active_output.geometry();
+                let output_geo = window_output.geometry();
 
                 // Calculate centered position
                 let center_x = (output_geo.size.w - target_width) / 2;
@@ -66,10 +74,8 @@ impl AnimatedResizeHandler for State {
             }
         }
 
-        // Get the active output from the last active seat
-        let active_output = shell.seats.last_active().active_output();
-        let Some(workspace) = shell.active_space(&active_output) else {
-            warn!("No active workspace");
+        let Some(workspace) = shell.active_space(&window_output) else {
+            warn!("No active workspace for window's output");
             return;
         };
         // element_geometry returns Rectangle<i32, Local>
@@ -79,7 +85,7 @@ impl AnimatedResizeHandler for State {
         };
 
         // Get output geometry for boundary checking
-        let output_geo = active_output.geometry();
+        let output_geo = window_output.geometry();
 
         // Build target geometry - start with current position, change size
         let target_size: Size<i32, Local> = (target_width, target_height).into();
@@ -147,7 +153,7 @@ impl AnimatedResizeHandler for State {
 
         // Start the animation via the floating layer
         let mut shell = self.common.shell.write();
-        if let Some(workspace) = shell.active_space_mut(&active_output) {
+        if let Some(workspace) = shell.active_space_mut(&window_output) {
             workspace
                 .floating_layer
                 .start_client_driven_resize(mapped, target_geometry);
@@ -183,8 +189,14 @@ impl AnimatedResizeHandler for State {
             return;
         };
 
-        // Get the active output from the last active seat
-        let active_output = shell.seats.last_active().active_output();
+        // Find the output that actually contains this window (not the cursor's output)
+        let Some(window_output) = shell.visible_output_for_surface(surface).cloned() else {
+            warn!(
+                surface_id = surface.id().protocol_id(),
+                "Could not find output for surface"
+            );
+            return;
+        };
 
         // Client sends logical coordinates - use directly
         let target_size: Size<i32, Local> = (target_width, target_height).into();
@@ -207,8 +219,8 @@ impl AnimatedResizeHandler for State {
             }
         }
 
-        let Some(workspace) = shell.active_space(&active_output) else {
-            warn!("No active workspace");
+        let Some(workspace) = shell.active_space(&window_output) else {
+            warn!("No active workspace for window's output");
             return;
         };
         // element_geometry returns Rectangle<i32, Local>
@@ -219,7 +231,7 @@ impl AnimatedResizeHandler for State {
 
         // Get non-exclusive zone for boundary clamping (respects layer-shell panels)
         let usable_zone =
-            smithay::desktop::layer_map_for_output(&active_output).non_exclusive_zone();
+            smithay::desktop::layer_map_for_output(&window_output).non_exclusive_zone();
 
         // Clamp position to keep window within usable bounds (excluding panels)
         let mut clamped_x = target_x;
@@ -262,7 +274,7 @@ impl AnimatedResizeHandler for State {
 
         // Start the animation via the floating layer
         let mut shell = self.common.shell.write();
-        if let Some(workspace) = shell.active_space_mut(&active_output) {
+        if let Some(workspace) = shell.active_space_mut(&window_output) {
             workspace
                 .floating_layer
                 .start_client_driven_resize(mapped, target_geometry);
