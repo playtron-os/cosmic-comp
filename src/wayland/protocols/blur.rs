@@ -219,16 +219,11 @@ where
                 *data.pending_region.lock().unwrap() = regions;
             }
             org_kde_kwin_blur::Request::Release => {
-                // The destructor is handled automatically
-                if let Ok(surface) = data.surface.upgrade() {
-                    with_states(&surface, |surface_data| {
-                        let mut cached = surface_data.cached_state.get::<CacheableBlurState>();
-                        let pending = cached.pending();
-                        pending.enabled = false;
-                        pending.data = None;
-                    });
-                    state.blur_unset(&surface);
-                }
+                // Release is a destructor for the blur *object*, NOT an unset.
+                // Clients create a new blur object and commit it
+                // before releasing the old one. We must not disable blur here,
+                // otherwise the new object's commit is undone by the old release.
+                // Only the explicit `unset` request on the manager should disable blur.
             }
         }
     }
