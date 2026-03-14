@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/playtron-os/cosmic-comp/compare/v1.8.1...v1.8.2) (2026-03-14)
+
+
+### Bug Fixes
+
+* do not destroy blur on release request ([406164c](https://github.com/playtron-os/cosmic-comp/commit/406164c4572989f1f2dcfae1d54bad7e23a45e64))
+
 ## [1.8.1](https://github.com/playtron-os/cosmic-comp/compare/v1.8.0...v1.8.1) (2026-03-13)
 
 

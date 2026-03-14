@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-comp"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "anyhow",
  "bitflags 2.11.0",
