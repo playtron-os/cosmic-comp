@@ -1320,12 +1320,22 @@ impl FloatingLayout {
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
 
+        let current_geometry = Rectangle::new(position, win_geo.size);
         if let Some(previous_geometry) = prev.or(already_mapped) {
             self.animations.insert(
                 mapped.clone(),
                 Animation::Tiled {
                     start: Instant::now(),
                     previous_geometry,
+                },
+            );
+        } else {
+            // Fade in newly mapped windows
+            self.animations.insert(
+                mapped.clone(),
+                Animation::MapFadeIn {
+                    start: Instant::now(),
+                    geometry: current_geometry,
                 },
             );
         }
