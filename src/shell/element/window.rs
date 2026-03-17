@@ -330,8 +330,7 @@ impl CosmicWindowInternal {
                     .lock()
                     .unwrap()
                     .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
+                    .radius_window()
                     .map(|x| x.round() as u8)
             })
             .unwrap_or([0; 4]);

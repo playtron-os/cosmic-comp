@@ -696,8 +696,7 @@ impl CosmicStack {
                 .then(|| {
                     theme
                         .cosmic()
-                        .radius_s()
-                        .map(|x| if x < 4.0 { x } else { x + 4.0 })
+                        .radius_window()
                         .map(|x| (x * scale as f32).round() as u8)
                 })
                 .unwrap_or([0, 0, 0, 0]);
@@ -771,13 +770,7 @@ impl CosmicStack {
             let is_embedded = is_surface_embedded(&windows[active]);
 
             let round = (appearance.clip_tiled_windows || !tiled) && !maximized;
-            let radii = round.then(|| {
-                theme
-                    .cosmic()
-                    .radius_s()
-                    .map(|x| if x < 4.0 { x } else { x + 4.0 })
-                    .map(|x| x.round() as u8)
-            });
+            let radii = round.then(|| theme.cosmic().radius_window().map(|x| x.round() as u8));
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
             geo.loc += location.to_f64().to_logical(scale);
@@ -967,8 +960,7 @@ impl CosmicStack {
                 .lock()
                 .unwrap()
                 .cosmic()
-                .radius_s()
-                .map(|x| if x < 4.0 { x } else { x + 4.0 })
+                .radius_window()
                 .map(|val| val.round() as u8);
 
             if !round {
@@ -1335,13 +1327,7 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
         {
             Radius::from(0.0)
         } else {
-            let radii = stack
-                .theme
-                .lock()
-                .unwrap()
-                .cosmic()
-                .radius_s()
-                .map(|x| if x < 4.0 { x } else { x + 4.0 });
+            let radii = stack.theme.lock().unwrap().cosmic().radius_window();
             Radius::from([radii[0], radii[1], 0., 0.])
         };
         let group_focused = stack.group_focused.load(Ordering::SeqCst);
