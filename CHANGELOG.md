@@ -1,3 +1,18 @@
+# [1.9.0](https://github.com/playtron-os/cosmic-comp/compare/v1.8.2...v1.9.0) (2026-03-18)
+
+
+### Bug Fixes
+
+* cap window sizes properly so it fits within display bounds on first render ([c55743c](https://github.com/playtron-os/cosmic-comp/commit/c55743cb4687d267ad7db091bda36610fd44f828))
+* fix window fade in animation playing when you drop them after drag ([59c67e8](https://github.com/playtron-os/cosmic-comp/commit/59c67e88cdb9fa2ef96555c4eec754d4b0023b24))
+* update libcosmic to support proper font and letter spacing in SSD ([d2a2bd5](https://github.com/playtron-os/cosmic-comp/commit/d2a2bd5ecaa8e7ef73751aadc3bc4267ded4a517))
+* use proper corner radius for windows ([abf2b1e](https://github.com/playtron-os/cosmic-comp/commit/abf2b1e2e5b562a09c52ba712cbcc0e8b72ab88a))
+
+
+### Features
+
+* fade in all floating windows when they appear ([e4b6008](https://github.com/playtron-os/cosmic-comp/commit/e4b6008f9e59b7e76d87bcd64cab4b67ec9fb492))
+
 ## [1.8.2](https://github.com/playtron-os/cosmic-comp/compare/v1.8.1...v1.8.2) (2026-03-14)
 
 
