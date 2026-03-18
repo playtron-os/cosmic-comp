@@ -1450,7 +1450,11 @@ impl FloatingLayout {
             }
             (mapped, geo.loc)
         } else {
-            self.map_internal(window.clone(), Some(position), None, None);
+            // Pass current geometry as `prev` so map_internal uses a position
+            // animation instead of MapFadeIn. The window already existed — it
+            // was just grabbed, not newly created.
+            let geo = Rectangle::new(position, window.geometry().size.as_local());
+            self.map_internal(window.clone(), Some(position), None, Some(geo));
             (window, position)
         }
     }
