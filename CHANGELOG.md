@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/playtron-os/cosmic-comp/compare/v1.9.0...v1.10.0) (2026-03-19)
+
+
+### Features
+
+* implement night shift setting ([4f7e632](https://github.com/playtron-os/cosmic-comp/commit/4f7e632a4c368c0faf5f06ac5f31176e8c6d2847))
+
 # [1.9.0](https://github.com/playtron-os/cosmic-comp/compare/v1.8.2...v1.9.0) (2026-03-18)
 
 
