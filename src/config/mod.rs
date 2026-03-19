@@ -152,11 +152,13 @@ pub struct ScreenFilter {
     pub inverted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub color_filter: Option<ColorFilter>,
+    #[serde(default)]
+    pub night_shift: u16,
 }
 
 impl ScreenFilter {
     pub fn is_noop(&self) -> bool {
-        !self.inverted && self.color_filter.is_none()
+        !self.inverted && self.color_filter.is_none() && self.night_shift == 0
     }
 }
 
@@ -324,6 +326,13 @@ impl Config {
                 .common
                 .a11y_state
                 .set_screen_filter(filter_conf.color_filter);
+
+            // Sync night_shift from cosmic-config into the screen filter
+            let night_shift = state.common.config.cosmic_conf.night_shift;
+            if night_shift != state.common.config.dynamic_conf.screen_filter().night_shift {
+                let mut filter = state.common.config.dynamic_conf.screen_filter_mut();
+                filter.night_shift = night_shift;
+            }
         });
 
         // Load voice mode configuration
@@ -414,6 +423,7 @@ impl Config {
         ScreenFilter {
             inverted: false,
             color_filter: None,
+            night_shift: 0,
         }
     }
 
@@ -973,6 +983,20 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     state.common.update_config();
                     for output in state.common.shell.read().outputs() {
                         state.backend.schedule_render(output);
+                    }
+                }
+            }
+            "night_shift" => {
+                let new = get_config::<u16>(&config, "night_shift");
+                if new != state.common.config.cosmic_conf.night_shift {
+                    state.common.config.cosmic_conf.night_shift = new;
+                    let mut filter = state.common.config.dynamic_conf.screen_filter_mut();
+                    let mut updated = (*filter).clone();
+                    updated.night_shift = new;
+                    if let Err(err) = state.backend.update_screen_filter(&updated) {
+                        warn!("Failed to apply night shift: {}", err);
+                    } else {
+                        *filter = updated;
                     }
                 }
             }

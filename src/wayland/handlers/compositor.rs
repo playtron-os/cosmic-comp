@@ -416,20 +416,16 @@ impl State {
                         let zone = layer_map_for_output(&active_output).non_exclusive_zone();
                         let has_ssd = !pending.surface.is_decorated(true);
                         let ssd_h = if has_ssd { SSD_HEIGHT } else { 0 };
-                        let bounds = Size::from((
-                            zone.size.w / 3 * 2,
-                            zone.size.h / 3 * 2 - ssd_h,
-                        ));
+                        let bounds = Size::from((zone.size.w / 3 * 2, zone.size.h / 3 * 2 - ssd_h));
                         toplevel.with_pending_state(|state| {
                             state.bounds = Some(bounds);
                         });
                         None
                     };
-                    let has_buffer = with_renderer_surface_state(surface, |state| state.buffer().is_some())
-                        .unwrap_or(false);
-                    if toplevel_ensure_initial_configure(toplevel, initial_size)
-                        && has_buffer
-                    {
+                    let has_buffer =
+                        with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                            .unwrap_or(false);
+                    if toplevel_ensure_initial_configure(toplevel, initial_size) && has_buffer {
                         let window = pending.surface.clone();
                         window.on_commit();
 

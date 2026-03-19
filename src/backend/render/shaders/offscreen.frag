@@ -22,6 +22,7 @@ uniform float tint;
 
 uniform float invert;
 uniform float color_mode;
+uniform float night_shift;
 
 void main() {
     vec4 color = texture2D(tex, v_coords);
@@ -81,6 +82,55 @@ void main() {
         correction.b =  (diff.r * 0.7) + (diff.b * 1.0);
 
         color.rgb += correction;
+    }
+
+    // Night shift: warm color temperature via Planckian locus approximation.
+    // night_shift carries the target temperature in Kelvin (e.g. 3500.0).
+    // 6500 K ≈ daylight (no change); lower values are warmer.
+    if (night_shift > 0.0 && night_shift < 6500.0) {
+        float temp = night_shift / 100.0;
+        float r_mult;
+        float g_mult;
+        float b_mult;
+
+        // Red
+        if (temp <= 66.0) {
+            r_mult = 1.0;
+        } else {
+            float t = temp - 60.0;
+            r_mult = 1.29293618606 * pow(t, -0.1332047592);
+            r_mult = clamp(r_mult, 0.0, 1.0);
+        }
+
+        // Green
+        if (temp <= 66.0) {
+            g_mult = 0.39008157876 * log(temp) - 0.63184144378;
+            g_mult = clamp(g_mult, 0.0, 1.0);
+        } else {
+            float t = temp - 60.0;
+            g_mult = 1.12989086089 * pow(t, -0.0755148492);
+            g_mult = clamp(g_mult, 0.0, 1.0);
+        }
+
+        // Blue
+        if (temp >= 66.0) {
+            b_mult = 1.0;
+        } else if (temp <= 19.0) {
+            b_mult = 0.0;
+        } else {
+            float t = temp - 10.0;
+            b_mult = 0.54320678911 * log(t) - 1.19625408914;
+            b_mult = clamp(b_mult, 0.0, 1.0);
+        }
+
+        // Normalize so that 6500 K maps to (1,1,1)
+        float nr = 1.0;
+        float ng = 0.39008157876 * log(65.0) - 0.63184144378;
+        float nb = 0.54320678911 * log(55.0) - 1.19625408914;
+
+        color.r *= r_mult / nr;
+        color.g *= g_mult / ng;
+        color.b *= b_mult / nb;
     }
 
     // re-multiply

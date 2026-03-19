@@ -2721,6 +2721,7 @@ fn postprocess_elements<'a>(
                         .map(|val| val as u8 as f32)
                         .unwrap_or(0.),
                 ),
+                Uniform::new("night_shift", f32::from(screen_filter.night_shift)),
             ],
         ));
     }
@@ -2755,6 +2756,7 @@ fn postprocess_elements<'a>(
                     .map(|val| val as u8 as f32)
                     .unwrap_or(0.),
             ),
+            Uniform::new("night_shift", f32::from(screen_filter.night_shift)),
         ],
     ));
 

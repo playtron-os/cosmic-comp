@@ -99,6 +99,8 @@ pub struct CosmicCompConfig {
     pub edge_snap_threshold: u32,
     pub accessibility_zoom: ZoomConfig,
     pub appearance_settings: AppearanceConfig,
+    /// Night shift color temperature in Kelvin (0 = disabled, e.g. 3500 = warm)
+    pub night_shift: u16,
 }
 
 impl Default for CosmicCompConfig {
@@ -135,6 +137,7 @@ impl Default for CosmicCompConfig {
             edge_snap_threshold: 0,
             accessibility_zoom: ZoomConfig::default(),
             appearance_settings: AppearanceConfig::default(),
+            night_shift: 0,
         }
     }
 }
