@@ -1536,22 +1536,28 @@ where
                         location
                     };
 
+                    // Compute the physical location for surface rendering
+                    let surface_render_phys_loc: Point<i32, Physical> = render_location
+                        .to_local(output)
+                        .as_logical()
+                        .to_physical_precise_round(scale);
+
                     // First render the layer surface content
-                    elements.extend(
+                    let surface_elements =
                         render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
                             renderer,
                             layer.wl_surface(),
-                            render_location
-                                .to_local(output)
-                                .as_logical()
-                                .to_physical_precise_round(scale),
+                            surface_render_phys_loc,
                             Scale::from(scale),
                             alpha,
                             FRAME_TIME_FILTER,
-                        )
-                        .into_iter()
-                        .flat_map(crop_to_output)
-                        .map(Into::into),
+                        );
+
+                    elements.extend(
+                        surface_elements
+                            .into_iter()
+                            .flat_map(crop_to_output)
+                            .map(Into::into),
                     );
 
                     let local_geo =
@@ -1595,6 +1601,10 @@ where
                         {
                             // Use the blurred backdrop shader with the cached texture
                             let output_transform = output.current_transform();
+                            // Disable shader border if the client has set
+                            // its own corner radius — it handles its own borders
+                            let has_client_corner_radius = corner_radius.iter().any(|&r| r > 0.0);
+
                             let blurred_element = BlurredBackdropShader::element(
                                 renderer,
                                 &blur_info.texture,
@@ -1607,7 +1617,7 @@ where
                                 blur_alpha,
                                 BLUR_TINT_COLOR,
                                 BLUR_TINT_STRENGTH,
-                                true, // Enable border for layer shells
+                                !has_client_corner_radius,
                             );
 
                             let backdrop_element: WorkspaceRenderElement<R> =
