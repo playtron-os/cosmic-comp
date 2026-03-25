@@ -3501,8 +3501,10 @@ impl Shell {
     // Voice mode methods
 
     /// Check if voice mode is currently active
+    /// This checks both the orb visibility AND the voice mode state machine,
+    /// so it returns true even during the window fade-in before the orb appears.
     pub fn is_voice_mode_active(&self) -> bool {
-        self.voice_orb_state.is_active()
+        self.voice_orb_state.is_active() || self.voice_mode.is_active()
     }
 
     /// Update voice mode animation state

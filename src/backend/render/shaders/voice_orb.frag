@@ -11,7 +11,8 @@ varying vec2 v_coords;
 // Animation uniforms
 uniform float time;           // Animation time in seconds
 uniform float scale;          // Current scale of the orb (0.0 to 1.0 for grow animation)
-uniform float pulse;          // Pulse intensity (0.0 to 1.0) for voice activity
+uniform float iLowIntensity;  // Smoothed low-frequency audio intensity (0.0 to 1.0)
+uniform float iHighIntensity; // Smoothed high-frequency audio intensity (0.0 to 1.0)
 uniform float attached;       // 1.0 if attached to window (burst mode), 0.0 if floating
 
 // Position uniforms (for window attachment)
@@ -20,19 +21,22 @@ uniform float morph_progress; // Deprecated - kept for compatibility
 uniform float cover_scale;    // Scale factor: how much larger orb is than render area
 uniform float window_aspect;  // Window aspect ratio (w/h) when attached
 uniform float border_radius;  // Border radius in pixels for rounded corners when attached
+uniform float viewport_scale; // UV scale factor for viewport padding (1.0 = no padding)
 
 // Configuration constants
-const float innerRadius = 0.45;    // Aperture
+const float innerRadius = 0.6;    // Aperture
 const float noiseScale = 0.65;     // Turbulence
-const float speed = 1.2;           // Temporal Speed
+const float speed = 1.0;           // Temporal Speed
 
 // Colors (converted from RGB 0-255 to 0-1)
-const vec3 color1 = vec3(0.051, 0.808, 0.580);      // Primary pulse: 13, 206, 148
-const vec3 color2 = vec3(0.129, 0.690, 0.494);      // Secondary flow: 33, 176, 126
-const vec3 color3 = vec3(0.047, 0.275, 0.196);      // Core depth: 12, 70, 50
-const vec3 haloColor = vec3(0.106, 0.714, 0.510);   // Halo accent: 27, 182, 130
-const vec3 bgColor = vec3(0.859, 1.0, 0.957);       // Background A: 219, 255, 244
-const vec3 bgColor2 = vec3(1.0, 1.0, 1.0);          // Background B: 255, 255, 255
+const vec3 color1 = vec3(0.000, 0.800, 0.702);      // Primary pulse: Caribbean Green (0, 204, 179)
+const vec3 color2 = vec3(0.722, 0.902, 0.212);      // Secondary flow: Yellow Green (184, 230, 54)
+const vec3 color3 = vec3(0.000, 0.400, 0.349);      // Core depth: Deep Teal (0, 102, 89)
+const vec3 haloColor = vec3(0.800, 1.000, 0.102);   // Halo accent: Electric Lime (204, 255, 26)
+const vec3 bgColor = vec3(0.949, 0.949, 0.980);     // Background A: Lavender Gray (242, 242, 250)
+const vec3 bgColor2 = vec3(0.851, 0.851, 0.922);    // Background B: Silver Mist (217, 217, 235)
+const vec3 audioColor1 = vec3(0.000, 1.000, 0.800); // Audio reactive: Bright Aquamarine (0, 255, 204)
+const vec3 audioColor2 = vec3(0.900, 1.000, 0.300); // Audio reactive: Neon Lime (230, 255, 77)
 
 const float PI = 3.14159265359;
 
@@ -125,66 +129,76 @@ void main() {
         // Floating mode: use standard height-based normalization
         uv = (fragCoord * 2.0 - size) / size.y;
         noiseUV = uv;
+        // Scale UVs by viewport_scale to keep orb visually the same size
+        // when the render element has extra padding for glow/halo
+        uv *= viewport_scale;
+        noiseUV *= viewport_scale;
     }
     
     float animTime = time * speed;
     
-    // Smooth the pulse value for cleaner animation (cubic smoothstep)
-    float smoothPulse = pulse * pulse * (3.0 - 2.0 * pulse);
-    
-    // Audio reactivity - subtle expansion based on voice input
-    float bassPulse = smoothPulse * 0.8;      // Radius expansion
-    float trebleShimmer = smoothPulse * 0.5;  // Brightness/glow boost
+    // Frequency band modulations (directly from smoothed intensity channels)
+    float bassPulse = pow(iLowIntensity, 1.2) * 1.2;
+    float trebleShimmer = pow(iHighIntensity, 1.5) * 1.5;
     
     float ang = atan(uv.y, uv.x);
     float len = length(uv);
     
-    // Dynamic parameters based on audio - subtle radius expansion when speaking
-    float dynamicRadius = innerRadius + bassPulse * 0.12;
-    float dynamicNoiseScale = noiseScale + trebleShimmer * 0.15;
+    // Orb expansion/de-expansion
+    float dynamicRadius = innerRadius + bassPulse * 0.15;
+    float dynamicNoiseScale = noiseScale + trebleShimmer * 0.2;
     
-    // Noise-based distortion - use noiseUV for consistent visual detail during scaling
-    float n0 = snoise3(vec3(noiseUV * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
+    // Add some rotation based on audio
+    float rotation = animTime * 0.5 + bassPulse * 0.5;
+    vec2 rotatedUv = vec2(
+        noiseUV.x * cos(rotation) - noiseUV.y * sin(rotation),
+        noiseUV.x * sin(rotation) + noiseUV.y * cos(rotation)
+    );
+    
+    // Noise-based distortion - use rotated noiseUV for consistent visual detail during scaling
+    float n0 = snoise3(vec3(rotatedUv * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
     float r0 = mix(mix(dynamicRadius, 1.0, 0.4), mix(dynamicRadius, 1.0, 0.6), n0);
     float d0 = distance(uv, r0 / len * uv);
     
-    // Core glow - brighter when speaking
-    float v0 = light1(1.0 + bassPulse * 2.0, 15.0 - bassPulse * 3.0, d0);
+    // Glow intensity
+    float v0 = light1(1.0 + bassPulse * 4.0, 15.0 - bassPulse * 4.0, d0);
     v0 *= smoothstep(r0 * 1.05, r0, len);
-    float cl = cos(ang + animTime * 2.0 + bassPulse * 1.5) * 0.5 + 0.5;
+    float cl = cos(ang + animTime * 2.0 + (bassPulse + trebleShimmer) * 1.5) * 0.5 + 0.5;
     
     // Rotating light point
-    float a = animTime * -1.0;
+    float a = animTime * -1.0 - trebleShimmer * 0.2;
     vec2 pos = vec2(cos(a), sin(a)) * r0;
     float d = distance(uv, pos);
-    float v1 = light2(2.0 + bassPulse * 1.5, 5.0, d);
-    v1 *= light1(1.0, 50.0 - bassPulse * 10.0, d0);
+    float v1 = light2(2.0 + bassPulse * 2.0, 5.0, d);
+    v1 *= light1(1.0, 50.0 - bassPulse * 15.0, d0);
     
-    // Outer halo ring - more visible when speaking
-    float haloR = r0 * (1.18 + trebleShimmer * 0.08);
+    // Outer halo ring
+    float haloR = r0 * (1.15 + trebleShimmer * 0.08);
     float dHalo = abs(len - haloR);
-    float haloIntensity = 0.15 + trebleShimmer * 0.4;  // Base glow + voice boost
-    float v4 = light1(haloIntensity, 60.0, dHalo);
+    float v4 = light1(trebleShimmer * 0.5, 60.0, dHalo);
     v4 *= smoothstep(0.12, 0.0, dHalo);
     
     // Edge masks
     float v2 = smoothstep(1.0 + bassPulse * 0.05, mix(dynamicRadius, 1.0, n0 * 0.5), len);
     float v3 = smoothstep(dynamicRadius, mix(dynamicRadius, 1.0, 0.5), len);
     
-    // Subtle hue shift based on voice activity
-    vec3 baseCol1 = hueShift(color1, bassPulse * 0.3);
-    vec3 baseCol2 = hueShift(color2, -bassPulse * 0.15);
-    vec3 baseCol3 = hueShift(color3, bassPulse * 0.1);
-    vec3 haloColFinal = hueShift(haloColor, trebleShimmer * 0.8);
+    // Blend between base colors and audio colors
+    vec3 activeCol1 = mix(color1, audioColor1, bassPulse);
+    vec3 activeCol2 = mix(color2, audioColor2, trebleShimmer);
+    
+    vec3 baseCol1 = hueShift(activeCol1, bassPulse * 0.8 + trebleShimmer * 0.4);
+    vec3 baseCol2 = hueShift(activeCol2, -bassPulse * 0.4);
+    vec3 baseCol3 = hueShift(color3, bassPulse * 0.2);
+    
+    // Use the haloColor influenced by trebleShimmer
+    vec3 haloColFinal = hueShift(haloColor, trebleShimmer * 2.0);
     
     // Combine colors
     vec3 col = mix(baseCol1, baseCol2, cl);
     col = mix(baseCol3, col, v0);
-    col += haloColFinal * v4 * 3.5;
+    col += haloColFinal * v4 * 2.5;
     col *= (1.0 - v4 * 0.2);
-    
-    // Subtle brightness boost when speaking
-    col += (baseCol1 + baseCol2) * bassPulse * 0.08;
+    col += (baseCol1 + baseCol2) * bassPulse * 0.15;
     
     col = (col + v1) * v2 * v3;
     col = clamp(col, 0.0, 1.0);
@@ -195,7 +209,7 @@ void main() {
     // Background gradient (only visible inside orb area)
     float bgGrad = clamp(len * 0.5 + uv.y * 0.2, 0.0, 1.0);
     vec3 currentBG = mix(bgColor, bgColor2, bgGrad);
-    currentBG += bgColor2 * bassPulse * 0.05;
+    currentBG += bgColor2 * bassPulse * 0.1;
     
     // Mix portal with background
     vec3 finalRGB = mix(currentBG, portal.rgb, portal.a);

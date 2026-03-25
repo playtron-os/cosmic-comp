@@ -2,8 +2,9 @@
 
 //! Handler implementation for the voice mode protocol
 
-use crate::shell::SeatExt;
+use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::shell::grabs::SeatMoveGrabState;
+use crate::shell::{SeatExt, Shell};
 use crate::state::State;
 use crate::utils::geometry::{PointExt, RectGlobalExt, RectLocalExt, SizeExt};
 use crate::utils::prelude::OutputExt;
@@ -14,7 +15,7 @@ use smithay::desktop::space::SpaceElement;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::wayland::seat::WaylandFocus;
-use tracing::info;
+use tracing::{debug, info};
 
 impl VoiceModeHandler for State {
     fn voice_mode_state(&mut self) -> &mut VoiceModeState {
@@ -76,76 +77,73 @@ impl VoiceModeHandler for State {
 
         // Determine which receiver to use and get window geometry if attaching
         // Priority: grabbed window > focused window > default receiver
-        let (receiver_surface, window_geo) = if let Some((grabbed_surface, geo, surface_id)) =
-            &grabbed_window_info
-        {
-            // Check if grabbed window has a voice receiver
-            if self
-                .common
-                .voice_mode_state
-                .has_receiver_for_surface(grabbed_surface)
-            {
-                info!("Using grabbed window as voice receiver");
-                (
-                    Some(grabbed_surface.clone()),
-                    Some((geo.clone(), surface_id.clone())),
-                )
+        let (receiver_surface, window_geo) =
+            if let Some((grabbed_surface, geo, surface_id)) = &grabbed_window_info {
+                // Check if grabbed window has a voice receiver
+                if self
+                    .common
+                    .voice_mode_state
+                    .has_receiver_for_surface(grabbed_surface)
+                {
+                    info!("Using grabbed window as voice receiver");
+                    (
+                        Some(grabbed_surface.clone()),
+                        Some((geo.clone(), surface_id.clone())),
+                    )
+                } else if let Some(surface) = focused_surface {
+                    // Fall back to focused surface check
+                    if self
+                        .common
+                        .voice_mode_state
+                        .has_receiver_for_surface(surface)
+                    {
+                        let keyboard = seat.get_keyboard().unwrap();
+                        let geo_and_id = keyboard.current_focus().and_then(|focus| match &focus {
+                            crate::shell::focus::target::KeyboardFocusTarget::Element(mapped) => {
+                                Self::find_element_geo_across_outputs(&shell, mapped)
+                            }
+                            _ => None,
+                        });
+                        (Some(surface.clone()), geo_and_id)
+                    } else {
+                        (None, None)
+                    }
+                } else {
+                    (None, None)
+                }
             } else if let Some(surface) = focused_surface {
-                // Fall back to focused surface check
+                // No grabbed window, check focused surface
                 if self
                     .common
                     .voice_mode_state
                     .has_receiver_for_surface(surface)
                 {
-                    // Get the focused window's geometry (not grabbed)
                     let keyboard = seat.get_keyboard().unwrap();
                     let geo_and_id = keyboard.current_focus().and_then(|focus| match &focus {
                         crate::shell::focus::target::KeyboardFocusTarget::Element(mapped) => {
-                            let workspace = shell.active_space(&output)?;
-                            let local_geo = workspace.element_geometry(mapped)?;
-                            let geo = local_geo.to_global(&output).as_logical();
-                            let surface_id = mapped.active_window().wl_surface()?.id().to_string();
-                            Some((geo, surface_id))
+                            Self::find_element_geo_across_outputs(&shell, mapped)
                         }
                         _ => None,
                     });
                     (Some(surface.clone()), geo_and_id)
                 } else {
-                    (None, None)
+                    // Focused surface doesn't have a receiver, try last-focused receiver
+                    info!("Focused surface has no receiver, trying last-focused fallback");
+                    self.find_last_focused_receiver_geo(&shell, &output)
+                        .map_or((None, None), |(s, g)| (Some(s), g))
                 }
             } else {
-                (None, None)
-            }
-        } else if let Some(surface) = focused_surface {
-            // No grabbed window, check focused surface
-            if self
-                .common
-                .voice_mode_state
-                .has_receiver_for_surface(surface)
-            {
-                // Get the focused window's geometry and surface ID from the workspace
-                let keyboard = seat.get_keyboard().unwrap();
-                let geo_and_id = keyboard.current_focus().and_then(|focus| match &focus {
-                    crate::shell::focus::target::KeyboardFocusTarget::Element(mapped) => {
-                        // Get element geometry from workspace (gives position in workspace coordinates)
-                        let workspace = shell.active_space(&output)?;
-                        let local_geo = workspace.element_geometry(mapped)?;
-                        // Convert to global/logical coordinates for rendering
-                        let geo = local_geo.to_global(&output).as_logical();
-                        // Get surface ID for reliable window matching during render
-                        let surface_id = mapped.active_window().wl_surface()?.id().to_string();
-                        Some((geo, surface_id))
-                    }
-                    _ => None,
-                });
-                (Some(surface.clone()), geo_and_id)
-            } else {
-                // Focused surface doesn't have a receiver, fall back to default
-                (None, None)
-            }
+                // No focused surface, try last-focused receiver
+                info!("No focused surface, trying last-focused fallback");
+                self.find_last_focused_receiver_geo(&shell, &output)
+                    .map_or((None, None), |(s, g)| (Some(s), g))
+            };
+
+        // If still no receiver, check maximized windows as last resort
+        let (receiver_surface, window_geo) = if receiver_surface.is_some() {
+            (receiver_surface, window_geo)
         } else {
-            // No focused surface - check for maximized windows with voice receivers
-            // This handles the case where a chat window is maximized but not focused
+            // Last resort: check for maximized windows with voice receivers
             let maximized_receiver = shell.active_space(&output).and_then(|workspace| {
                 workspace.mapped().find_map(|mapped| {
                     // Check if window is maximized
@@ -219,7 +217,7 @@ impl VoiceModeHandler for State {
         } else {
             // No focused receiver, use default receiver with floating orb
             info!(
-                "Showing floating orb (using default receiver) on output: {}",
+                "No receiver found after all fallbacks - using default receiver on output: {}",
                 output.name()
             );
             // Request orb show - will start after window fade completes
@@ -232,19 +230,13 @@ impl VoiceModeHandler for State {
             OrbState::Floating
         };
 
+        self.common.voice_mode_state.set_orb_state(orb_state);
         orb_state
     }
 
     fn deactivate_voice_mode(&mut self) {
-        info!("Deactivating voice mode - sending will_stop to client");
-
-        // Send will_stop to active receiver and wait for ack
-        if self.common.voice_mode_state.send_will_stop().is_none() {
-            // No active receiver, just complete deactivation immediately
-            info!("No active receiver, completing deactivation immediately");
-            self.complete_deactivation();
-        }
-        // Otherwise, wait for ack_stop from client (or timeout)
+        info!("Deactivating voice mode - immediate dismiss");
+        self.complete_deactivation();
     }
 
     fn cancel_voice_mode(&mut self) {
@@ -260,6 +252,10 @@ impl VoiceModeHandler for State {
 
         // Start the exit sequence (orb shrinks first, then windows fade in)
         shell.exit_voice_mode();
+
+        // Update protocol state
+        drop(shell);
+        self.common.voice_mode_state.set_orb_state(OrbState::Hidden);
     }
 
     fn freeze_orb(&mut self) {
@@ -291,6 +287,29 @@ impl VoiceModeHandler for State {
 
         // Start the exit sequence (orb shrinks first, then windows fade in)
         shell.exit_voice_mode();
+
+        // Update protocol state
+        drop(shell);
+        self.common.voice_mode_state.set_orb_state(OrbState::Hidden);
+
+        // Send focus_input to default receiver and grant keyboard focus to its
+        // layer surface so the user can immediately type after voice input.
+        if let Some(surface) = self
+            .common
+            .voice_mode_state
+            .send_focus_input_to_surface_or_default(None)
+        {
+            let shell = self.common.shell.read();
+            if let Some(layer_surface) = shell.find_layer_surface_by_wl_surface(&surface) {
+                drop(shell);
+                let seat = self.common.shell.read().seats.last_active().clone();
+                let focus_target = KeyboardFocusTarget::from(layer_surface);
+                info!("Setting keyboard focus to default receiver after voice deactivation");
+                Shell::set_focus(self, Some(&focus_target), &seat, None, false);
+            } else {
+                debug!("Default receiver surface is not a layer surface, skipping focus");
+            }
+        }
     }
 
     fn check_pending_stop_timeout(&mut self) {
@@ -367,7 +386,6 @@ impl VoiceModeHandler for State {
         // Update protocol state
         drop(shell);
         self.common.voice_mode_state.set_orb_state(OrbState::Hidden);
-        self.common.voice_mode_state.reset_audio_level();
     }
 
     fn request_activate_voice_mode(&mut self, surface: &WlSurface) {
@@ -390,3 +408,74 @@ impl VoiceModeHandler for State {
 }
 
 delegate_voice_mode!(State);
+
+impl State {
+    /// Find a mapped element's geometry by searching across all outputs.
+    /// This is needed because the element may be on a different output than the pointer.
+    fn find_element_geo_across_outputs(
+        shell: &crate::shell::Shell,
+        mapped: &crate::shell::CosmicMapped,
+    ) -> Option<(
+        smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        String,
+    )> {
+        shell.outputs().find_map(|out| {
+            let workspace = shell.active_space(out)?;
+            let local_geo = workspace.element_geometry(mapped)?;
+            let geo = local_geo.to_global(out).as_logical();
+            let surface_id = mapped.active_window().wl_surface()?.id().to_string();
+            Some((geo, surface_id))
+        })
+    }
+
+    /// Try to find the last-focused voice receiver and its on-screen geometry.
+    /// Returns `Some((surface, Some((geo, id))))` when the window is mapped on any output.
+    fn find_last_focused_receiver_geo(
+        &self,
+        shell: &crate::shell::Shell,
+        _output: &smithay::output::Output,
+    ) -> Option<(
+        WlSurface,
+        Option<(
+            smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+            String,
+        )>,
+    )> {
+        let last_surface = self.common.voice_mode_state.get_last_focused_receiver()?;
+        if !self
+            .common
+            .voice_mode_state
+            .has_receiver_for_surface(&last_surface)
+        {
+            info!("Last-focused receiver surface no longer has a registered receiver");
+            return None;
+        }
+        info!(
+            "Using last-focused voice receiver (surface_id: {})",
+            last_surface.id()
+        );
+
+        // Search all outputs for the mapped window matching this surface
+        let geo_and_id = shell.outputs().find_map(|out| {
+            let workspace = shell.active_space(out)?;
+            workspace.mapped().find_map(|mapped| {
+                let active = mapped.active_window();
+                let wl = active.wl_surface()?;
+                if *wl != last_surface {
+                    return None;
+                }
+                let local_geo = workspace.element_geometry(mapped)?;
+                let geo = local_geo.to_global(out).as_logical();
+                let surface_id = wl.id().to_string();
+                Some((geo, surface_id))
+            })
+        });
+        // If we couldn't find geometry (window may be minimized), still return
+        // the surface so it can be used; activate_voice_mode will fall back to floating.
+        info!(
+            geo_found = geo_and_id.is_some(),
+            "Last-focused receiver geo search complete"
+        );
+        Some((last_surface, geo_and_id))
+    }
+}

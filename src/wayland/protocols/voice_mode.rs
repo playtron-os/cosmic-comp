@@ -133,7 +133,7 @@ pub const WILL_STOP_TIMEOUT_MS: u128 = 200;
 /// Threshold for tap vs hold detection (in milliseconds)
 /// If key is released before this duration, it's a tap (focus chat)
 /// If key is held longer, it's a hold (voice mode)
-pub const TAP_THRESHOLD_MS: u128 = 300;
+pub const TAP_THRESHOLD_MS: u128 = 250;
 
 /// State for the voice mode manager protocol
 pub struct VoiceModeState {
@@ -144,8 +144,6 @@ pub struct VoiceModeState {
     current_orb_state: Mutex<OrbState>,
     /// Currently active receiver surface
     active_receiver_surface: Mutex<Option<Weak<WlSurface>>>,
-    /// Current audio level from client (0-1000)
-    audio_level: Mutex<u32>,
     /// Serial counter for will_stop events
     serial_counter: AtomicU32,
     /// Pending stop state (waiting for ack_stop)
@@ -172,7 +170,6 @@ impl std::fmt::Debug for VoiceModeState {
                 "has_active_receiver",
                 &self.active_receiver_surface.lock().unwrap().is_some(),
             )
-            .field("audio_level", &self.audio_level.lock().unwrap())
             .field("pending_stop", &self.pending_stop.lock().unwrap())
             .finish()
     }
@@ -196,7 +193,6 @@ impl VoiceModeState {
             receivers: Mutex::new(Vec::new()),
             current_orb_state: Mutex::new(OrbState::Hidden),
             active_receiver_surface: Mutex::new(None),
-            audio_level: Mutex::new(0),
             serial_counter: AtomicU32::new(1),
             pending_stop: Mutex::new(None),
             key_press_time: Mutex::new(None),
@@ -388,7 +384,6 @@ impl VoiceModeState {
         *self.active_receiver_surface.lock().unwrap() = None;
         *self.pending_stop.lock().unwrap() = None;
         *self.activated_on_demand.lock().unwrap() = false;
-        self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
             if let Ok(surface) = surface_weak.upgrade() {
@@ -480,7 +475,6 @@ impl VoiceModeState {
         *self.active_receiver_surface.lock().unwrap() = None;
         *self.pending_stop.lock().unwrap() = None;
         *self.activated_on_demand.lock().unwrap() = false;
-        self.reset_audio_level();
 
         if let Some(surface_weak) = active_surface {
             if let Ok(surface) = surface_weak.upgrade() {
@@ -637,26 +631,6 @@ impl VoiceModeState {
         let mut receivers = self.receivers.lock().unwrap();
         receivers.retain(|r| r.resource.upgrade().is_ok() && r.surface.upgrade().is_ok());
     }
-
-    /// Get current audio level (0-1000)
-    pub fn audio_level(&self) -> u32 {
-        *self.audio_level.lock().unwrap()
-    }
-
-    /// Get current audio level as a normalized float (0.0-1.0)
-    pub fn audio_level_normalized(&self) -> f32 {
-        (*self.audio_level.lock().unwrap() as f32 / 1000.0).clamp(0.0, 1.0)
-    }
-
-    /// Set audio level (called from protocol handler)
-    fn set_audio_level(&self, level: u32) {
-        *self.audio_level.lock().unwrap() = level.min(1000);
-    }
-
-    /// Reset audio level to 0 (called when voice mode ends)
-    pub fn reset_audio_level(&self) {
-        *self.audio_level.lock().unwrap() = 0;
-    }
 }
 
 /// Handler trait for voice mode events (compositor-side control)
@@ -793,12 +767,6 @@ where
         match request {
             zcosmic_voice_mode_v1::Request::Destroy => {
                 debug!(is_default = data.is_default, "Voice receiver destroyed");
-            }
-            zcosmic_voice_mode_v1::Request::SetAudioLevel { level } => {
-                // Only accept audio level updates if voice mode is active
-                if state.voice_mode_state().is_active() {
-                    state.voice_mode_state().set_audio_level(level);
-                }
             }
             zcosmic_voice_mode_v1::Request::AckStop { serial, freeze } => {
                 let freeze = freeze != 0;

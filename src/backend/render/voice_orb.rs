@@ -6,9 +6,14 @@
 //! The orb is a soft, luminous energy sphere with pastel spectral gradient that appears
 //! when voice input mode is active.
 
-use std::{borrow::Borrow, time::Instant};
+use std::{
+    borrow::Borrow,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Instant,
+};
 
 use keyframe::{ease, functions::EaseOutCubic};
+use memmap2::Mmap;
 use smithay::{
     backend::renderer::{
         element::Kind,
@@ -19,13 +24,47 @@ use smithay::{
     },
     utils::{Logical, Point, Rectangle, Size},
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::element::AsGlowRenderer;
 use crate::wayland::protocols::voice_mode::{OrbState, VoiceState};
 
 /// Include the voice orb shader source
 pub static VOICE_ORB_SHADER: &str = include_str!("./shaders/voice_orb.frag");
+
+/// Shared-memory reader for real-time audio level data written by chatserve.
+///
+/// The file at `/run/user/$UID/agentos-voice-levels` contains a single `AtomicU64`
+/// packing two `u16` band levels (low in bits 0-15, high in bits 16-31).
+pub struct AudioLevelReader {
+    mmap: Mmap,
+}
+
+impl AudioLevelReader {
+    /// Try to open and mmap the shared audio level file.
+    /// Returns `None` if the file does not exist yet.
+    pub fn open() -> Option<Self> {
+        let uid = unsafe { libc::getuid() };
+        let path = format!("/run/user/{}/agentos-voice-levels", uid);
+        let file = std::fs::File::open(&path).ok()?;
+        let mmap = unsafe { Mmap::map(&file).ok()? };
+        if mmap.len() < 8 {
+            return None;
+        }
+        debug!(path, "Audio level shmem reader opened");
+        Some(Self { mmap })
+    }
+
+    /// Read the current low and high band levels (each 0-1000).
+    pub fn read(&self) -> (u16, u16) {
+        let ptr = self.mmap.as_ptr() as *const AtomicU64;
+        // SAFETY: mmap is page-aligned (>= 8-byte aligned) and at least 8 bytes.
+        let packed = unsafe { &*ptr }.load(Ordering::Relaxed);
+        let low = (packed & 0xFFFF) as u16;
+        let high = ((packed >> 16) & 0xFFFF) as u16;
+        (low, high)
+    }
+}
 
 /// Calculated metrics for orb positioning and scaling relative to a window
 #[derive(Debug, Clone, Copy)]
@@ -561,7 +600,6 @@ fn ease_spring_bounce(t: f32) -> f32 {
 }
 
 /// State for the voice orb rendering
-#[derive(Debug, Clone)]
 pub struct VoiceOrbState {
     /// Current orb display state
     pub orb_state: OrbState,
@@ -573,10 +611,16 @@ pub struct VoiceOrbState {
     pub position: Point<f32, Logical>,
     /// Current opacity (0.0 = transparent, 1.0 = fully visible)
     pub opacity: f32,
-    /// Current smoothed pulse intensity (0.0 to 1.0)
-    pub pulse_intensity: f32,
-    /// Target pulse intensity for smooth interpolation
-    target_pulse_intensity: f32,
+    /// Smoothed low-frequency intensity (bass-like, fast response)
+    pub low_intensity: f32,
+    /// Smoothed high-frequency intensity (treble-like, slower response)
+    pub high_intensity: f32,
+    /// Target intensity from audio level input
+    target_intensity: f32,
+    /// Target low-band intensity (from FFT shmem or single-channel fallback)
+    target_low: f32,
+    /// Target high-band intensity (from FFT shmem or single-channel fallback)
+    target_high: f32,
     /// Current animation (if any)
     pub animation: Option<VoiceOrbAnimation>,
     /// Attached window geometry (if attached)
@@ -599,6 +643,58 @@ pub struct VoiceOrbState {
     pub transition_just_completed: bool,
     /// Output name where floating orb should be rendered (set when voice mode starts)
     pub target_output: Option<String>,
+    /// Shared-memory reader for real-time FFT audio level data from chatserve
+    shmem_reader: Option<AudioLevelReader>,
+    /// When true, poll_shmem_audio_levels() will not lazily reopen the reader.
+    /// Set on hide(), cleared on show_floating()/show_attached().
+    shmem_disabled: bool,
+    /// Last time update_pulse() was called (for real delta time)
+    last_pulse_update: Instant,
+}
+
+impl std::fmt::Debug for VoiceOrbState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceOrbState")
+            .field("orb_state", &self.orb_state)
+            .field("voice_state", &self.voice_state)
+            .field("scale", &self.scale)
+            .field("low_intensity", &self.low_intensity)
+            .field("high_intensity", &self.high_intensity)
+            .field("shmem_reader", &self.shmem_reader.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for VoiceOrbState {
+    fn clone(&self) -> Self {
+        Self {
+            orb_state: self.orb_state,
+            voice_state: self.voice_state,
+            scale: self.scale,
+            position: self.position,
+            opacity: self.opacity,
+            low_intensity: self.low_intensity,
+            high_intensity: self.high_intensity,
+            target_intensity: self.target_intensity,
+            target_low: self.target_low,
+            target_high: self.target_high,
+            animation: self.animation.clone(),
+            attached_window: self.attached_window,
+            attached_surface_id: self.attached_surface_id.clone(),
+            shader_time_start: self.shader_time_start,
+            pending_show: self.pending_show,
+            pending_hide: self.pending_hide,
+            burst_scale: self.burst_scale,
+            contained_scale: self.contained_scale,
+            shrinking_from_attached: self.shrinking_from_attached,
+            transition_just_completed: self.transition_just_completed,
+            target_output: self.target_output.clone(),
+            // shmem_reader is not cloned — only the original state reads shmem
+            shmem_reader: None,
+            shmem_disabled: self.shmem_disabled,
+            last_pulse_update: self.last_pulse_update,
+        }
+    }
 }
 
 impl Default for VoiceOrbState {
@@ -609,8 +705,11 @@ impl Default for VoiceOrbState {
             scale: 0.0,
             position: Point::from((0.5, 0.5)),
             opacity: 1.0,
-            pulse_intensity: 0.0,
-            target_pulse_intensity: 0.0,
+            low_intensity: 0.0,
+            high_intensity: 0.0,
+            target_intensity: 0.0,
+            target_low: 0.0,
+            target_high: 0.0,
             animation: None,
             attached_window: None,
             attached_surface_id: None,
@@ -622,6 +721,9 @@ impl Default for VoiceOrbState {
             shrinking_from_attached: false,
             transition_just_completed: false,
             target_output: None,
+            shmem_reader: None,
+            shmem_disabled: false,
+            last_pulse_update: Instant::now(),
         }
     }
 }
@@ -662,6 +764,8 @@ impl VoiceOrbState {
     /// Start showing the orb (floating in center)
     pub fn show_floating(&mut self) {
         self.orb_state = OrbState::Floating;
+        self.shmem_disabled = false;
+        debug!("Voice orb show_floating: shmem re-enabled");
         // Start from current position/scale for smooth transitions when interrupted
         self.animation = Some(VoiceOrbAnimation::grow_in(self.scale, self.position));
         self.pending_show = false;
@@ -669,6 +773,8 @@ impl VoiceOrbState {
 
     /// Start showing the orb attached to a window (burst only, no dart)
     pub fn show_attached(&mut self) {
+        self.shmem_disabled = false;
+        debug!("Voice orb show_attached: shmem re-enabled");
         // Position and window_geo should already be set by request_show_attached
         // Start from current scale/position for smooth transitions when interrupted
         self.animation = Some(VoiceOrbAnimation::burst_only(
@@ -688,6 +794,15 @@ impl VoiceOrbState {
 
     /// Hide the orb
     pub fn hide(&mut self) {
+        // Disable shmem reads and close the reader so it gets reopened fresh
+        // next time. The writer deletes the file on drop and creates a new
+        // one on the next recording, invalidating the old mmap.
+        // shmem_disabled prevents poll_shmem_audio_levels() from lazily
+        // reopening the reader during the shrink animation.
+        self.shmem_disabled = true;
+        self.close_shmem_reader();
+        debug!("Voice orb hide: shmem disabled and reader closed");
+
         if self.orb_state != OrbState::Hidden {
             // When attached, shrink in place; when floating, shrink toward center
             let stay_in_place = self.orb_state == OrbState::Attached;
@@ -797,9 +912,8 @@ impl VoiceOrbState {
         if self.orb_state == OrbState::Floating {
             debug!("Freezing orb in place for transcription processing");
             self.orb_state = OrbState::Frozen;
-            // Stop any pulsing
-            self.pulse_intensity = 0.0;
-            self.target_pulse_intensity = 0.0;
+            // Stop pulsing — zero the target and let smoothing decay naturally
+            self.target_intensity = 0.0;
             self.voice_state = VoiceState::Idle;
         }
     }
@@ -972,37 +1086,91 @@ impl VoiceOrbState {
         )
     }
 
-    /// Update audio level for visualization (0-1000 -> 0.0-1.0)
-    pub fn set_audio_level(&mut self, level: u32) {
-        // Normalize to 0.0-1.0 range
-        let target = (level as f32 / 1000.0).clamp(0.0, 1.0);
-        // Set target for smooth interpolation (actual smoothing happens in update())
-        self.target_pulse_intensity = target;
-        // Also set voice state to recording if we have audio
-        if level > 0 {
+    /// Update audio level with separate low and high frequency band values (0-1000 each).
+    /// Used when reading from shared memory FFT data.
+    pub fn set_audio_level_dual(&mut self, low: u16, high: u16) {
+        let target_low = (low as f32 / 1000.0 * 2.5).clamp(0.0, 1.0);
+        let target_high = (high as f32 / 1000.0 * 2.5).clamp(0.0, 1.0);
+        self.target_low = target_low;
+        self.target_high = target_high;
+        // Keep target_intensity as max for compatibility
+        self.target_intensity = target_low.max(target_high);
+        if low > 0 || high > 0 {
             self.voice_state = VoiceState::Recording;
         }
     }
 
-    /// Update pulse intensity with smooth interpolation (call every frame)
-    pub fn update_pulse(&mut self) {
-        // Asymmetric smoothing: fast attack, slow decay for natural feel
-        let diff = self.target_pulse_intensity - self.pulse_intensity;
-        if diff > 0.0 {
-            // Attack: respond quickly to increases (snappy)
-            self.pulse_intensity += diff * 0.25;
-        } else {
-            // Decay: fade out slowly for smooth trail
-            self.pulse_intensity += diff * 0.08;
+    /// Try to read audio levels from shared memory (written by chatserve).
+    /// Opens the shmem file lazily on first call. Returns true if a non-zero
+    /// level was read, false otherwise.
+    pub fn poll_shmem_audio_levels(&mut self) -> bool {
+        // Don't reopen the reader after hide() — the old file is invalidated
+        if self.shmem_disabled {
+            return false;
         }
-        // Clamp to valid range
-        self.pulse_intensity = self.pulse_intensity.clamp(0.0, 1.0);
+
+        // Lazy-open the shmem reader
+        if self.shmem_reader.is_none() {
+            self.shmem_reader = AudioLevelReader::open();
+            if self.shmem_reader.is_some() {
+                debug!("poll_shmem_audio_levels: lazily opened shmem reader");
+            }
+        }
+
+        if let Some(ref reader) = self.shmem_reader {
+            let (low, high) = reader.read();
+            if low > 0 || high > 0 {
+                // Log first non-zero read for latency diagnosis
+                if self.low_intensity == 0.0 && self.high_intensity == 0.0 {
+                    info!(
+                        low,
+                        high, "[TIMING] First non-zero shmem read in compositor"
+                    );
+                }
+                self.set_audio_level_dual(low, high);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Close the shmem reader (call when voice mode ends).
+    pub fn close_shmem_reader(&mut self) {
+        self.shmem_reader = None;
+    }
+
+    /// Update intensity values with smooth interpolation.
+    /// Uses real elapsed time for frame-rate-independent smoothing.
+    /// Base 0.01 means after 1 second the residual distance is 1%,
+    /// giving a smooth ~0.5s perceived response time.
+    pub fn update_pulse(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_pulse_update).as_secs_f32();
+        self.last_pulse_update = now;
+
+        // Clamp dt to avoid jumps after long pauses (e.g. first frame)
+        let dt = dt.clamp(0.001, 0.1);
+
+        // Frame-rate-independent exponential lerp:
+        //   lerpFactor = 1.0 - pow(base, dt)
+        // Base 0.01: at 60fps → lerp ≈ 0.074/frame; at 144fps → lerp ≈ 0.031/frame
+        // Produces identical smoothing regardless of refresh rate.
+        let lerp_factor = 1.0 - (0.01_f32).powf(dt);
+
+        self.low_intensity += (self.target_low - self.low_intensity) * lerp_factor;
+        self.high_intensity += (self.target_high - self.high_intensity) * lerp_factor;
+
+        self.low_intensity = self.low_intensity.clamp(0.0, 1.0);
+        self.high_intensity = self.high_intensity.clamp(0.0, 1.0);
     }
 
     /// Reset audio level (called when voice mode ends)
     pub fn reset_audio_level(&mut self) {
-        self.pulse_intensity = 0.0;
-        self.target_pulse_intensity = 0.0;
+        // Don't zero out the smoothed values — let them decay naturally via
+        // update_pulse() toward target 0. Just zero the target.
+        self.target_intensity = 0.0;
+        self.target_low = 0.0;
+        self.target_high = 0.0;
         self.voice_state = VoiceState::Idle;
     }
 
@@ -1094,13 +1262,15 @@ impl VoiceOrbShader {
             &[
                 UniformName::new("time", UniformType::_1f),
                 UniformName::new("scale", UniformType::_1f),
-                UniformName::new("pulse", UniformType::_1f),
+                UniformName::new("iLowIntensity", UniformType::_1f),
+                UniformName::new("iHighIntensity", UniformType::_1f),
                 UniformName::new("attached", UniformType::_1f),
                 UniformName::new("target_center", UniformType::_2f),
                 UniformName::new("morph_progress", UniformType::_1f),
                 UniformName::new("cover_scale", UniformType::_1f),
                 UniformName::new("window_aspect", UniformType::_1f),
                 UniformName::new("border_radius", UniformType::_1f),
+                UniformName::new("viewport_scale", UniformType::_1f),
             ],
         )?;
 
@@ -1159,77 +1329,87 @@ impl VoiceOrbShader {
         let effective_window_geo = window_geo_override.or(orb_state.attached_window);
 
         // Calculate the orb geometry based on state
-        let (geo, orb_scale_in_shader, position_override, effective_scale) = if in_burst_phase {
-            // In burst phase: render clipped to window bounds
-            // The shader will draw an orb that extends beyond the window
-            // but the element geometry clips it
-            if let Some(window_geo) = effective_window_geo {
-                // Calculate correct burst_scale for current window geometry
-                // This handles dynamic window resizing
-                let correct_burst_scale =
-                    OrbWindowMetrics::burst_scale_for_window(window_geo, base_orb_size);
+        let (geo, orb_scale_in_shader, position_override, effective_scale, viewport_scale) =
+            if in_burst_phase {
+                // In burst phase: render clipped to window bounds
+                // The shader will draw an orb that extends beyond the window
+                // but the element geometry clips it
+                if let Some(window_geo) = effective_window_geo {
+                    // Calculate correct burst_scale for current window geometry
+                    // This handles dynamic window resizing
+                    let correct_burst_scale =
+                        OrbWindowMetrics::burst_scale_for_window(window_geo, base_orb_size);
 
-                // If we're at or near burst scale (fully expanded), use the corrected burst scale
-                // Otherwise, we're animating and should use the stored scale proportionally
-                let effective_scale = if orb_state.animation.is_none()
-                    && (orb_state.scale - orb_state.burst_scale).abs() < 0.01
-                {
-                    // Fully burst - use the correct burst scale for current window
-                    correct_burst_scale
-                } else {
-                    // Animating - interpolate between 0 and correct burst scale
-                    // based on how far we are in the animation (0 to burst_scale)
-                    let progress = if orb_state.burst_scale > 0.0 {
-                        orb_state.scale / orb_state.burst_scale
+                    // If we're at or near burst scale (fully expanded), use the corrected burst scale
+                    // Otherwise, we're animating and should use the stored scale proportionally
+                    let effective_scale = if orb_state.animation.is_none()
+                        && (orb_state.scale - orb_state.burst_scale).abs() < 0.01
+                    {
+                        // Fully burst - use the correct burst scale for current window
+                        correct_burst_scale
                     } else {
-                        0.0
+                        // Animating - interpolate between 0 and correct burst scale
+                        // based on how far we are in the animation (0 to burst_scale)
+                        let progress = if orb_state.burst_scale > 0.0 {
+                            orb_state.scale / orb_state.burst_scale
+                        } else {
+                            0.0
+                        };
+                        correct_burst_scale * progress
                     };
-                    correct_burst_scale * progress
-                };
 
-                debug!(
-                    "Voice orb burst phase: window_geo={:?}, scale={}, position={:?}",
-                    window_geo, effective_scale, orb_state.position
-                );
+                    debug!(
+                        "Voice orb burst phase: window_geo={:?}, scale={}, position={:?}",
+                        window_geo, effective_scale, orb_state.position
+                    );
 
-                // Use window geometry as render bounds (clipping)
-                // Calculate how large the orb appears relative to window
-                let orb_diameter = base_orb_size * effective_scale;
-                // Shader uses max(width, height) for normalization, so scale relative to that
-                let window_max = window_geo.size.w.max(window_geo.size.h) as f32;
+                    // Use window geometry as render bounds (clipping)
+                    // Calculate how large the orb appears relative to window
+                    let orb_diameter = base_orb_size * effective_scale;
+                    // Shader uses max(width, height) for normalization, so scale relative to that
+                    let window_max = window_geo.size.w.max(window_geo.size.h) as f32;
 
-                // Scale factor: how much bigger is the orb than the window's larger dimension?
-                // This tells the shader to draw the orb larger than the render area
-                let scale_in_shader = orb_diameter / window_max;
+                    // Scale factor: how much bigger is the orb than the window's larger dimension?
+                    // This tells the shader to draw the orb larger than the render area
+                    let scale_in_shader = orb_diameter / window_max;
 
-                // Calculate normalized position from actual window geometry
-                let pos = Point::from((
-                    (window_geo.loc.x as f32 + window_geo.size.w as f32 / 2.0)
-                        / output_geo.size.w as f32,
-                    (window_geo.loc.y as f32 + window_geo.size.h as f32 / 2.0)
-                        / output_geo.size.h as f32,
-                ));
+                    // Calculate normalized position from actual window geometry
+                    let pos = Point::from((
+                        (window_geo.loc.x as f32 + window_geo.size.w as f32 / 2.0)
+                            / output_geo.size.w as f32,
+                        (window_geo.loc.y as f32 + window_geo.size.h as f32 / 2.0)
+                            / output_geo.size.h as f32,
+                    ));
 
-                (window_geo, scale_in_shader, Some(pos), effective_scale)
+                    (
+                        window_geo,
+                        scale_in_shader,
+                        Some(pos),
+                        effective_scale,
+                        1.0f32,
+                    )
+                } else {
+                    return None;
+                }
             } else {
-                return None;
-            }
-        } else {
-            // Floating or darting: render as normal orb
-            // Note: Use output-local coordinates (0,0 origin) for element positioning
-            // The output_geo.loc is the global position but elements render in local space
-            let orb_size = (base_orb_size * orb_state.scale) as i32;
-            let render_size = (orb_size as f32 * 1.5) as i32; // Extra space for glow
-            let center_x = (orb_state.position.x * output_geo.size.w as f32) as i32;
-            let center_y = (orb_state.position.y * output_geo.size.h as f32) as i32;
+                // Floating or darting: render as normal orb
+                // Note: Use output-local coordinates (0,0 origin) for element positioning
+                // The output_geo.loc is the global position but elements render in local space
+                let orb_size = (base_orb_size * orb_state.scale) as i32;
+                let render_size = (orb_size as f32 * 2.0) as i32; // Extra space for glow/halo at max audio
+                let center_x = (orb_state.position.x * output_geo.size.w as f32) as i32;
+                let center_y = (orb_state.position.y * output_geo.size.h as f32) as i32;
 
-            let geo = Rectangle::new(
-                Point::from((center_x - render_size / 2, center_y - render_size / 2)),
-                Size::from((render_size, render_size)),
-            );
-            // In floating mode, orb scale in shader is 1.0 (normal size)
-            (geo, 1.0f32, None, orb_state.scale)
-        };
+                let geo = Rectangle::new(
+                    Point::from((center_x - render_size / 2, center_y - render_size / 2)),
+                    Size::from((render_size, render_size)),
+                );
+                // viewport_scale compensates for the larger render area so the orb
+                // stays the same visual size as with 1.5x (the original design ratio).
+                let viewport_scale = render_size as f32 / (orb_size as f32 * 1.5);
+                // In floating mode, orb scale in shader is 1.0 (normal size)
+                (geo, 1.0f32, None, orb_state.scale, viewport_scale)
+            };
 
         // Use position override (from actual window geometry) if available
         let position = position_override.unwrap_or(orb_state.position);
@@ -1237,11 +1417,10 @@ impl VoiceOrbShader {
         // Time for animation
         let time = orb_state.shader_time();
 
-        // Pulse based on voice state
-        let pulse = match orb_state.voice_state {
-            VoiceState::Recording => orb_state.pulse_intensity,
-            VoiceState::Idle => 0.0,
-        };
+        // Intensities are already smoothed by update_pulse() — use them directly.
+        // No hard gate on voice_state; the smoothing handles fade-in/out naturally.
+        let low_intensity = orb_state.low_intensity;
+        let high_intensity = orb_state.high_intensity;
 
         // Window aspect ratio and border radius for proper orb rendering when clipped
         let (window_aspect, is_attached, effective_border_radius) = if in_burst_phase {
@@ -1268,13 +1447,15 @@ impl VoiceOrbShader {
             vec![
                 Uniform::new("time", time),
                 Uniform::new("scale", effective_scale),
-                Uniform::new("pulse", pulse),
+                Uniform::new("iLowIntensity", low_intensity),
+                Uniform::new("iHighIntensity", high_intensity),
                 Uniform::new("attached", is_attached),
                 Uniform::new("target_center", [position.x, position.y]),
                 Uniform::new("morph_progress", 0.0f32), // Deprecated, kept for compatibility
                 Uniform::new("cover_scale", orb_scale_in_shader),
                 Uniform::new("window_aspect", window_aspect),
                 Uniform::new("border_radius", effective_border_radius),
+                Uniform::new("viewport_scale", viewport_scale),
             ],
             Kind::Unspecified,
         );

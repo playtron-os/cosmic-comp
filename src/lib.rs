@@ -177,11 +177,10 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
             state.check_pending_stop_timeout();
         }
 
-        // Sync audio level from voice mode protocol to orb renderer
-        let audio_level = state.common.voice_mode_state.audio_level();
+        // Poll audio levels from shared memory
         let (clients, transition_completed) = {
             let mut shell = state.common.shell.write();
-            shell.voice_orb_state.set_audio_level(audio_level);
+            shell.voice_orb_state.poll_shmem_audio_levels();
             let transition_completed = shell.voice_orb_state.transition_just_completed;
             (shell.update_animations(), transition_completed)
         };
@@ -193,7 +192,12 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                 .common
                 .voice_mode_state
                 .set_orb_state(OrbState::Hidden);
-            state.common.voice_mode_state.reset_audio_level();
+            state
+                .common
+                .shell
+                .write()
+                .voice_orb_state
+                .close_shmem_reader();
         }
 
         {

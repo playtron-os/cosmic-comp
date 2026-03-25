@@ -872,6 +872,7 @@ dependencies = [
  "libsystemd",
  "log-panics",
  "logind-zbus",
+ "memmap2",
  "ordered-float",
  "parking_lot 0.12.5",
  "png 0.18.1",
