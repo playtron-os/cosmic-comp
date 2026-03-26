@@ -595,7 +595,7 @@ fn layer_surfaces<'a>(
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id();
         let namespace = s.namespace();
-        let (visible, mut alpha) =
+        let (mut visible, mut alpha) =
             home_visibility.surface_visibility(&surface_id, Some(layer), Some(&namespace));
 
         // Apply layer fade-in alpha if this surface is still fading in
@@ -608,11 +608,23 @@ fn layer_surfaces<'a>(
                 false
             };
 
-        // Compute blur alpha: same as surface alpha for fade-in (both fade together),
+        // Apply layer fade-out alpha if this surface is fading out.
+        // During fade-out the surface is still visible (not yet in hidden_surfaces)
+        // but with decreasing alpha.
+        let is_fading_out =
+            if let Some(&fade_alpha) = home_visibility.layer_fade_out_alphas.get(&surface_id) {
+                visible = true;
+                alpha = fade_alpha;
+                true
+            } else {
+                false
+            };
+
+        // Compute blur alpha: same as surface alpha for fade-in/out (both fade together),
         // but squared during home visibility animation for a softer blur transition
-        let blur_alpha = if is_fading_in {
+        let blur_alpha = if is_fading_in || is_fading_out {
             let result = alpha;
-            tracing::debug!(?surface_id, blur_alpha = ?result, "layer_surfaces: blur_alpha during fade-in");
+            tracing::debug!(?surface_id, blur_alpha = ?result, "layer_surfaces: blur_alpha during fade");
             result
         } else {
             let is_animating = alpha < 1.0;

@@ -965,6 +965,8 @@ pub struct HomeVisibilityContext {
     pub voice_mode_layer_alpha: f32,
     /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
     pub layer_fade_in_alphas: std::collections::HashMap<ObjectId, f32>,
+    /// Layer surfaces currently fading out (surface ObjectId -> current alpha 1.0-0.0)
+    pub layer_fade_out_alphas: std::collections::HashMap<ObjectId, f32>,
 }
 
 impl HomeVisibilityContext {
@@ -978,6 +980,7 @@ impl HomeVisibilityContext {
             voice_mode_alpha: shell.voice_mode_window_alpha(),
             voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
             layer_fade_in_alphas: shell.layer_fade_in_alphas(),
+            layer_fade_out_alphas: shell.layer_fade_out_alphas(),
         }
     }
 

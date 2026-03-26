@@ -125,6 +125,7 @@ use self::{
 
 const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
+const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(200);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
 const GESTURE_VELOCITY_THRESHOLD: f64 = 0.02;
@@ -611,6 +612,10 @@ pub struct Shell {
     /// Layer surfaces waiting for a buffer commit before starting their fade-in.
     /// Moved to `layer_fade_in` when the surface next commits a buffer.
     pending_layer_fade_in: std::collections::HashSet<ObjectId>,
+    /// Layer surfaces currently fading out (surface ObjectId -> start instant).
+    /// While fading out, the surface remains visible with decreasing alpha.
+    /// When the animation completes, moved to `hidden_surfaces`.
+    layer_fade_out: std::collections::HashMap<ObjectId, Instant>,
 
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
@@ -1952,6 +1957,7 @@ impl Shell {
             // Layer surface fade-in tracking
             layer_fade_in: std::collections::HashMap::new(),
             pending_layer_fade_in: std::collections::HashSet::new(),
+            layer_fade_out: std::collections::HashMap::new(),
 
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),
@@ -2672,6 +2678,7 @@ impl Shell {
                 .any(|s| s.visibility.is_animating())
             || !self.layer_fade_in.is_empty()
             || !self.pending_layer_fade_in.is_empty()
+            || !self.layer_fade_out.is_empty()
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -2698,6 +2705,17 @@ impl Shell {
         self.update_auto_hide_animations();
         // Clean up completed layer surface fade-ins
         self.cleanup_layer_fade_ins();
+        // Complete layer surface fade-outs (moves to hidden_surfaces)
+        let completed_fade_outs = self.cleanup_layer_fade_outs();
+        if !completed_fade_outs.is_empty() {
+            // Update layer blur cache for outputs with completed fade-outs
+            for output in self.outputs().cloned().collect::<Vec<_>>() {
+                crate::wayland::handlers::layer_shell::update_layer_blur_state(
+                    &output,
+                    self.hidden_surfaces(),
+                );
+            }
+        }
         clients
     }
 
@@ -3384,11 +3402,17 @@ impl Shell {
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
     pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
         if hidden {
-            self.hidden_surfaces.insert(surface_id.clone());
-            // Cancel any pending fade-in if we're hiding again
+            // Start fade-out animation instead of immediately hiding.
+            // The surface will remain visible with decreasing alpha until
+            // the animation completes, then moved to hidden_surfaces.
             self.pending_layer_fade_in.remove(&surface_id);
+            self.layer_fade_in.remove(&surface_id);
+            self.layer_fade_out
+                .entry(surface_id.clone())
+                .or_insert_with(Instant::now);
         } else {
             let was_hidden = self.hidden_surfaces.remove(&surface_id);
+            let was_fading_out = self.layer_fade_out.remove(&surface_id);
             // Defer blur fade-in until the surface commits its first buffer
             // after becoming visible. This prevents the blur animating over
             // stale/empty content while the client renders its first frame.
@@ -3398,13 +3422,16 @@ impl Shell {
                     "set_surface_hidden: deferring fade-in until next buffer commit"
                 );
                 self.pending_layer_fade_in.insert(surface_id);
+            } else if was_fading_out.is_some() {
+                // Was still fading out — restart fade-in from current position
+                self.layer_fade_in.insert(surface_id, Instant::now());
             }
         }
     }
 
     /// Check if a surface is explicitly hidden
     pub fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {
-        self.hidden_surfaces.contains(&surface_id)
+        self.hidden_surfaces.contains(surface_id)
     }
 
     /// Remove a surface from hidden tracking (called when surface is destroyed)
@@ -3462,10 +3489,57 @@ impl Shell {
         });
     }
 
+    /// Get the map of layer surfaces currently fading out with their alpha values.
+    /// Alpha goes from 1.0 → 0.0 over LAYER_FADE_OUT_DURATION.
+    pub fn layer_fade_out_alphas(&self) -> std::collections::HashMap<ObjectId, f32> {
+        let now = Instant::now();
+        let result: std::collections::HashMap<ObjectId, f32> = self
+            .layer_fade_out
+            .iter()
+            .filter_map(|(surface_id, start)| {
+                let elapsed = now.saturating_duration_since(*start);
+                let progress =
+                    (elapsed.as_secs_f32() / LAYER_FADE_OUT_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                if progress >= 1.0 {
+                    None
+                } else {
+                    // Ease-in cubic (decelerating fade)
+                    let eased = 1.0 - progress.powi(3);
+                    Some((surface_id.clone(), eased))
+                }
+            })
+            .collect();
+        result
+    }
+
+    /// Complete fade-outs that have finished: move to hidden_surfaces
+    fn cleanup_layer_fade_outs(&mut self) -> Vec<ObjectId> {
+        let now = Instant::now();
+        let mut completed = Vec::new();
+        self.layer_fade_out.retain(|surface_id, start| {
+            let elapsed = now.saturating_duration_since(*start);
+            if elapsed >= LAYER_FADE_OUT_DURATION {
+                completed.push(surface_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for surface_id in &completed {
+            self.hidden_surfaces.insert(surface_id.clone());
+        }
+        completed
+    }
+
     /// Remove a surface from fade-in tracking (called when surface is destroyed)
     pub fn remove_layer_fade_in(&mut self, surface_id: &ObjectId) {
         self.layer_fade_in.remove(surface_id);
         self.pending_layer_fade_in.remove(surface_id);
+    }
+
+    /// Remove a surface from fade-out tracking (called when surface is destroyed)
+    pub fn remove_layer_fade_out(&mut self, surface_id: &ObjectId) {
+        self.layer_fade_out.remove(surface_id);
     }
 
     /// Activate a pending fade-in for a surface.
