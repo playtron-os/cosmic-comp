@@ -1,3 +1,17 @@
+# [1.11.0](https://github.com/playtron-os/cosmic-comp/compare/v1.10.0...v1.11.0) (2026-03-26)
+
+
+### Bug Fixes
+
+* allow layer shell surfaces to fade out ([5045562](https://github.com/playtron-os/cosmic-comp/commit/50455623500579e874e0f73960e640a7c7804c48))
+* disable blur shader border for layer surfaces with client corner radius ([e09cd9b](https://github.com/playtron-os/cosmic-comp/commit/e09cd9b803457bbf8123e815f15616e2013a1b53))
+* reduce fade out duration for surface layer ([d6dc8f8](https://github.com/playtron-os/cosmic-comp/commit/d6dc8f866b78d7b8c8bd9b909e012300f3da5860))
+
+
+### Features
+
+* update voice orb and fix animation issues with voice input, and read audio level via shared memory buffer ([167f460](https://github.com/playtron-os/cosmic-comp/commit/167f4606b047e041a0a9088fc6702d35af414a2c))
+
 # [1.10.0](https://github.com/playtron-os/cosmic-comp/compare/v1.9.0...v1.10.0) (2026-03-19)
 
 
