@@ -909,6 +909,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config"
 version = "1.0.0"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "atomicwrites",
  "calloop 0.14.4",
@@ -929,6 +930,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config-derive"
 version = "1.0.0"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -1016,7 +1018,7 @@ dependencies = [
  "rangemap",
  "rustc-hash 2.1.1",
  "self_cell",
- "skrifa 0.40.0",
+ "skrifa",
  "smol_str 0.3.6",
  "swash",
  "sys-locale",
@@ -1029,6 +1031,7 @@ dependencies = [
 [[package]]
 name = "cosmic-theme"
 version = "1.0.0"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "almost",
  "cosmic-config",
@@ -1735,15 +1738,6 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "font-types"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39a654f404bbcbd48ea58c617c2993ee91d1cb63727a37bf2323a4edeed1b8c5"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
-name = "font-types"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73829a7b5c91198af28a99159b7ae4afbb252fb906159ff7f189f3a2ceaa3df2"
@@ -2181,7 +2175,7 @@ dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
  "core_maths",
- "read-fonts 0.37.0",
+ "read-fonts",
  "smallvec",
 ]
 
@@ -2369,6 +2363,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "dnd",
  "iced_core",
@@ -2384,6 +2379,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -2406,6 +2402,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "futures",
  "iced_core",
@@ -2430,6 +2427,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
@@ -2451,6 +2449,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2462,6 +2461,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "bytes",
  "dnd",
@@ -2475,6 +2475,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -2490,6 +2491,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.11.0",
@@ -2520,6 +2522,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.0-dev"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "dnd",
  "iced_renderer",
@@ -3000,6 +3003,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 [[package]]
 name = "libcosmic"
 version = "1.0.0"
+source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
 dependencies = [
  "apply",
  "auto_enums",
@@ -4500,23 +4504,13 @@ checksum = "3b42e27ef78c35d3998403c1d26f3efd9e135d3e5121b0a4845cc5cc27547f4f"
 
 [[package]]
 name = "read-fonts"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6717cf23b488adf64b9d711329542ba34de147df262370221940dfabc2c91358"
-dependencies = [
- "bytemuck",
- "font-types 0.10.1",
-]
-
-[[package]]
-name = "read-fonts"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
 dependencies = [
  "bytemuck",
  "core_maths",
- "font-types 0.11.1",
+ "font-types",
 ]
 
 [[package]]
@@ -5059,22 +5053,12 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "skrifa"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c31071dedf532758ecf3fed987cdb4bd9509f900e026ab684b4ecb81ea49841"
-dependencies = [
- "bytemuck",
- "read-fonts 0.35.0",
-]
-
-[[package]]
-name = "skrifa"
 version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
 dependencies = [
  "bytemuck",
- "read-fonts 0.37.0",
+ "read-fonts",
 ]
 
 [[package]]
@@ -5353,11 +5337,11 @@ dependencies = [
 
 [[package]]
 name = "swash"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47846491253e976bdd07d0f9cc24b7daf24720d11309302ccbbc6e6b6e53550a"
+checksum = "842f3cd369c2ba38966204f983eaa5e54a8e84a7d7159ed36ade2b6c335aae64"
 dependencies = [
- "skrifa 0.37.0",
+ "skrifa",
  "yazi",
  "zeno",
 ]
@@ -7359,7 +7343,3 @@ dependencies = [
  "syn 2.0.117",
  "winnow 0.7.15",
 ]
-
-[[patch.unused]]
-name = "iced_winit"
-version = "0.14.0-dev"
