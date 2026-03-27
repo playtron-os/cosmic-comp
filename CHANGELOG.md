@@ -1,3 +1,11 @@
+## [1.11.1](https://github.com/playtron-os/cosmic-comp/compare/v1.11.0...v1.11.1) (2026-03-27)
+
+
+### Bug Fixes
+
+* remove local deps from cargo ([468896a](https://github.com/playtron-os/cosmic-comp/commit/468896a07c53ca8e9ad001828b61479a44830b08))
+* unpin libcosmic versions ([ec13b0b](https://github.com/playtron-os/cosmic-comp/commit/ec13b0bc8ccbfc10116cacbd09262c7c1dade10d))
+
 # [1.11.0](https://github.com/playtron-os/cosmic-comp/compare/v1.10.0...v1.11.0) (2026-03-26)
 
 
