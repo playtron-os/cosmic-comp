@@ -180,6 +180,9 @@ pub struct SurfaceThreadState {
 
     /// Per-output frame profiler for performance analysis.
     frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler,
+
+    /// Count of consecutive render failures for backoff calculation.
+    render_failure_count: u32,
 }
 
 pub type GbmDrmOutput = DrmOutput<
@@ -573,6 +576,7 @@ fn surface_thread(
         sequence_delta_plot_name,
 
         frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler::new(&name),
+        render_failure_count: 0,
     };
 
     let signal = event_loop.get_signal();
@@ -1705,8 +1709,35 @@ impl SurfaceThreadState {
             .insert_source(timer, move |_time, _, state| {
                 if let Err(err) = state.redraw(estimated_presentation) {
                     let name = state.output.name();
-                    warn!(?name, "Failed to submit rendering: {:?}", err);
-                    state.queue_redraw(true);
+                    state.render_failure_count = state.render_failure_count.saturating_add(1);
+                    warn!(
+                        ?name,
+                        failure_count = state.render_failure_count,
+                        "Failed to submit rendering: {:?}",
+                        err
+                    );
+                    // Only retry if the surface is still active.
+                    // Use exponential backoff to avoid busy-looping when GPU is stalled
+                    // or experiencing contention.
+                    if state.active.load(Ordering::SeqCst) {
+                        // Cap backoff at ~500ms to stay responsive
+                        let backoff_ms = (16u64 << state.render_failure_count.min(5)).min(500);
+                        let backoff_timer = Timer::from_duration(Duration::from_millis(backoff_ms));
+                        if let Ok(token) = state.loop_handle.insert_source(
+                            backoff_timer,
+                            move |_time, _, state| {
+                                state.queue_redraw(true);
+                                TimeoutAction::Drop
+                            },
+                        ) {
+                            // Store the backoff timer if we need to track it
+                            // For now just let it fire
+                            let _ = token;
+                        }
+                    }
+                } else {
+                    // Reset failure count on success
+                    state.render_failure_count = 0;
                 }
                 TimeoutAction::Drop
             })
@@ -2188,12 +2219,24 @@ impl SurfaceThreadState {
                                 .reset();
                             frame.fail(FailureReason::Unknown);
                         }
+                        // Cleanup texture cache even on error to prevent dmabuf leaks
+                        if let Ok(devices) = self.api.devices_mut() {
+                            for device in devices {
+                                let _ = device.renderer_mut().cleanup_texture_cache();
+                            }
+                        }
                         return Err(err).with_context(|| "Failed to submit result for display");
                     }
                 };
             }
             Err(err) => {
                 compositor.reset_buffers();
+                // Cleanup texture cache even on error to prevent dmabuf leaks
+                if let Ok(devices) = self.api.devices_mut() {
+                    for device in devices {
+                        let _ = device.renderer_mut().cleanup_texture_cache();
+                    }
+                }
                 anyhow::bail!("Rendering failed: {}", err);
             }
         }
