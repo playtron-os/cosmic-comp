@@ -926,27 +926,32 @@ impl XwmHandler for State {
         _reorder: Option<Reorder>,
     ) {
         // We only allow floating X11 windows to resize themselves. Nothing else
-        let shell = self.common.shell.read();
+        // Exception: X11 transient children can also reposition themselves (to follow parent).
+        let mut shell = self.common.shell.write();
 
         // TODO: Fullscreen
         if let Some(mapped) = shell
             .element_for_surface(&window)
             .filter(|mapped| !mapped.is_minimized())
+            .cloned()
         {
-            let current_geo = if let Some(workspace) = shell.space_for(mapped) {
+            let is_transient = window.is_transient_for().is_some();
+
+            // Find current geometry only for floating windows
+            let current_geo = if let Some(workspace) = shell.space_for(&mapped) {
                 workspace
-                    .element_geometry(mapped)
+                    .element_geometry(&mapped)
                     .filter(|_| workspace.is_floating(&window))
                     .map(|geo| geo.to_global(workspace.output()))
             } else if let Some((output, set)) = shell
                 .workspaces
                 .sets
                 .iter()
-                .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == mapped))
+                .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &mapped))
             {
                 Some(
                     set.sticky_layer
-                        .element_geometry(mapped)
+                        .element_geometry(&mapped)
                         .unwrap()
                         .to_global(output),
                 )
@@ -956,15 +961,48 @@ impl XwmHandler for State {
 
             if let Some(current_geo) = current_geo {
                 let ssd_height = mapped.ssd_height(false).unwrap_or(0);
-                mapped.set_geometry(Rectangle::new(
-                    current_geo.loc,
-                    (
-                        w.map(|w| w as i32).unwrap_or(current_geo.size.w),
-                        h.map(|h| h as i32 + ssd_height)
-                            .unwrap_or(current_geo.size.h),
-                    )
-                        .into(),
-                ))
+                // For transient children, also allow repositioning
+                let new_loc: Point<i32, Global> = if is_transient && (x.is_some() || y.is_some()) {
+                    Point::from((
+                        x.unwrap_or(current_geo.loc.x),
+                        y.unwrap_or(current_geo.loc.y),
+                    ))
+                } else {
+                    current_geo.loc
+                };
+                let new_size: Size<i32, Global> = (
+                    w.map(|w| w as i32).unwrap_or(current_geo.size.w),
+                    h.map(|h| h as i32 + ssd_height)
+                        .unwrap_or(current_geo.size.h),
+                )
+                    .into();
+
+                let new_geo = Rectangle::new(new_loc, new_size);
+                mapped.set_geometry(new_geo);
+
+                // If the position changed, also update the floating space mapping
+                // so the window actually renders at the new position.
+                if new_loc != current_geo.loc {
+                    if let Some(workspace) = shell.space_for_mut(&mapped) {
+                        let output = workspace.output.clone();
+                        let local_pos = new_loc.to_local(&output);
+                        workspace.floating_layer.space.map_element(
+                            mapped,
+                            local_pos.as_logical(),
+                            true,
+                        );
+                    } else if let Some((output, set)) = shell
+                        .workspaces
+                        .sets
+                        .iter_mut()
+                        .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &mapped))
+                    {
+                        let local_pos = new_loc.to_local(output);
+                        set.sticky_layer
+                            .space
+                            .map_element(mapped, local_pos.as_logical(), true);
+                    }
+                }
             } else {
                 let _ = window.configure(None); // ack and force old state
             }

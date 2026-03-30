@@ -2504,6 +2504,10 @@ impl FloatingLayout {
         }
     }
 
+    pub fn remove_animation(&mut self, mapped: &CosmicMapped) {
+        let _ = self.animations.remove(mapped);
+    }
+
     pub fn animations_going(&self) -> bool {
         self.dirty.swap(false, Ordering::SeqCst) || !self.animations.is_empty()
     }

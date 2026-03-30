@@ -504,24 +504,35 @@ fn raise_with_children(floating_layer: &mut FloatingLayout, focused: &CosmicMapp
 
     if floating_layer.mapped().any(|m| m == focused) {
         floating_layer.space.raise_element(focused, true);
+        // Get the focused window's X11 window ID for transient_for matching
+        let focused_x11_window_id = focused.active_window().x11_surface().map(|x| x.window_id());
         for element in floating_layer
             .space
             .elements()
             .filter(|elem| elem != &focused)
             .filter(|elem| {
-                let parent = elem
+                // Check Wayland xdg_toplevel parent
+                let wayland_parent = elem
                     .active_window()
                     .0
                     .toplevel()
                     .and_then(|toplevel| toplevel.parent());
-                parent.is_some_and(|parent| {
+                let is_wayland_child = wayland_parent.is_some_and(|parent| {
                     focused
                         .active_window()
                         .wl_surface()
                         .map(Cow::into_owned)
                         .map(|focused| parent == focused)
                         .unwrap_or(false)
-                })
+                });
+                // Check X11 WM_TRANSIENT_FOR
+                let is_x11_child = focused_x11_window_id.is_some_and(|parent_id| {
+                    elem.active_window()
+                        .x11_surface()
+                        .and_then(|x| x.is_transient_for())
+                        .is_some_and(|tid| tid == parent_id)
+                });
+                is_wayland_child || is_x11_child
             })
             .cloned()
             .collect::<Vec<_>>()

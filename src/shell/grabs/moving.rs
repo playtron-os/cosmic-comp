@@ -80,6 +80,11 @@ pub struct MoveGrabState {
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
+    /// X11 transient children that follow the parent during drag.
+    /// Each entry is (child_mapped, offset_from_parent).
+    /// Children are unmapped from the workspace during drag and rendered
+    /// here at parent_visual_pos + offset.
+    transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
 }
 
 impl MoveGrabState {
@@ -413,6 +418,24 @@ impl MoveGrabState {
                 }
             });
 
+        // Render X11 transient children at fixed offsets from parent
+        let transient_child_elements: Vec<CosmicMappedRenderElement<R>> = self
+            .transient_children
+            .iter()
+            .flat_map(|(child, offset)| {
+                let child_render_location = render_location + *offset;
+                child.render_elements::<R, CosmicMappedRenderElement<R>>(
+                    renderer,
+                    (child_render_location - child.geometry().loc)
+                        .to_physical_precise_round(output_scale),
+                    None,
+                    output_scale,
+                    alpha,
+                    Some(false),
+                )
+            })
+            .collect();
+
         // Embedded windows at the front (top z-order), then rest of the elements
         embedded_elements
             .into_iter()
@@ -427,6 +450,7 @@ impl MoveGrabState {
                             1.0,
                         )
                     })
+                    .chain(transient_child_elements)
                     .chain(p_elements)
                     .chain(focus_element)
                     .chain(
@@ -569,6 +593,7 @@ pub struct MoveGrab {
     previous: ManagedLayer,
     release: ReleaseMode,
     edge_snap_threshold: f64,
+    initial_window_location: Point<i32, Global>,
     // SAFETY: This is only used on drop which will always be on the main thread
     evlh: NotSend<LoopHandle<'static, State>>,
 }
@@ -596,6 +621,7 @@ impl MoveGrab {
                 .unwrap()
                 .tiling_layer
                 .cleanup_drag();
+
             self.cursor_output = current_output.clone();
         }
 
@@ -949,6 +975,7 @@ impl MoveGrab {
         previous_layer: ManagedLayer,
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
+        transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
     ) -> MoveGrab {
         let mut outputs = HashSet::new();
         outputs.insert(cursor_output.clone());
@@ -967,6 +994,7 @@ impl MoveGrab {
             previous: previous_layer,
             location: start_data.location(),
             cursor_output: cursor_output.clone(),
+            transient_children,
         };
 
         // Mark this window as grabbed so cleanup_orphaned_embeds won't orphan
@@ -1000,6 +1028,7 @@ impl MoveGrab {
             previous: previous_layer,
             release,
             edge_snap_threshold,
+            initial_window_location,
             evlh: NotSend(evlh),
         }
     }
@@ -1026,11 +1055,13 @@ impl Drop for MoveGrab {
         let window = self.window.clone();
         let is_touch_grab = matches!(self.start_data, GrabStartData::Touch(_));
         let cursor_output = self.cursor_output.clone();
+        let _initial_window_location = self.initial_window_location;
 
         let _ = self.evlh.0.insert_idle(move |state| {
-            let (position, parent_surface_id): (
+            let (position, parent_surface_id, _transient_children): (
                 Option<(CosmicMapped, Point<i32, Global>)>,
                 Option<String>,
+                Vec<(CosmicMapped, Point<i32, Logical>)>,
             ) = if let Some(grab_state) = seat
                 .user_data()
                 .get::<SeatMoveGrabState>()
@@ -1045,6 +1076,8 @@ impl Drop for MoveGrab {
                 if let Some(ref surface_id) = parent_surface_id {
                     unmark_parent_grabbed(surface_id);
                 }
+
+                let tc = grab_state.transient_children.clone();
 
                 let position = if grab_state.window.alive() {
                     let window_location =
@@ -1144,6 +1177,15 @@ impl Drop for MoveGrab {
                     // Re-evaluate auto-hide — window was dropped on a
                     // (possibly different) output after a drag.
                     shell.refresh_auto_hide();
+
+                    // Remap X11 transient children at the actual final parent position
+                    // (not the raw grab position, which may differ for tiling/snapping).
+                    let remap_pos = drop_result
+                        .as_ref()
+                        .map(|(_, loc)| *loc)
+                        .unwrap_or(window_location);
+                    shell.remap_x11_transient_children(remap_pos, &tc);
+
                     drop_result
                 } else {
                     let mut shell = state.common.shell.write();
@@ -1154,11 +1196,14 @@ impl Drop for MoveGrab {
                         .tiling_layer
                         .cleanup_drag();
                     shell.set_overview_mode(None, state.common.event_loop_handle.clone());
+                    // Parent died: remap children at their original positions
+                    // (offset from 0,0 which won't be exact, but they're alive)
+                    shell.remap_x11_transient_children(Point::from((0, 0)).as_global(), &tc);
                     None
                 };
-                (position, parent_surface_id)
+                (position, parent_surface_id, tc)
             } else {
-                (None, None)
+                (None, None, Vec::new())
             };
 
             // Move embedded children to follow the parent to the new output

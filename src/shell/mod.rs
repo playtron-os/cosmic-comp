@@ -620,6 +620,10 @@ pub struct Shell {
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
 
+    /// Original X11 geometry at map time (before compositor configuration).
+    /// Used to compute correct relative offsets for transient children.
+    original_x11_positions: HashMap<u32, Rectangle<i32, Logical>>,
+
     #[cfg(feature = "debug")]
     pub debug_active: bool,
 }
@@ -1962,6 +1966,9 @@ impl Shell {
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),
 
+            // Original X11 geometry at map time
+            original_x11_positions: HashMap::new(),
+
             #[cfg(feature = "debug")]
             debug_active: false,
         }
@@ -2457,6 +2464,38 @@ impl Shell {
                     set.workspaces
                         .iter()
                         .find_map(|w| w.element_for_surface(surface))
+                })
+        })
+    }
+
+    pub fn element_for_x11_window_id(&self, x11_window_id: u32) -> Option<&CosmicMapped> {
+        self.workspaces.sets.values().find_map(|set| {
+            set.minimized_windows
+                .iter()
+                .find(|w| {
+                    w.windows().any(|s| {
+                        s.x11_surface()
+                            .is_some_and(|x11| x11.window_id() == x11_window_id)
+                    })
+                })
+                .and_then(|w| w.mapped())
+                .or_else(|| {
+                    set.sticky_layer.mapped().find(|w| {
+                        w.windows().any(|(s, _)| {
+                            s.x11_surface()
+                                .is_some_and(|x11| x11.window_id() == x11_window_id)
+                        })
+                    })
+                })
+                .or_else(|| {
+                    set.workspaces.iter().find_map(|w| {
+                        w.mapped().find(|m| {
+                            m.windows().any(|(s, _)| {
+                                s.x11_surface()
+                                    .is_some_and(|x11| x11.window_id() == x11_window_id)
+                            })
+                        })
+                    })
                 })
         })
     }
@@ -4312,6 +4351,44 @@ impl Shell {
                 None
             });
 
+        // Store the original X11 geometry before the compositor configures the window.
+        // This is the app-requested position, needed for correct transient positioning.
+        if let Some(x11) = window.x11_surface() {
+            self.original_x11_positions
+                .insert(x11.window_id(), x11.geometry());
+        }
+
+        let transient_for_id = window
+            .x11_surface()
+            .and_then(|surface| surface.is_transient_for());
+        let transient_parent = transient_for_id
+            .and_then(|parent_window_id| self.element_for_x11_window_id(parent_window_id))
+            .cloned();
+
+        let transient_parent_output = transient_parent.as_ref().and_then(|parent| {
+            self.space_for(parent)
+                .map(|workspace| workspace.output.clone())
+                .or_else(|| {
+                    self.workspaces.sets.iter().find_map(|(output, set)| {
+                        set.sticky_layer
+                            .mapped()
+                            .any(|m| m == parent)
+                            .then_some(output.clone())
+                    })
+                })
+        });
+
+        let transient_parent_workspace = transient_parent
+            .as_ref()
+            .and_then(|parent| self.space_for(parent).map(|workspace| workspace.handle));
+
+        let transient_parent_is_sticky = transient_parent.as_ref().is_some_and(|parent| {
+            self.workspaces
+                .sets
+                .values()
+                .any(|set| set.sticky_layer.mapped().any(|m| m == parent))
+        });
+
         let parent_is_sticky = if let Some(toplevel) = window.0.toplevel() {
             if let Some(parent) = toplevel.parent() {
                 if let Some(elem) = self.element_for_surface(&parent) {
@@ -4326,19 +4403,20 @@ impl Shell {
                 false
             }
         } else {
-            false
+            transient_parent_is_sticky
         };
 
         let pending_activation = self.pending_activations.remove(&(&window).into());
         let workspace_handle = match pending_activation {
             Some(ActivationContext::Workspace(handle)) => Some(handle),
-            _ => None,
+            _ => transient_parent_workspace,
         };
 
         let should_be_fullscreen = output.is_some();
         // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
         let mut output = output
             .or(embed_parent_output)
+            .or(transient_parent_output)
             .unwrap_or_else(|| seat.active_output());
 
         // this is beyond stupid, just to make the borrow checker happy
@@ -4428,7 +4506,62 @@ impl Shell {
 
         let workspace_empty = workspace.mapped().next().is_none();
         if is_dialog || floating_exception || !workspace.tiling_enabled {
-            workspace.floating_layer.map(mapped.clone(), None);
+            // For X11 transient children, use the X11 geometry as initial position
+            // so they appear next to their parent (e.g. Android emulator side panel).
+            let initial_position = window
+                .x11_surface()
+                .filter(|x| x.is_transient_for().is_some())
+                .and_then(|x| {
+                    let geo = x.geometry();
+                    let parent_id = x.is_transient_for()?;
+                    // Find the parent element's position in the workspace
+                    let parent_elem = workspace.mapped().find(|m| {
+                        m.active_window()
+                            .x11_surface()
+                            .is_some_and(|px| px.window_id() == parent_id)
+                    });
+                    let parent_geo = parent_elem.and_then(|p| workspace.element_geometry(p));
+                    // Position relative to parent if we found it
+                    if let Some(parent_geo) = parent_geo {
+                        // The X11 geometry gives us the position relative to
+                        // the root window. The parent's X11 geometry also uses
+                        // root coordinates. Compute relative offset.
+                        let parent_x11_geo = workspace
+                            .mapped()
+                            .find(|m| {
+                                m.active_window()
+                                    .x11_surface()
+                                    .is_some_and(|px| px.window_id() == parent_id)
+                            })
+                            .and_then(|m| m.active_window().x11_surface().map(|px| px.geometry()));
+                        // Get parent's SSD offset (element_geometry includes SSD,
+                        // but the X11 content starts below the titlebar)
+                        let parent_ssd_offset = parent_elem
+                            .map(|p| p.active_window_offset())
+                            .unwrap_or_default();
+                        if let Some(parent_x11_geo) = parent_x11_geo {
+                            let relative_x = geo.loc.x - parent_x11_geo.loc.x;
+                            let relative_y = geo.loc.y - parent_x11_geo.loc.y;
+                            // parent_geo.loc is the top-left of the decoration frame.
+                            // Add parent's SSD offset to reach the X11 content origin,
+                            // then subtract the child's own SSD offset since initial_position
+                            // sets the element frame origin (not the content origin).
+                            let child_ssd_height = mapped.ssd_height(false).unwrap_or(0);
+                            Some(Point::<i32, Local>::from((
+                                parent_geo.loc.x + parent_ssd_offset.x + relative_x,
+                                parent_geo.loc.y + parent_ssd_offset.y + relative_y
+                                    - child_ssd_height,
+                            )))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                });
+            workspace
+                .floating_layer
+                .map(mapped.clone(), initial_position);
         } else {
             for mapped in workspace
                 .mapped()
@@ -4497,7 +4630,272 @@ impl Shell {
         // Re-evaluate auto-hide — a new window was mapped.
         self.refresh_auto_hide();
 
+        // After mapping an X11 window, check if any already-mapped windows are
+        // transient children of this window that mapped before their parent.
+        // If so, move them to the same output/workspace and make them floating.
+        if let Some(x11_surface) = window.x11_surface() {
+            let parent_window_id = x11_surface.window_id();
+            self.reparent_orphaned_transient_children(parent_window_id, &output, workspace_handle);
+        }
+
         new_target
+    }
+
+    /// After an X11 parent window maps, find any transient children that mapped
+    /// before it and reposition them relative to the parent.
+    /// Also moves children to the parent's output/workspace if needed.
+    fn reparent_orphaned_transient_children(
+        &mut self,
+        parent_window_id: u32,
+        _parent_output: &Output,
+        parent_workspace_handle: WorkspaceHandle,
+    ) {
+        // Collect children that are transient to this parent
+        let orphans: Vec<CosmicMapped> = self
+            .workspaces
+            .sets
+            .values()
+            .flat_map(|set| {
+                set.workspaces
+                    .iter()
+                    .flat_map(|w| w.mapped())
+                    .chain(set.sticky_layer.mapped())
+            })
+            .filter(|m| {
+                m.active_window()
+                    .x11_surface()
+                    .and_then(|x| x.is_transient_for())
+                    .is_some_and(|tid| tid == parent_window_id)
+            })
+            .cloned()
+            .collect();
+
+        if orphans.is_empty() {
+            return;
+        }
+
+        // First, move any orphans that are on the wrong workspace
+        for orphan in &orphans {
+            let already_on_target = self
+                .workspaces
+                .spaces()
+                .find(|w| w.handle == parent_workspace_handle)
+                .is_some_and(|w| w.mapped().any(|m| m == orphan));
+
+            if !already_on_target {
+                // Remove from current workspace
+                for workspace in self.workspaces.spaces_mut() {
+                    if workspace.mapped().any(|m| m == orphan) {
+                        workspace.unmap_element(orphan);
+                        break;
+                    }
+                }
+
+                // Map onto parent's workspace as floating (position set below)
+                if let Some(workspace) = self
+                    .workspaces
+                    .spaces_mut()
+                    .find(|w| w.handle == parent_workspace_handle)
+                {
+                    workspace.floating_layer.map(orphan.clone(), None);
+                }
+            }
+        }
+
+        // Now reposition all orphans relative to the parent.
+        // The parent just mapped so its element_geometry is available.
+        // Use ORIGINAL X11 geometries (stored at map time, before compositor configuration)
+        // because the compositor may have placed the child at a default position.
+        let workspace = match self
+            .workspaces
+            .spaces()
+            .find(|w| w.handle == parent_workspace_handle)
+        {
+            Some(ws) => ws,
+            None => return,
+        };
+
+        // Find parent element and its compositor geometry
+        let parent_elem = workspace.mapped().find(|m| {
+            m.active_window()
+                .x11_surface()
+                .is_some_and(|px| px.window_id() == parent_window_id)
+        });
+        let parent_geo = parent_elem.and_then(|p| workspace.element_geometry(p));
+        let parent_ssd_offset = parent_elem
+            .map(|p| p.active_window_offset())
+            .unwrap_or_default();
+
+        // Use stored original X11 geometry (app-requested, not compositor-configured)
+        let parent_orig_x11_geo = self.original_x11_positions.get(&parent_window_id).copied();
+
+        let (Some(parent_geo), Some(parent_orig_x11_geo)) = (parent_geo, parent_orig_x11_geo)
+        else {
+            tracing::warn!(
+                parent_window_id = parent_window_id,
+                has_parent_geo = parent_geo.is_some(),
+                has_parent_orig_x11 = parent_orig_x11_geo.is_some(),
+                "reparent_orphaned_transient_children: could not find parent geometry"
+            );
+            return;
+        };
+
+        // Collect positions using original X11 geometries
+        let orphan_positions: Vec<_> = orphans
+            .iter()
+            .filter_map(|orphan| {
+                let child_x11_id = orphan
+                    .active_window()
+                    .x11_surface()
+                    .map(|x| x.window_id())?;
+                let child_orig_x11_geo = self.original_x11_positions.get(&child_x11_id).copied()?;
+
+                // Compute relative offset using ORIGINAL X11 positions
+                let relative_x = child_orig_x11_geo.loc.x - parent_orig_x11_geo.loc.x;
+                let relative_y = child_orig_x11_geo.loc.y - parent_orig_x11_geo.loc.y;
+
+                // parent_geo.loc is the decoration frame origin.
+                // Add parent SSD offset to reach the X11 content origin.
+                // Subtract child's own SSD height since we're setting the element frame position.
+                let child_ssd_height = orphan.ssd_height(false).unwrap_or(0);
+                let new_loc = Point::<i32, Local>::from((
+                    parent_geo.loc.x + parent_ssd_offset.x + relative_x,
+                    parent_geo.loc.y + parent_ssd_offset.y + relative_y - child_ssd_height,
+                ));
+
+                // Update element geometry
+                let new_geo = Rectangle::new(
+                    new_loc.to_global(&workspace.output),
+                    orphan.geometry().size.as_global(),
+                );
+                orphan.set_geometry(new_geo);
+
+                Some((orphan.clone(), new_loc.as_logical()))
+            })
+            .collect();
+
+        // Re-map at corrected positions (need mutable access)
+        if let Some(workspace) = self
+            .workspaces
+            .spaces_mut()
+            .find(|w| w.handle == parent_workspace_handle)
+        {
+            for (orphan, new_loc) in orphan_positions {
+                workspace
+                    .floating_layer
+                    .space
+                    .map_element(orphan, new_loc, false);
+            }
+        }
+    }
+
+    /// Collect X11 transient children of a window, compute their offsets from
+    /// the parent, and unmap them from the workspace. Returns the children and
+    /// their offsets for rendering in the grab state.
+    pub fn collect_and_unmap_x11_transient_children(
+        &mut self,
+        parent: &CosmicMapped,
+        parent_global_pos: Point<i32, Global>,
+    ) -> Vec<(CosmicMapped, Point<i32, Logical>)> {
+        let parent_x11_id = match parent.active_window().x11_surface().map(|x| x.window_id()) {
+            Some(id) => id,
+            None => return Vec::new(),
+        };
+
+        // First pass: find children and compute offsets
+        let children: Vec<(CosmicMapped, Point<i32, Logical>)> = self
+            .workspaces
+            .spaces()
+            .flat_map(|w| {
+                w.mapped()
+                    .filter(|m| {
+                        m.active_window()
+                            .x11_surface()
+                            .and_then(|x| x.is_transient_for())
+                            .is_some_and(|tid| tid == parent_x11_id)
+                    })
+                    .filter_map(|m| {
+                        let child_geo = w.element_geometry(m)?;
+                        let child_global = child_geo.loc.to_global(&w.output);
+                        let offset = (child_global - parent_global_pos).as_logical();
+                        Some((m.clone(), offset))
+                    })
+            })
+            .collect();
+
+        // Second pass: unmap children from their workspaces
+        for (child, _) in &children {
+            for workspace in self.workspaces.spaces_mut() {
+                if workspace
+                    .floating_layer
+                    .space
+                    .elements()
+                    .any(|e| e == child)
+                {
+                    workspace.floating_layer.space.unmap_elem(child);
+                    workspace.floating_layer.remove_animation(child);
+                    break;
+                }
+            }
+        }
+
+        children
+    }
+
+    /// Remap X11 transient children that were unmapped during drag.
+    /// Places them at parent_global_pos + offset on the appropriate workspace.
+    pub fn remap_x11_transient_children(
+        &mut self,
+        parent_global_pos: Point<i32, Global>,
+        children: &[(CosmicMapped, Point<i32, Logical>)],
+    ) {
+        for (child, offset) in children {
+            let target_global: Point<i32, Global> =
+                (parent_global_pos.as_logical() + *offset).as_global();
+
+            // Find the output the target position falls on
+            let target_output = self
+                .outputs()
+                .find(|o| {
+                    o.geometry()
+                        .as_logical()
+                        .contains(target_global.as_logical())
+                })
+                .or_else(|| {
+                    self.outputs().min_by_key(|o| {
+                        let geo = o.geometry().as_logical();
+                        let cx = geo.loc.x + geo.size.w / 2;
+                        let cy = geo.loc.y + geo.size.h / 2;
+                        let dx = target_global.x - cx;
+                        let dy = target_global.y - cy;
+                        dx * dx + dy * dy
+                    })
+                })
+                .cloned();
+
+            let Some(target_output) = target_output else {
+                continue;
+            };
+
+            let target_local = target_global.to_local(&target_output);
+            let target_ws = match self.active_space_mut(&target_output) {
+                Some(ws) => ws,
+                None => continue,
+            };
+
+            let new_geo = Rectangle::new(target_global, child.geometry().size.as_global());
+            child.set_geometry(new_geo);
+            target_ws.floating_layer.space.map_element(
+                child.clone(),
+                target_local.as_logical(),
+                false,
+            );
+
+            child.output_enter(
+                &target_output,
+                Rectangle::from_size(target_output.geometry().size.as_logical()),
+            );
+        }
     }
 
     pub fn map_override_redirect(&mut self, window: X11Surface) {
@@ -5458,6 +5856,11 @@ impl Shell {
         mapped.set_activate(true);
         mapped.configure();
 
+        // Collect and unmap X11 transient children so they can be rendered
+        // alongside the parent during drag with zero drift.
+        let transient_children =
+            self.collect_and_unmap_x11_transient_children(&mapped, initial_window_location);
+
         let grab = MoveGrab::new(
             start_data,
             mapped,
@@ -5469,6 +5872,7 @@ impl Shell {
             layer,
             release,
             evlh.clone(),
+            transient_children,
         );
 
         if grab.is_tiling_grab() {

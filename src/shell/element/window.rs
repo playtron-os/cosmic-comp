@@ -321,6 +321,18 @@ impl CosmicWindowInternal {
             return [0; 4];
         }
 
+        // X11 transient children (utility/toolbar windows) get 0 corner radius
+        // unless the surface itself explicitly sets a radius.
+        // This matches GNOME/KWin behavior where sub-windows have square corners.
+        let is_x11_transient = self
+            .window
+            .x11_surface()
+            .is_some_and(|x| x.is_transient_for().is_some());
+        if is_x11_transient {
+            let surface_corners = self.window.corner_radius(geometry_size);
+            return surface_corners.unwrap_or([0; 4]);
+        }
+
         let clip = (!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows);
         let round = !is_tiled || appearance.clip_tiled_windows;

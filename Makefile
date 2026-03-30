@@ -104,7 +104,7 @@ rpm: all
 
 run-debug:
 	WAYLAND_DISPLAY=wayland-2 \
-	COSMIC_COMP_LOG=warn,cosmic_comp::shell::layout::floating=debug,cosmic_comp::backend::render=debug,cosmic_comp::wayland::handlers::surface_embed=info,cosmic_comp::backend::kms=debug,cosmic_comp::shell=debug,cosmic_comp::shell::workspace=debug,cosmic_comp::backend::kms::surface=debug \
+	COSMIC_COMP_LOG=warn,cosmic_comp::shell::layout=debug,cosmic_comp::shell::layout::floating=debug,cosmic_comp::backend::render=debug,cosmic_comp::wayland::handlers::surface_embed=info,cosmic_comp::backend::kms=debug,cosmic_comp::shell=debug,cosmic_comp::shell::workspace=debug,cosmic_comp::backend::kms::surface=debug,cosmic_comp::xwayland=debug,smithay::xwayland=debug \
 	stdbuf -oL cargo run --features debug 2>&1 \
 	| stdbuf -oL sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g' \
 	| stdbuf -oL grep -v 'smithay::backend::renderer::gles' \

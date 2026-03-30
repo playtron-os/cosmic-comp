@@ -494,6 +494,7 @@ impl MoveGrab {
         previous_layer: ManagedLayer,
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
+        transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
     ) -> MoveGrab {
         MoveGrab::Move(moving::MoveGrab::new(
             start_data,
@@ -506,6 +507,7 @@ impl MoveGrab {
             previous_layer,
             release,
             evlh,
+            transient_children,
         ))
     }
 
