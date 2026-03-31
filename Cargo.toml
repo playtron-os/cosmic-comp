@@ -98,7 +98,7 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/Smithay/smithay.git"
-rev = "c3f6fa75f7bbed5598f90556fb46e52086384341"
+rev = "98435a562"
 default-features = false
 features = [
     "backend_drm",

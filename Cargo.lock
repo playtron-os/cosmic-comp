@@ -875,7 +875,7 @@ dependencies = [
  "sendfd",
  "serde",
  "serde_json",
- "smithay 0.7.0 (git+https://github.com/Smithay/smithay.git?rev=c3f6fa75f7bbed5598f90556fb46e52086384341)",
+ "smithay",
  "smithay-egui",
  "thiserror 2.0.18",
  "time",
@@ -5087,40 +5087,6 @@ name = "smithay"
 version = "0.7.0"
 source = "git+https://github.com/Smithay/smithay.git?rev=98435a562#98435a562e382bdf0a82c2e70bab0480d04128ea"
 dependencies = [
- "appendlist",
- "atomic_float",
- "bitflags 2.11.0",
- "calloop 0.14.4",
- "cgmath",
- "cursor-icon",
- "downcast-rs",
- "drm-fourcc",
- "errno",
- "gl_generator",
- "glow 0.16.0",
- "indexmap 2.13.0",
- "libc",
- "libloading",
- "profiling",
- "rand 0.9.2",
- "rustix 1.1.4",
- "sha2",
- "smallvec",
- "tempfile",
- "thiserror 2.0.18",
- "tracing",
- "wayland-protocols",
- "wayland-protocols-misc",
- "wayland-protocols-wlr",
- "wayland-server",
- "xkbcommon 0.9.0",
-]
-
-[[package]]
-name = "smithay"
-version = "0.7.0"
-source = "git+https://github.com/Smithay/smithay.git?rev=c3f6fa75f7bbed5598f90556fb46e52086384341#c3f6fa75f7bbed5598f90556fb46e52086384341"
-dependencies = [
  "aliasable",
  "appendlist",
  "ash",
@@ -5246,7 +5212,7 @@ dependencies = [
  "image",
  "log",
  "memoffset",
- "smithay 0.7.0 (git+https://github.com/Smithay/smithay.git?rev=98435a562)",
+ "smithay",
  "xkbcommon 0.8.0",
 ]
 
