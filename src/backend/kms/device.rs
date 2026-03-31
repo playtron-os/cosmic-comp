@@ -323,10 +323,10 @@ impl State {
             GbmFramebufferExporter::new(gbm.clone(), render_node.into()),
             Some(gbm.clone()),
             [
-                Fourcc::Abgr2101010,
-                Fourcc::Argb2101010,
                 Fourcc::Abgr8888,
                 Fourcc::Argb8888,
+                Fourcc::Abgr2101010,
+                Fourcc::Argb2101010,
             ],
             render_formats,
         );
@@ -987,7 +987,16 @@ fn create_output_for_conn(drm: &mut DrmDevice, conn: connector::Handle) -> Resul
                 connector::SubPixel::VerticalRgb => Subpixel::VerticalRgb,
                 connector::SubPixel::VerticalBgr => Subpixel::VerticalBgr,
                 connector::SubPixel::None => Subpixel::None,
-                _ => Subpixel::Unknown,
+                _ => {
+                    // eDP/LVDS/DSI panels almost universally use horizontal RGB subpixels.
+                    // Default to that when the DRM driver reports Unknown.
+                    match conn_info.interface() {
+                        connector::Interface::EmbeddedDisplayPort
+                        | connector::Interface::LVDS
+                        | connector::Interface::DSI => Subpixel::HorizontalRgb,
+                        _ => Subpixel::Unknown,
+                    }
+                }
             },
             make: edid_info
                 .as_ref()
