@@ -1,3 +1,18 @@
+# [1.12.0](https://github.com/playtron-os/cosmic-comp/compare/v1.11.1...v1.12.0) (2026-03-31)
+
+
+### Bug Fixes
+
+* correctly update smithay version ([eea0fb7](https://github.com/playtron-os/cosmic-comp/commit/eea0fb7ad15e7877640a922c77266bf87228736d))
+* error handling for dmabuf leak or other failures ([718d78a](https://github.com/playtron-os/cosmic-comp/commit/718d78ae1b583198197d2f7533abed79b80675aa))
+* try color format abgr8888 before hdr formats, and add some more default handling to connection interface for panels ([cd381b7](https://github.com/playtron-os/cosmic-comp/commit/cd381b78c02a38c944356cb0ecaeedaa425cb1c7))
+* update smithay to fix text/icon pixelation issue due to texture.frag mediump float ([2a7e3af](https://github.com/playtron-os/cosmic-comp/commit/2a7e3afd615d331e594a9a2359ed60f8f375dc59))
+
+
+### Features
+
+* properly handle X11 transient child windows (e.g. Android emulator side panel) ([d2ff036](https://github.com/playtron-os/cosmic-comp/commit/d2ff036a0db40b035d3fed667e1416575580b3ab))
+
 ## [1.11.1](https://github.com/playtron-os/cosmic-comp/compare/v1.11.0...v1.11.1) (2026-03-27)
 
 
