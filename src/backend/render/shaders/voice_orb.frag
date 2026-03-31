@@ -29,14 +29,14 @@ const float noiseScale = 0.65;     // Turbulence
 const float speed = 1.0;           // Temporal Speed
 
 // Colors (converted from RGB 0-255 to 0-1)
-const vec3 color1 = vec3(0.000, 0.800, 0.702);      // Primary pulse: Caribbean Green (0, 204, 179)
-const vec3 color2 = vec3(0.722, 0.902, 0.212);      // Secondary flow: Yellow Green (184, 230, 54)
-const vec3 color3 = vec3(0.000, 0.400, 0.349);      // Core depth: Deep Teal (0, 102, 89)
-const vec3 haloColor = vec3(0.800, 1.000, 0.102);   // Halo accent: Electric Lime (204, 255, 26)
-const vec3 bgColor = vec3(0.949, 0.949, 0.980);     // Background A: Lavender Gray (242, 242, 250)
-const vec3 bgColor2 = vec3(0.851, 0.851, 0.922);    // Background B: Silver Mist (217, 217, 235)
-const vec3 audioColor1 = vec3(0.000, 1.000, 0.800); // Audio reactive: Bright Aquamarine (0, 255, 204)
-const vec3 audioColor2 = vec3(0.900, 1.000, 0.300); // Audio reactive: Neon Lime (230, 255, 77)
+const vec3 color1 = vec3(0.000, 0.784, 0.588);      // Primary pulse: #00C896 (0, 200, 150)
+const vec3 color2 = vec3(0.039, 0.498, 0.400);      // Secondary flow: #0A7F66 (10, 127, 102)
+const vec3 color3 = vec3(0.008, 0.118, 0.102);      // Core depth: #021E1A (2, 30, 26)
+const vec3 haloColor = vec3(0.486, 1.000, 0.839);   // Halo accent: #7CFFD6 (124, 255, 214)
+const vec3 bgColor = vec3(0.949, 0.949, 0.980);     // Background A: #F2F2FA Lavender Gray (242, 242, 250)
+const vec3 bgColor2 = vec3(0.851, 0.851, 0.922);    // Background B: #D9D9EB Silver Mist (217, 217, 235)
+const vec3 audioColor1 = vec3(0.000, 1.000, 0.800); // Audio reactive: #00FFCC Bright Aquamarine (0, 255, 204)
+const vec3 audioColor2 = vec3(0.900, 1.000, 0.300); // Audio reactive: #E6FF4D Neon Lime (230, 255, 77)
 
 const float PI = 3.14159265359;
 
