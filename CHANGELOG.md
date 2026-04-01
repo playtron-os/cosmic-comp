@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/playtron-os/cosmic-comp/compare/v1.13.0...v1.14.0) (2026-04-01)
+
+
+### Features
+
+* add support for COSMIC_ACTIVATION_TRUSTED_APPS for notifications app support ([b90b5a0](https://github.com/playtron-os/cosmic-comp/commit/b90b5a084bdff60816717c401048f57d6296428b))
+
 # [1.13.0](https://github.com/playtron-os/cosmic-comp/compare/v1.12.0...v1.13.0) (2026-04-01)
 
 
