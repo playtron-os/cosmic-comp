@@ -1,3 +1,15 @@
+# [1.13.0](https://github.com/playtron-os/cosmic-comp/compare/v1.12.0...v1.13.0) (2026-04-01)
+
+
+### Bug Fixes
+
+* update voice orb colors ([c8997f8](https://github.com/playtron-os/cosmic-comp/commit/c8997f897d74fb151e8be7f746a149a719f028ee))
+
+
+### Features
+
+* improve voice orb shader with processing state ([199379f](https://github.com/playtron-os/cosmic-comp/commit/199379fb551b9972c7e8cec0490435e3281841bb))
+
 # [1.12.0](https://github.com/playtron-os/cosmic-comp/compare/v1.11.1...v1.12.0) (2026-03-31)
 
 
