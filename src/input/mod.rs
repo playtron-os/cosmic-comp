@@ -1897,7 +1897,7 @@ impl State {
                             drop(shell);
                             // Decide how to handle the tap:
                             // - If HOME_ENABLED: enter full home mode (minimizes windows + triggers HideOnHome animations)
-                            // - If no voice windows: just minimize windows (don't hide humainos-dock)
+                            // - If no voice windows: just minimize windows
                             // - Otherwise: just set focus without minimizing
                             let has_voice_windows =
                                 self.common.voice_mode_state.has_non_default_receivers();
