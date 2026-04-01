@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::shell::WorkspaceDelta;
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::{shell::ActivationKey, state::ClientState, utils::prelude::*};
@@ -8,7 +10,7 @@ use crate::{
 use smithay::{
     delegate_xdg_activation,
     input::Seat,
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::wayland_server::{backend::ClientId, protocol::wl_surface::WlSurface},
     wayland::xdg_activation::{
         XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
     },
@@ -21,6 +23,42 @@ pub enum ActivationContext {
     Workspace(WorkspaceHandle),
 }
 
+/// Executables that are allowed full activation even with stale serials.
+/// Configurable via `COSMIC_ACTIVATION_TRUSTED_APPS` (comma-separated).
+/// Empty by default — no apps are trusted unless explicitly configured.
+fn trusted_activators() -> &'static [String] {
+    static APPS: OnceLock<Vec<String>> = OnceLock::new();
+    APPS.get_or_init(|| {
+        std::env::var("COSMIC_ACTIVATION_TRUSTED_APPS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    })
+}
+
+fn is_trusted_activator(
+    display_handle: &smithay::reexports::wayland_server::DisplayHandle,
+    client_id: Option<&ClientId>,
+) -> bool {
+    let apps = trusted_activators();
+    if apps.is_empty() {
+        return false;
+    }
+    let Some(client_id) = client_id else {
+        return false;
+    };
+    let exe = display_handle
+        .backend_handle()
+        .get_client_credentials(client_id.clone())
+        .ok()
+        .and_then(|creds| std::fs::read_link(format!("/proc/{}/exe", creds.pid)).ok())
+        .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from));
+    let Some(exe) = exe else { return false };
+    apps.iter().any(|app| app == &exe)
+}
+
 impl XdgActivationHandler for State {
     fn activation_state(&mut self) -> &mut XdgActivationState {
         &mut self.common.xdg_activation_state
@@ -30,11 +68,12 @@ impl XdgActivationHandler for State {
         // Privileged clients always get valid tokens
         if data
             .client_id
+            .as_ref()
             .and_then(|client_id| {
                 self.common
                     .display_handle
                     .backend_handle()
-                    .get_client_data(client_id)
+                    .get_client_data(client_id.clone())
                     .ok()
             })
             .and_then(|data| {
@@ -74,9 +113,6 @@ impl XdgActivationHandler for State {
             return true;
         };
 
-        // At this point we don't bother with urgent-only tokens.
-        // If the client provides a bad serial, it should be fixed.
-
         let keyboard = seat.get_keyboard().unwrap();
         let valid = keyboard
             .last_enter()
@@ -92,9 +128,28 @@ impl XdgActivationHandler for State {
                 .insert_if_missing(move || ActivationContext::Workspace(handle));
 
             debug!(?token, "created workspace token");
+        } else if is_trusted_activator(&self.common.display_handle, data.client_id.as_ref()) {
+            // Trusted activator with a stale serial — grant full workspace
+            // token so the target window can be focused immediately.
+            let output = seat.active_output();
+            let mut shell = self.common.shell.write();
+            let workspace = shell.active_space_mut(&output).unwrap();
+            let handle = workspace.handle;
+            data.user_data
+                .insert_if_missing(move || ActivationContext::Workspace(handle));
+            debug!(
+                ?token,
+                "created workspace token for trusted activator with stale serial"
+            );
+        } else {
+            // Stale serial from untrusted client — grant UrgentOnly so the
+            // window can still be focused via activate_surface.
+            data.user_data
+                .insert_if_missing(|| ActivationContext::UrgentOnly);
+            debug!(?token, "created urgent-only token for stale serial");
         }
 
-        valid
+        true
     }
 
     fn request_activation(
@@ -109,11 +164,12 @@ impl XdgActivationHandler for State {
 
         match context {
             ActivationContext::UrgentOnly => {
-                let shell = self.common.shell.write();
-                if let Some((workspace, _output)) = shell.workspace_for_surface(&surface) {
-                    let mut workspace_guard = self.common.workspace_state.update();
-                    workspace_guard.add_workspace_state(&workspace, WState::Urgent);
-                }
+                // UrgentOnly tokens still attempt to focus the window.
+                // activate_surface will raise, switch workspace, and focus if
+                // the surface is already mapped.  For unmapped surfaces on a
+                // different workspace it falls back to marking the workspace
+                // as urgent internally.
+                self.activate_surface(&surface, None);
             }
             ActivationContext::Workspace(_) => {
                 self.activate_surface(
