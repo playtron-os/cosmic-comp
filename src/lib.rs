@@ -175,6 +175,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         {
             use crate::wayland::protocols::voice_mode::VoiceModeHandler;
             state.check_pending_stop_timeout();
+            state.check_frozen_timeout();
         }
 
         // Poll audio levels from shared memory

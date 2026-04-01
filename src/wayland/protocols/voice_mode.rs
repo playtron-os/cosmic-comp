@@ -661,6 +661,9 @@ pub trait VoiceModeHandler {
     /// Called periodically to check for pending stop timeout
     fn check_pending_stop_timeout(&mut self);
 
+    /// Called periodically to check if the frozen orb has timed out (1 second)
+    fn check_frozen_timeout(&mut self);
+
     /// Called when a new voice receiver is registered
     /// If orb is frozen, this can trigger transition to the new window
     fn on_voice_receiver_registered(&mut self, surface: &WlSurface);

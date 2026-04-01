@@ -235,8 +235,18 @@ impl VoiceModeHandler for State {
     }
 
     fn deactivate_voice_mode(&mut self) {
-        info!("Deactivating voice mode - immediate dismiss");
-        self.complete_deactivation();
+        // Send will_stop to the active receiver and wait for ack_stop.
+        // The client will respond with ack_stop(freeze=true) to enter thinking
+        // mode, or ack_stop(freeze=false) to dismiss immediately.
+        if let Some(serial) = self.common.voice_mode_state.send_will_stop() {
+            info!(serial, "Sent will_stop, waiting for client ack_stop");
+            // The ack response will call either freeze_orb() or complete_deactivation()
+            // via the protocol handler. If it times out, check_pending_stop_timeout()
+            // will call complete_deactivation().
+        } else {
+            info!("No active receiver for will_stop - immediate dismiss");
+            self.complete_deactivation();
+        }
     }
 
     fn cancel_voice_mode(&mut self) {
@@ -319,6 +329,17 @@ impl VoiceModeHandler for State {
         }
     }
 
+    fn check_frozen_timeout(&mut self) {
+        let timed_out = {
+            let shell = self.common.shell.read();
+            shell.voice_orb_state.has_frozen_timeout()
+        };
+        if timed_out {
+            info!("Frozen orb timeout - dismissing");
+            self.dismiss_orb();
+        }
+    }
+
     fn on_voice_receiver_registered(&mut self, surface: &WlSurface) {
         // Check if orb is currently frozen - if so, we need to transition to the new window
         let shell = self.common.shell.read();
@@ -372,16 +393,36 @@ impl VoiceModeHandler for State {
     }
 
     fn dismiss_orb(&mut self) {
-        info!("Dismissing frozen orb (client requested hide)");
+        let shell = self.common.shell.read();
+        let was_attached = shell.voice_orb_state.is_frozen_attached();
+        let orb_state = shell.voice_orb_state.orb_state;
+        let voice_mode = shell.voice_mode_debug();
+        let position = shell.voice_orb_state.position;
+        let scale = shell.voice_orb_state.scale;
+        drop(shell);
+
+        info!(
+            "Dismissing frozen orb: was_attached={}, orb_state={:?}, voice_mode={}, position={:?}, scale={}",
+            was_attached, orb_state, voice_mode, position, scale
+        );
 
         let mut shell = self.common.shell.write();
 
         // Request orb hide - will start shrinking animation
         shell.voice_orb_state.request_hide();
 
-        // Fade windows in immediately (skip WaitingForOrbShrink since orb was frozen/stationary)
-        // The orb will shrink while windows fade in simultaneously
-        shell.voice_mode_fade_in_immediately();
+        if was_attached {
+            // When orb was attached, windows were already visible.
+            // Use exit_from_attached() which goes directly to None without
+            // any fade animation (exit() would trigger WaitingForOrbShrink → FadingOut
+            // which flashes windows to alpha=0 then fades them back in).
+            info!("dismiss_orb: was_attached=true, calling exit_voice_mode_from_attached()");
+            shell.exit_voice_mode_from_attached();
+        } else {
+            // When orb was floating, windows were hidden — fade them back in.
+            info!("dismiss_orb: was_attached=false, calling voice_mode_fade_in_immediately()");
+            shell.voice_mode_fade_in_immediately();
+        }
 
         // Update protocol state
         drop(shell);

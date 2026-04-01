@@ -22,6 +22,7 @@ uniform float cover_scale;    // Scale factor: how much larger orb is than rende
 uniform float window_aspect;  // Window aspect ratio (w/h) when attached
 uniform float border_radius;  // Border radius in pixels for rounded corners when attached
 uniform float viewport_scale; // UV scale factor for viewport padding (1.0 = no padding)
+uniform float thinking;       // Thinking mode progress (0.0 = normal, 1.0 = fully thinking)
 
 // Configuration constants
 const float innerRadius = 0.6;    // Aperture
@@ -158,6 +159,15 @@ void main() {
     // Noise-based distortion - use rotated noiseUV for consistent visual detail during scaling
     float n0 = snoise3(vec3(rotatedUv * dynamicNoiseScale, animTime * 0.5)) * 0.5 + 0.5;
     float r0 = mix(mix(dynamicRadius, 1.0, 0.4), mix(dynamicRadius, 1.0, 0.6), n0);
+
+    // Thinking mode: apply sine wave deformation directly to the orb edge
+    if (thinking > 0.01) {
+        float wave = sin(ang * 6.0 + time * 1.5) * 0.5 + 0.5;
+        wave += (sin(ang * 10.0 - time * 2.0) * 0.5 + 0.5) * 0.4;
+        wave /= 1.4;  // normalize
+        r0 += wave * 0.08 * thinking;
+    }
+
     float d0 = distance(uv, r0 / len * uv);
     
     // Glow intensity
@@ -215,7 +225,7 @@ void main() {
     vec3 finalRGB = mix(currentBG, portal.rgb, portal.a);
     
     // Create circular mask for the orb
-    float orbEdge = r0 * 1.15;  // Slight buffer for halo
+    float orbEdge = r0 * 1.15;
     float orbMask = 1.0 - smoothstep(orbEdge - 0.05, orbEdge + 0.05, len);
     
     // Final alpha (scale is handled by geometry size, not shader)

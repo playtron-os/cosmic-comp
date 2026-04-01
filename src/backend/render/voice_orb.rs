@@ -615,6 +615,9 @@ pub struct VoiceOrbState {
     pub low_intensity: f32,
     /// Smoothed high-frequency intensity (treble-like, slower response)
     pub high_intensity: f32,
+    /// Thinking mode progress (0.0 = normal, 1.0 = fully thinking)
+    /// Smoothly interpolated based on orb state (Frozen = thinking)
+    pub thinking_progress: f32,
     /// Target intensity from audio level input
     target_intensity: f32,
     /// Target low-band intensity (from FFT shmem or single-channel fallback)
@@ -650,6 +653,11 @@ pub struct VoiceOrbState {
     shmem_disabled: bool,
     /// Last time update_pulse() was called (for real delta time)
     last_pulse_update: Instant,
+    /// Timestamp when the orb entered Frozen state (for timeout)
+    frozen_since: Option<Instant>,
+    /// Whether the orb was in Attached mode before entering Frozen state.
+    /// Used to skip window fade-in on dismiss (windows are already visible when attached).
+    pub frozen_was_attached: bool,
 }
 
 impl std::fmt::Debug for VoiceOrbState {
@@ -660,6 +668,8 @@ impl std::fmt::Debug for VoiceOrbState {
             .field("scale", &self.scale)
             .field("low_intensity", &self.low_intensity)
             .field("high_intensity", &self.high_intensity)
+            .field("thinking_progress", &self.thinking_progress)
+            .field("frozen_was_attached", &self.frozen_was_attached)
             .field("shmem_reader", &self.shmem_reader.is_some())
             .finish_non_exhaustive()
     }
@@ -675,6 +685,7 @@ impl Clone for VoiceOrbState {
             opacity: self.opacity,
             low_intensity: self.low_intensity,
             high_intensity: self.high_intensity,
+            thinking_progress: self.thinking_progress,
             target_intensity: self.target_intensity,
             target_low: self.target_low,
             target_high: self.target_high,
@@ -693,6 +704,8 @@ impl Clone for VoiceOrbState {
             shmem_reader: None,
             shmem_disabled: self.shmem_disabled,
             last_pulse_update: self.last_pulse_update,
+            frozen_since: self.frozen_since,
+            frozen_was_attached: self.frozen_was_attached,
         }
     }
 }
@@ -707,6 +720,7 @@ impl Default for VoiceOrbState {
             opacity: 1.0,
             low_intensity: 0.0,
             high_intensity: 0.0,
+            thinking_progress: 0.0,
             target_intensity: 0.0,
             target_low: 0.0,
             target_high: 0.0,
@@ -724,6 +738,8 @@ impl Default for VoiceOrbState {
             shmem_reader: None,
             shmem_disabled: false,
             last_pulse_update: Instant::now(),
+            frozen_since: None,
+            frozen_was_attached: false,
         }
     }
 }
@@ -790,6 +806,7 @@ impl VoiceOrbState {
     pub fn request_hide(&mut self) {
         self.pending_hide = true;
         self.pending_show = false;
+        self.frozen_since = None;
     }
 
     /// Hide the orb
@@ -800,12 +817,14 @@ impl VoiceOrbState {
         // shmem_disabled prevents poll_shmem_audio_levels() from lazily
         // reopening the reader during the shrink animation.
         self.shmem_disabled = true;
+        self.frozen_since = None;
         self.close_shmem_reader();
         debug!("Voice orb hide: shmem disabled and reader closed");
 
         if self.orb_state != OrbState::Hidden {
-            // When attached, shrink in place; when floating, shrink toward center
-            let stay_in_place = self.orb_state == OrbState::Attached;
+            // When attached (or frozen from attached), shrink in place; when floating, shrink toward center
+            let stay_in_place = self.is_effectively_attached();
+            self.frozen_was_attached = false;
 
             // If scale is already near 0, skip the animation entirely
             // This prevents a "meaningless" shrink animation that would keep
@@ -908,14 +927,48 @@ impl VoiceOrbState {
     /// Freeze the orb in place (for transcription processing)
     /// Orb stops pulsing and stays visible until attach_and_transition or cancel
     pub fn freeze(&mut self) {
-        // Only freeze if currently floating
-        if self.orb_state == OrbState::Floating {
-            debug!("Freezing orb in place for transcription processing");
+        // Freeze if currently floating or attached
+        if self.orb_state == OrbState::Floating || self.orb_state == OrbState::Attached {
+            self.frozen_was_attached = self.orb_state == OrbState::Attached;
+            debug!(
+                "Freezing orb - entering thinking mode (was_attached={}, position={:?}, scale={}, burst_scale={}, attached_window={:?}, in_burst_phase={}, orb_state -> Frozen)",
+                self.frozen_was_attached,
+                self.position,
+                self.scale,
+                self.burst_scale,
+                self.attached_window,
+                self.is_in_burst_phase()
+            );
             self.orb_state = OrbState::Frozen;
+            self.frozen_since = Some(Instant::now());
             // Stop pulsing — zero the target and let smoothing decay naturally
             self.target_intensity = 0.0;
             self.voice_state = VoiceState::Idle;
+        } else {
+            debug!(
+                "freeze() called but orb_state={:?}, ignoring",
+                self.orb_state
+            );
         }
+    }
+
+    /// Whether the orb is frozen and was previously attached to a window.
+    /// Used to keep the orb rendering at window level during thinking mode.
+    pub fn is_frozen_attached(&self) -> bool {
+        self.orb_state == OrbState::Frozen && self.frozen_was_attached
+    }
+
+    /// Whether the orb is effectively in attached mode:
+    /// either currently Attached, or Frozen from a previously-attached state.
+    pub fn is_effectively_attached(&self) -> bool {
+        self.orb_state == OrbState::Attached || self.is_frozen_attached()
+    }
+
+    /// Check if the frozen orb has exceeded the timeout
+    pub fn has_frozen_timeout(&self) -> bool {
+        self.frozen_since
+            .map(|t| t.elapsed().as_secs_f32() >= 30.0)
+            .unwrap_or(false)
     }
 
     /// Start the attach and transition animation (burst + fade out)
@@ -944,6 +997,8 @@ impl VoiceOrbState {
         self.attached_window = Some(window_geo);
         self.attached_surface_id = Some(surface_id);
         self.orb_state = OrbState::Transitioning;
+        self.frozen_since = None;
+        self.frozen_was_attached = false;
         self.opacity = 1.0;
 
         // Start burst + fade animation
@@ -1036,6 +1091,10 @@ impl VoiceOrbState {
         }
         // Transitioning state is always in burst phase (orb expands over window)
         if self.orb_state == OrbState::Transitioning {
+            return true;
+        }
+        // Frozen from attached mode: keep rendering clipped to window
+        if self.is_frozen_attached() {
             return true;
         }
         // If not attached, never in burst phase
@@ -1162,6 +1221,18 @@ impl VoiceOrbState {
 
         self.low_intensity = self.low_intensity.clamp(0.0, 1.0);
         self.high_intensity = self.high_intensity.clamp(0.0, 1.0);
+
+        // Smoothly interpolate thinking_progress toward target
+        // Target is 1.0 when Frozen (waiting for transcript), 0.0 otherwise
+        // Use a slower lerp (base 0.05) for a gentler ~0.8s ramp into thinking mode
+        let thinking_lerp = 1.0 - (0.05_f32).powf(dt);
+        let thinking_target = if self.orb_state == OrbState::Frozen {
+            1.0
+        } else {
+            0.0
+        };
+        self.thinking_progress += (thinking_target - self.thinking_progress) * thinking_lerp;
+        self.thinking_progress = self.thinking_progress.clamp(0.0, 1.0);
     }
 
     /// Reset audio level (called when voice mode ends)
@@ -1199,9 +1270,11 @@ impl VoiceOrbState {
     pub fn should_render_at_window_level(&self) -> bool {
         // Render at window level if:
         // 1. Attached and in burst phase, OR
-        // 2. Currently shrinking from an attached state (hide animation)
+        // 2. Currently shrinking from an attached state (hide animation), OR
+        // 3. Frozen from attached mode (thinking animation stays at window level)
         (self.orb_state == OrbState::Attached && self.is_in_burst_phase())
             || self.shrinking_from_attached
+            || self.is_frozen_attached()
     }
 
     /// Get the attached window geometry if in window-level render mode
@@ -1229,7 +1302,7 @@ impl VoiceOrbState {
         window_geo: Rectangle<i32, Logical>,
         output_size: Size<i32, Logical>,
     ) {
-        if self.orb_state == OrbState::Attached || self.shrinking_from_attached {
+        if self.is_effectively_attached() || self.shrinking_from_attached {
             // Check if window size changed (need to recalculate burst_scale)
             let size_changed = self
                 .attached_window
@@ -1271,6 +1344,7 @@ impl VoiceOrbShader {
                 UniformName::new("window_aspect", UniformType::_1f),
                 UniformName::new("border_radius", UniformType::_1f),
                 UniformName::new("viewport_scale", UniformType::_1f),
+                UniformName::new("thinking", UniformType::_1f),
             ],
         )?;
 
@@ -1456,6 +1530,7 @@ impl VoiceOrbShader {
                 Uniform::new("window_aspect", window_aspect),
                 Uniform::new("border_radius", effective_border_radius),
                 Uniform::new("viewport_scale", viewport_scale),
+                Uniform::new("thinking", orb_state.thinking_progress),
             ],
             Kind::Unspecified,
         );

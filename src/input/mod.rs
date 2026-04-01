@@ -1770,20 +1770,17 @@ impl State {
             }
 
             tracing::debug!("Voice key binding matched! Processing...");
-            // Check if voice mode is in a non-interruptible state (frozen, transitioning)
-            // During these states, pressing the key again will cancel voice mode
+            // When the orb is frozen (thinking) or transitioning, ignore the guide key entirely.
+            // Only Escape can dismiss the orb during these states.
             if self
                 .common
                 .voice_mode_state
                 .orb_state()
                 .is_non_interruptible()
             {
-                if event.state() == KeyState::Pressed {
-                    tracing::debug!("Voice mode interrupted during freeze/transition - cancelling");
-                    std::mem::drop(shell); // Release shell lock before protocol calls
-                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                    self.cancel_voice_mode();
-                }
+                tracing::debug!(
+                    "Voice key ignored - orb is in non-interruptible state (use Escape to dismiss)"
+                );
                 return FilterResult::Intercept(None);
             }
 
@@ -2125,6 +2122,24 @@ impl State {
         }
 
         std::mem::drop(shell);
+
+        // Escape dismisses the orb when frozen (thinking mode)
+        if handle.modified_sym() == Keysym::Escape
+            && event.state() == KeyState::Pressed
+            && self
+                .common
+                .voice_mode_state
+                .orb_state()
+                .is_non_interruptible()
+        {
+            tracing::debug!(
+                "Escape pressed during frozen/transitioning orb - cancelling voice mode"
+            );
+            use crate::wayland::protocols::voice_mode::VoiceModeHandler;
+            self.cancel_voice_mode();
+            seat.supressed_keys().add(&handle, None);
+            return FilterResult::Intercept(None);
+        }
 
         // cancel grabs
         if is_grabbed

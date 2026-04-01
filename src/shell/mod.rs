@@ -3635,6 +3635,16 @@ impl Shell {
         self.voice_mode.exit();
     }
 
+    /// Exit voice mode immediately from attached state (no fade animation)
+    pub fn exit_voice_mode_from_attached(&mut self) {
+        self.voice_mode.exit_from_attached();
+    }
+
+    /// Get a debug representation of the current voice mode state
+    pub fn voice_mode_debug(&self) -> String {
+        format!("{:?}", self.voice_mode)
+    }
+
     /// Fade windows in immediately (for attached mode transitions)
     pub fn voice_mode_fade_in_immediately(&mut self) {
         self.voice_mode.fade_in_immediately();
@@ -3671,14 +3681,23 @@ impl Shell {
                     return true;
                 }
             }
-            // Receiver window focused and orb is frozen -> start attach_and_transition animation
-            // This happens when chat-ui window opens/focuses after transcription completes
+            // Receiver window focused and orb is frozen -> depends on prior state
             (true, crate::wayland::protocols::voice_mode::OrbState::Frozen) => {
+                if self.voice_orb_state.frozen_was_attached {
+                    // Orb was attached before freezing — stay frozen in place.
+                    // The client will send voice_dismiss when transcription completes,
+                    // which triggers dismiss_orb → request_hide → shrink animation.
+                    tracing::debug!(
+                        "Voice orb: frozen (was_attached) - ignoring focus change, waiting for client dismiss"
+                    );
+                    return true;
+                }
+                // Orb was floating before freezing — a new receiver window just opened.
+                // Attach to it and fade out (e.g. chat-ui opens after desktop voice).
                 if let Some(mapped) = focused_element {
                     use smithay::desktop::space::SpaceElement;
                     let window_geo = SpaceElement::geometry(mapped);
                     let output_size = output_geo.size.as_logical();
-                    // Get the surface ID for the attached window
                     let surface_id = mapped
                         .active_window()
                         .wl_surface()
@@ -3689,10 +3708,9 @@ impl Shell {
                         output_size,
                         surface_id,
                     );
-                    // Fade windows back in (orb will burst then fade out)
                     self.voice_mode.fade_in_immediately();
                     tracing::debug!(
-                        "Voice orb: frozen -> attach_and_transition to newly focused window"
+                        "Voice orb: frozen (was_floating) -> attach_and_transition to newly focused window"
                     );
                     return true;
                 }
@@ -3719,10 +3737,12 @@ impl Shell {
 
         // Windows stay visible only when attached or transitioning (orb behind window)
         // or when shrinking from attached state (window was already visible)
-        // Frozen state keeps windows hidden like floating - orb is just paused
+        // or when frozen from attached mode (windows were already visible before freeze)
         if self.voice_orb_state.orb_state == OrbState::Attached
             || self.voice_orb_state.orb_state == OrbState::Transitioning
             || self.voice_orb_state.shrinking_from_attached
+            || (self.voice_orb_state.orb_state == OrbState::Frozen
+                && self.voice_orb_state.frozen_was_attached)
         {
             // When attached/transitioning, windows should be visible
             // But respect the animation state for smooth transitions
