@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/playtron-os/cosmic-comp/compare/v1.14.0...v1.15.0) (2026-04-08)
+
+
+### Features
+
+* implement better animation driven pipeline to maximize/unmaximize windows ([6aa4b91](https://github.com/playtron-os/cosmic-comp/commit/6aa4b9179445527dd819f17027bbbab7a895bfa5))
+
 # [1.14.0](https://github.com/playtron-os/cosmic-comp/compare/v1.13.0...v1.14.0) (2026-04-01)
 
 
