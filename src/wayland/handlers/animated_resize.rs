@@ -147,16 +147,19 @@ impl AnimatedResizeHandler for State {
             target_y,
             target_width,
             target_height,
-            "Starting client-driven resize animation with boundary constraints"
+            "Starting animated resize with boundary constraints"
         );
         drop(shell); // Release read lock before getting write lock
 
-        // Start the animation via the floating layer
+        // Start the animation via the floating layer (compositor-driven texture upscaling)
         let mut shell = self.common.shell.write();
         if let Some(workspace) = shell.active_space_mut(&window_output) {
-            workspace
-                .floating_layer
-                .start_client_driven_resize(mapped, target_geometry);
+            workspace.floating_layer.map_internal(
+                mapped,
+                Some(target_geometry.loc),
+                Some(target_geometry.size.as_logical()),
+                None,
+            );
         }
     }
 
@@ -268,16 +271,19 @@ impl AnimatedResizeHandler for State {
             clamped_y,
             target_width,
             target_height,
-            "Starting client-driven resize animation with explicit position"
+            "Starting animated resize with explicit position"
         );
         drop(shell); // Release read lock before getting write lock
 
-        // Start the animation via the floating layer
+        // Start the animation via the floating layer (compositor-driven texture upscaling)
         let mut shell = self.common.shell.write();
         if let Some(workspace) = shell.active_space_mut(&window_output) {
-            workspace
-                .floating_layer
-                .start_client_driven_resize(mapped, target_geometry);
+            workspace.floating_layer.map_internal(
+                mapped,
+                Some(target_geometry.loc),
+                Some(target_geometry.size.as_logical()),
+                None,
+            );
         }
     }
 }

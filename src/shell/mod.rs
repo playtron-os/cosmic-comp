@@ -6234,12 +6234,12 @@ impl Shell {
         loop_handle: &LoopHandle<'static, State>,
     ) {
         if window.is_maximized(true) {
-            self.unmaximize_request_with_options(window, true);
+            self.unmaximize_request_with_options(window);
         } else {
             if window.is_fullscreen(true) {
                 return;
             }
-            self.maximize_request_with_options(window, seat, true, true, false, loop_handle);
+            self.maximize_request_with_options(window, seat, true, false, loop_handle);
         }
     }
 
@@ -6346,7 +6346,7 @@ impl Shell {
         animate: bool,
         loop_handle: &LoopHandle<'static, State>,
     ) {
-        self.maximize_request_with_options(mapped, seat, animate, false, false, loop_handle)
+        self.maximize_request_with_options(mapped, seat, animate, false, loop_handle)
     }
 
     /// Maximize with fade-in animation only (no geometry transition).
@@ -6357,18 +6357,15 @@ impl Shell {
         seat: &Seat<State>,
         loop_handle: &LoopHandle<'static, State>,
     ) {
-        self.maximize_request_with_options(mapped, seat, true, false, true, loop_handle)
+        self.maximize_request_with_options(mapped, seat, true, true, loop_handle)
     }
 
-    /// Maximize with optional client-driven animation.
-    /// When `client_driven` is true, the compositor sends intermediate
-    /// configure events to the client for smooth resize animation.
+    /// Maximize with pipelined client-driven resize animation.
     pub fn maximize_request_with_options(
         &mut self,
         mapped: &CosmicMapped,
         seat: &Seat<State>,
         animate: bool,
-        client_driven: bool,
         fade_in_only: bool,
         loop_handle: &LoopHandle<'static, State>,
     ) {
@@ -6416,12 +6413,12 @@ impl Shell {
                 original_layer,
             });
             std::mem::drop(state);
-            if client_driven && animate {
-                floating_layer.map_maximized_client_driven(mapped.clone(), original_geometry);
-            } else if fade_in_only && animate {
+            if fade_in_only && animate {
                 floating_layer.map_maximized_fade_in(mapped.clone(), original_geometry);
+            } else if animate {
+                floating_layer.start_pipelined_maximize(mapped.clone(), original_geometry);
             } else {
-                floating_layer.map_maximized(mapped.clone(), original_geometry, animate);
+                floating_layer.map_maximized(mapped.clone(), original_geometry, false);
             }
             // Trigger auto-hide for surfaces on the same output.
             self.refresh_auto_hide();
@@ -6429,16 +6426,13 @@ impl Shell {
     }
 
     pub fn unmaximize_request(&mut self, mapped: &CosmicMapped) -> Option<Size<i32, Logical>> {
-        self.unmaximize_request_with_options(mapped, false)
+        self.unmaximize_request_with_options(mapped)
     }
 
-    /// Unmaximize with optional client-driven animation.
-    /// When `client_driven` is true, the compositor sends intermediate
-    /// configure events to the client for smooth resize animation.
+    /// Unmaximize with pipelined client-driven resize animation.
     pub fn unmaximize_request_with_options(
         &mut self,
         mapped: &CosmicMapped,
-        client_driven: bool,
     ) -> Option<Size<i32, Logical>> {
         if let Some(set) = self.workspaces.sets.values_mut().find(|set| {
             set.sticky_layer.mapped().any(|m| m == mapped)
@@ -6458,18 +6452,8 @@ impl Shell {
                 {
                     minimized.unmaximize(state.original_geometry);
                 } else {
-                    mapped.set_maximized(false);
-                    if client_driven {
-                        set.sticky_layer
-                            .start_client_driven_resize(mapped.clone(), state.original_geometry);
-                    } else {
-                        set.sticky_layer.map_internal(
-                            mapped.clone(),
-                            Some(state.original_geometry.loc),
-                            Some(state.original_geometry.size.as_logical()),
-                            None,
-                        );
-                    }
+                    set.sticky_layer
+                        .start_pipelined_unmaximize(mapped.clone(), state.original_geometry);
                 }
                 // Trigger auto-hide update after unmaximize.
                 self.refresh_auto_hide();
@@ -6479,7 +6463,7 @@ impl Shell {
             }
         } else if let Some(workspace) = self.space_for_mut(mapped) {
             let result = workspace
-                .unmaximize_request_with_options(mapped, client_driven)
+                .unmaximize_request_with_options(mapped)
                 .map(|geo| geo.size.as_logical());
             // Trigger auto-hide update after unmaximize.
             self.refresh_auto_hide();

@@ -77,6 +77,21 @@ enum Animation {
         start: Instant,
         previous_geometry: Rectangle<i32, Local>,
     },
+    /// Client-driven pipelined resize animation.
+    /// Sends configures along the animation curve, pipelined ahead by 1-2 frames.
+    /// The client renders at intermediate sizes; the compositor positions the buffer
+    /// at the time-interpolated location with minimal scaling.
+    ClientPipelinedResize {
+        start: Instant,
+        previous_geometry: Rectangle<i32, Local>,
+        target_geometry: Rectangle<i32, Local>,
+        last_configure_time: Instant,
+        is_maximize: bool,
+        /// Set to true once the animation duration has elapsed and final state
+        /// (maximized/tiled/geometry) has been applied. The animation is kept
+        /// alive until the client's buffer matches the target size.
+        finalized: bool,
+    },
     Minimize {
         start: Instant,
         previous_geometry: Rectangle<i32, Local>,
@@ -86,18 +101,6 @@ enum Animation {
         start: Instant,
         previous_geometry: Rectangle<i32, Local>,
         target_geometry: Rectangle<i32, Local>,
-    },
-    /// Client-driven animated resize: sends intermediate configure events
-    /// instead of rescaling the buffer. The client renders at each
-    /// intermediate size for smooth resize animation.
-    ClientDrivenResize {
-        start: Instant,
-        previous_geometry: Rectangle<i32, Local>,
-        target_geometry: Rectangle<i32, Local>,
-        /// Last size we sent in a configure (for change detection)
-        last_sent_size: Size<i32, Local>,
-        /// Last time we sent a configure (for throttling)
-        last_configure_time: Instant,
     },
     /// Fade-in animation for newly mapped maximized windows.
     /// Window starts at 0% opacity and fades to 100% over ANIMATION_DURATION.
@@ -111,17 +114,16 @@ impl Animation {
     fn start(&self) -> &Instant {
         match self {
             Animation::Tiled { start, .. } => start,
+            Animation::ClientPipelinedResize { start, .. } => start,
             Animation::Minimize { start, .. } => start,
             Animation::Unminimize { start, .. } => start,
-            Animation::ClientDrivenResize { start, .. } => start,
             Animation::MapFadeIn { start, .. } => start,
         }
     }
 
     fn alpha(&self) -> f32 {
         match self {
-            Animation::Tiled { .. } => 1.0,
-            Animation::ClientDrivenResize { .. } => 1.0,
+            Animation::Tiled { .. } | Animation::ClientPipelinedResize { .. } => 1.0,
             Animation::Minimize { start, .. } => {
                 let percentage = Instant::now()
                     .duration_since(*start)
@@ -154,94 +156,16 @@ impl Animation {
             Animation::Tiled {
                 previous_geometry, ..
             } => previous_geometry,
+            Animation::ClientPipelinedResize {
+                previous_geometry, ..
+            } => previous_geometry,
             Animation::Minimize {
                 previous_geometry, ..
             } => previous_geometry,
             Animation::Unminimize {
                 previous_geometry, ..
             } => previous_geometry,
-            Animation::ClientDrivenResize {
-                previous_geometry, ..
-            } => previous_geometry,
             Animation::MapFadeIn { geometry, .. } => geometry,
-        }
-    }
-
-    /// Returns true if this animation uses client-driven resize (sends configure events
-    /// instead of rescaling buffers)
-    fn is_client_driven(&self) -> bool {
-        matches!(self, Animation::ClientDrivenResize { .. })
-    }
-
-    /// For ClientDrivenResize, calculate the render position based on the client's
-    /// actual buffer size. This keeps position and buffer in sync regardless of
-    /// how many frames the client takes to respond.
-    ///
-    /// The key insight: interpolate position based on where the actual buffer size
-    /// falls on the animation curve, not based on time.
-    fn render_geometry_for_buffer_size(
-        &self,
-        actual_buffer_size: Size<i32, Logical>,
-    ) -> Option<Rectangle<i32, Local>> {
-        match self {
-            Animation::ClientDrivenResize {
-                start,
-                previous_geometry,
-                target_geometry,
-                ..
-            } => {
-                let buffer_size = actual_buffer_size.as_local();
-
-                // Calculate how far along the size is between previous and target
-                let prev_size = previous_geometry.size;
-                let target_size = target_geometry.size;
-
-                // If sizes are the same, this is a position-only animation
-                // Use time-based easing for smooth position animation
-                if prev_size == target_size {
-                    let now = Instant::now();
-                    let progress = now
-                        .duration_since(*start)
-                        .min(ANIMATION_DURATION)
-                        .as_secs_f64()
-                        / ANIMATION_DURATION.as_secs_f64();
-
-                    // Use same easing as size animations
-                    let eased_geo: Rectangle<i32, Local> = ease(
-                        EaseInOutCubic,
-                        EaseRectangle(*previous_geometry),
-                        EaseRectangle(*target_geometry),
-                        progress,
-                    )
-                    .unwrap();
-
-                    return Some(eased_geo);
-                }
-
-                // Calculate progress based on size (use width as proxy, could average)
-                let size_progress = if prev_size.w != target_size.w {
-                    (buffer_size.w - prev_size.w) as f64 / (target_size.w - prev_size.w) as f64
-                } else if prev_size.h != target_size.h {
-                    (buffer_size.h - prev_size.h) as f64 / (target_size.h - prev_size.h) as f64
-                } else {
-                    1.0
-                };
-
-                // Clamp progress to [0, 1]
-                let progress = size_progress.clamp(0.0, 1.0);
-
-                // Interpolate position linearly based on size progress
-                let x = previous_geometry.loc.x as f64
-                    + (target_geometry.loc.x - previous_geometry.loc.x) as f64 * progress;
-                let y = previous_geometry.loc.y as f64
-                    + (target_geometry.loc.y - previous_geometry.loc.y) as f64 * progress;
-
-                Some(Rectangle::new(
-                    Point::new(x.round() as i32, y.round() as i32),
-                    buffer_size,
-                ))
-            }
-            _ => None,
         }
     }
 
@@ -259,14 +183,6 @@ impl Animation {
             | Animation::Unminimize {
                 target_geometry, ..
             } => (MINIMIZE_ANIMATION_DURATION, *target_geometry),
-            Animation::ClientDrivenResize {
-                previous_geometry, ..
-            } => {
-                // For client-driven resize, return the previous geometry as fallback.
-                // The actual render geometry should be calculated via
-                // render_geometry_for_buffer_size() based on the client's buffer.
-                return *previous_geometry;
-            }
             Animation::MapFadeIn { geometry, .. } => {
                 // MapFadeIn doesn't change geometry, just alpha.
                 // Return the target geometry immediately.
@@ -282,6 +198,9 @@ impl Animation {
                 };
                 (ANIMATION_DURATION, target_geometry)
             }
+            Animation::ClientPipelinedResize {
+                target_geometry, ..
+            } => (ANIMATION_DURATION, *target_geometry),
         };
         let previous_rect = *self.previous_geometry();
         let start = *self.start();
@@ -490,38 +409,6 @@ impl FloatingLayout {
     // Embedded child animation helpers
     // ─────────────────────────────────────────────────────────────────────────────
 
-    /// Start animation sync tracking for all embedded children of a parent.
-    /// Call this at the beginning of a client-driven animation.
-    fn start_embed_animation_tracking(
-        &self,
-        parent_surface_id: Option<&String>,
-        parent_geometry: Rectangle<i32, Local>,
-    ) {
-        let Some(sid) = parent_surface_id else { return };
-
-        let embedded_children =
-            crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(sid);
-
-        for (embedded_surface_id, embed_info) in &embedded_children {
-            let initial_embed_size = if let Some(ref anchor) = embed_info.anchor_config {
-                anchor.calculate_geometry(parent_geometry.size.w, parent_geometry.size.h)
-            } else {
-                embed_info.geometry
-            };
-
-            crate::wayland::handlers::surface_embed::start_embed_animation_sync(
-                embedded_surface_id,
-                initial_embed_size.size,
-            );
-
-            tracing::debug!(
-                embedded_surface_id,
-                ?initial_embed_size,
-                "Started animation sync for embedded child"
-            );
-        }
-    }
-
     /// Configure all embedded children to a given parent size.
     /// If `record_for_animation` is true, records the configure for animation sync.
     fn configure_embeds_to_parent_size(
@@ -569,47 +456,6 @@ impl FloatingLayout {
                 );
             }
         }
-    }
-
-    /// Calculate the lookahead geometry for frame-ahead buffering.
-    /// This calculates where the animation will be ~16ms (one frame) ahead.
-    fn calculate_lookahead_geometry(
-        from: Rectangle<i32, Local>,
-        to: Rectangle<i32, Local>,
-    ) -> Rectangle<i32, Local> {
-        let lookahead_duration = std::time::Duration::from_millis(16);
-        let lookahead_progress =
-            (lookahead_duration.as_secs_f64() / ANIMATION_DURATION.as_secs_f64()).min(1.0);
-
-        ease(
-            EaseInOutCubic,
-            EaseRectangle(from),
-            EaseRectangle(to),
-            lookahead_progress,
-        )
-        .unwrap()
-    }
-
-    /// Calculate lookahead geometry based on animation progress plus estimated latency.
-    /// Used during animation updates to configure embedded windows ahead of time.
-    fn calculate_lookahead_for_latency(
-        previous_geometry: Rectangle<i32, Local>,
-        target_geometry: Rectangle<i32, Local>,
-        anim_start: Instant,
-        estimated_latency: std::time::Duration,
-    ) -> Rectangle<i32, Local> {
-        let now = Instant::now();
-        let lookahead_elapsed = now.duration_since(anim_start) + estimated_latency;
-        let lookahead_progress =
-            (lookahead_elapsed.as_secs_f64() / ANIMATION_DURATION.as_secs_f64()).min(1.0);
-
-        ease(
-            EaseInOutCubic,
-            EaseRectangle(previous_geometry),
-            EaseRectangle(target_geometry),
-            lookahead_progress,
-        )
-        .unwrap()
     }
 
     /// Render embedded children of a parent window.
@@ -787,97 +633,13 @@ impl FloatingLayout {
         popup_elements
     }
 
-    /// Update embedded children with lookahead sizes during animation.
-    /// This ensures embedded windows commit buffers for the next frame ahead of time.
-    fn update_embeds_with_lookahead(
-        &self,
-        mapped: &CosmicMapped,
-        previous_geometry: Rectangle<i32, Local>,
-        target_geometry: Rectangle<i32, Local>,
-    ) {
-        let parent_surface_id = mapped
-            .active_window()
-            .wl_surface()
-            .map(|s| s.id().to_string());
-
-        let Some(ref sid) = parent_surface_id else {
-            return;
-        };
-
-        let embedded_children =
-            crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(sid);
-
-        let anim_start = self
-            .animations
-            .get(mapped)
-            .map(|a| *a.start())
-            .unwrap_or_else(Instant::now);
-
-        for (embedded_surface_id, _embed_info) in &embedded_children {
-            let estimated_latency =
-                crate::wayland::handlers::surface_embed::get_embed_animation_sync(
-                    embedded_surface_id,
-                )
-                .map(|sync| sync.estimated_latency)
-                .unwrap_or(std::time::Duration::from_millis(16));
-
-            let lookahead_parent_geometry = Self::calculate_lookahead_for_latency(
-                previous_geometry,
-                target_geometry,
-                anim_start,
-                estimated_latency,
-            );
-
-            // Update embedded geometry for lookahead parent size
-            let lookahead_embeds =
-                crate::wayland::handlers::surface_embed::update_embedded_geometry_for_parent_by_surface_id(
-                    sid,
-                    lookahead_parent_geometry.size.w,
-                    lookahead_parent_geometry.size.h,
-                );
-
-            // Configure the specific embedded window to lookahead size
-            for (embed_id, new_geometry) in lookahead_embeds {
-                if &embed_id != embedded_surface_id {
-                    continue;
-                }
-
-                if let Some(embedded_elem) = self.space.elements().find(|e| {
-                    e.active_window()
-                        .wl_surface()
-                        .map(|s| s.id().to_string() == embed_id)
-                        .unwrap_or(false)
-                }) {
-                    let global_geo = Rectangle::new(
-                        (new_geometry.loc.x, new_geometry.loc.y).into(),
-                        (new_geometry.size.w, new_geometry.size.h).into(),
-                    );
-                    embedded_elem.active_window().set_geometry(global_geo, 0);
-                    embedded_elem.configure();
-
-                    crate::wayland::handlers::surface_embed::record_embed_configure(
-                        &embed_id,
-                        new_geometry.size,
-                    );
-
-                    tracing::trace!(
-                        embed_id,
-                        ?estimated_latency,
-                        lookahead_size = ?new_geometry.size,
-                        "Configured embedded with lookahead"
-                    );
-                }
-            }
-        }
-    }
-
     pub fn map_maximized(
         &mut self,
         mapped: CosmicMapped,
         previous_geometry: Rectangle<i32, Local>,
         animate: bool,
     ) {
-        self.map_maximized_internal(mapped, previous_geometry, animate, false, false)
+        self.map_maximized_internal(mapped, previous_geometry, animate, false)
     }
 
     /// Map a window as maximized with fade-in animation only (no geometry transition).
@@ -887,17 +649,7 @@ impl FloatingLayout {
         mapped: CosmicMapped,
         previous_geometry: Rectangle<i32, Local>,
     ) {
-        self.map_maximized_internal(mapped, previous_geometry, true, false, true)
-    }
-
-    /// Map a window as maximized with client-driven animation.
-    /// The client receives intermediate configure events during the animation.
-    pub fn map_maximized_client_driven(
-        &mut self,
-        mapped: CosmicMapped,
-        previous_geometry: Rectangle<i32, Local>,
-    ) {
-        self.map_maximized_internal(mapped, previous_geometry, true, true, false)
+        self.map_maximized_internal(mapped, previous_geometry, true, true)
     }
 
     fn map_maximized_internal(
@@ -905,7 +657,6 @@ impl FloatingLayout {
         mapped: CosmicMapped,
         previous_geometry: Rectangle<i32, Local>,
         animate: bool,
-        client_driven: bool,
         fade_in_only: bool,
     ) {
         let output = self.space.outputs().next().unwrap().clone();
@@ -921,67 +672,137 @@ impl FloatingLayout {
             .wl_surface()
             .map(|s| s.id().to_string());
 
-        if client_driven && animate {
-            // Client-driven: use frame-ahead buffering for embedded children
-            self.start_embed_animation_tracking(parent_surface_id.as_ref(), previous_geometry);
+        // Configure embedded children to final target size
+        self.configure_embeds_to_parent_size(
+            parent_surface_id.as_ref(),
+            target_geometry.size.w,
+            target_geometry.size.h,
+            false,
+        );
 
-            let lookahead_geometry =
-                Self::calculate_lookahead_geometry(previous_geometry, target_geometry);
-            self.configure_embeds_to_parent_size(
-                parent_surface_id.as_ref(),
-                lookahead_geometry.size.w,
-                lookahead_geometry.size.h,
-                true, // record for animation
-            );
+        mapped.set_geometry(target_geometry.to_global(&output));
+        mapped.configure();
 
-            let now = Instant::now();
-            self.animations.insert(
-                mapped.clone(),
-                Animation::ClientDrivenResize {
-                    start: now,
-                    previous_geometry,
-                    target_geometry,
-                    last_sent_size: previous_geometry.size,
-                    last_configure_time: now,
-                },
-            );
-            mapped.set_geometry(previous_geometry.to_global(&output));
-            mapped.configure();
-        } else {
-            // Compositor-driven: configure embedded children to final target size
-            self.configure_embeds_to_parent_size(
-                parent_surface_id.as_ref(),
-                target_geometry.size.w,
-                target_geometry.size.h,
-                false, // no animation tracking
-            );
-
-            mapped.set_geometry(target_geometry.to_global(&output));
-            mapped.configure();
-
-            if animate {
-                if fade_in_only {
-                    // Pure fade-in: window starts at full size, just animate alpha
-                    self.animations.insert(
-                        mapped.clone(),
-                        Animation::MapFadeIn {
-                            start: Instant::now(),
-                            geometry: target_geometry,
-                        },
-                    );
-                } else {
-                    self.update_or_insert_tiled_animation(
-                        &mapped,
-                        previous_geometry,
-                        target_geometry,
-                    );
-                }
+        if animate {
+            if fade_in_only {
+                // Pure fade-in: window starts at full size, just animate alpha
+                self.animations.insert(
+                    mapped.clone(),
+                    Animation::MapFadeIn {
+                        start: Instant::now(),
+                        geometry: target_geometry,
+                    },
+                );
             } else {
-                self.animations.remove(&mapped);
+                self.update_or_insert_tiled_animation(&mapped, previous_geometry, target_geometry);
             }
+        } else {
+            self.animations.remove(&mapped);
         }
 
         self.finalize_maximize_map(mapped, target_geometry);
+    }
+
+    /// Start a pipelined maximize animation.
+    /// Sends configures along the animation curve so the client re-renders at
+    /// intermediate sizes. set_maximized/set_tiled are deferred until completion.
+    pub fn start_pipelined_maximize(
+        &mut self,
+        mapped: CosmicMapped,
+        original_geometry: Rectangle<i32, Local>,
+    ) {
+        let output = self.space.outputs().next().unwrap().clone();
+        let layers = layer_map_for_output(&output);
+        let target_geometry = layers.non_exclusive_zone().as_local();
+
+        mapped.set_bounds(target_geometry.size.as_logical());
+
+        // Send first configure 1 frame ahead on the curve
+        let frame_interval = Duration::from_millis(16);
+        let first_progress = frame_interval.as_secs_f64() / ANIMATION_DURATION.as_secs_f64();
+        let first_geo: Rectangle<i32, Local> = ease(
+            EaseInOutCubic,
+            EaseRectangle(original_geometry),
+            EaseRectangle(target_geometry),
+            first_progress,
+        )
+        .unwrap();
+        mapped.set_geometry(first_geo.to_global(&output));
+        mapped.configure();
+
+        tracing::debug!(
+            app_id = %mapped.active_window().app_id(),
+            prev = ?original_geometry,
+            target = ?target_geometry,
+            first_geo = ?first_geo,
+            "[PIPELINE] Starting pipelined maximize"
+        );
+
+        let now = Instant::now();
+        self.animations.insert(
+            mapped.clone(),
+            Animation::ClientPipelinedResize {
+                start: now,
+                previous_geometry: original_geometry,
+                target_geometry,
+                last_configure_time: now,
+                is_maximize: true,
+                finalized: false,
+            },
+        );
+
+        self.finalize_maximize_map(mapped, target_geometry);
+    }
+
+    /// Start a pipelined unmaximize animation.
+    /// Sends configures along the animation curve so the client re-renders at
+    /// intermediate sizes. set_maximized/set_tiled are deferred until completion.
+    pub fn start_pipelined_unmaximize(
+        &mut self,
+        mapped: CosmicMapped,
+        target_geometry: Rectangle<i32, Local>,
+    ) {
+        let current_geo = self
+            .space
+            .element_geometry(&mapped)
+            .map(RectExt::as_local)
+            .unwrap_or(target_geometry);
+
+        let output = self.space.outputs().next().unwrap().clone();
+
+        // Send first configure 1 frame ahead on the curve
+        let frame_interval = Duration::from_millis(16);
+        let first_progress = frame_interval.as_secs_f64() / ANIMATION_DURATION.as_secs_f64();
+        let first_geo: Rectangle<i32, Local> = ease(
+            EaseInOutCubic,
+            EaseRectangle(current_geo),
+            EaseRectangle(target_geometry),
+            first_progress,
+        )
+        .unwrap();
+        mapped.set_geometry(first_geo.to_global(&output));
+        mapped.configure();
+
+        tracing::debug!(
+            app_id = %mapped.active_window().app_id(),
+            prev = ?current_geo,
+            target = ?target_geometry,
+            first_geo = ?first_geo,
+            "[PIPELINE] Starting pipelined unmaximize"
+        );
+
+        let now = Instant::now();
+        self.animations.insert(
+            mapped.clone(),
+            Animation::ClientPipelinedResize {
+                start: now,
+                previous_geometry: current_geo,
+                target_geometry,
+                last_configure_time: now,
+                is_maximize: false,
+                finalized: false,
+            },
+        );
     }
 
     /// Update an existing animation's target or insert a new animation.
@@ -998,16 +819,13 @@ impl FloatingLayout {
                 Animation::Unminimize {
                     target_geometry: tg,
                     ..
-                }
-                | Animation::ClientDrivenResize {
-                    target_geometry: tg,
-                    ..
                 } => {
                     *tg = target_geometry;
                 }
                 Animation::Minimize { .. }
                 | Animation::Tiled { .. }
-                | Animation::MapFadeIn { .. } => {}
+                | Animation::MapFadeIn { .. }
+                | Animation::ClientPipelinedResize { .. } => {}
             }
         } else {
             // If geometries are the same, use fade-in animation instead of tiled
@@ -1051,68 +869,7 @@ impl FloatingLayout {
         self.space.refresh();
     }
 
-    /// Start a client-driven animated resize from current geometry to target.
-    /// Instead of rescaling buffers, this sends intermediate configure events
-    /// to the client so it can render at each intermediate size for smooth animation.
-    ///
-    /// This is useful for smooth maximize/unmaximize transitions when the client
-    /// supports rendering at varying sizes quickly.
-    pub fn start_client_driven_resize(
-        &mut self,
-        mapped: CosmicMapped,
-        target_geometry: Rectangle<i32, Local>,
-    ) {
-        let current_geometry = self
-            .space
-            .element_geometry(&mapped)
-            .map(RectExt::as_local)
-            .unwrap_or(target_geometry);
-
-        let parent_surface_id = mapped
-            .active_window()
-            .wl_surface()
-            .map(|s| s.id().to_string());
-
-        // Start animation sync and configure embeds to lookahead size
-        self.start_embed_animation_tracking(parent_surface_id.as_ref(), current_geometry);
-
-        let lookahead_geometry =
-            Self::calculate_lookahead_geometry(current_geometry, target_geometry);
-        self.configure_embeds_to_parent_size(
-            parent_surface_id.as_ref(),
-            lookahead_geometry.size.w,
-            lookahead_geometry.size.h,
-            true, // record for animation
-        );
-
-        // Start animation from current to target
-        let now = Instant::now();
-        self.animations.insert(
-            mapped.clone(),
-            Animation::ClientDrivenResize {
-                start: now,
-                previous_geometry: current_geometry,
-                target_geometry,
-                last_sent_size: current_geometry.size,
-                last_configure_time: now,
-            },
-        );
-
-        // Map at current position (will be animated)
-        self.space
-            .map_element(mapped, current_geometry.loc.as_logical(), true);
-        self.dirty.store(true, Ordering::SeqCst);
-    }
-
-    /// Check if the given mapped element has a client-driven resize animation active
-    pub fn has_client_driven_resize(&self, mapped: &CosmicMapped) -> bool {
-        self.animations
-            .get(mapped)
-            .map(|a| a.is_client_driven())
-            .unwrap_or(false)
-    }
-
-    pub(in crate::shell) fn map_internal(
+    pub(crate) fn map_internal(
         &mut self,
         mapped: CosmicMapped,
         position: Option<Point<i32, Local>>,
@@ -2514,176 +2271,148 @@ impl FloatingLayout {
 
     pub fn update_animation_state(&mut self) {
         let was_empty = self.animations.is_empty();
+        let now = Instant::now();
 
-        // Get output for geometry conversion (needed for client-driven animations)
         let output = self.space.outputs().next().cloned();
+        if let Some(ref output) = output {
+            let frame_interval = Duration::from_millis(16);
 
-        // Calculate frame interval from display refresh rate for configure throttling.
-        // Falls back to 60fps (16ms) if the output mode is unavailable.
-        let frame_interval = output
-            .as_ref()
-            .and_then(|o| o.current_mode())
-            .map(|mode| Duration::from_secs_f64(1_000.0 / mode.refresh as f64))
-            .unwrap_or(Duration::from_millis(16));
-
-        // For client-driven resize animations:
-        // Calculate animated geometry and send configures at each frame.
-        // The render position is calculated separately in render_elements
-        // based on the client's actual buffer size.
-
-        // Collect updates to send
-        let updates: Vec<_> = self
-            .animations
-            .iter()
-            .filter_map(|(mapped, anim)| {
-                if let Animation::ClientDrivenResize {
+            // Send pipelined configures for ClientPipelinedResize animations
+            for (mapped, anim) in self.animations.iter_mut() {
+                if let Animation::ClientPipelinedResize {
                     start,
                     previous_geometry,
                     target_geometry,
-                    last_sent_size,
                     last_configure_time,
                     ..
                 } = anim
                 {
-                    // Calculate current animated geometry based on time
-                    let now = Instant::now();
-                    let progress = now
-                        .duration_since(*start)
-                        .min(ANIMATION_DURATION)
-                        .as_secs_f64()
+                    let elapsed = now.duration_since(*start);
+                    let progress = elapsed.min(ANIMATION_DURATION).as_secs_f64()
                         / ANIMATION_DURATION.as_secs_f64();
 
-                    let current_geometry: Rectangle<i32, Local> = ease(
-                        EaseInOutCubic,
-                        EaseRectangle(*previous_geometry),
-                        EaseRectangle(*target_geometry),
-                        progress,
-                    )
-                    .unwrap();
+                    // Only send if animation is still running and enough time passed
+                    let time_since_last = now.duration_since(*last_configure_time);
+                    if progress < 1.0 && time_since_last >= frame_interval {
+                        // Back-pressure: don't flood the client
+                        let pending = mapped.active_window().pending_configure_count();
+                        if pending < 3 {
+                            // Send configure for 1 frame ahead on the curve
+                            let lookahead_progress = (elapsed + frame_interval)
+                                .min(ANIMATION_DURATION)
+                                .as_secs_f64()
+                                / ANIMATION_DURATION.as_secs_f64();
+                            let mut lookahead_geo: Rectangle<i32, Local> = ease(
+                                EaseInOutCubic,
+                                EaseRectangle(*previous_geometry),
+                                EaseRectangle(*target_geometry),
+                                lookahead_progress,
+                            )
+                            .unwrap();
 
-                    // Check if we need to send a new configure
-                    let elapsed = now.duration_since(*start);
-                    let is_complete = elapsed >= ANIMATION_DURATION;
-                    // Send if size changed from what we last sent
-                    let size_changed = current_geometry.size != *last_sent_size;
-                    let final_size_needed = is_complete && *last_sent_size != target_geometry.size;
+                            // Snap to target when within 2px to avoid near-miss frames
+                            if (lookahead_geo.size.w - target_geometry.size.w).abs() <= 2
+                                && (lookahead_geo.size.h - target_geometry.size.h).abs() <= 2
+                            {
+                                lookahead_geo = *target_geometry;
+                            }
 
-                    // Throttle configures to the display's frame rate
-                    // to avoid flooding the client's Wayland socket buffer.
-                    // Always allow the final configure to ensure we reach the target.
-                    let throttle_ok = final_size_needed
-                        || now.duration_since(*last_configure_time) >= frame_interval;
+                            mapped.set_geometry(lookahead_geo.to_global(output));
+                            mapped.configure();
+                            *last_configure_time = now;
 
-                    // Back-pressure: skip if the client has too many unacked configures.
-                    // This prevents flooding the Wayland socket buffer when the client
-                    // is busy (e.g. during wgpu surface reconfigure), which would cause
-                    // the compositor to kill the connection with EPIPE.
-                    let client_keeping_up =
-                        final_size_needed || mapped.active_window().pending_configure_count() < 5;
-
-                    if (size_changed || final_size_needed) && throttle_ok && client_keeping_up {
-                        let geometry_to_send = if is_complete {
-                            *target_geometry
+                            tracing::debug!(
+                                app_id = %mapped.active_window().app_id(),
+                                elapsed_ms = elapsed.as_millis(),
+                                progress = format!("{progress:.3}"),
+                                pending = pending,
+                                lookahead_w = lookahead_geo.size.w,
+                                lookahead_h = lookahead_geo.size.h,
+                                "[PIPELINE] Sent configure"
+                            );
                         } else {
-                            current_geometry
-                        };
-                        Some((mapped.clone(), geometry_to_send))
-                    } else {
-                        None
+                            tracing::debug!(
+                                app_id = %mapped.active_window().app_id(),
+                                pending = pending,
+                                "[PIPELINE] Back-pressure: skipping configure"
+                            );
+                        }
                     }
-                } else {
-                    None
                 }
-            })
-            .collect();
-
-        // Send configures and update last_sent_size, also update embedded children with lookahead
-        if let Some(ref output) = output {
-            for (mapped, geometry) in &updates {
-                mapped.set_geometry(geometry.to_global(output));
-                mapped.force_configure();
-
-                // Update last_sent_size/time and get animation info for embedded lookahead
-                let (previous_geometry, target_geometry) =
-                    if let Some(Animation::ClientDrivenResize {
-                        last_sent_size,
-                        last_configure_time,
-                        previous_geometry,
-                        target_geometry,
-                        ..
-                    }) = self.animations.get_mut(mapped)
-                    {
-                        *last_sent_size = geometry.size;
-                        *last_configure_time = Instant::now();
-                        (*previous_geometry, *target_geometry)
-                    } else {
-                        continue;
-                    };
-
-                // Update embedded children with lookahead sizes
-                self.update_embeds_with_lookahead(mapped, previous_geometry, target_geometry);
             }
-        }
 
-        // Before removing completed animations, finalize their geometry and stop embed sync
-        if let Some(ref output) = output {
-            let completed: Vec<_> = self
-                .animations
-                .iter()
-                .filter_map(|(mapped, anim)| {
-                    let duration = match anim {
-                        Animation::Tiled { .. } | Animation::ClientDrivenResize { .. } => {
-                            ANIMATION_DURATION
-                        }
-                        _ => MINIMIZE_ANIMATION_DURATION,
-                    };
-                    if Instant::now().duration_since(*anim.start()) >= duration {
-                        // For client-driven animations, get the target geometry
-                        if let Animation::ClientDrivenResize {
-                            target_geometry, ..
-                        } = anim
-                        {
-                            Some((mapped.clone(), *target_geometry))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+            // Finalize completed ClientPipelinedResize animations.
+            // Set `finalized = true` so state is only applied once, but keep the
+            // animation alive until the client's buffer catches up to the target size.
+            for (mapped, anim) in self.animations.iter_mut() {
+                if let Animation::ClientPipelinedResize {
+                    start,
+                    target_geometry,
+                    is_maximize,
+                    finalized,
+                    ..
+                } = anim
+                {
+                    if !*finalized && now.duration_since(*start) >= ANIMATION_DURATION {
+                        tracing::debug!(
+                            app_id = %mapped.active_window().app_id(),
+                            is_maximize = *is_maximize,
+                            target = ?*target_geometry,
+                            "[PIPELINE] Animation complete, applying final state"
+                        );
+                        mapped.set_maximized(*is_maximize);
+                        mapped.set_tiled(*is_maximize);
+                        mapped.set_geometry(target_geometry.to_global(output));
+                        mapped.configure();
+                        self.space.map_element(
+                            mapped.clone(),
+                            target_geometry.loc.as_logical(),
+                            false,
+                        );
+                        *finalized = true;
                     }
-                })
-                .collect();
-
-            for (mapped, target_geometry) in completed {
-                // Update the element's geometry to the final target
-                mapped.set_geometry(target_geometry.to_global(output));
-                // Also update the space's element location
-                self.space
-                    .map_element(mapped.clone(), target_geometry.loc.as_logical(), false);
-
-                // Stop animation sync for embedded children
-                let parent_surface_id = mapped
-                    .active_window()
-                    .wl_surface()
-                    .map(|s| s.id().to_string());
-                let embedded_children = parent_surface_id
-                    .map(|sid| crate::wayland::handlers::surface_embed::get_children_for_parent_by_surface_id(&sid))
-                    .unwrap_or_default();
-                for (embedded_surface_id, _) in embedded_children {
-                    crate::wayland::handlers::surface_embed::stop_embed_animation_sync(
-                        &embedded_surface_id,
-                    );
                 }
             }
         }
 
-        self.animations.retain(|_, anim| {
-            let duration = match anim {
-                Animation::Tiled { .. } | Animation::ClientDrivenResize { .. } => {
-                    ANIMATION_DURATION
+        self.animations.retain(|mapped, anim| {
+            match anim {
+                Animation::ClientPipelinedResize {
+                    start,
+                    target_geometry,
+                    finalized,
+                    ..
+                } => {
+                    if !*finalized {
+                        // Animation still running — keep
+                        return true;
+                    }
+                    // Safety: don't wait forever if client never reaches target
+                    let total_elapsed = now.duration_since(*start);
+                    if total_elapsed > ANIMATION_DURATION * 3 {
+                        tracing::warn!(
+                            app_id = %mapped.active_window().app_id(),
+                            "[PIPELINE] Buffer never reached target, force-removing animation"
+                        );
+                        return false;
+                    }
+                    // Finalized: keep alive until buffer matches target size
+                    let buf_size = mapped.geometry().size.as_local();
+                    let target_matches = buf_size.w == target_geometry.size.w
+                        && buf_size.h == target_geometry.size.h;
+                    if target_matches {
+                        tracing::debug!(
+                            app_id = %mapped.active_window().app_id(),
+                            "[PIPELINE] Buffer reached target size, removing animation"
+                        );
+                    }
+                    !target_matches
                 }
-                _ => MINIMIZE_ANIMATION_DURATION,
-            };
-            Instant::now().duration_since(*anim.start()) < duration
+                Animation::Tiled { .. } | Animation::MapFadeIn { .. } => {
+                    now.duration_since(*anim.start()) < ANIMATION_DURATION
+                }
+                _ => now.duration_since(*anim.start()) < MINIMIZE_ANIMATION_DURATION,
+            }
         });
         if self.animations.is_empty() != was_empty {
             self.dirty.store(true, Ordering::SeqCst);
@@ -3124,29 +2853,88 @@ impl FloatingLayout {
             let anim_opt = self.animations.get(elem);
             let (mut geometry, alpha) = anim_opt
                 .map(|anim| {
-                    // For client-driven animations, calculate render position based on
-                    // the client's ACTUAL buffer size. This keeps position and buffer
-                    // perfectly in sync regardless of how many frames the client takes.
-                    let geo = if anim.is_client_driven() {
-                        // Get the client's actual committed buffer size
-                        let buffer_size = elem.geometry().size;
-                        anim.render_geometry_for_buffer_size(buffer_size)
-                            .unwrap_or(*anim.previous_geometry())
-                    } else {
-                        *anim.previous_geometry()
-                    };
-                    (geo, alpha * anim.alpha())
+                    match anim {
+                        Animation::ClientPipelinedResize {
+                            previous_geometry,
+                            target_geometry,
+                            ..
+                        } => {
+                            // Position based on the buffer's actual committed size.
+                            // No stretching — the window is displayed at 1:1.
+                            let buffer_size = elem.geometry().size.as_local();
+                            let size_range_w = target_geometry.size.w - previous_geometry.size.w;
+                            let size_range_h = target_geometry.size.h - previous_geometry.size.h;
+                            let progress = if size_range_w.abs() > 1 {
+                                ((buffer_size.w - previous_geometry.size.w) as f64
+                                    / size_range_w as f64)
+                                    .clamp(0.0, 1.0)
+                            } else if size_range_h.abs() > 1 {
+                                ((buffer_size.h - previous_geometry.size.h) as f64
+                                    / size_range_h as f64)
+                                    .clamp(0.0, 1.0)
+                            } else {
+                                1.0
+                            };
+                            let loc_x = previous_geometry.loc.x
+                                + ((target_geometry.loc.x - previous_geometry.loc.x) as f64
+                                    * progress) as i32;
+                            let loc_y = previous_geometry.loc.y
+                                + ((target_geometry.loc.y - previous_geometry.loc.y) as f64
+                                    * progress) as i32;
+                            let geo = Rectangle::new(Point::from((loc_x, loc_y)), buffer_size);
+                            tracing::trace!(
+                                app_id = %elem.active_window().app_id(),
+                                buf_w = buffer_size.w,
+                                buf_h = buffer_size.h,
+                                geo_x = loc_x,
+                                geo_y = loc_y,
+                                prev_x = previous_geometry.loc.x,
+                                prev_y = previous_geometry.loc.y,
+                                prev_w = previous_geometry.size.w,
+                                prev_h = previous_geometry.size.h,
+                                tgt_x = target_geometry.loc.x,
+                                tgt_y = target_geometry.loc.y,
+                                tgt_w = target_geometry.size.w,
+                                tgt_h = target_geometry.size.h,
+                                progress = format!("{progress:.3}"),
+                                output_w = output_geometry.size.w,
+                                output_h = output_geometry.size.h,
+                                "[PIPELINE_RENDER] frame"
+                            );
+                            (geo, alpha * anim.alpha())
+                        }
+                        _ => {
+                            let geo = *anim.previous_geometry();
+                            (geo, alpha * anim.alpha())
+                        }
+                    }
                 })
                 .unwrap_or_else(|| (self.space.element_geometry(elem).unwrap().as_local(), alpha));
 
-            // For client-driven animations, use the calculated geometry location directly
-            // (which was computed from the actual buffer size)
-            let render_location = if anim_opt.map(|a| a.is_client_driven()).unwrap_or(false) {
-                // Use the buffer-based geometry position directly
-                geometry.loc
-            } else {
-                geometry.loc - elem.geometry().loc.as_local()
-            };
+            // Pre-compute the animated geometry for Tiled animations.
+            // This is used for blur/backdrop placement so they track the animated size,
+            // while the actual buffer stays at previous_geometry and gets rescaled later.
+            // ClientPipelinedResize does NOT use this — its geometry is already correct
+            // (computed from buffer size above).
+            let tiled_anim_geometry = anim_opt.and_then(|anim| {
+                if matches!(anim, Animation::Tiled { .. }) {
+                    Some(
+                        anim.geometry(
+                            output_geometry,
+                            self.space
+                                .element_geometry(elem)
+                                .map(RectExt::as_local)
+                                .unwrap_or(geometry),
+                            elem.floating_tiled.lock().unwrap().as_ref(),
+                            self.gaps(),
+                        ),
+                    )
+                } else {
+                    None
+                }
+            });
+
+            let render_location = geometry.loc - elem.geometry().loc.as_local();
 
             let mut window_elements = elem.render_elements(
                 renderer,
@@ -3179,12 +2967,10 @@ impl FloatingLayout {
                 Point<i32, Physical>,
                 Size<i32, Local>,
             )> = if let Some(anim) = anim_opt {
-                if !anim.is_client_driven()
-                    && matches!(
-                        anim,
-                        Animation::Minimize { .. } | Animation::Unminimize { .. }
-                    )
-                {
+                if matches!(
+                    anim,
+                    Animation::Minimize { .. } | Animation::Unminimize { .. }
+                ) {
                     let original_geo = anim.previous_geometry();
                     let target_geometry = anim.geometry(
                         output_geometry,
@@ -3313,7 +3099,8 @@ impl FloatingLayout {
                         geometry
                     }
                 } else {
-                    geometry
+                    // For Tiled animations, use the interpolated geometry
+                    tiled_anim_geometry.unwrap_or(geometry)
                 };
 
                 let corner_radius = elem.blur_corner_radius(
@@ -3371,12 +3158,15 @@ impl FloatingLayout {
             if !elem.has_blur() || blur_ctx.is_some() {
                 if let Some(wl_surface) = elem.active_window().wl_surface() {
                     if let Some(color) = get_surface_backdrop_color(&wl_surface) {
-                        let corner_radius = elem
-                            .blur_corner_radius(geometry.size.as_logical(), indicator_thickness);
+                        let backdrop_geo = tiled_anim_geometry.unwrap_or(geometry);
+                        let corner_radius = elem.blur_corner_radius(
+                            backdrop_geo.size.as_logical(),
+                            indicator_thickness,
+                        );
                         let backdrop = BackdropShader::element(
                             renderer,
                             Key::Window(Usage::Overlay, elem.key()),
-                            geometry,
+                            backdrop_geo,
                             corner_radius,
                             alpha * color.alpha_f32(),
                             color.to_rgb_f32(),
@@ -3388,125 +3178,122 @@ impl FloatingLayout {
 
             // Now apply animation transformations
             if let Some(anim) = anim_opt {
-                if !anim.is_client_driven() {
-                    if let Some((original_geo, scale, relocation, _buffer_size)) =
-                        minimize_anim_info
-                    {
-                        // For minimize/unminimize: scale window elements with uniform scaling
-                        // Blur is already rendered at scaled geometry above
-                        window_elements = window_elements
-                            .into_iter()
-                            .map(|element| match element {
-                                CosmicMappedRenderElement::Stack(elem) => {
-                                    CosmicMappedRenderElement::MovingStack({
-                                        let rescaled = RescaleRenderElement::from_element(
-                                            elem,
-                                            original_geo
-                                                .loc
-                                                .as_logical()
-                                                .to_physical_precise_round(output_scale),
-                                            scale,
-                                        );
+                if matches!(anim, Animation::ClientPipelinedResize { .. }) {
+                    // No rescaling for client-driven pipelined resize.
+                    // Position is already computed from the buffer's actual size above.
+                } else if let Some((original_geo, scale, relocation, _buffer_size)) =
+                    minimize_anim_info
+                {
+                    // For minimize/unminimize: scale window elements with uniform scaling
+                    // Blur is already rendered at scaled geometry above
+                    window_elements = window_elements
+                        .into_iter()
+                        .map(|element| match element {
+                            CosmicMappedRenderElement::Stack(elem) => {
+                                CosmicMappedRenderElement::MovingStack({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        original_geo
+                                            .loc
+                                            .as_logical()
+                                            .to_physical_precise_round(output_scale),
+                                        scale,
+                                    );
 
-                                        RelocateRenderElement::from_element(
-                                            rescaled,
-                                            relocation,
-                                            Relocate::Relative,
-                                        )
-                                    })
-                                }
-                                CosmicMappedRenderElement::Window(elem) => {
-                                    CosmicMappedRenderElement::MovingWindow({
-                                        let rescaled = RescaleRenderElement::from_element(
-                                            elem,
-                                            original_geo
-                                                .loc
-                                                .as_logical()
-                                                .to_physical_precise_round(output_scale),
-                                            scale,
-                                        );
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        relocation,
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            CosmicMappedRenderElement::Window(elem) => {
+                                CosmicMappedRenderElement::MovingWindow({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        original_geo
+                                            .loc
+                                            .as_logical()
+                                            .to_physical_precise_round(output_scale),
+                                        scale,
+                                    );
 
-                                        RelocateRenderElement::from_element(
-                                            rescaled,
-                                            relocation,
-                                            Relocate::Relative,
-                                        )
-                                    })
-                                }
-                                x => x,
-                            })
-                            .collect();
-                    } else {
-                        // For other compositor-driven animations (like Tiled), use per-axis scaling
-                        let original_geo = anim.previous_geometry();
-                        geometry = anim.geometry(
-                            output_geometry,
-                            self.space
-                                .element_geometry(elem)
-                                .map(RectExt::as_local)
-                                .unwrap_or(geometry),
-                            elem.floating_tiled.lock().unwrap().as_ref(),
-                            self.gaps(),
-                        );
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        relocation,
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            x => x,
+                        })
+                        .collect();
+                } else {
+                    // For other compositor-driven animations (like Tiled), use per-axis scaling
+                    let original_geo = anim.previous_geometry();
+                    geometry = anim.geometry(
+                        output_geometry,
+                        self.space
+                            .element_geometry(elem)
+                            .map(RectExt::as_local)
+                            .unwrap_or(geometry),
+                        elem.floating_tiled.lock().unwrap().as_ref(),
+                        self.gaps(),
+                    );
 
-                        let buffer_size = elem.geometry().size;
-                        let scale = Scale {
-                            x: geometry.size.w as f64 / buffer_size.w as f64,
-                            y: geometry.size.h as f64 / buffer_size.h as f64,
-                        };
+                    let buffer_size = elem.geometry().size;
+                    let scale = Scale {
+                        x: geometry.size.w as f64 / buffer_size.w as f64,
+                        y: geometry.size.h as f64 / buffer_size.h as f64,
+                    };
 
-                        let relocation = (geometry.loc - original_geo.loc)
-                            .as_logical()
-                            .to_physical_precise_round(output_scale);
+                    let relocation = (geometry.loc - original_geo.loc)
+                        .as_logical()
+                        .to_physical_precise_round(output_scale);
 
-                        window_elements = window_elements
-                            .into_iter()
-                            .map(|element| match element {
-                                CosmicMappedRenderElement::Stack(elem) => {
-                                    CosmicMappedRenderElement::MovingStack({
-                                        let rescaled = RescaleRenderElement::from_element(
-                                            elem,
-                                            original_geo
-                                                .loc
-                                                .as_logical()
-                                                .to_physical_precise_round(output_scale),
-                                            scale,
-                                        );
+                    window_elements = window_elements
+                        .into_iter()
+                        .map(|element| match element {
+                            CosmicMappedRenderElement::Stack(elem) => {
+                                CosmicMappedRenderElement::MovingStack({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        original_geo
+                                            .loc
+                                            .as_logical()
+                                            .to_physical_precise_round(output_scale),
+                                        scale,
+                                    );
 
-                                        RelocateRenderElement::from_element(
-                                            rescaled,
-                                            relocation,
-                                            Relocate::Relative,
-                                        )
-                                    })
-                                }
-                                CosmicMappedRenderElement::Window(elem) => {
-                                    CosmicMappedRenderElement::MovingWindow({
-                                        let rescaled = RescaleRenderElement::from_element(
-                                            elem,
-                                            original_geo
-                                                .loc
-                                                .as_logical()
-                                                .to_physical_precise_round(output_scale),
-                                            scale,
-                                        );
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        relocation,
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            CosmicMappedRenderElement::Window(elem) => {
+                                CosmicMappedRenderElement::MovingWindow({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        original_geo
+                                            .loc
+                                            .as_logical()
+                                            .to_physical_precise_round(output_scale),
+                                        scale,
+                                    );
 
-                                        RelocateRenderElement::from_element(
-                                            rescaled,
-                                            relocation,
-                                            Relocate::Relative,
-                                        )
-                                    })
-                                }
-                                x => x,
-                            })
-                            .collect();
-                    }
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        relocation,
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            x => x,
+                        })
+                        .collect();
                 }
-                // Client-driven: The geometry was already set correctly above
-                // using client_driven_geometry(). No buffer rescaling or relocation
-                // needed - the client renders at the animated size and we already
-                // positioned it at the animated location.
             }
 
             if focused == Some(elem) && !elem.is_maximized(false) {
