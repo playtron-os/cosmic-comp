@@ -292,7 +292,7 @@ impl VoiceConfig {
             "F20" => keysym == Keysym::F20,
             "F21" => keysym == Keysym::F21,
             "F22" => keysym == Keysym::F22,
-            "F23" => keysym == Keysym::F23 || keysym.raw() == 0x1008ffb1, // Also match XF86TouchpadOff (some layouts map F23 to this)
+            "F23" => keysym == Keysym::F23 || keysym == Keysym::F18 || keysym.raw() == 0x1008ffb1, // Also match F18 (some laptop variants) and XF86TouchpadOff
             "F24" => keysym == Keysym::F24,
             // XF86 multimedia keys - Copilot key on some laptops reports as XF86TouchpadOff via xkbcommon
             "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1, // XF86XK_TouchpadOff = 269025201
@@ -353,7 +353,7 @@ impl VoiceConfig {
             "F20" => keysym == Keysym::F20,
             "F21" => keysym == Keysym::F21,
             "F22" => keysym == Keysym::F22,
-            "F23" => keysym == Keysym::F23 || keysym.raw() == 0x1008ffb1,
+            "F23" => keysym == Keysym::F23 || keysym == Keysym::F18 || keysym.raw() == 0x1008ffb1,
             "F24" => keysym == Keysym::F24,
             "XF86TouchpadOff" => keysym.raw() == 0x1008ffb1,
             "Super_L" => keysym == Keysym::Super_L || keysym == Keysym::Super_R,
