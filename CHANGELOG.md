@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/playtron-os/cosmic-comp/compare/v1.15.0...v1.15.1) (2026-04-09)
+
+
+### Bug Fixes
+
+* match F18 for voice mode as well ([f3585bf](https://github.com/playtron-os/cosmic-comp/commit/f3585bf341cbf586b087076efc097c8a677d5c7d))
+
 # [1.15.0](https://github.com/playtron-os/cosmic-comp/compare/v1.14.0...v1.15.0) (2026-04-08)
 
 
