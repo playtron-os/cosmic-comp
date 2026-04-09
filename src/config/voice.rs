@@ -302,8 +302,16 @@ impl VoiceConfig {
             _ => false,
         };
 
-        let mods_match = binding.modifiers.matches(modifiers);
-        tracing::trace!(key_matches, mods_match, "key_matches result");
+        // Hardware voice key variants (F18, XF86TouchpadOff) are sent without modifiers
+        // on some laptops, so skip the modifier check for these known alternate keysyms
+        let is_hw_voice_key = keysym == Keysym::F18 || keysym.raw() == 0x1008ffb1;
+        let mods_match = is_hw_voice_key || binding.modifiers.matches(modifiers);
+        tracing::trace!(
+            key_matches,
+            mods_match,
+            is_hw_voice_key,
+            "key_matches result"
+        );
         key_matches && mods_match
     }
 
