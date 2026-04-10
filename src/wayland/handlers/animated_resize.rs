@@ -105,14 +105,14 @@ impl AnimatedResizeHandler for State {
 
         const CENTER_THRESHOLD: f32 = 0.4;
         if relative_x > CENTER_THRESHOLD {
-            // Window is centered or to the right - move x by half the width difference
-            // to keep the window's visual center stable
-            let width_diff = current_geo.size.w - target_width;
-            target_x = current_geo.loc.x + width_diff / 2;
+            // Window is centered or to the right — use absolute centering to
+            // avoid cumulative integer-division drift when animated_resize is
+            // called many times per second (e.g. per-frame resize animations).
+            target_x = (output_geo.size.w - target_width) / 2;
             debug!(
                 relative_x,
-                width_diff,
-                "Window is centered/right (> {}), adjusting x by half width diff",
+                target_x,
+                "Window is centered/right (> {}), using absolute center",
                 CENTER_THRESHOLD
             );
         } else {
@@ -147,19 +147,19 @@ impl AnimatedResizeHandler for State {
             target_y,
             target_width,
             target_height,
-            "Starting animated resize with boundary constraints"
+            "Starting pipelined resize animation"
         );
         drop(shell); // Release read lock before getting write lock
 
-        // Start the animation via the floating layer (compositor-driven texture upscaling)
+        // Start a compositor-driven pipelined resize animation (like maximize/unmaximize
+        // but without changing window state flags). The compositor sends per-frame
+        // configures along the easing curve; the client renders at each intermediate
+        // size and the compositor displays the buffer at 1:1 (no texture stretching).
         let mut shell = self.common.shell.write();
         if let Some(workspace) = shell.active_space_mut(&window_output) {
-            workspace.floating_layer.map_internal(
-                mapped,
-                Some(target_geometry.loc),
-                Some(target_geometry.size.as_logical()),
-                None,
-            );
+            workspace
+                .floating_layer
+                .start_pipelined_resize(mapped, target_geometry);
         }
     }
 

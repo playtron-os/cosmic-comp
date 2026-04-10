@@ -86,7 +86,8 @@ enum Animation {
         previous_geometry: Rectangle<i32, Local>,
         target_geometry: Rectangle<i32, Local>,
         last_configure_time: Instant,
-        is_maximize: bool,
+        /// `Some(true)` = maximize, `Some(false)` = unmaximize, `None` = arbitrary resize.
+        is_maximize: Option<bool>,
         /// Set to true once the animation duration has elapsed and final state
         /// (maximized/tiled/geometry) has been applied. The animation is kept
         /// alive until the client's buffer matches the target size.
@@ -746,12 +747,62 @@ impl FloatingLayout {
                 previous_geometry: original_geometry,
                 target_geometry,
                 last_configure_time: now,
-                is_maximize: true,
+                is_maximize: Some(true),
                 finalized: false,
             },
         );
 
         self.finalize_maximize_map(mapped, target_geometry);
+    }
+
+    /// Start a pipelined resize animation for an arbitrary geometry change.
+    /// Like maximize/unmaximize but without changing any window state flags.
+    pub fn start_pipelined_resize(
+        &mut self,
+        mapped: CosmicMapped,
+        target_geometry: Rectangle<i32, Local>,
+    ) {
+        let current_geo = self
+            .space
+            .element_geometry(&mapped)
+            .map(RectExt::as_local)
+            .unwrap_or(target_geometry);
+
+        let output = self.space.outputs().next().unwrap().clone();
+
+        // Send first configure 1 frame ahead on the curve
+        let frame_interval = Duration::from_millis(16);
+        let first_progress = frame_interval.as_secs_f64() / ANIMATION_DURATION.as_secs_f64();
+        let first_geo: Rectangle<i32, Local> = ease(
+            EaseInOutCubic,
+            EaseRectangle(current_geo),
+            EaseRectangle(target_geometry),
+            first_progress,
+        )
+        .unwrap();
+        mapped.set_geometry(first_geo.to_global(&output));
+        mapped.configure();
+
+        tracing::debug!(
+            app_id = %mapped.active_window().app_id(),
+            prev = ?current_geo,
+            target = ?target_geometry,
+            first_geo = ?first_geo,
+            "[PIPELINE] Starting pipelined resize"
+        );
+
+        let now = Instant::now();
+        self.animations.insert(
+            mapped.clone(),
+            Animation::ClientPipelinedResize {
+                start: now,
+                previous_geometry: current_geo,
+                target_geometry,
+                last_configure_time: now,
+                is_maximize: None,
+                finalized: false,
+            },
+        );
     }
 
     /// Start a pipelined unmaximize animation.
@@ -799,7 +850,7 @@ impl FloatingLayout {
                 previous_geometry: current_geo,
                 target_geometry,
                 last_configure_time: now,
-                is_maximize: false,
+                is_maximize: Some(false),
                 finalized: false,
             },
         );
@@ -2356,12 +2407,14 @@ impl FloatingLayout {
                     if !*finalized && now.duration_since(*start) >= ANIMATION_DURATION {
                         tracing::debug!(
                             app_id = %mapped.active_window().app_id(),
-                            is_maximize = *is_maximize,
+                            is_maximize = ?*is_maximize,
                             target = ?*target_geometry,
                             "[PIPELINE] Animation complete, applying final state"
                         );
-                        mapped.set_maximized(*is_maximize);
-                        mapped.set_tiled(*is_maximize);
+                        if let Some(maximize) = *is_maximize {
+                            mapped.set_maximized(maximize);
+                            mapped.set_tiled(maximize);
+                        }
                         mapped.set_geometry(target_geometry.to_global(output));
                         mapped.configure();
                         self.space.map_element(
