@@ -1,3 +1,10 @@
+## [1.15.2](https://github.com/playtron-os/cosmic-comp/compare/v1.15.1...v1.15.2) (2026-04-10)
+
+
+### Bug Fixes
+
+* adjust voice orb attached mode scale ([2f12ef3](https://github.com/playtron-os/cosmic-comp/commit/2f12ef376c66ed3830f55eb352e0eb63ad30a5b5))
+
 ## [1.15.1](https://github.com/playtron-os/cosmic-comp/compare/v1.15.0...v1.15.1) (2026-04-09)
 
 
