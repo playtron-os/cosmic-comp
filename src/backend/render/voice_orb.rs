@@ -117,9 +117,9 @@ impl OrbWindowMetrics {
     fn burst_scale_from_size(size: Size<i32, Logical>, floating_orb_size: f32) -> f32 {
         let w = size.w as f32;
         let h = size.h as f32;
-        // Distance from center to corner, times 2 for diameter, plus 25% margin
+        // Distance from center to corner, times 2 for diameter, plus 5% margin
         let corner_dist = ((w / 2.0).powi(2) + (h / 2.0).powi(2)).sqrt();
-        let cover_diameter = corner_dist * 2.0 * 1.25;
+        let cover_diameter = corner_dist * 1.85;
         cover_diameter / floating_orb_size
     }
 }
