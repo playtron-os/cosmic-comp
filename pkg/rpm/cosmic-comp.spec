@@ -6,7 +6,7 @@ Summary:        COSMIC Wayland Compositor (Playtron fork)
 
 License:        GPL-3.0-only
 URL:            https://github.com/pop-os/cosmic-comp
-Source0:        %{name}-%{_arch}.tar.gz
+Source0:        %{name}.tar.gz
 
 # Runtime dependencies (from upstream cosmic-comp)
 # Pin cosmic-icon-theme to 1.0.x series
