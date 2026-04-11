@@ -112,8 +112,8 @@ tasks:
     cmds:
       - mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
       - cp ./pkg/rpm/{{.NAME}}.spec ~/rpmbuild/SPECS
-      - cp dist/{{.NAME}}-{{.ARCH}}.tar.gz ~/rpmbuild/SOURCES
-      - rpmbuild -bb --target {{.ARCH}} ~/rpmbuild/SPECS/{{.NAME}}.spec
+      - cp dist/{{.NAME}}-{{.ARCH}}.tar.gz ~/rpmbuild/SOURCES/{{.NAME}}.tar.gz
+      - rpmbuild -bb --target {{.ARCH}} --define '_prefix /usr' ~/rpmbuild/SPECS/{{.NAME}}.spec
       - cp ~/rpmbuild/RPMS/{{.ARCH}}/{{.NAME}}-{{.VERSION}}-1.{{.ARCH}}.rpm dist
 
   dist:all:

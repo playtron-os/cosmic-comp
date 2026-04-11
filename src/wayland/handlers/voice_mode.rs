@@ -203,6 +203,17 @@ impl VoiceModeHandler for State {
                     .voice_mode_state
                     .send_orb_attached(surface, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h);
 
+                // Focus the receiver window so the voice orb is visible on screen
+                let shell = self.common.shell.read();
+                let seat = shell.seats.last_active().clone();
+                let mapped = shell.element_for_surface(surface).cloned();
+                drop(shell);
+                if let Some(mapped) = mapped {
+                    let focus_target = KeyboardFocusTarget::Element(mapped);
+                    info!("Focusing receiver window for voice attach mode");
+                    Shell::set_focus(self, Some(&focus_target), &seat, None, false);
+                }
+
                 OrbState::Attached
             } else {
                 // Shouldn't happen, but fall back to floating
