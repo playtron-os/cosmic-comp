@@ -1,3 +1,11 @@
+## [1.15.3](https://github.com/playtron-os/cosmic-comp/compare/v1.15.2...v1.15.3) (2026-04-11)
+
+
+### Bug Fixes
+
+* focus the voice orb receiver ([0d44126](https://github.com/playtron-os/cosmic-comp/commit/0d4412673cfc6b122a83738e439bfbb00415b87e))
+* use proper animated pipeline for animated resize protocol ([f332d64](https://github.com/playtron-os/cosmic-comp/commit/f332d640e9c4efb3ae076023229c656350effd66))
+
 ## [1.15.2](https://github.com/playtron-os/cosmic-comp/compare/v1.15.1...v1.15.2) (2026-04-10)
 
 
