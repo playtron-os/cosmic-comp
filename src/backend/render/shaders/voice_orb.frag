@@ -29,15 +29,15 @@ const float innerRadius = 0.6;    // Aperture
 const float noiseScale = 0.65;     // Turbulence
 const float speed = 1.0;           // Temporal Speed
 
-// Colors (converted from RGB 0-255 to 0-1)
-const vec3 color1 = vec3(0.000, 0.784, 0.588);      // Primary pulse: #00C896 (0, 200, 150)
-const vec3 color2 = vec3(0.039, 0.498, 0.400);      // Secondary flow: #0A7F66 (10, 127, 102)
-const vec3 color3 = vec3(0.008, 0.118, 0.102);      // Core depth: #021E1A (2, 30, 26)
-const vec3 haloColor = vec3(0.486, 1.000, 0.839);   // Halo accent: #7CFFD6 (124, 255, 214)
+// Colors — derived from 3 base colors: #D0F94A, #00D49C, #00879F
+const vec3 color1 = vec3(0.000, 0.831, 0.612);      // Primary pulse: #00D49C (0, 212, 156)
+const vec3 color2 = vec3(0.000, 0.529, 0.624);      // Secondary flow: #00879F (0, 135, 159)
+const vec3 color3 = vec3(0.000, 0.063, 0.075);      // Core depth: darkened #00879F
+const vec3 haloColor = vec3(0.816, 0.976, 0.290);   // Halo accent: #D0F94A (208, 249, 74)
 const vec3 bgColor = vec3(0.949, 0.949, 0.980);     // Background A: #F2F2FA Lavender Gray (242, 242, 250)
 const vec3 bgColor2 = vec3(0.851, 0.851, 0.922);    // Background B: #D9D9EB Silver Mist (217, 217, 235)
-const vec3 audioColor1 = vec3(0.000, 1.000, 0.800); // Audio reactive: #00FFCC Bright Aquamarine (0, 255, 204)
-const vec3 audioColor2 = vec3(0.900, 1.000, 0.300); // Audio reactive: #E6FF4D Neon Lime (230, 255, 77)
+const vec3 audioColor1 = vec3(0.000, 0.831, 0.612); // Audio reactive: #00D49C (0, 212, 156)
+const vec3 audioColor2 = vec3(0.816, 0.976, 0.290); // Audio reactive: #D0F94A (208, 249, 74)
 
 const float PI = 3.14159265359;
 
@@ -192,16 +192,17 @@ void main() {
     float v2 = smoothstep(1.0 + bassPulse * 0.05, mix(dynamicRadius, 1.0, n0 * 0.5), len);
     float v3 = smoothstep(dynamicRadius, mix(dynamicRadius, 1.0, 0.5), len);
     
-    // Blend between base colors and audio colors
-    vec3 activeCol1 = mix(color1, audioColor1, bassPulse);
-    vec3 activeCol2 = mix(color2, audioColor2, trebleShimmer);
-    
-    vec3 baseCol1 = hueShift(activeCol1, bassPulse * 0.8 + trebleShimmer * 0.4);
-    vec3 baseCol2 = hueShift(activeCol2, -bassPulse * 0.4);
-    vec3 baseCol3 = hueShift(color3, bassPulse * 0.2);
-    
-    // Use the haloColor influenced by trebleShimmer
-    vec3 haloColFinal = hueShift(haloColor, trebleShimmer * 2.0);
+    // Clamp the mix factors to prevent color values from overshooting (0.0 to 1.0)
+    float bassMix = clamp(bassPulse * 1.2, 0.0, 1.0);
+    float trebleMix = clamp(trebleShimmer * 1.2, 0.0, 1.0);
+
+    // Directly mix from the base color to the audio color
+    vec3 baseCol1 = mix(color1, audioColor1, bassMix);
+    vec3 baseCol2 = mix(color2, audioColor2, trebleMix);
+    vec3 baseCol3 = mix(color3, audioColor1, bassMix * 0.5);
+
+    // Transition the halo directly to the treble color
+    vec3 haloColFinal = mix(haloColor, audioColor2, trebleMix);
     
     // Combine colors
     vec3 col = mix(baseCol1, baseCol2, cl);
