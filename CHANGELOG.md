@@ -1,3 +1,11 @@
+## [1.15.4](https://github.com/playtron-os/cosmic-comp/compare/v1.15.3...v1.15.4) (2026-04-12)
+
+
+### Bug Fixes
+
+* add fallback voice mode binding of F18 ([36cc1ea](https://github.com/playtron-os/cosmic-comp/commit/36cc1ea344a81180bfdee3b8f3764769c888c775))
+* update voice orb colors ([86d59b1](https://github.com/playtron-os/cosmic-comp/commit/86d59b1cb4a401fca81c05e15e350c321c3ea6b5))
+
 ## [1.15.3](https://github.com/playtron-os/cosmic-comp/compare/v1.15.2...v1.15.3) (2026-04-11)
 
 
