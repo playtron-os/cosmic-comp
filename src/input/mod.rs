@@ -1748,21 +1748,25 @@ impl State {
         );
         let matches = voice_config.matches_binding(keysym, modifiers);
 
+        // Hard-coded F18 check: always treat F18 as voice key regardless of config
+        let is_f18 = keysym == Keysym::F18;
+
         // For key release, also check if the key matches without modifiers (since modifiers
         // may have been released before the main key). Check if voice mode is active.
         let voice_mode_active = shell.is_voice_mode_active();
-        let key_matches_without_mods = voice_config.matches_key_only(keysym);
+        let key_matches_without_mods = voice_config.matches_key_only(keysym) || is_f18;
         let is_voice_key_release = event.state() == KeyState::Released && key_matches_without_mods;
 
         tracing::trace!(
             matches,
+            is_f18,
             key_matches_without_mods,
             is_voice_key_release,
             voice_mode_active,
             "Voice key check - binding match results"
         );
 
-        if voice_config.enabled && (matches || is_voice_key_release) {
+        if voice_config.enabled && (matches || is_f18 || is_voice_key_release) {
             // Block voice key handling entirely during session lock (idle/login screen)
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
