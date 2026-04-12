@@ -82,7 +82,10 @@ impl Default for VoiceConfig {
                     ..Default::default()
                 },
             },
-            fallback_binding: None,
+            fallback_binding: Some(VoiceKeyBinding {
+                key: "F18".to_string(),
+                modifiers: VoiceModifiers::none(),
+            }),
             chat_app_id: "chat-ui".to_string(),
             enabled: true,
         }
