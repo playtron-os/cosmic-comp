@@ -1,3 +1,17 @@
+# [1.16.0](https://github.com/playtron-os/cosmic-comp/compare/v1.15.4...v1.16.0) (2026-04-14)
+
+
+### Bug Fixes
+
+* fix not reevaluating keyboard focus on layer show ([a47c01d](https://github.com/playtron-os/cosmic-comp/commit/a47c01dc1db4d5b0af3eda4c669b58188a8f9ce7))
+* hard code F18 to activate voice mde ([8d3e9a6](https://github.com/playtron-os/cosmic-comp/commit/8d3e9a6115545144285727b9dea943f112278e91))
+* update voice orb colors ([c9c2c77](https://github.com/playtron-os/cosmic-comp/commit/c9c2c77979a387289c6b3e20e7f09e7c3365c5a7))
+
+
+### Features
+
+* support moving output agnostic surfaces to active output when they get shown ([6789fec](https://github.com/playtron-os/cosmic-comp/commit/6789fec3de888a8182e80094fa7f5480b8186419))
+
 ## [1.15.4](https://github.com/playtron-os/cosmic-comp/compare/v1.15.3...v1.15.4) (2026-04-12)
 
 
