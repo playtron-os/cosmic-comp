@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{shell::grabs::SeatMoveGrabState, state::ClientState, utils::prelude::*};
+use crate::{
+    shell::focus::target::KeyboardFocusTarget, shell::grabs::SeatMoveGrabState, state::ClientState,
+    utils::prelude::*,
+};
 use calloop::Interest;
 use smithay::{
     backend::renderer::{
@@ -21,7 +24,9 @@ use smithay::{
         drm_syncobj::DrmSyncobjCachedState,
         seat::WaylandFocus,
         shell::{
-            wlr_layer::LayerSurfaceAttributes,
+            wlr_layer::{
+                KeyboardInteractivity, Layer, LayerSurfaceAttributes, LayerSurfaceCachedState,
+            },
             xdg::{
                 ToplevelSurface, XdgPopupSurfaceRoleAttributes, XdgToplevelSurfaceRoleAttributes,
             },
@@ -365,7 +370,7 @@ impl CompositorHandler for State {
             })
             .cloned();
 
-        if let Some(output) = layer_output {
+        if let Some(ref output) = layer_output {
             let changed = layer_map_for_output(&output).arrange();
             if changed {
                 shell.workspaces.recalculate();
@@ -383,6 +388,41 @@ impl CompositorHandler for State {
                 &output,
                 shell.hidden_surfaces(),
             );
+        }
+
+        // Re-evaluate keyboard focus for layer surfaces whose
+        // keyboard_interactivity may have changed in this commit.
+        // The visibility handler only checks at show time and the initial
+        // map handler only checks at map time, so a transition from None
+        // to Exclusive on an already-visible surface would otherwise be
+        // missed.
+        let layer_focus_target = layer_output.as_ref().and_then(|output| {
+            let map = layer_map_for_output(output);
+            let layer = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)?;
+            let surface_id = layer.wl_surface().id();
+            if shell.is_surface_hidden(&surface_id) {
+                return None;
+            }
+            let wants_exclusive = with_states(layer.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = cached.current();
+                matches!(current.layer, Layer::Top | Layer::Overlay)
+                    && current.keyboard_interactivity == KeyboardInteractivity::Exclusive
+            });
+            wants_exclusive.then(|| {
+                let target: KeyboardFocusTarget = layer.clone().into();
+                let seat = shell.seats.last_active().clone();
+                (target, seat)
+            })
+        });
+        std::mem::drop(shell);
+
+        if let Some((target, seat)) = layer_focus_target
+            && seat
+                .get_keyboard()
+                .is_some_and(|kb| kb.current_focus().as_ref() != Some(&target))
+        {
+            Shell::set_focus(self, Some(&target), &seat, None, false);
         }
     }
 }
