@@ -118,12 +118,19 @@ impl WlrLayerShellHandler for State {
     ) {
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
+        let no_output = wl_output.is_none();
         let output = wl_output
             .as_ref()
             .and_then(Output::from_resource)
             .unwrap_or_else(|| seat.active_output());
+        let layer_surface = LayerSurface::new(surface, namespace);
+        if no_output {
+            shell
+                .output_agnostic_layers
+                .insert(layer_surface.wl_surface().id());
+        }
         shell.pending_layers.push(PendingLayer {
-            surface: LayerSurface::new(surface, namespace),
+            surface: layer_surface,
             output,
             seat,
         });
@@ -150,6 +157,7 @@ impl WlrLayerShellHandler for State {
         shell.remove_surface_visibility(surface_id.clone());
         shell.remove_hidden_surface(&surface_id);
         shell.remove_layer_fade_in(&surface_id);
+        shell.output_agnostic_layers.remove(&surface_id);
 
         let maybe_output = shell
             .outputs()
