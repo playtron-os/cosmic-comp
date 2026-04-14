@@ -622,6 +622,11 @@ pub struct Shell {
     /// moves them to the output where the cursor currently is.
     pub output_agnostic_layers: std::collections::HashSet<ObjectId>,
 
+    /// Layer surfaces that have already been granted Exclusive keyboard
+    /// focus in the commit handler.  Cleared when interactivity drops
+    /// below Exclusive or the surface is hidden/destroyed.
+    pub exclusive_focus_granted: std::collections::HashSet<ObjectId>,
+
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
 
@@ -1970,6 +1975,9 @@ impl Shell {
 
             // Layer surfaces that follow the cursor to whichever output
             output_agnostic_layers: std::collections::HashSet::new(),
+
+            // Exclusive keyboard focus already granted (avoid re-granting every frame)
+            exclusive_focus_granted: std::collections::HashSet::new(),
 
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),

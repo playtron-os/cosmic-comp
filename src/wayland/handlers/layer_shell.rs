@@ -158,6 +158,7 @@ impl WlrLayerShellHandler for State {
         shell.remove_hidden_surface(&surface_id);
         shell.remove_layer_fade_in(&surface_id);
         shell.output_agnostic_layers.remove(&surface_id);
+        shell.exclusive_focus_granted.remove(&surface_id);
 
         let maybe_output = shell
             .outputs()

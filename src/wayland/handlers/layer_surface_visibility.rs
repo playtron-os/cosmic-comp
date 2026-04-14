@@ -23,6 +23,12 @@ impl LayerSurfaceVisibilityHandler for State {
         let mut shell = self.common.shell.write();
         shell.set_surface_hidden(surface_id.clone(), hidden);
 
+        // Clear exclusive focus tracking so the commit handler will
+        // re-grant focus on the next show→Exclusive transition.
+        if hidden {
+            shell.exclusive_focus_granted.remove(&surface_id);
+        }
+
         let is_agnostic = shell.is_output_agnostic_layer(&surface_id);
         tracing::debug!(
             surface_id = surface_id.protocol_id(),

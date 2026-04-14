@@ -391,11 +391,12 @@ impl CompositorHandler for State {
         }
 
         // Re-evaluate keyboard focus for layer surfaces whose
-        // keyboard_interactivity may have changed in this commit.
+        // keyboard_interactivity transitioned to Exclusive in this commit.
         // The visibility handler only checks at show time and the initial
         // map handler only checks at map time, so a transition from None
         // to Exclusive on an already-visible surface would otherwise be
-        // missed.
+        // missed.  We track which surfaces already had focus granted to
+        // avoid stealing focus on every subsequent frame commit.
         let layer_focus_target = layer_output.as_ref().and_then(|output| {
             let map = layer_map_for_output(output);
             let layer = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)?;
@@ -409,19 +410,22 @@ impl CompositorHandler for State {
                 matches!(current.layer, Layer::Top | Layer::Overlay)
                     && current.keyboard_interactivity == KeyboardInteractivity::Exclusive
             });
-            wants_exclusive.then(|| {
-                let target: KeyboardFocusTarget = layer.clone().into();
-                let seat = shell.seats.last_active().clone();
-                (target, seat)
-            })
+            if wants_exclusive {
+                // Only grant focus once per Exclusive transition
+                if shell.exclusive_focus_granted.insert(surface_id) {
+                    let target: KeyboardFocusTarget = layer.clone().into();
+                    let seat = shell.seats.last_active().clone();
+                    return Some((target, seat));
+                }
+            } else {
+                // Interactivity dropped below Exclusive — clear tracking
+                shell.exclusive_focus_granted.remove(&surface_id);
+            }
+            None
         });
         std::mem::drop(shell);
 
-        if let Some((target, seat)) = layer_focus_target
-            && seat
-                .get_keyboard()
-                .is_some_and(|kb| kb.current_focus().as_ref() != Some(&target))
-        {
+        if let Some((target, seat)) = layer_focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, false);
         }
     }
