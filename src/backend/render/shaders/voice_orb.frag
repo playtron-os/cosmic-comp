@@ -25,19 +25,19 @@ uniform float viewport_scale; // UV scale factor for viewport padding (1.0 = no 
 uniform float thinking;       // Thinking mode progress (0.0 = normal, 1.0 = fully thinking)
 
 // Configuration constants
-const float innerRadius = 0.6;    // Aperture
-const float noiseScale = 0.65;     // Turbulence
-const float speed = 1.0;           // Temporal Speed
+const float innerRadius = 0.47;    // Aperture
+const float noiseScale = 0.84;     // Turbulence
+const float speed = 1.5;           // Temporal Speed
 
-// Colors — derived from 3 base colors: #D0F94A, #00D49C, #00879F
-const vec3 color1 = vec3(0.000, 0.831, 0.612);      // Primary pulse: #00D49C (0, 212, 156)
-const vec3 color2 = vec3(0.000, 0.529, 0.624);      // Secondary flow: #00879F (0, 135, 159)
-const vec3 color3 = vec3(0.000, 0.063, 0.075);      // Core depth: darkened #00879F
-const vec3 haloColor = vec3(0.816, 0.976, 0.290);   // Halo accent: #D0F94A (208, 249, 74)
+// Colors — derived from 3 base colors: #ccff1a, #00ccb3, #b8e636
+const vec3 color1 = vec3(0.000, 0.800, 0.702);      // Primary pulse: #00ccb3 (0, 204, 179)
+const vec3 color2 = vec3(0.722, 0.902, 0.212);      // Secondary flow: #b8e636 (184, 230, 54)
+const vec3 color3 = vec3(0.000, 0.400, 0.349);      // Core depth: #006659 (0, 102, 89)
+const vec3 haloColor = vec3(0.800, 1.000, 0.102);   // Halo accent: #ccff1a (204, 255, 26)
 const vec3 bgColor = vec3(0.949, 0.949, 0.980);     // Background A: #F2F2FA Lavender Gray (242, 242, 250)
 const vec3 bgColor2 = vec3(0.851, 0.851, 0.922);    // Background B: #D9D9EB Silver Mist (217, 217, 235)
-const vec3 audioColor1 = vec3(0.000, 0.831, 0.612); // Audio reactive: #00D49C (0, 212, 156)
-const vec3 audioColor2 = vec3(0.816, 0.976, 0.290); // Audio reactive: #D0F94A (208, 249, 74)
+const vec3 audioColor1 = vec3(0.000, 0.600, 0.502); // Bass impact: #009980 (0, 153, 128)
+const vec3 audioColor2 = vec3(0.502, 0.800, 0.102); // Treble glow: #80cc1a (128, 204, 26)
 
 const float PI = 3.14159265359;
 
