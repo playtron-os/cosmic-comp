@@ -617,6 +617,11 @@ pub struct Shell {
     /// When the animation completes, moved to `hidden_surfaces`.
     layer_fade_out: std::collections::HashMap<ObjectId, Instant>,
 
+    /// Layer surfaces created without a specific wl_output.
+    /// When these become visible via the visibility protocol, the compositor
+    /// moves them to the output where the cursor currently is.
+    pub output_agnostic_layers: std::collections::HashSet<ObjectId>,
+
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
 
@@ -1962,6 +1967,9 @@ impl Shell {
             layer_fade_in: std::collections::HashMap::new(),
             pending_layer_fade_in: std::collections::HashSet::new(),
             layer_fade_out: std::collections::HashMap::new(),
+
+            // Layer surfaces that follow the cursor to whichever output
+            output_agnostic_layers: std::collections::HashSet::new(),
 
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),
@@ -3471,6 +3479,11 @@ impl Shell {
     /// Check if a surface is explicitly hidden
     pub fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {
         self.hidden_surfaces.contains(surface_id)
+    }
+
+    /// Check if a layer surface was created without a specific output
+    pub fn is_output_agnostic_layer(&self, surface_id: &ObjectId) -> bool {
+        self.output_agnostic_layers.contains(surface_id)
     }
 
     /// Remove a surface from hidden tracking (called when surface is destroyed)
