@@ -1,3 +1,12 @@
+## [1.16.1](https://github.com/playtron-os/cosmic-comp/compare/v1.16.0...v1.16.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* dont change exclusive focus every frame ([99a16af](https://github.com/playtron-os/cosmic-comp/commit/99a16afd08e326f013323e7bcce8d01206a70f6d))
+* make voice orb input color not as strong so it doesnt turn yellow ([ef261e3](https://github.com/playtron-os/cosmic-comp/commit/ef261e3cb83afde1abf89b8bb10657346d2a623f))
+* small shader tweek to reduce yellow color ([a81c8f8](https://github.com/playtron-os/cosmic-comp/commit/a81c8f863c906b18752d45ecf39fd6d208124fc9))
+
 # [1.16.0](https://github.com/playtron-os/cosmic-comp/compare/v1.15.4...v1.16.0) (2026-04-14)
 
 
