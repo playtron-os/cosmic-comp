@@ -173,6 +173,7 @@ void main() {
     // Glow intensity
     float v0 = light1(1.0 + bassPulse * 4.0, 15.0 - bassPulse * 4.0, d0);
     v0 *= smoothstep(r0 * 1.05, r0, len);
+    v0 = clamp(v0, 0.0, 1.0);
     float cl = cos(ang + animTime * 2.0 + (bassPulse + trebleShimmer) * 1.5) * 0.5 + 0.5;
     
     // Rotating light point
@@ -181,6 +182,7 @@ void main() {
     float d = distance(uv, pos);
     float v1 = light2(2.0 + bassPulse * 2.0, 5.0, d);
     v1 *= light1(1.0, 50.0 - bassPulse * 15.0, d0);
+    v1 = min(v1, 1.0);
     
     // Outer halo ring
     float haloR = r0 * (1.15 + trebleShimmer * 0.08);
@@ -207,11 +209,11 @@ void main() {
     // Combine colors
     vec3 col = mix(baseCol1, baseCol2, cl);
     col = mix(baseCol3, col, v0);
-    col += haloColFinal * v4 * 2.5;
+    col += haloColFinal * v4 * 1.0;
     col *= (1.0 - v4 * 0.2);
-    col += (baseCol1 + baseCol2) * bassPulse * 0.15;
+    col += baseCol1 * bassPulse * 0.15;
     
-    col = (col + v1) * v2 * v3;
+    col = col * (1.0 + v1) * v2 * v3;
     col = clamp(col, 0.0, 1.0);
     
     // Extract alpha from the computed color
