@@ -200,7 +200,7 @@ void main() {
 
     // Directly mix from the base color to the audio color
     vec3 baseCol1 = mix(color1, audioColor1, bassMix);
-    vec3 baseCol2 = mix(color2, audioColor2, trebleMix);
+    vec3 baseCol2 = mix(color2, audioColor2, max(bassMix, trebleMix));
     vec3 baseCol3 = mix(color3, audioColor1, bassMix * 0.5);
 
     // Transition the halo directly to the treble color
