@@ -16,6 +16,10 @@ impl BlurHandler for State {
         std::mem::drop(shell);
 
         let surface_id = surface.id();
+        tracing::debug!(
+            surface_protocol_id = surface.id().protocol_id(),
+            "blur_set: surface committed new blur, calling restart_layer_fade_in"
+        );
         self.common.shell.write().restart_layer_fade_in(surface_id);
 
         if let Some(output) = output {
@@ -24,6 +28,10 @@ impl BlurHandler for State {
     }
 
     fn blur_unset(&mut self, surface: &WlSurface) {
+        tracing::debug!(
+            surface_protocol_id = surface.id().protocol_id(),
+            "blur_unset: blur removed from surface, scheduling render"
+        );
         if let Some(output) = self.common.shell.read().visible_output_for_surface(surface) {
             self.backend.schedule_render(output);
         }

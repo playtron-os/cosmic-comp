@@ -191,7 +191,8 @@ where
                 tracing::trace!(
                     surface_id = surface.id().protocol_id(),
                     has_region = pending_region.is_some(),
-                    "[BLUR-TIMING] 1/5 Client committed blur protocol for surface"
+                    region_count = pending_region.as_ref().map(|r| r.len()).unwrap_or(0),
+                    "Blur Commit for surface"
                 );
 
                 with_states(&surface, |surface_data| {
@@ -206,15 +207,31 @@ where
                 state.blur_set(&surface);
             }
             org_kde_kwin_blur::Request::SetRegion { region } => {
-                let regions = region.and_then(|r| {
-                    r.data::<smithay::wayland::compositor::RegionAttributes>()
-                        .map(|attrs| {
-                            attrs
-                                .rects
-                                .iter()
-                                .map(|(_, rect)| *rect)
-                                .collect::<Vec<_>>()
-                        })
+                let regions = region.map(|r| {
+                    use smithay::wayland::compositor::{RectangleKind, get_region_attributes};
+                    let attrs = get_region_attributes(&r);
+
+                    // The WlRegion accumulates Add/Subtract ops across calls.
+                    // Find the last Subtract (which acts as a "clear"), then
+                    // collect only the Add rects after it.
+                    let last_subtract_idx = attrs
+                        .rects
+                        .iter()
+                        .rposition(|(kind, _)| matches!(kind, RectangleKind::Subtract));
+
+                    let start = last_subtract_idx.map_or(0, |i| i + 1);
+                    let result: Vec<_> = attrs.rects[start..]
+                        .iter()
+                        .filter(|(kind, _)| matches!(kind, RectangleKind::Add))
+                        .map(|(_, rect)| *rect)
+                        .collect();
+
+                    tracing::trace!(
+                        total_rects = attrs.rects.len(),
+                        add_rects = result.len(),
+                        "Blur SetRegion parsed"
+                    );
+                    result
                 });
                 *data.pending_region.lock().unwrap() = regions;
             }

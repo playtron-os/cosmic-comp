@@ -3460,14 +3460,26 @@ impl Shell {
             // Start fade-out animation instead of immediately hiding.
             // The surface will remain visible with decreasing alpha until
             // the animation completes, then moved to hidden_surfaces.
-            self.pending_layer_fade_in.remove(&surface_id);
-            self.layer_fade_in.remove(&surface_id);
+            let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
+            let was_pending = self.pending_layer_fade_in.remove(&surface_id);
+            tracing::debug!(
+                ?surface_id,
+                was_fading_in,
+                was_pending,
+                "set_surface_hidden(true): starting fade-out"
+            );
             self.layer_fade_out
                 .entry(surface_id.clone())
                 .or_insert_with(Instant::now);
         } else {
             let was_hidden = self.hidden_surfaces.remove(&surface_id);
             let was_fading_out = self.layer_fade_out.remove(&surface_id);
+            tracing::debug!(
+                ?surface_id,
+                was_hidden,
+                was_fading_out = was_fading_out.is_some(),
+                "set_surface_hidden(false): making visible"
+            );
             // Defer blur fade-in until the surface commits its first buffer
             // after becoming visible. This prevents the blur animating over
             // stale/empty content while the client renders its first frame.
@@ -3479,6 +3491,10 @@ impl Shell {
                 self.pending_layer_fade_in.insert(surface_id);
             } else if was_fading_out.is_some() {
                 // Was still fading out — restart fade-in from current position
+                tracing::debug!(
+                    ?surface_id,
+                    "set_surface_hidden: was fading out, restarting fade-in"
+                );
                 self.layer_fade_in.insert(surface_id, Instant::now());
             }
         }
@@ -3518,9 +3534,10 @@ impl Shell {
                     let eased = 1.0 - (1.0 - progress).powi(3);
                     tracing::debug!(
                         ?surface_id,
-                        ?progress,
-                        ?eased,
-                        "layer_fade_in_alphas: surface still fading"
+                        elapsed_ms = elapsed.as_millis(),
+                        progress = format!("{:.3}", progress),
+                        alpha = format!("{:.3}", eased),
+                        "layer_fade_in_alphas: surface fading in"
                     );
                     Some((surface_id.clone(), eased))
                 }
@@ -3579,6 +3596,11 @@ impl Shell {
         self.layer_fade_out.retain(|surface_id, start| {
             let elapsed = now.saturating_duration_since(*start);
             if elapsed >= LAYER_FADE_OUT_DURATION {
+                tracing::debug!(
+                    ?surface_id,
+                    elapsed_ms = elapsed.as_millis(),
+                    "cleanup_layer_fade_outs: fade-out complete, moving to hidden_surfaces"
+                );
                 completed.push(surface_id.clone());
                 false
             } else {
@@ -3625,8 +3647,36 @@ impl Shell {
     /// Unconditionally inserts because the original entry may have already been
     /// cleaned up by cleanup_layer_fade_ins() if the animation expired.
     pub fn restart_layer_fade_in(&mut self, surface_id: ObjectId) {
+        let is_already_fading_in = self.layer_fade_in.contains_key(&surface_id);
+        let is_fading_out = self.layer_fade_out.contains_key(&surface_id);
+        let is_pending = self.pending_layer_fade_in.contains(&surface_id);
+        let is_hidden = self.hidden_surfaces.contains(&surface_id);
+
+        // Only restart when the surface is pending its first fade-in or
+        // reversing from a fade-out.  Skip when already fading in (resetting
+        // the timer would drop alpha back to 0 and cause a visible blink) and
+        // when fully visible (blur region update, no animation needed).
+        if !is_pending && !is_fading_out {
+            tracing::debug!(
+                ?surface_id,
+                is_already_fading_in,
+                is_hidden,
+                "restart_layer_fade_in: skipping — surface is {} fading in or fully visible",
+                if is_already_fading_in {
+                    "already"
+                } else {
+                    "not"
+                }
+            );
+            return;
+        }
+
         tracing::debug!(
             ?surface_id,
+            is_already_fading_in,
+            is_fading_out,
+            is_pending,
+            is_hidden,
             "restart_layer_fade_in: restarting fade-in for blur"
         );
         self.layer_fade_in.insert(surface_id, Instant::now());

@@ -39,8 +39,10 @@ use crate::{
             screencopy::{FrameHolder, SessionData, render_session},
         },
         protocols::{
-            blur::has_blur as surface_has_blur, corner_radius::get_surface_corner_radius,
-            layer_shadow::surface_has_shadow, workspace::WorkspaceHandle,
+            blur::{get_blur_state, has_blur as surface_has_blur},
+            corner_radius::get_surface_corner_radius,
+            layer_shadow::surface_has_shadow,
+            workspace::WorkspaceHandle,
         },
     },
 };
@@ -1497,25 +1499,64 @@ where
                             get_cached_blur_texture_for_layer(&output_name, &popup_surface_id)
                         {
                             let output_transform = output.current_transform();
-                            let blurred_element = BlurredBackdropShader::element(
-                                renderer,
-                                &blur_info.texture,
-                                local_geo,
-                                blur_info.size,
-                                blur_info.screen_size,
-                                blur_info.scale.x,
-                                output_transform,
-                                corner_radius,
-                                1.0,
-                                BLUR_TINT_COLOR,
-                                BLUR_TINT_STRENGTH,
-                                true, // Enable border for popups
-                            );
 
-                            let backdrop_element: WorkspaceRenderElement<R> =
-                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
-                            if let Some(cropped) = crop_to_output(backdrop_element) {
-                                elements.push(cropped.into());
+                            // Check for blur regions — if set, render per-region backdrops
+                            let blur_regions = get_blur_state(popup_wl_surface)
+                                .and_then(|state| state.data)
+                                .and_then(|data| data.region);
+
+                            let has_per_region_blur = blur_regions.is_some();
+                            let blur_geos: Vec<Rectangle<i32, Local>> =
+                                if let Some(regions) = blur_regions {
+                                    regions
+                                        .iter()
+                                        .filter_map(|region| {
+                                            let geo = Rectangle::new(
+                                                (
+                                                    local_geo.loc.x + region.loc.x,
+                                                    local_geo.loc.y + region.loc.y,
+                                                )
+                                                    .into(),
+                                                region.size.as_local(),
+                                            );
+                                            // Clamp blur rect to surface bounds
+                                            geo.intersection(local_geo)
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![local_geo]
+                                };
+
+                            const PER_REGION_CORNER_RADIUS: f32 = 8.0;
+
+                            for blur_geo in blur_geos {
+                                let blur_corner_radius = if has_per_region_blur {
+                                    [PER_REGION_CORNER_RADIUS; 4]
+                                } else {
+                                    corner_radius
+                                };
+
+                                let blurred_element = BlurredBackdropShader::element(
+                                    renderer,
+                                    &blur_info.texture,
+                                    blur_geo,
+                                    blur_info.size,
+                                    blur_info.screen_size,
+                                    blur_info.scale.x,
+                                    output_transform,
+                                    blur_corner_radius,
+                                    1.0,
+                                    BLUR_TINT_COLOR,
+                                    BLUR_TINT_STRENGTH,
+                                    true, // Enable border for popups
+                                );
+
+                                let backdrop_element: WorkspaceRenderElement<R> =
+                                    Into::<CosmicMappedRenderElement<R>>::into(blurred_element)
+                                        .into();
+                                if let Some(cropped) = crop_to_output(backdrop_element) {
+                                    elements.push(cropped.into());
+                                }
                             }
                         }
                     }
@@ -1608,25 +1649,99 @@ where
                             // its own corner radius — it handles its own borders
                             let has_client_corner_radius = corner_radius.iter().any(|&r| r > 0.0);
 
-                            let blurred_element = BlurredBackdropShader::element(
-                                renderer,
-                                &blur_info.texture,
-                                local_geo,
-                                blur_info.size,
-                                blur_info.screen_size,
-                                blur_info.scale.x,
-                                output_transform,
-                                corner_radius,
-                                blur_alpha,
-                                BLUR_TINT_COLOR,
-                                BLUR_TINT_STRENGTH,
-                                !has_client_corner_radius,
+                            // Check for blur regions — if set, render per-region backdrops
+                            let blur_state_debug = get_blur_state(layer.wl_surface());
+                            let blur_regions = blur_state_debug
+                                .as_ref()
+                                .and_then(|state| state.data.as_ref())
+                                .and_then(|data| data.region.as_ref());
+
+                            tracing::trace!(
+                                surface_id = layer.wl_surface().id().protocol_id(),
+                                has_state = blur_state_debug.is_some(),
+                                has_data = blur_state_debug
+                                    .as_ref()
+                                    .and_then(|s| s.data.as_ref())
+                                    .is_some(),
+                                has_region = blur_regions.is_some(),
+                                region_count = blur_regions.map(|r| r.len()).unwrap_or(0),
+                                "Layer blur rendering"
                             );
 
-                            let backdrop_element: WorkspaceRenderElement<R> =
-                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
-                            if let Some(cropped) = crop_to_output(backdrop_element) {
-                                elements.push(cropped.into());
+                            let has_per_region_blur = blur_regions.is_some();
+                            let blur_geos: Vec<Rectangle<i32, Local>> =
+                                if let Some(regions) = blur_regions {
+                                    regions
+                                        .iter()
+                                        .filter_map(|region| {
+                                            let geo = Rectangle::new(
+                                                (
+                                                    local_geo.loc.x + region.loc.x,
+                                                    local_geo.loc.y + region.loc.y,
+                                                )
+                                                    .into(),
+                                                region.size.as_local(),
+                                            );
+                                            // Clamp blur rect to surface bounds so
+                                            // rects that arrive before a pending resize
+                                            // never overflow the current buffer.
+                                            let geo = geo.intersection(local_geo)?;
+                                            tracing::trace!(
+                                                surface_id = layer.wl_surface().id().protocol_id(),
+                                                region_loc_x = region.loc.x,
+                                                region_loc_y = region.loc.y,
+                                                region_w = region.size.w,
+                                                region_h = region.size.h,
+                                                final_x = geo.loc.x,
+                                                final_y = geo.loc.y,
+                                                final_w = geo.size.w,
+                                                final_h = geo.size.h,
+                                                surface_x = local_geo.loc.x,
+                                                surface_y = local_geo.loc.y,
+                                                surface_w = local_geo.size.w,
+                                                surface_h = local_geo.size.h,
+                                                blur_alpha,
+                                                "Layer blur: per-region rect"
+                                            );
+                                            Some(geo)
+                                        })
+                                        .collect()
+                                } else {
+                                    vec![local_geo]
+                                };
+
+                            // Per-region blur uses a default card corner radius
+                            // since the KDE blur protocol doesn't carry radii.
+                            const PER_REGION_CORNER_RADIUS: f32 = 8.0;
+
+                            for blur_geo in blur_geos {
+                                let (blur_corner_radius, blur_border) = if has_per_region_blur {
+                                    ([PER_REGION_CORNER_RADIUS; 4], true)
+                                } else {
+                                    (corner_radius, !has_client_corner_radius)
+                                };
+
+                                let blurred_element = BlurredBackdropShader::element(
+                                    renderer,
+                                    &blur_info.texture,
+                                    blur_geo,
+                                    blur_info.size,
+                                    blur_info.screen_size,
+                                    blur_info.scale.x,
+                                    output_transform,
+                                    blur_corner_radius,
+                                    blur_alpha,
+                                    BLUR_TINT_COLOR,
+                                    BLUR_TINT_STRENGTH,
+                                    blur_border,
+                                );
+
+                                let backdrop_element: WorkspaceRenderElement<R> =
+                                    Into::<CosmicMappedRenderElement<R>>::into(blurred_element)
+                                        .into();
+                                if let Some(cropped) = crop_to_output(backdrop_element) {
+                                    elements.push(cropped.into());
+                                }
                             }
                         }
                     }

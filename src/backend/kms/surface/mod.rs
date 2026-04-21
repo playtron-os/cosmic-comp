@@ -1361,7 +1361,7 @@ fn process_blur(
                                 uncached_count = uncached_surfaces.len(),
                                 blur_total_us = blur_start.elapsed().as_micros(),
                                 layer_group_us = layer_group_start.elapsed().as_micros(),
-                                "[BLUR-TIMING] 5/5 First blur texture cached for layer surfaces"
+                                "First blur texture cached — calling restart_layer_fade_in for uncached surfaces"
                             );
                             let mut shell_guard = shell.write();
                             for surface_id in &uncached_surfaces {
