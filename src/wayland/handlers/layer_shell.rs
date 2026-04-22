@@ -7,7 +7,7 @@ use crate::{
     },
     shell::PendingLayer,
     utils::prelude::*,
-    wayland::protocols::blur::has_blur as surface_has_blur,
+    wayland::protocols::blur::{get_blur_radius, has_blur as surface_has_blur},
 };
 use smithay::{
     delegate_layer_shell,
@@ -60,12 +60,15 @@ pub fn update_layer_blur_state(
         .filter_map(|layer| {
             let geometry = layer_map.layer_geometry(layer)?;
             let layer_type = layer.layer();
-            let surface_id = layer.wl_surface().id();
+            let surface = layer.wl_surface();
+            let surface_id = surface.id();
+            let blur_radius = get_blur_radius(surface);
 
             Some(LayerBlurSurfaceInfo {
                 surface_id,
                 geometry,
                 layer: layer_type,
+                blur_radius,
             })
         })
         .collect();

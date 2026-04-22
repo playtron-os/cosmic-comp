@@ -1002,6 +1002,7 @@ fn process_blur(
                     blur_size,
                     scale,
                     blur_iterations,
+                    None,
                 );
 
                 if blur_result.is_ok() {
@@ -1083,7 +1084,8 @@ fn process_blur(
         let layer_blur_start = std::time::Instant::now();
         let layer_blur_surfaces = get_layer_blur_surfaces(&output_name);
 
-        // Group surfaces by layer type (Background=0, Bottom=1, Top=2, Overlay=3)
+        // Group surfaces by (layer type, blur radius) for proper capture.
+        // Surfaces with different radii need separate blur passes.
         let layer_to_key = |l: Layer| -> u8 {
             match l {
                 Layer::Background => 0,
@@ -1101,25 +1103,41 @@ fn process_blur(
             }
         };
 
-        let mut surfaces_by_layer: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Logical>)>> =
+        fn radius_key(r: Option<f32>) -> i32 {
+            match r {
+                Some(v) => (v * 1000.0) as i32,
+                None => -1,
+            }
+        }
+
+        let mut surfaces_by_group: StdHashMap<(u8, i32), Vec<(ObjectId, Rectangle<i32, Logical>)>> =
             StdHashMap::new();
+        let mut group_radius_map: StdHashMap<(u8, i32), Option<f32>> = StdHashMap::new();
         for layer_info in &layer_blur_surfaces {
-            surfaces_by_layer
-                .entry(layer_to_key(layer_info.layer))
+            let key = (
+                layer_to_key(layer_info.layer),
+                radius_key(layer_info.blur_radius),
+            );
+            surfaces_by_group
+                .entry(key)
                 .or_default()
                 .push((layer_info.surface_id.clone(), layer_info.geometry));
+            group_radius_map
+                .entry(key)
+                .or_insert(layer_info.blur_radius);
         }
 
         tracing::debug!(
             output = %output_name,
             total_layer_surfaces = layer_blur_surfaces.len(),
-            layer_groups = surfaces_by_layer.len(),
+            layer_groups = surfaces_by_group.len(),
             "[BLUR-TIMING] KMS layer blur processing starting"
         );
 
-        // Process each layer type that has blur surfaces
-        for (layer_key, surfaces) in surfaces_by_layer {
-            let layer_type = key_to_layer(layer_key);
+        // Process each group (layer + radius) that has blur surfaces
+        for (group_key, surfaces) in surfaces_by_group {
+            let layer_type = key_to_layer(group_key.0);
+            let group_blur_radius = group_radius_map.get(&group_key).copied().flatten();
             let layer_group_start = std::time::Instant::now();
 
             let _layer_span = tracing::debug_span!(
@@ -1185,7 +1203,7 @@ fn process_blur(
             };
 
             // Compute content hash for cache invalidation
-            let layer_z = layer_key as usize;
+            let layer_z = group_key.0 as usize;
             let content_hash =
                 compute_element_content_hash(layer_z + 1000, &capture_elements, scale);
 
@@ -1315,6 +1333,7 @@ fn process_blur(
                         blur_size,
                         scale,
                         blur_iterations,
+                        group_blur_radius,
                     );
 
                     if blur_result.is_ok() {

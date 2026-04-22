@@ -721,12 +721,6 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("input_to_geo", UniformType::Matrix3x3),
             UniformName::new("geo_size", UniformType::_2f),
             UniformName::new("corner_radius", UniformType::_4f),
-            // Secondary shadow uniforms
-            UniformName::new("shadow_color_2", UniformType::_4f),
-            UniformName::new("sigma_2", UniformType::_1f),
-            UniformName::new("input_to_geo_2", UniformType::Matrix3x3),
-            UniformName::new("geo_size_2", UniformType::_2f),
-            UniformName::new("corner_radius_2", UniformType::_4f),
             // Window cutout uniforms
             UniformName::new("window_input_to_geo", UniformType::Matrix3x3),
             UniformName::new("window_geo_size", UniformType::_2f),
@@ -2141,14 +2135,15 @@ where
     // Get layer blur surfaces from cache (populated by main thread, safe for render thread)
     use smithay::wayland::shell::wlr_layer::Layer;
     let cached_layer_blur = get_layer_blur_surfaces(&output.name());
-    let layer_blur_surfaces: Vec<(ObjectId, Rectangle<i32, Local>, Layer)> = cached_layer_blur
-        .into_iter()
-        .map(|info| {
-            let geo = info.geometry.as_local();
-            blur_geometries.push((geo, 1.0));
-            (info.surface_id, geo, info.layer)
-        })
-        .collect();
+    let layer_blur_surfaces: Vec<(ObjectId, Rectangle<i32, Local>, Layer, Option<f32>)> =
+        cached_layer_blur
+            .into_iter()
+            .map(|info| {
+                let geo = info.geometry.as_local();
+                blur_geometries.push((geo, 1.0));
+                (info.surface_id, geo, info.layer, info.blur_radius)
+            })
+            .collect();
     let has_layer_blur = !layer_blur_surfaces.is_empty();
 
     tracing::trace!(
@@ -2537,6 +2532,7 @@ where
                         blur_size,
                         scale,
                         blur_iterations,
+                        None,
                     );
 
                     if blur_result.is_ok() {
@@ -2616,8 +2612,9 @@ where
             }
         }
         if has_layer_blur && blur_state.is_ready() {
-            // Group surfaces by layer type for proper capture
-            // Use u8 key since Layer doesn't implement Hash
+            // Group surfaces by (layer type, blur radius) for proper capture.
+            // Surfaces with different radii need separate blur passes even if
+            // they are on the same layer.
             use std::collections::HashMap as StdHashMap;
             let layer_to_key = |l: Layer| -> u8 {
                 match l {
@@ -2636,20 +2633,35 @@ where
                 }
             };
 
-            let mut surfaces_by_layer: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Local>)>> =
-                StdHashMap::new();
-            for (surface_id, geo, layer) in &layer_blur_surfaces {
-                surfaces_by_layer
-                    .entry(layer_to_key(*layer))
+            // Key: (layer_key, quantized radius in millipixels) to group surfaces
+            // that share the same layer AND blur radius.
+            fn radius_key(r: Option<f32>) -> i32 {
+                match r {
+                    Some(v) => (v * 1000.0) as i32,
+                    None => -1, // default radius
+                }
+            }
+
+            let mut surfaces_by_group: StdHashMap<
+                (u8, i32),
+                Vec<(ObjectId, Rectangle<i32, Local>)>,
+            > = StdHashMap::new();
+            let mut group_radius_map: StdHashMap<(u8, i32), Option<f32>> = StdHashMap::new();
+            for (surface_id, geo, layer, blur_radius) in &layer_blur_surfaces {
+                let key = (layer_to_key(*layer), radius_key(*blur_radius));
+                surfaces_by_group
+                    .entry(key)
                     .or_default()
                     .push((surface_id.clone(), *geo));
+                group_radius_map.entry(key).or_insert(*blur_radius);
             }
 
             let layer_blur_start = std::time::Instant::now();
 
-            // Process each layer type that has blur surfaces
-            for (layer_key, surfaces) in &surfaces_by_layer {
-                let layer_type = key_to_layer(*layer_key);
+            // Process each group (layer + radius) that has blur surfaces
+            for (group_key, surfaces) in &surfaces_by_group {
+                let layer_type = key_to_layer(group_key.0);
+                let group_blur_radius = group_radius_map.get(group_key).copied().flatten();
                 let layer_group_start = std::time::Instant::now();
 
                 // Check if all surfaces in this layer have valid cached blur textures
@@ -2816,6 +2828,7 @@ where
                         blur_size,
                         scale,
                         blur_iterations,
+                        group_blur_radius,
                     );
 
                     if blur_result.is_ok() {

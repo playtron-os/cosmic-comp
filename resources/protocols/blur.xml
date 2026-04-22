@@ -7,7 +7,7 @@
     SPDX-License-Identifier: LGPL-2.1-or-later
   ]]></copyright>
 
-  <interface name="org_kde_kwin_blur_manager" version="1">
+  <interface name="org_kde_kwin_blur_manager" version="2">
     <description summary="blur manager">
       This interface allows a client to request blur effect for a surface.
     </description>
@@ -28,7 +28,7 @@
     </request>
   </interface>
 
-  <interface name="org_kde_kwin_blur" version="1">
+  <interface name="org_kde_kwin_blur" version="2">
     <description summary="blur interface">
       This interface allows a client to specify a blur region for a surface.
     </description>
@@ -50,6 +50,18 @@
       <description summary="release the blur object">
         Release the blur object, removing the blur effect from the surface.
       </description>
+    </request>
+
+    <!-- Version 2 additions -->
+
+    <request name="set_radius" since="2">
+      <description summary="set the blur radius">
+        Set the blur radius in pixels. If not set, the compositor's default
+        blur radius is used. The value is a fixed-point number with 8 bits
+        of fractional precision (i.e. multiply the desired radius by 256).
+        For example, a 2px blur is 512, a 60px blur is 15360.
+      </description>
+      <arg name="radius_fixed" type="int"/>
     </request>
   </interface>
 </protocol>

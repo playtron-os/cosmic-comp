@@ -84,17 +84,11 @@ impl ShadowShader {
         {
             let shader = Self::get(renderer);
 
-            // Primary shadow: blur 14, offset (0, 3), alpha 0.12
-            let softness = 14.;
+            // Primary shadow: rgba(0, 0, 0, 0.1) 0px 24px 80px
+            let softness = 80.;
             let spread = 0.;
-            let offset = [0., 3.];
-            let color = [0., 0., 0., 0.12];
-
-            // Secondary shadow: blur 5, offset (0, 5), alpha 0.02
-            let softness_2 = 5.;
-            let spread_2 = 0.;
-            let offset_2 = [0., 5.];
-            let color_2 = [0., 0., 0., 0.02];
+            let offset = [0., 24.];
+            let color = [0., 0., 0., 0.1];
 
             let radius = radius.map(|r| ceil(r as f64));
             let radius = [
@@ -122,41 +116,11 @@ impl ShadowShader {
             let win_radius = radius;
             let radius = radius.map(|r| if r > 0. { r.saturating_add(spread) } else { 0. });
 
-            // Secondary shadow geometry
-            let width_2 = softness_2;
-            let sigma_2 = width_2 / 2.;
-            let width_2 = ceil(sigma_2 * 4.);
-
-            let offset_2_point: Point<f64, Local> =
-                Point::new(ceil(offset_2[0]), ceil(offset_2[1]));
-            let spread_2 = ceil(spread_2.abs()).copysign(spread_2);
-            let offset_2 = offset_2_point - Point::new(spread_2, spread_2);
-
-            let box_size_2 = if spread_2 >= 0. {
-                geo.size + Size::new(spread_2, spread_2).upscale(2.)
-            } else {
-                geo.size - Size::new(-spread_2, -spread_2).upscale(2.)
-            };
-
-            let radius_2 = win_radius.map(|r| {
-                if r > 0. {
-                    r.saturating_add(spread_2)
-                } else {
-                    0.
-                }
-            });
-
-            // Combine shader sizes (use the larger of the two)
-            let shader_width = width.max(width_2);
-            // Account for max offset in each direction
-            let max_offset_x = offset.x.abs().max(offset_2.x.abs());
-            let max_offset_y = offset.y.abs().max(offset_2.y.abs());
             let shader_size = geo.size
-                + Size::from((shader_width + max_offset_x, shader_width + max_offset_y))
-                    .upscale(2.)
-                + Size::new(spread.max(spread_2), spread.max(spread_2)).upscale(2.);
+                + Size::from((width + offset.x.abs(), width + offset.y.abs())).upscale(2.)
+                + Size::new(spread, spread).upscale(2.);
             let mut shader_geo = Rectangle::new(
-                Point::from((-shader_width - max_offset_x, -shader_width - max_offset_y)),
+                Point::from((-width - offset.x.abs(), -width - offset.y.abs())),
                 shader_size,
             );
 
@@ -169,20 +133,6 @@ impl ShadowShader {
                 * Matrix3::from_translation(Vector2::new(
                     -geo_loc.x / area_size.x,
                     -geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
-
-            // Secondary shadow transforms
-            let geo_loc_2 = Vector2::new(
-                -shader_geo.loc.x + offset_2.x,
-                -shader_geo.loc.y + offset_2.y,
-            );
-
-            let input_to_geo_2 = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -geo_loc_2.x / area_size.x,
-                    -geo_loc_2.y / area_size.y,
                 )))
             .cast::<f32>()
             .unwrap();
@@ -223,26 +173,6 @@ impl ShadowShader {
                             radius[1] as f32,
                             radius[2] as f32,
                             radius[3] as f32,
-                        ],
-                    ),
-                    // Secondary shadow uniforms
-                    Uniform::new("shadow_color_2", color_2),
-                    Uniform::new("sigma_2", sigma_2 as f32),
-                    Uniform::new(
-                        "input_to_geo_2",
-                        UniformValue::Matrix3x3 {
-                            matrices: vec![*AsRef::<[f32; 9]>::as_ref(&input_to_geo_2)],
-                            transpose: false,
-                        },
-                    ),
-                    Uniform::new("geo_size_2", [box_size_2.w as f32, box_size_2.h as f32]),
-                    Uniform::new(
-                        "corner_radius_2",
-                        [
-                            radius_2[0] as f32,
-                            radius_2[1] as f32,
-                            radius_2[2] as f32,
-                            radius_2[3] as f32,
                         ],
                     ),
                     // Window cutout uniforms
@@ -316,17 +246,11 @@ impl ShadowShader {
         {
             let shader = Self::get(renderer);
 
-            // Primary shadow: blur 14, offset (0, 3), alpha 0.12
-            let softness = 14.;
+            // Primary shadow: rgba(0, 0, 0, 0.12) 0px 8px 32px
+            let softness = 32.;
             let spread = 0.;
-            let offset = [0., 3.];
+            let offset = [0., 8.];
             let color = [0., 0., 0., 0.12];
-
-            // Secondary shadow: blur 5, offset (0, 5), alpha 0.02
-            let softness_2 = 5.;
-            let spread_2 = 0.;
-            let offset_2 = [0., 5.];
-            let color_2 = [0., 0., 0., 0.02];
 
             let radius = radius.map(|r| ceil(r as f64));
             let radius = [
@@ -354,41 +278,11 @@ impl ShadowShader {
             let win_radius = radius;
             let radius = radius.map(|r| if r > 0. { r.saturating_add(spread) } else { 0. });
 
-            // Secondary shadow geometry
-            let width_2 = softness_2;
-            let sigma_2 = width_2 / 2.;
-            let width_2 = ceil(sigma_2 * 4.);
-
-            let offset_2_point: Point<f64, Local> =
-                Point::new(ceil(offset_2[0]), ceil(offset_2[1]));
-            let spread_2 = ceil(spread_2.abs()).copysign(spread_2);
-            let offset_2 = offset_2_point - Point::new(spread_2, spread_2);
-
-            let box_size_2 = if spread_2 >= 0. {
-                geo.size + Size::new(spread_2, spread_2).upscale(2.)
-            } else {
-                geo.size - Size::new(-spread_2, -spread_2).upscale(2.)
-            };
-
-            let radius_2 = win_radius.map(|r| {
-                if r > 0. {
-                    r.saturating_add(spread_2)
-                } else {
-                    0.
-                }
-            });
-
-            // Combine shader sizes (use the larger of the two)
-            let shader_width = width.max(width_2);
-            // Account for max offset in each direction
-            let max_offset_x = offset.x.abs().max(offset_2.x.abs());
-            let max_offset_y = offset.y.abs().max(offset_2.y.abs());
             let shader_size = geo.size
-                + Size::from((shader_width + max_offset_x, shader_width + max_offset_y))
-                    .upscale(2.)
-                + Size::new(spread.max(spread_2), spread.max(spread_2)).upscale(2.);
+                + Size::from((width + offset.x.abs(), width + offset.y.abs())).upscale(2.)
+                + Size::new(spread, spread).upscale(2.);
             let mut shader_geo = Rectangle::new(
-                Point::from((-shader_width - max_offset_x, -shader_width - max_offset_y)),
+                Point::from((-width - offset.x.abs(), -width - offset.y.abs())),
                 shader_size,
             );
 
@@ -401,20 +295,6 @@ impl ShadowShader {
                 * Matrix3::from_translation(Vector2::new(
                     -geo_loc.x / area_size.x,
                     -geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
-
-            // Secondary shadow transforms
-            let geo_loc_2 = Vector2::new(
-                -shader_geo.loc.x + offset_2.x,
-                -shader_geo.loc.y + offset_2.y,
-            );
-
-            let input_to_geo_2 = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -geo_loc_2.x / area_size.x,
-                    -geo_loc_2.y / area_size.y,
                 )))
             .cast::<f32>()
             .unwrap();
@@ -455,26 +335,6 @@ impl ShadowShader {
                             radius[1] as f32,
                             radius[2] as f32,
                             radius[3] as f32,
-                        ],
-                    ),
-                    // Secondary shadow uniforms
-                    Uniform::new("shadow_color_2", color_2),
-                    Uniform::new("sigma_2", sigma_2 as f32),
-                    Uniform::new(
-                        "input_to_geo_2",
-                        UniformValue::Matrix3x3 {
-                            matrices: vec![*AsRef::<[f32; 9]>::as_ref(&input_to_geo_2)],
-                            transpose: false,
-                        },
-                    ),
-                    Uniform::new("geo_size_2", [box_size_2.w as f32, box_size_2.h as f32]),
-                    Uniform::new(
-                        "corner_radius_2",
-                        [
-                            radius_2[0] as f32,
-                            radius_2[1] as f32,
-                            radius_2[2] as f32,
-                            radius_2[3] as f32,
                         ],
                     ),
                     // Window cutout uniforms

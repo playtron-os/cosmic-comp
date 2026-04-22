@@ -532,6 +532,8 @@ pub struct LayerBlurSurfaceInfo {
     pub geometry: Rectangle<i32, Logical>,
     /// Layer type (Bottom, Top, Overlay, Background)
     pub layer: smithay::wayland::shell::wlr_layer::Layer,
+    /// Custom blur radius in pixels, or None for compositor default.
+    pub blur_radius: Option<f32>,
 }
 
 /// Cached layer surface info for rendering (includes the actual LayerSurface).
@@ -1030,6 +1032,7 @@ where
 /// - `tex_size`: Size of all textures
 /// - `scale`: Scale factor for damage tracking
 /// - `iterations`: Number of blur iterations
+/// - `custom_radius`: Optional per-surface blur radius; uses `DEFAULT_BLUR_RADIUS` if `None`.
 ///
 /// After this function, `pong_texture` contains the blurred result.
 pub fn apply_blur_passes<R>(
@@ -1040,6 +1043,7 @@ pub fn apply_blur_passes<R>(
     tex_size: Size<i32, Physical>,
     scale: Scale<f64>,
     iterations: u32,
+    custom_radius: Option<f32>,
 ) -> Result<(), GlesError>
 where
     R: Renderer + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlowRenderer,
@@ -1054,7 +1058,7 @@ where
     .entered();
 
     let blur_shader = super::BlurShader::get(renderer);
-    let blur_radius = DEFAULT_BLUR_RADIUS;
+    let blur_radius = custom_radius.unwrap_or(DEFAULT_BLUR_RADIUS);
 
     // First pass: src -> ping (horizontal blur)
     apply_single_blur_pass(

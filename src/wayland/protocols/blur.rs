@@ -39,6 +39,8 @@ use std::sync::Mutex;
 pub struct BlurRegionData {
     /// The blur region. If None, the entire surface should be blurred.
     pub region: Option<Vec<Rectangle<i32, Logical>>>,
+    /// Custom blur radius in pixels. If None, the compositor default is used.
+    pub radius: Option<f32>,
 }
 
 /// Cacheable blur state for double-buffering
@@ -48,6 +50,8 @@ pub struct CacheableBlurState {
     pub enabled: bool,
     /// The blur region data
     pub data: Option<BlurRegionData>,
+    /// Custom blur radius in pixels. If None, the compositor default is used.
+    pub radius: Option<f32>,
 }
 
 impl Cacheable for CacheableBlurState {
@@ -63,6 +67,7 @@ impl Cacheable for CacheableBlurState {
 pub struct BlurData {
     surface: Weak<WlSurface>,
     pending_region: Mutex<Option<Vec<Rectangle<i32, Logical>>>>,
+    pending_radius: Mutex<Option<f32>>,
 }
 
 /// State for the blur manager protocol
@@ -82,7 +87,7 @@ impl BlurState {
             + 'static,
     {
         let global =
-            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(1, ());
+            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(2, ());
         BlurState { global }
     }
 
@@ -146,6 +151,7 @@ where
                 let blur_data = BlurData {
                     surface: surface.downgrade(),
                     pending_region: Mutex::new(None),
+                    pending_radius: Mutex::new(None),
                 };
                 data_init.init(id, blur_data);
             }
@@ -187,11 +193,13 @@ where
                 };
 
                 let pending_region = data.pending_region.lock().unwrap().take();
+                let pending_radius = data.pending_radius.lock().unwrap().take();
 
                 tracing::trace!(
                     surface_id = surface.id().protocol_id(),
                     has_region = pending_region.is_some(),
                     region_count = pending_region.as_ref().map(|r| r.len()).unwrap_or(0),
+                    ?pending_radius,
                     "Blur Commit for surface"
                 );
 
@@ -199,8 +207,10 @@ where
                     let mut cached = surface_data.cached_state.get::<CacheableBlurState>();
                     let pending = cached.pending();
                     pending.enabled = true;
+                    pending.radius = pending_radius;
                     pending.data = Some(BlurRegionData {
                         region: pending_region,
+                        radius: pending_radius,
                     });
                 });
 
@@ -242,6 +252,12 @@ where
                 // otherwise the new object's commit is undone by the old release.
                 // Only the explicit `unset` request on the manager should disable blur.
             }
+            org_kde_kwin_blur::Request::SetRadius { radius_fixed } => {
+                // Fixed-point 24.8: divide by 256 to get pixels
+                let radius_px = radius_fixed as f32 / 256.0;
+                tracing::trace!(radius_fixed, radius_px, "Blur SetRadius");
+                *data.pending_radius.lock().unwrap() = Some(radius_px);
+            }
         }
     }
 }
@@ -270,6 +286,12 @@ pub fn has_blur(surface: &WlSurface) -> bool {
         );
     }
     result
+}
+
+/// Get the custom blur radius for a surface, if set.
+/// Returns `None` if the surface uses the compositor default.
+pub fn get_blur_radius(surface: &WlSurface) -> Option<f32> {
+    get_blur_state(surface).and_then(|state| state.radius)
 }
 
 /// Macro to delegate blur protocol handling
