@@ -1,3 +1,11 @@
+# [1.17.0](https://github.com/playtron-os/cosmic-comp/compare/v1.16.1...v1.17.0) (2026-04-22)
+
+
+### Features
+
+* add blur radius support and simplify shadow rendering ([5aa0e5d](https://github.com/playtron-os/cosmic-comp/commit/5aa0e5d84db86f1fef09545609c8b8a6d8b203f8))
+* **blur:** per-region blur rendering with surface-bounds clamping ([12044c4](https://github.com/playtron-os/cosmic-comp/commit/12044c432c3caa6cbd6bfe87e1320d7d9f29432f))
+
 ## [1.16.1](https://github.com/playtron-os/cosmic-comp/compare/v1.16.0...v1.16.1) (2026-04-15)
 
 
