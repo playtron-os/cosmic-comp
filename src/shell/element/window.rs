@@ -93,6 +93,9 @@ pub struct CosmicWindowInternal {
     last_title: Mutex<String>,
     /// Cached app icon handle, resolved once and refreshed when app_id changes.
     cached_icon: Mutex<(String, Option<cosmic::widget::icon::Handle>)>,
+    /// Desktop override from .desktop file with X-Cosmic-AppIdMatch.
+    /// Tuple: (app_id used for lookup, optional override).
+    desktop_override: Mutex<(String, Option<DesktopOverride>)>,
     tiled: AtomicBool,
     theme: Mutex<cosmic::Theme>,
     appearance_conf: Mutex<AppearanceConfig>,
@@ -278,6 +281,121 @@ fn prescale_raster_icon(path: &str) -> Option<cosmic::widget::icon::Handle> {
     })
 }
 
+/// Override properties parsed from a .desktop file with `X-Cosmic-AppIdMatch`.
+#[derive(Debug, Clone, Default)]
+struct DesktopOverride {
+    forced_title: Option<String>,
+    forced_icon: Option<String>,
+}
+
+/// Simple glob matching supporting `*` (any sequence) and `?` (single char).
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let (p, t) = (pattern.as_bytes(), text.as_bytes());
+    let (mut px, mut tx) = (0usize, 0usize);
+    let (mut star_px, mut star_tx) = (usize::MAX, 0usize);
+    while tx < t.len() {
+        if px < p.len() && (p[px] == b'?' || p[px] == t[tx]) {
+            px += 1;
+            tx += 1;
+        } else if px < p.len() && p[px] == b'*' {
+            star_px = px;
+            star_tx = tx;
+            px += 1;
+        } else if star_px != usize::MAX {
+            px = star_px + 1;
+            star_tx += 1;
+            tx = star_tx;
+        } else {
+            return false;
+        }
+    }
+    while px < p.len() && p[px] == b'*' {
+        px += 1;
+    }
+    px == p.len()
+}
+
+/// Scan XDG application directories for a .desktop file whose
+/// `X-Cosmic-AppIdMatch` glob matches `app_id`, returning any
+/// `X-Cosmic-ForcedTitle` / `X-Cosmic-ForcedIcon` overrides.
+fn find_desktop_override(app_id: &str) -> Option<DesktopOverride> {
+    use std::path::PathBuf;
+
+    if app_id.is_empty() {
+        return None;
+    }
+    let mut search_dirs = Vec::new();
+    if let Ok(home) = std::env::var("XDG_DATA_HOME") {
+        search_dirs.push(PathBuf::from(home).join("applications"));
+    } else if let Ok(home) = std::env::var("HOME") {
+        search_dirs.push(PathBuf::from(home).join(".local/share/applications"));
+    }
+    if let Ok(dirs) = std::env::var("XDG_DATA_DIRS") {
+        for dir in dirs.split(':') {
+            search_dirs.push(PathBuf::from(dir).join("applications"));
+        }
+    } else {
+        search_dirs.push(PathBuf::from("/usr/local/share/applications"));
+        search_dirs.push(PathBuf::from("/usr/share/applications"));
+    }
+    for dir in &search_dirs {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+                continue;
+            }
+            if let Some(ovr) = parse_desktop_override(&path, app_id) {
+                return Some(ovr);
+            }
+        }
+    }
+    None
+}
+
+/// Parse a single .desktop file for X-Cosmic override keys.
+fn parse_desktop_override(path: &std::path::Path, app_id: &str) -> Option<DesktopOverride> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut in_desktop_entry = false;
+    let mut match_pattern: Option<String> = None;
+    let mut forced_title: Option<String> = None;
+    let mut forced_icon: Option<String> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            if in_desktop_entry && match_pattern.is_some() {
+                break;
+            }
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry {
+            continue;
+        }
+        if let Some(val) = line.strip_prefix("X-Cosmic-AppIdMatch=") {
+            match_pattern = Some(val.to_string());
+        } else if let Some(val) = line.strip_prefix("X-Cosmic-ForcedTitle=") {
+            forced_title = Some(val.to_string());
+        } else if let Some(val) = line.strip_prefix("X-Cosmic-ForcedIcon=") {
+            forced_icon = Some(val.to_string());
+        }
+    }
+    let pattern = match_pattern?;
+    if !glob_match(&pattern, app_id) {
+        return None;
+    }
+    if forced_title.is_none() && forced_icon.is_none() {
+        return None;
+    }
+    Some(DesktopOverride {
+        forced_title,
+        forced_icon,
+    })
+}
+
 impl CosmicWindowInternal {
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
         let value = focus.map_or(0, |x| x as u8);
@@ -378,7 +496,12 @@ impl CosmicWindow {
         let width = window.geometry().size.w;
         let last_title = window.title();
         let app_id = window.app_id();
-        let icon = resolve_app_icon(&app_id);
+        let desktop_ovr = find_desktop_override(&app_id);
+        let icon_name = desktop_ovr
+            .as_ref()
+            .and_then(|o| o.forced_icon.as_deref())
+            .unwrap_or(&app_id);
+        let icon = resolve_app_icon(icon_name);
 
         // Note: We intentionally do NOT set_tiled based on clip_floating_windows.
         // The tiled protocol state should only reflect actual tiling status,
@@ -390,7 +513,8 @@ impl CosmicWindow {
                 activated: AtomicBool::new(false),
                 pointer_entered: AtomicU8::new(0),
                 last_title: Mutex::new(last_title),
-                cached_icon: Mutex::new((app_id, icon)),
+                cached_icon: Mutex::new((app_id.clone(), icon)),
+                desktop_override: Mutex::new((app_id, desktop_ovr)),
                 tiled: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
@@ -969,8 +1093,17 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         let radii = win.compute_corner_radius(geo_size, 0);
         let corner_radius_f32 = radii.map(|r| r as f32);
 
+        // Use forced title from .desktop override if available
+        let title = {
+            let ovr = win.desktop_override.lock().unwrap();
+            ovr.1
+                .as_ref()
+                .and_then(|o| o.forced_title.clone())
+                .unwrap_or_else(|| win.last_title.lock().unwrap().clone())
+        };
+
         let mut header = cosmic::widget::header_bar()
-            .title(win.last_title.lock().unwrap().clone())
+            .title(title)
             .on_drag(Message::DragStart)
             .on_close(Message::Close)
             .focused(win.window.is_activated(false))
@@ -1081,12 +1214,19 @@ impl SpaceElement for CosmicWindow {
                 false
             };
 
-            // Refresh cached icon if app_id changed
+            // Refresh cached icon and desktop override if app_id changed
             let app_id = p.window.app_id();
             let mut cached = p.cached_icon.lock().unwrap();
             if cached.0 != app_id {
-                cached.1 = resolve_app_icon(&app_id);
-                cached.0 = app_id;
+                let new_ovr = find_desktop_override(&app_id);
+                let icon_name = new_ovr
+                    .as_ref()
+                    .and_then(|o| o.forced_icon.as_deref())
+                    .unwrap_or(&app_id);
+                cached.1 = resolve_app_icon(icon_name);
+                cached.0 = app_id.clone();
+                drop(cached);
+                *p.desktop_override.lock().unwrap() = (app_id, new_ovr);
                 return true; // force redraw
             }
             drop(cached);

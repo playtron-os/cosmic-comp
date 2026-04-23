@@ -909,7 +909,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config"
 version = "1.0.0"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "atomicwrites",
  "calloop 0.14.4",
@@ -930,7 +930,7 @@ dependencies = [
 [[package]]
 name = "cosmic-config-derive"
 version = "1.0.0"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "quote",
  "syn 2.0.117",
@@ -939,7 +939,7 @@ dependencies = [
 [[package]]
 name = "cosmic-freedesktop-icons"
 version = "0.4.0"
-source = "git+https://github.com/pop-os/freedesktop-icons#7a61a704f6d1ec41f71cbe766e3cc484858523fa"
+source = "git+https://github.com/pop-os/freedesktop-icons#9c562fe3ecf03241a46a60c0078cd6ea10bd75ce"
 dependencies = [
  "bstr",
  "btoi",
@@ -1007,8 +1007,8 @@ dependencies = [
 
 [[package]]
 name = "cosmic-text"
-version = "0.18.2"
-source = "git+https://github.com/pop-os/cosmic-text.git#5651c2d96727749f8b19df4fda332bd8a2e6d823"
+version = "0.19.0"
+source = "git+https://github.com/pop-os/cosmic-text.git#c24886c2471e5606587c46090cd25dbbf209186b"
 dependencies = [
  "bitflags 2.11.0",
  "fontdb 0.23.0",
@@ -1031,7 +1031,7 @@ dependencies = [
 [[package]]
 name = "cosmic-theme"
 version = "1.0.0"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "almost",
  "cosmic-config",
@@ -2363,7 +2363,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "dnd",
  "iced_core",
@@ -2379,7 +2379,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "bitflags 2.11.0",
  "bytes",
@@ -2402,7 +2402,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "futures",
  "iced_core",
@@ -2427,7 +2427,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "bitflags 2.11.0",
  "bytemuck",
@@ -2449,7 +2449,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2461,7 +2461,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "bytes",
  "dnd",
@@ -2475,7 +2475,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -2491,7 +2491,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.11.0",
@@ -2522,7 +2522,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.14.0-dev"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "dnd",
  "iced_renderer",
@@ -3003,7 +3003,7 @@ checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
 [[package]]
 name = "libcosmic"
 version = "1.0.0"
-source = "git+https://github.com/playtron-os/libcosmic.git#ba0e126fafcf0845635c9a4b18293c6ed015b126"
+source = "git+https://github.com/playtron-os/libcosmic.git#5e6537499107bd22581be23c810229ac556a040d"
 dependencies = [
  "apply",
  "auto_enums",
@@ -5240,7 +5240,7 @@ checksum = "27207bb65232eda1f588cf46db2fee75c0808d557f6b3cf19a75f5d6d7c94df1"
 [[package]]
 name = "softbuffer"
 version = "0.4.1"
-source = "git+https://github.com/pop-os/softbuffer?tag=cosmic-4.0#a3f77e251e7422803f693df6e3fc313c010c4dcb"
+source = "git+https://github.com/pop-os/softbuffer?tag=cosmic-4.0#c2b2c19ddb38ff17495643699f97cb1f2064a1be"
 dependencies = [
  "as-raw-xcb-connection",
  "bytemuck",
