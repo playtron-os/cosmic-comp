@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/playtron-os/cosmic-comp/compare/v1.17.0...v1.18.0) (2026-04-23)
+
+
+### Features
+
+* add forced title/icon properties support in .desktop files to override it for chromium apps ([116e082](https://github.com/playtron-os/cosmic-comp/commit/116e08236b02583067cd1ac763b21bafd25ed2e0))
+
 # [1.17.0](https://github.com/playtron-os/cosmic-comp/compare/v1.16.1...v1.17.0) (2026-04-22)
 
 
