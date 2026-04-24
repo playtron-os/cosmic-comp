@@ -1,3 +1,10 @@
+## [1.18.1](https://github.com/playtron-os/cosmic-comp/compare/v1.18.0...v1.18.1) (2026-04-24)
+
+
+### Bug Fixes
+
+* update libcosmic for header bar and change size to 47px ([6273d1d](https://github.com/playtron-os/cosmic-comp/commit/6273d1dfd9d0d7a35174b6c0418efa55e161c64d))
+
 # [1.18.0](https://github.com/playtron-os/cosmic-comp/compare/v1.17.0...v1.18.0) (2026-04-23)
 
 
