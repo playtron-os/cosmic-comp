@@ -70,7 +70,7 @@ use wayland_backend::server::ObjectId;
 
 use super::CosmicSurface;
 
-pub const SSD_HEIGHT: i32 = 49;
+pub const SSD_HEIGHT: i32 = 47;
 pub const RESIZE_BORDER: i32 = 10;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -1107,6 +1107,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_drag(Message::DragStart)
             .on_close(Message::Close)
             .focused(win.window.is_activated(false))
+            .hovered(win.current_focus() == Some(Focus::Header))
             .maximized(win.window.is_maximized(false))
             .on_double_click(Message::Maximize)
             .on_right_click(Message::Menu)
