@@ -619,34 +619,33 @@ where
                 source,
                 options,
             } => {
-                if let Some(src) = source.data::<ImageCaptureSourceData>() {
-                    if *src != ImageCaptureSourceData::Destroyed {
-                        if let Some(buffer_constraints) = state.capture_source(src) {
-                            let session_data = Arc::new(Mutex::new(SessionInner::new(
-                                src.clone(),
-                                Into::<u32>::into(options) == 1,
-                            )));
-                            let obj = data_init.init(
-                                session,
-                                SessionData {
-                                    inner: session_data.clone(),
-                                },
-                            );
+                if let Some(src) = source.data::<ImageCaptureSourceData>()
+                    && *src != ImageCaptureSourceData::Destroyed
+                    && let Some(buffer_constraints) = state.capture_source(src)
+                {
+                    let session_data = Arc::new(Mutex::new(SessionInner::new(
+                        src.clone(),
+                        Into::<u32>::into(options) == 1,
+                    )));
+                    let obj = data_init.init(
+                        session,
+                        SessionData {
+                            inner: session_data.clone(),
+                        },
+                    );
 
-                            let session = SessionRef {
-                                obj,
-                                inner: session_data,
-                                user_data: Arc::new(UserDataMap::new()),
-                            };
-                            session.update_constraints(buffer_constraints);
-                            state
-                                .screencopy_state()
-                                .known_sessions
-                                .push(session.clone());
-                            state.new_session(Session(session));
-                            return;
-                        }
-                    }
+                    let session = SessionRef {
+                        obj,
+                        inner: session_data,
+                        user_data: Arc::new(UserDataMap::new()),
+                    };
+                    session.update_constraints(buffer_constraints);
+                    state
+                        .screencopy_state()
+                        .known_sessions
+                        .push(session.clone());
+                    state.new_session(Session(session));
+                    return;
                 }
 
                 let session_data = Arc::new(Mutex::new(SessionInner::new(
@@ -673,32 +672,30 @@ where
             } => {
                 // TODO: use pointer, but we need new smithay api for that.
 
-                if let Some(src) = source.data::<ImageCaptureSourceData>() {
-                    if *src != ImageCaptureSourceData::Destroyed {
-                        if let Some(buffer_constraints) = state.capture_cursor_source(src) {
-                            let session_data =
-                                Arc::new(Mutex::new(CursorSessionInner::new(src.clone())));
-                            let obj = data_init.init(
-                                session,
-                                CursorSessionData {
-                                    inner: session_data.clone(),
-                                },
-                            );
+                if let Some(src) = source.data::<ImageCaptureSourceData>()
+                    && *src != ImageCaptureSourceData::Destroyed
+                    && let Some(buffer_constraints) = state.capture_cursor_source(src)
+                {
+                    let session_data = Arc::new(Mutex::new(CursorSessionInner::new(src.clone())));
+                    let obj = data_init.init(
+                        session,
+                        CursorSessionData {
+                            inner: session_data.clone(),
+                        },
+                    );
 
-                            let session = CursorSessionRef {
-                                obj,
-                                inner: session_data,
-                                user_data: Arc::new(UserDataMap::new()),
-                            };
-                            session.update_constraints(buffer_constraints);
-                            state
-                                .screencopy_state()
-                                .known_cursor_sessions
-                                .push(session.clone());
-                            state.new_cursor_session(CursorSession(session));
-                            return;
-                        }
-                    }
+                    let session = CursorSessionRef {
+                        obj,
+                        inner: session_data,
+                        user_data: Arc::new(UserDataMap::new()),
+                    };
+                    session.update_constraints(buffer_constraints);
+                    state
+                        .screencopy_state()
+                        .known_cursor_sessions
+                        .push(session.clone());
+                    state.new_cursor_session(CursorSession(session));
+                    return;
                 }
 
                 let session_data = Arc::new(Mutex::new(CursorSessionInner::new(

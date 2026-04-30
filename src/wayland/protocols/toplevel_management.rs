@@ -271,10 +271,9 @@ where
                 let window = window_from_handle(toplevel).unwrap();
                 if let Some(workspace_handle) =
                     state.workspace_state().get_ext_workspace_handle(&workspace)
+                    && let Some(output) = Output::from_resource(&output)
                 {
-                    if let Some(output) = Output::from_resource(&output) {
-                        state.move_to_workspace(dh, &window, workspace_handle, output);
-                    }
+                    state.move_to_workspace(dh, &window, workspace_handle, output);
                 }
             }
             zcosmic_toplevel_manager_v1::Request::ForceClose { toplevel } => {

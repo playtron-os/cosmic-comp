@@ -323,10 +323,10 @@ impl VoiceConfig {
         }
 
         // Check fallback binding key
-        if let Some(ref fallback) = self.fallback_binding {
-            if self.keysym_matches_key(&fallback.key, keysym) {
-                return true;
-            }
+        if let Some(ref fallback) = self.fallback_binding
+            && self.keysym_matches_key(&fallback.key, keysym)
+        {
+            return true;
         }
 
         false

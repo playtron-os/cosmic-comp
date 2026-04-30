@@ -67,14 +67,14 @@ impl ExclusiveModeHandler for State {
                 let surface = mapped.active_window();
                 if surface != exclusive_surface {
                     // Skip windows that are embedded in the exclusive surface
-                    if let Some(parent_id) = get_parent_surface_id(&surface) {
-                        if parent_id == exclusive_surface_id {
-                            debug!(
-                                window_app_id = %surface.app_id(),
-                                "Skipping embedded child of exclusive surface"
-                            );
-                            continue;
-                        }
+                    if let Some(parent_id) = get_parent_surface_id(&surface)
+                        && parent_id == exclusive_surface_id
+                    {
+                        debug!(
+                            window_app_id = %surface.app_id(),
+                            "Skipping embedded child of exclusive surface"
+                        );
+                        continue;
                     }
                     surfaces_to_minimize.push(surface.clone());
                 }

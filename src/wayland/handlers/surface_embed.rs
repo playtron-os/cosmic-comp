@@ -168,10 +168,10 @@ pub fn mark_pid_pending_embed(pid: u32) {
 
 /// Remove a PID from the pending embed set (window can now be shown)
 pub fn unmark_pid_pending_embed(pid: u32) {
-    if let Ok(mut set) = PIDS_PENDING_EMBED.write() {
-        if set.remove(&pid) {
-            tracing::info!(pid = pid, "Unmarked PID from pending embed (now visible)");
-        }
+    if let Ok(mut set) = PIDS_PENDING_EMBED.write()
+        && set.remove(&pid)
+    {
+        tracing::info!(pid = pid, "Unmarked PID from pending embed (now visible)");
     }
 }
 
@@ -200,13 +200,13 @@ pub fn mark_surface_id_pending_embed(surface_id: &str) {
 
 /// Remove a surface ID from the pending embed set (window can now be shown)
 pub fn unmark_surface_id_pending_embed(surface_id: &str) {
-    if let Ok(mut set) = SURFACE_IDS_PENDING_EMBED.write() {
-        if set.remove(surface_id) {
-            tracing::info!(
-                surface_id = surface_id,
-                "Unmarked surface from pending embed (now visible)"
-            );
-        }
+    if let Ok(mut set) = SURFACE_IDS_PENDING_EMBED.write()
+        && set.remove(surface_id)
+    {
+        tracing::info!(
+            surface_id = surface_id,
+            "Unmarked surface from pending embed (now visible)"
+        );
     }
 }
 
@@ -387,24 +387,23 @@ pub fn update_embedded_geometry_for_parent_by_surface_id(
     let mut updated = Vec::new();
     if let Ok(mut map) = EMBEDDED_APP_IDS.write() {
         for (surface_id, info) in map.iter_mut() {
-            if info.parent_surface_id == parent_surface_id {
-                if let Some(ref anchor_config) = info.anchor_config {
-                    let new_geometry =
-                        anchor_config.calculate_geometry(parent_width, parent_height);
-                    if new_geometry != info.geometry {
-                        info!(
-                            "Updating embedded '{}' (surface='{}') geometry: {:?} -> {:?} (parent_surface {} size {}x{})",
-                            info.embedded_app_id,
-                            surface_id,
-                            info.geometry,
-                            new_geometry,
-                            parent_surface_id,
-                            parent_width,
-                            parent_height
-                        );
-                        info.geometry = new_geometry;
-                        updated.push((surface_id.clone(), new_geometry));
-                    }
+            if info.parent_surface_id == parent_surface_id
+                && let Some(ref anchor_config) = info.anchor_config
+            {
+                let new_geometry = anchor_config.calculate_geometry(parent_width, parent_height);
+                if new_geometry != info.geometry {
+                    info!(
+                        "Updating embedded '{}' (surface='{}') geometry: {:?} -> {:?} (parent_surface {} size {}x{})",
+                        info.embedded_app_id,
+                        surface_id,
+                        info.geometry,
+                        new_geometry,
+                        parent_surface_id,
+                        parent_width,
+                        parent_height
+                    );
+                    info.geometry = new_geometry;
+                    updated.push((surface_id.clone(), new_geometry));
                 }
             }
         }
@@ -414,13 +413,13 @@ pub fn update_embedded_geometry_for_parent_by_surface_id(
 
 /// Unmark a surface as embedded (by surface ID)
 pub fn unmark_surface_embedded(surface_id: &str) {
-    if let Ok(mut map) = EMBEDDED_APP_IDS.write() {
-        if let Some(removed) = map.remove(surface_id) {
-            info!(
-                "Unmarked surface_id='{}' (app_id='{}') from global map",
-                surface_id, removed.embedded_app_id
-            );
-        }
+    if let Ok(mut map) = EMBEDDED_APP_IDS.write()
+        && let Some(removed) = map.remove(surface_id)
+    {
+        info!(
+            "Unmarked surface_id='{}' (app_id='{}') from global map",
+            surface_id, removed.embedded_app_id
+        );
     }
 }
 
@@ -466,13 +465,13 @@ pub fn start_embed_animation_sync(surface_id: &str, initial_size: Size<i32, Logi
 /// Stop tracking animation sync for an embedded surface.
 /// Call this when the animation completes.
 pub fn stop_embed_animation_sync(surface_id: &str) {
-    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write() {
-        if map.remove(surface_id).is_some() {
-            info!(
-                "Stopped animation sync for embedded surface '{}'",
-                surface_id
-            );
-        }
+    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write()
+        && map.remove(surface_id).is_some()
+    {
+        info!(
+            "Stopped animation sync for embedded surface '{}'",
+            surface_id
+        );
     }
 }
 
@@ -482,11 +481,11 @@ pub fn record_embed_configure(
     surface_id: &str,
     size: Size<i32, Logical>,
 ) -> Option<std::time::Duration> {
-    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write() {
-        if let Some(sync) = map.get_mut(surface_id) {
-            sync.record_configure(size);
-            return Some(sync.estimated_latency);
-        }
+    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write()
+        && let Some(sync) = map.get_mut(surface_id)
+    {
+        sync.record_configure(size);
+        return Some(sync.estimated_latency);
     }
     None
 }
@@ -498,15 +497,15 @@ pub fn record_embed_commit(
     surface_id: &str,
     committed_size: Size<i32, Logical>,
 ) -> Option<std::time::Duration> {
-    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write() {
-        if let Some(sync) = map.get_mut(surface_id) {
-            sync.record_commit(committed_size);
-            debug!(
-                "Embedded '{}' committed size {:?}, latency estimate: {:?}",
-                surface_id, committed_size, sync.estimated_latency
-            );
-            return Some(sync.estimated_latency);
-        }
+    if let Ok(mut map) = EMBED_ANIMATION_SYNC.write()
+        && let Some(sync) = map.get_mut(surface_id)
+    {
+        sync.record_commit(committed_size);
+        debug!(
+            "Embedded '{}' committed size {:?}, latency estimate: {:?}",
+            surface_id, committed_size, sync.estimated_latency
+        );
+        return Some(sync.estimated_latency);
     }
     None
 }
@@ -578,29 +577,30 @@ impl SurfaceEmbedHandler for State {
                     // Get the client from the surface
                     if let Ok(client) = self.common.display_handle.get_client(wl_surface.id()) {
                         // Get client credentials (PID, UID, GID)
-                        if let Ok(creds) = client.get_credentials(&self.common.display_handle) {
-                            if creds.pid as u32 == pid {
-                                let app_id = surface.app_id();
+                        if let Ok(creds) = client.get_credentials(&self.common.display_handle)
+                            && creds.pid as u32 == pid
+                        {
+                            let app_id = surface.app_id();
 
-                                // If expected_app_id is provided, verify it matches
-                                if let Some(expected) = expected_app_id {
-                                    if !expected.is_empty() && app_id != expected {
-                                        debug!(
-                                            "PID {} matches but app_id mismatch: expected '{}', got '{}'",
-                                            pid, expected, app_id
-                                        );
-                                        continue;
-                                    }
-                                }
-
-                                info!(
-                                    "Found window for PID {}: app_id='{}', title='{}'",
-                                    pid,
-                                    app_id,
-                                    surface.title()
+                            // If expected_app_id is provided, verify it matches
+                            if let Some(expected) = expected_app_id
+                                && !expected.is_empty()
+                                && app_id != expected
+                            {
+                                debug!(
+                                    "PID {} matches but app_id mismatch: expected '{}', got '{}'",
+                                    pid, expected, app_id
                                 );
-                                return Some((surface.clone(), app_id));
+                                continue;
                             }
+
+                            info!(
+                                "Found window for PID {}: app_id='{}', title='{}'",
+                                pid,
+                                app_id,
+                                surface.title()
+                            );
+                            return Some((surface.clone(), app_id));
                         }
                     }
                 }
@@ -785,12 +785,12 @@ impl State {
             // Find parent's workspace
             let parent_mapped = shell.element_for_surface_id(&parent_surface_id);
             let parent_workspace = parent_mapped.and_then(|m| shell.space_for(m));
-            let parent_handle = parent_workspace.map(|w| w.handle.clone());
+            let parent_handle = parent_workspace.map(|w| w.handle);
 
             // Find embedded's workspace
             let embedded_mapped = shell.element_for_surface(embedded).cloned();
             let embedded_workspace = embedded_mapped.as_ref().and_then(|m| shell.space_for(m));
-            let embedded_handle = embedded_workspace.map(|w| w.handle.clone());
+            let embedded_handle = embedded_workspace.map(|w| w.handle);
 
             if let (Some(p), Some(e)) = (&parent_handle, &embedded_handle) {
                 info!(
@@ -893,12 +893,12 @@ impl State {
             // Find parent's workspace by surface ID
             let parent_mapped = shell.element_for_surface_id(&parent_surface_id);
             let parent_workspace = parent_mapped.and_then(|m| shell.space_for(m));
-            let parent_handle = parent_workspace.map(|w| w.handle.clone());
+            let parent_handle = parent_workspace.map(|w| w.handle);
 
             // Find embedded's workspace
             let embedded_mapped = shell.element_for_surface(window).cloned();
             let embedded_workspace = embedded_mapped.as_ref().and_then(|m| shell.space_for(m));
-            let embedded_handle = embedded_workspace.map(|w| w.handle.clone());
+            let embedded_handle = embedded_workspace.map(|w| w.handle);
 
             (parent_handle, embedded_handle, embedded_mapped)
         };
@@ -1028,21 +1028,22 @@ impl State {
                     let mut embed_data = data.lock().unwrap();
 
                     // Verify app_id if one was expected
-                    if let Some(ref expected) = embed_data.expected_app_id {
-                        if !expected.is_empty() && &app_id != expected {
-                            info!(
-                                "Skipping embed - app_id mismatch: expected '{}', got '{}'",
-                                expected, app_id
-                            );
-                            // Put back the embed for this PID - maybe another window will match
-                            drop(embed_data);
-                            self.common
-                                .pending_pid_embeds
-                                .entry(pid)
-                                .or_default()
-                                .push(embed);
-                            continue;
-                        }
+                    if let Some(ref expected) = embed_data.expected_app_id
+                        && !expected.is_empty()
+                        && &app_id != expected
+                    {
+                        info!(
+                            "Skipping embed - app_id mismatch: expected '{}', got '{}'",
+                            expected, app_id
+                        );
+                        // Put back the embed for this PID - maybe another window will match
+                        drop(embed_data);
+                        self.common
+                            .pending_pid_embeds
+                            .entry(pid)
+                            .or_default()
+                            .push(embed);
+                        continue;
                     }
 
                     // Update the embed data with the actual window

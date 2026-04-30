@@ -40,14 +40,14 @@ impl DismissControllerRegistry {
         &self,
         controller: zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1,
     ) {
-        if let Some(data) = controller.data::<LayerSurfaceDismissControllerData>() {
-            if let Ok(surface) = data.surface.upgrade() {
-                let surface_id = surface.id().protocol_id();
-                self.controllers
-                    .lock()
-                    .unwrap()
-                    .insert(surface_id, controller);
-            }
+        if let Some(data) = controller.data::<LayerSurfaceDismissControllerData>()
+            && let Ok(surface) = data.surface.upgrade()
+        {
+            let surface_id = surface.id().protocol_id();
+            self.controllers
+                .lock()
+                .unwrap()
+                .insert(surface_id, controller);
         }
     }
 

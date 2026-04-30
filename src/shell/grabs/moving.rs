@@ -409,7 +409,7 @@ impl MoveGrabState {
                             Some(current_window_geo),
                             Some(window_border_radius),
                         )
-                        .map(|e| CosmicMappedRenderElement::from(e))
+                        .map(CosmicMappedRenderElement::from)
                     } else {
                         None
                     }
@@ -1131,43 +1131,43 @@ impl Drop for MoveGrab {
                                 window_location.to_local(&workspace.output),
                             );
 
-                            if matches!(previous, ManagedLayer::Floating) {
-                                if let Some(sz) = grab_state.snapping_zone {
-                                    if sz == SnappingZone::Maximize {
-                                        shell.maximize_toggle(
-                                            &window,
-                                            &seat,
-                                            &state.common.event_loop_handle,
-                                        );
-                                    } else {
-                                        let directions = match sz {
-                                            SnappingZone::Maximize => vec![],
-                                            SnappingZone::Top => vec![Direction::Up],
-                                            SnappingZone::TopLeft => {
-                                                vec![Direction::Up, Direction::Left]
-                                            }
-                                            SnappingZone::Left => vec![Direction::Left],
-                                            SnappingZone::BottomLeft => {
-                                                vec![Direction::Down, Direction::Left]
-                                            }
-                                            SnappingZone::Bottom => vec![Direction::Down],
-                                            SnappingZone::BottomRight => {
-                                                vec![Direction::Down, Direction::Right]
-                                            }
-                                            SnappingZone::Right => vec![Direction::Right],
-                                            SnappingZone::TopRight => {
-                                                vec![Direction::Up, Direction::Right]
-                                            }
-                                        };
-                                        for direction in directions {
-                                            workspace.floating_layer.move_element(
-                                                direction,
-                                                &seat,
-                                                ManagedLayer::Floating,
-                                                &theme,
-                                                &window,
-                                            );
+                            if matches!(previous, ManagedLayer::Floating)
+                                && let Some(sz) = grab_state.snapping_zone
+                            {
+                                if sz == SnappingZone::Maximize {
+                                    shell.maximize_toggle(
+                                        &window,
+                                        &seat,
+                                        &state.common.event_loop_handle,
+                                    );
+                                } else {
+                                    let directions = match sz {
+                                        SnappingZone::Maximize => vec![],
+                                        SnappingZone::Top => vec![Direction::Up],
+                                        SnappingZone::TopLeft => {
+                                            vec![Direction::Up, Direction::Left]
                                         }
+                                        SnappingZone::Left => vec![Direction::Left],
+                                        SnappingZone::BottomLeft => {
+                                            vec![Direction::Down, Direction::Left]
+                                        }
+                                        SnappingZone::Bottom => vec![Direction::Down],
+                                        SnappingZone::BottomRight => {
+                                            vec![Direction::Down, Direction::Right]
+                                        }
+                                        SnappingZone::Right => vec![Direction::Right],
+                                        SnappingZone::TopRight => {
+                                            vec![Direction::Up, Direction::Right]
+                                        }
+                                    };
+                                    for direction in directions {
+                                        workspace.floating_layer.move_element(
+                                            direction,
+                                            &seat,
+                                            ManagedLayer::Floating,
+                                            &theme,
+                                            &window,
+                                        );
                                     }
                                 }
                             }
@@ -1207,68 +1207,66 @@ impl Drop for MoveGrab {
             };
 
             // Move embedded children to follow the parent to the new output
-            if position.is_some() {
-                if let Some(ref parent_surface_id) = parent_surface_id {
-                    let embedded_children = get_embedded_surface_ids_for_parent(parent_surface_id);
-                    if !embedded_children.is_empty() {
-                        tracing::info!(
-                            parent_surface_id = %parent_surface_id,
-                            children_count = embedded_children.len(),
-                            "Moving embedded children with parent to new output"
-                        );
+            if position.is_some()
+                && let Some(ref parent_surface_id) = parent_surface_id
+            {
+                let embedded_children = get_embedded_surface_ids_for_parent(parent_surface_id);
+                if !embedded_children.is_empty() {
+                    tracing::info!(
+                        parent_surface_id = %parent_surface_id,
+                        children_count = embedded_children.len(),
+                        "Moving embedded children with parent to new output"
+                    );
 
-                        // Get the target workspace handle
-                        let target_workspace = {
+                    // Get the target workspace handle
+                    let target_workspace = {
+                        let shell = state.common.shell.read();
+                        shell.active_space(&output).map(|ws| ws.handle)
+                    };
+
+                    if let Some(target_handle) = target_workspace {
+                        for embedded_surface_id in embedded_children {
+                            // Find and move each embedded child
                             let shell = state.common.shell.read();
-                            shell.active_space(&output).map(|ws| ws.handle.clone())
-                        };
-
-                        if let Some(target_handle) = target_workspace {
-                            for embedded_surface_id in embedded_children {
-                                // Find and move each embedded child
-                                let shell = state.common.shell.read();
-                                let embedded_mapped = shell
-                                    .workspaces
-                                    .spaces()
-                                    .flat_map(|s| s.mapped())
-                                    .find(|m| {
-                                        m.windows().any(|(w, _)| {
-                                            w.wl_surface()
-                                                .map(|s| s.id().to_string() == embedded_surface_id)
-                                                .unwrap_or(false)
-                                        })
+                            let embedded_mapped = shell
+                                .workspaces
+                                .spaces()
+                                .flat_map(|s| s.mapped())
+                                .find(|m| {
+                                    m.windows().any(|(w, _)| {
+                                        w.wl_surface()
+                                            .map(|s| s.id().to_string() == embedded_surface_id)
+                                            .unwrap_or(false)
                                     })
-                                    .cloned();
+                                })
+                                .cloned();
 
-                                let embedded_workspace = embedded_mapped
-                                    .as_ref()
-                                    .and_then(|m| shell.space_for(m))
-                                    .map(|s| s.handle.clone());
+                            let embedded_workspace = embedded_mapped
+                                .as_ref()
+                                .and_then(|m| shell.space_for(m))
+                                .map(|s| s.handle);
 
-                                drop(shell);
+                            drop(shell);
 
-                                if let (Some(mapped), Some(from_handle)) =
-                                    (embedded_mapped, embedded_workspace)
-                                {
-                                    if from_handle != target_handle {
-                                        let mut workspace_state =
-                                            state.common.workspace_state.update();
-                                        let mut shell = state.common.shell.write();
-                                        let _ = shell.move_element(
-                                            None, // No seat
-                                            &mapped,
-                                            &from_handle,
-                                            &target_handle,
-                                            false, // Don't follow
-                                            None,
-                                            &mut workspace_state,
-                                        );
-                                        tracing::info!(
-                                            embedded_surface_id = %embedded_surface_id,
-                                            "Moved embedded child to parent's workspace"
-                                        );
-                                    }
-                                }
+                            if let (Some(mapped), Some(from_handle)) =
+                                (embedded_mapped, embedded_workspace)
+                                && from_handle != target_handle
+                            {
+                                let mut workspace_state = state.common.workspace_state.update();
+                                let mut shell = state.common.shell.write();
+                                let _ = shell.move_element(
+                                    None, // No seat
+                                    &mapped,
+                                    &from_handle,
+                                    &target_handle,
+                                    false, // Don't follow
+                                    None,
+                                    &mut workspace_state,
+                                );
+                                tracing::info!(
+                                    embedded_surface_id = %embedded_surface_id,
+                                    "Moved embedded child to parent's workspace"
+                                );
                             }
                         }
                     }

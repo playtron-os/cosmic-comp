@@ -111,22 +111,22 @@ impl ToplevelManagementHandler for State {
 
             std::mem::drop(shell);
 
-            if seat.active_output() != *output {
-                if let Some(new_pos) = new_pos {
-                    seat.set_active_output(output);
-                    if let Some(ptr) = seat.get_pointer() {
-                        let serial = SERIAL_COUNTER.next_serial();
-                        ptr.motion(
-                            self,
-                            None,
-                            &MotionEvent {
-                                location: new_pos.to_f64().as_logical(),
-                                serial,
-                                time: self.common.clock.now().as_millis(),
-                            },
-                        );
-                        ptr.frame(self);
-                    }
+            if seat.active_output() != *output
+                && let Some(new_pos) = new_pos
+            {
+                seat.set_active_output(output);
+                if let Some(ptr) = seat.get_pointer() {
+                    let serial = SERIAL_COUNTER.next_serial();
+                    ptr.motion(
+                        self,
+                        None,
+                        &MotionEvent {
+                            location: new_pos.to_f64().as_logical(),
+                            serial,
+                            time: self.common.clock.now().as_millis(),
+                        },
+                    );
+                    ptr.frame(self);
                 }
             }
 

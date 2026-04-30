@@ -31,12 +31,12 @@ impl Shell {
         if let Some(parent) = get_popup_toplevel(surface) {
             // Check if the toplevel is embedded - if so, we need to adjust popup positioning
             // to account for the fact that the embedded window is rendered inside its parent
-            if is_wl_surface_embedded(&parent) {
-                if let Some(result) = self.unconstrain_popup_for_embedded(surface, &parent) {
-                    return result;
-                }
-                // Fall through to normal handling if we couldn't find the parent
+            if is_wl_surface_embedded(&parent)
+                && let Some(result) = self.unconstrain_popup_for_embedded(surface, &parent)
+            {
+                return result;
             }
+            // Fall through to normal handling if we couldn't find the parent
 
             if let Some(elem) = self.element_for_surface(&parent) {
                 let (mut element_geo, output, is_tiled) =
@@ -178,7 +178,7 @@ pub fn update_reactive_popups<'a>(
     for (popup, _) in PopupManager::popups_for_surface(toplevel.wl_surface()) {
         match popup {
             PopupKind::Xdg(surface) => {
-                let positioner = with_states(&surface.wl_surface(), |states| {
+                let positioner = with_states(surface.wl_surface(), |states| {
                     let mut guard = states.cached_state.get::<PopupCachedState>();
                     guard
                         .current()

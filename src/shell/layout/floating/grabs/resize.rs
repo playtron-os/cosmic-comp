@@ -265,20 +265,19 @@ impl PointerGrab<State> for ResizeSurfaceGrab {
                         .write()
                         .workspaces
                         .active_mut(&self.output)
-                    {
-                        if let Some(embedded_elem) = ws.floating_layer.space.elements().find(|e| {
+                        && let Some(embedded_elem) = ws.floating_layer.space.elements().find(|e| {
                             e.active_window()
                                 .wl_surface()
                                 .map(|s| s.id().to_string() == embedded_surface_id)
                                 .unwrap_or(false)
-                        }) {
-                            let global_geo = Rectangle::new(
-                                (new_geometry.loc.x, new_geometry.loc.y).into(),
-                                (new_geometry.size.w, new_geometry.size.h).into(),
-                            );
-                            embedded_elem.active_window().set_geometry(global_geo, 0);
-                            embedded_elem.configure();
-                        }
+                        })
+                    {
+                        let global_geo = Rectangle::new(
+                            (new_geometry.loc.x, new_geometry.loc.y).into(),
+                            (new_geometry.size.w, new_geometry.size.h).into(),
+                        );
+                        embedded_elem.active_window().set_geometry(global_geo, 0);
+                        embedded_elem.configure();
                     }
                 }
             }
@@ -463,22 +462,20 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
                             .write()
                             .workspaces
                             .active_mut(&self.output)
-                        {
-                            if let Some(embedded_elem) =
+                            && let Some(embedded_elem) =
                                 ws.floating_layer.space.elements().find(|e| {
                                     e.active_window()
                                         .wl_surface()
                                         .map(|s| s.id().to_string() == embedded_surface_id)
                                         .unwrap_or(false)
                                 })
-                            {
-                                let global_geo = Rectangle::new(
-                                    (new_geometry.loc.x, new_geometry.loc.y).into(),
-                                    (new_geometry.size.w, new_geometry.size.h).into(),
-                                );
-                                embedded_elem.active_window().set_geometry(global_geo, 0);
-                                embedded_elem.configure();
-                            }
+                        {
+                            let global_geo = Rectangle::new(
+                                (new_geometry.loc.x, new_geometry.loc.y).into(),
+                                (new_geometry.size.w, new_geometry.size.h).into(),
+                            );
+                            embedded_elem.active_window().set_geometry(global_geo, 0);
+                            embedded_elem.configure();
                         }
                     }
                 }
@@ -647,10 +644,10 @@ impl ResizeSurfaceGrab {
             };
 
             // Finish resizing.
-            if let Some(ResizeState::WaitingForCommit(_)) = *resize_state {
-                if !window.is_resizing(false).unwrap_or(false) {
-                    *resize_state = None;
-                }
+            if let Some(ResizeState::WaitingForCommit(_)) = *resize_state
+                && !window.is_resizing(false).unwrap_or(false)
+            {
+                *resize_state = None;
             }
             std::mem::drop(resize_state);
 

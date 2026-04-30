@@ -857,26 +857,24 @@ where
             );
         }
 
-        if !exclude_dnd_icon {
-            if let Some(dnd_icon) = get_dnd_icon(seat) {
-                elements.extend(
-                    cursor::draw_dnd_icon(
-                        renderer,
-                        &dnd_icon.surface,
-                        (location + dnd_icon.offset.to_f64()).to_i32_round(),
-                        scale,
-                    )
-                    .into_iter()
-                    .map(CosmicElement::Dnd),
-                );
-            }
+        if !exclude_dnd_icon && let Some(dnd_icon) = get_dnd_icon(seat) {
+            elements.extend(
+                cursor::draw_dnd_icon(
+                    renderer,
+                    &dnd_icon.surface,
+                    (location + dnd_icon.offset.to_f64()).to_i32_round(),
+                    scale,
+                )
+                .into_iter()
+                .map(CosmicElement::Dnd),
+            );
         }
 
         let theme = theme.cosmic();
         // Skip move grab render when capturing for blur - the grabbed window
         // is always on top and shouldn't be included in the blur source
-        if !skip_move_grab {
-            if let Some(grab_elements) = seat
+        if !skip_move_grab
+            && let Some(grab_elements) = seat
                 .user_data()
                 .get::<SeatMoveGrabState>()
                 .unwrap()
@@ -892,18 +890,17 @@ where
                         attached_orb_state,
                     )
                 })
-            {
-                elements.extend(grab_elements.into_iter().map(|elem| {
-                    CosmicElement::MoveGrab(RescaleRenderElement::from_element(
-                        elem,
-                        focal_point
-                            .as_logical()
-                            .to_physical(output.current_scale().fractional_scale())
-                            .to_i32_round(),
-                        zoom_scale,
-                    ))
-                }));
-            }
+        {
+            elements.extend(grab_elements.into_iter().map(|elem| {
+                CosmicElement::MoveGrab(RescaleRenderElement::from_element(
+                    elem,
+                    focal_point
+                        .as_logical()
+                        .to_physical(output.current_scale().fractional_scale())
+                        .to_i32_round(),
+                    zoom_scale,
+                ))
+            }));
         }
 
         if let Some((grab_elements, should_scale)) = seat
@@ -1001,7 +998,7 @@ impl HomeVisibilityContext {
         use smithay::wayland::shell::wlr_layer::Layer;
 
         // Check if surface is explicitly hidden via layer_surface_visibility protocol
-        if self.hidden_surfaces.contains(&surface_id) {
+        if self.hidden_surfaces.contains(surface_id) {
             return (false, 0.0);
         }
 
@@ -1021,7 +1018,7 @@ impl HomeVisibilityContext {
             self.voice_mode_alpha
         };
 
-        if self.home_only_surfaces.contains(&surface_id) {
+        if self.home_only_surfaces.contains(surface_id) {
             // Home-only surface: visible only when home_alpha > 0
             if self.home_alpha > 0.0 {
                 let alpha = if skip_voice_mode_alpha {
@@ -1037,7 +1034,7 @@ impl HomeVisibilityContext {
             } else {
                 (false, 0.0)
             }
-        } else if self.hide_on_home_surfaces.contains(&surface_id) {
+        } else if self.hide_on_home_surfaces.contains(surface_id) {
             // Hide-on-home surface: inverse of home_alpha
             let base_alpha = 1.0 - self.home_alpha;
             if base_alpha > 0.0 {
@@ -1326,14 +1323,14 @@ where
             let target_output = shell_guard.voice_orb_state.target_output.as_deref();
             let should_render_here = target_output.map(|t| t == output.name()).unwrap_or(false);
 
-            if should_render_here {
-                if let Some(orb_element) = voice_orb::VoiceOrbShader::element(
+            if should_render_here
+                && let Some(orb_element) = voice_orb::VoiceOrbShader::element(
                     renderer,
                     &shell_guard.voice_orb_state,
                     output_geo,
-                ) {
-                    elements.push(orb_element.into());
-                }
+                )
+            {
+                elements.push(orb_element.into());
             }
         }
     }
@@ -1412,498 +1409,480 @@ where
     // Get voice mode window alpha for fading windows during voice mode
     let voice_mode_alpha = shell.voice_mode_window_alpha();
 
-    render_input_order::<()>(
-        &shell,
-        output,
-        previous,
-        current,
-        &element_filter,
-        |stage| {
-            match stage {
-                Stage::ZoomUI => {
-                    elements.extend(ZoomState::render(renderer, output));
-                }
-                Stage::SessionLock(lock_surface) => {
-                    elements.extend(
-                        session_lock_elements(renderer, output, lock_surface)
-                            .into_iter()
-                            .map(Into::into)
-                            .flat_map(crop_to_output)
-                            .map(Into::into),
-                    );
-                }
-                Stage::LayerPopup {
-                    popup, location, ..
-                } => {
-                    let popup_wl_surface = popup.wl_surface();
-                    let popup_geo = popup.geometry();
+    render_input_order::<()>(&shell, output, previous, current, element_filter, |stage| {
+        match stage {
+            Stage::ZoomUI => {
+                elements.extend(ZoomState::render(renderer, output));
+            }
+            Stage::SessionLock(lock_surface) => {
+                elements.extend(
+                    session_lock_elements(renderer, output, lock_surface)
+                        .into_iter()
+                        .map(Into::into)
+                        .flat_map(crop_to_output)
+                        .map(Into::into),
+                );
+            }
+            Stage::LayerPopup {
+                popup, location, ..
+            } => {
+                let popup_wl_surface = popup.wl_surface();
+                let popup_geo = popup.geometry();
 
-                    // Render the popup surface content
-                    elements.extend(
-                        render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
-                            renderer,
-                            popup_wl_surface,
-                            location
-                                .to_local(output)
-                                .as_logical()
-                                .to_physical_precise_round(scale),
-                            Scale::from(scale),
-                            1.0,
-                            FRAME_TIME_FILTER,
-                        )
+                // Render the popup surface content
+                elements.extend(
+                    render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
+                        renderer,
+                        popup_wl_surface,
+                        location
+                            .to_local(output)
+                            .as_logical()
+                            .to_physical_precise_round(scale),
+                        Scale::from(scale),
+                        1.0,
+                        FRAME_TIME_FILTER,
+                    )
+                    .into_iter()
+                    .flat_map(crop_to_output)
+                    .map(Into::into),
+                );
+
+                let local_geo =
+                    Rectangle::new(location.to_local(output), popup_geo.size.as_local());
+
+                // Get corner radius from the popup surface
+                let corner_radius = get_surface_corner_radius(popup_wl_surface, popup_geo.size);
+
+                // Render shadow behind the popup if enabled via protocol
+                let popup_surface_id = popup_wl_surface.id();
+                if surface_has_shadow(popup_wl_surface) {
+                    let is_dark = theme.cosmic().is_dark;
+                    let shadow_radius = corner_radius.map(|r| r.round() as u8);
+
+                    let shadow_element = ShadowShader::layer_element(
+                        renderer,
+                        &popup_surface_id,
+                        local_geo,
+                        shadow_radius,
+                        1.0,
+                        scale,
+                        is_dark,
+                    );
+
+                    let shadow: WorkspaceRenderElement<R> =
+                        Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
+                    if let Some(cropped) = crop_to_output(shadow) {
+                        elements.push(cropped.into());
+                    }
+                }
+
+                // Render blur backdrop behind the popup if enabled
+                if surface_has_blur(popup_wl_surface) {
+                    let output_name = output.name();
+
+                    if let Some(blur_info) =
+                        get_cached_blur_texture_for_layer(&output_name, &popup_surface_id)
+                    {
+                        let output_transform = output.current_transform();
+
+                        // Check for blur regions — if set, render per-region backdrops
+                        let blur_regions = get_blur_state(popup_wl_surface)
+                            .and_then(|state| state.data)
+                            .and_then(|data| data.region);
+
+                        let has_per_region_blur = blur_regions.is_some();
+                        let blur_geos: Vec<Rectangle<i32, Local>> =
+                            if let Some(regions) = blur_regions {
+                                regions
+                                    .iter()
+                                    .filter_map(|region| {
+                                        let geo = Rectangle::new(
+                                            (
+                                                local_geo.loc.x + region.loc.x,
+                                                local_geo.loc.y + region.loc.y,
+                                            )
+                                                .into(),
+                                            region.size.as_local(),
+                                        );
+                                        // Clamp blur rect to surface bounds
+                                        geo.intersection(local_geo)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![local_geo]
+                            };
+
+                        const PER_REGION_CORNER_RADIUS: f32 = 8.0;
+
+                        for blur_geo in blur_geos {
+                            let blur_corner_radius = if has_per_region_blur {
+                                [PER_REGION_CORNER_RADIUS; 4]
+                            } else {
+                                corner_radius
+                            };
+
+                            let blurred_element = BlurredBackdropShader::element(
+                                renderer,
+                                &blur_info.texture,
+                                blur_geo,
+                                blur_info.size,
+                                blur_info.screen_size,
+                                blur_info.scale.x,
+                                output_transform,
+                                blur_corner_radius,
+                                1.0,
+                                BLUR_TINT_COLOR,
+                                BLUR_TINT_STRENGTH,
+                                true, // Enable border for popups
+                            );
+
+                            let backdrop_element: WorkspaceRenderElement<R> =
+                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
+                            if let Some(cropped) = crop_to_output(backdrop_element) {
+                                elements.push(cropped.into());
+                            }
+                        }
+                    }
+                }
+            }
+            Stage::LayerSurface {
+                layer,
+                location,
+                alpha,
+                blur_alpha,
+            } => {
+                // Apply auto-hide render offset.
+                // Input hit-testing is also offset (in surface_under)
+                // so hidden surfaces don't intercept clicks.
+                let surface_id = layer.wl_surface().id();
+                let layer_geo = layer.bbox();
+                let (offset_x, offset_y) =
+                    shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
+                let render_location = if offset_x != 0 || offset_y != 0 {
+                    location + smithay::utils::Point::from((offset_x, offset_y))
+                } else {
+                    location
+                };
+
+                // Compute the physical location for surface rendering
+                let surface_render_phys_loc: Point<i32, Physical> = render_location
+                    .to_local(output)
+                    .as_logical()
+                    .to_physical_precise_round(scale);
+
+                // First render the layer surface content
+                let surface_elements =
+                    render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
+                        renderer,
+                        layer.wl_surface(),
+                        surface_render_phys_loc,
+                        Scale::from(scale),
+                        alpha,
+                        FRAME_TIME_FILTER,
+                    );
+
+                elements.extend(
+                    surface_elements
                         .into_iter()
                         .flat_map(crop_to_output)
                         .map(Into::into),
+                );
+
+                let local_geo =
+                    Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
+
+                // Get corner radius from the surface (same as windows)
+                let corner_radius = get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
+
+                // Render shadow behind the layer surface if enabled
+                // Alpha handles fading for home visibility surfaces
+                if surface_has_shadow(layer.wl_surface()) {
+                    let is_dark = theme.cosmic().is_dark;
+                    let shadow_radius = corner_radius.map(|r| r.round() as u8);
+
+                    let shadow_element = ShadowShader::layer_element(
+                        renderer,
+                        &surface_id,
+                        local_geo,
+                        shadow_radius,
+                        alpha,
+                        scale,
+                        is_dark,
                     );
 
-                    let local_geo =
-                        Rectangle::new(location.to_local(output), popup_geo.size.as_local());
-
-                    // Get corner radius from the popup surface
-                    let corner_radius = get_surface_corner_radius(popup_wl_surface, popup_geo.size);
-
-                    // Render shadow behind the popup if enabled via protocol
-                    let popup_surface_id = popup_wl_surface.id();
-                    if surface_has_shadow(popup_wl_surface) {
-                        let is_dark = theme.cosmic().is_dark;
-                        let shadow_radius = corner_radius.map(|r| r.round() as u8);
-
-                        let shadow_element = ShadowShader::layer_element(
-                            renderer,
-                            &popup_surface_id,
-                            local_geo,
-                            shadow_radius,
-                            1.0,
-                            scale,
-                            is_dark,
-                        );
-
-                        let shadow: WorkspaceRenderElement<R> =
-                            Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
-                        if let Some(cropped) = crop_to_output(shadow) {
-                            elements.push(cropped.into());
-                        }
-                    }
-
-                    // Render blur backdrop behind the popup if enabled
-                    if surface_has_blur(popup_wl_surface) {
-                        let output_name = output.name();
-
-                        if let Some(blur_info) =
-                            get_cached_blur_texture_for_layer(&output_name, &popup_surface_id)
-                        {
-                            let output_transform = output.current_transform();
-
-                            // Check for blur regions — if set, render per-region backdrops
-                            let blur_regions = get_blur_state(popup_wl_surface)
-                                .and_then(|state| state.data)
-                                .and_then(|data| data.region);
-
-                            let has_per_region_blur = blur_regions.is_some();
-                            let blur_geos: Vec<Rectangle<i32, Local>> =
-                                if let Some(regions) = blur_regions {
-                                    regions
-                                        .iter()
-                                        .filter_map(|region| {
-                                            let geo = Rectangle::new(
-                                                (
-                                                    local_geo.loc.x + region.loc.x,
-                                                    local_geo.loc.y + region.loc.y,
-                                                )
-                                                    .into(),
-                                                region.size.as_local(),
-                                            );
-                                            // Clamp blur rect to surface bounds
-                                            geo.intersection(local_geo)
-                                        })
-                                        .collect()
-                                } else {
-                                    vec![local_geo]
-                                };
-
-                            const PER_REGION_CORNER_RADIUS: f32 = 8.0;
-
-                            for blur_geo in blur_geos {
-                                let blur_corner_radius = if has_per_region_blur {
-                                    [PER_REGION_CORNER_RADIUS; 4]
-                                } else {
-                                    corner_radius
-                                };
-
-                                let blurred_element = BlurredBackdropShader::element(
-                                    renderer,
-                                    &blur_info.texture,
-                                    blur_geo,
-                                    blur_info.size,
-                                    blur_info.screen_size,
-                                    blur_info.scale.x,
-                                    output_transform,
-                                    blur_corner_radius,
-                                    1.0,
-                                    BLUR_TINT_COLOR,
-                                    BLUR_TINT_STRENGTH,
-                                    true, // Enable border for popups
-                                );
-
-                                let backdrop_element: WorkspaceRenderElement<R> =
-                                    Into::<CosmicMappedRenderElement<R>>::into(blurred_element)
-                                        .into();
-                                if let Some(cropped) = crop_to_output(backdrop_element) {
-                                    elements.push(cropped.into());
-                                }
-                            }
-                        }
+                    let shadow: WorkspaceRenderElement<R> =
+                        Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
+                    if let Some(cropped) = crop_to_output(shadow) {
+                        elements.push(cropped.into());
                     }
                 }
-                Stage::LayerSurface {
-                    layer,
-                    location,
-                    alpha,
-                    blur_alpha,
-                } => {
-                    // Apply auto-hide render offset.
-                    // Input hit-testing is also offset (in surface_under)
-                    // so hidden surfaces don't intercept clicks.
-                    let surface_id = layer.wl_surface().id();
-                    let layer_geo = layer.bbox();
-                    let (offset_x, offset_y) =
-                        shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
-                    let render_location = if offset_x != 0 || offset_y != 0 {
-                        location + smithay::utils::Point::from((offset_x, offset_y))
-                    } else {
-                        location
-                    };
 
-                    // Compute the physical location for surface rendering
-                    let surface_render_phys_loc: Point<i32, Physical> = render_location
-                        .to_local(output)
-                        .as_logical()
-                        .to_physical_precise_round(scale);
+                // Then render blur backdrop behind the layer surface (and shadow)
+                // blur_alpha may be more aggressively reduced than surface alpha during fade-in
+                if blur_alpha > 0.001 && surface_has_blur(layer.wl_surface()) {
+                    let output_name = output.name();
 
-                    // First render the layer surface content
-                    let surface_elements =
-                        render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
-                            renderer,
-                            layer.wl_surface(),
-                            surface_render_phys_loc,
-                            Scale::from(scale),
-                            alpha,
-                            FRAME_TIME_FILTER,
-                        );
+                    // Try to get cached blur texture for this layer surface
+                    if let Some(blur_info) =
+                        get_cached_blur_texture_for_layer(&output_name, &surface_id)
+                    {
+                        // Use the blurred backdrop shader with the cached texture
+                        let output_transform = output.current_transform();
+                        // Disable shader border if the client has set
+                        // its own corner radius — it handles its own borders
+                        let has_client_corner_radius = corner_radius.iter().any(|&r| r > 0.0);
 
-                    elements.extend(
-                        surface_elements
-                            .into_iter()
-                            .flat_map(crop_to_output)
-                            .map(Into::into),
-                    );
+                        // Check for blur regions — if set, render per-region backdrops
+                        let blur_state_debug = get_blur_state(layer.wl_surface());
+                        let blur_regions = blur_state_debug
+                            .as_ref()
+                            .and_then(|state| state.data.as_ref())
+                            .and_then(|data| data.region.as_ref());
 
-                    let local_geo =
-                        Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
-
-                    // Get corner radius from the surface (same as windows)
-                    let corner_radius =
-                        get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
-
-                    // Render shadow behind the layer surface if enabled
-                    // Alpha handles fading for home visibility surfaces
-                    if surface_has_shadow(layer.wl_surface()) {
-                        let is_dark = theme.cosmic().is_dark;
-                        let shadow_radius = corner_radius.map(|r| r.round() as u8);
-
-                        let shadow_element = ShadowShader::layer_element(
-                            renderer,
-                            &surface_id,
-                            local_geo,
-                            shadow_radius,
-                            alpha,
-                            scale,
-                            is_dark,
-                        );
-
-                        let shadow: WorkspaceRenderElement<R> =
-                            Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
-                        if let Some(cropped) = crop_to_output(shadow) {
-                            elements.push(cropped.into());
-                        }
-                    }
-
-                    // Then render blur backdrop behind the layer surface (and shadow)
-                    // blur_alpha may be more aggressively reduced than surface alpha during fade-in
-                    if blur_alpha > 0.001 && surface_has_blur(layer.wl_surface()) {
-                        let output_name = output.name();
-
-                        // Try to get cached blur texture for this layer surface
-                        if let Some(blur_info) =
-                            get_cached_blur_texture_for_layer(&output_name, &surface_id)
-                        {
-                            // Use the blurred backdrop shader with the cached texture
-                            let output_transform = output.current_transform();
-                            // Disable shader border if the client has set
-                            // its own corner radius — it handles its own borders
-                            let has_client_corner_radius = corner_radius.iter().any(|&r| r > 0.0);
-
-                            // Check for blur regions — if set, render per-region backdrops
-                            let blur_state_debug = get_blur_state(layer.wl_surface());
-                            let blur_regions = blur_state_debug
+                        tracing::trace!(
+                            surface_id = layer.wl_surface().id().protocol_id(),
+                            has_state = blur_state_debug.is_some(),
+                            has_data = blur_state_debug
                                 .as_ref()
-                                .and_then(|state| state.data.as_ref())
-                                .and_then(|data| data.region.as_ref());
+                                .and_then(|s| s.data.as_ref())
+                                .is_some(),
+                            has_region = blur_regions.is_some(),
+                            region_count = blur_regions.map(|r| r.len()).unwrap_or(0),
+                            "Layer blur rendering"
+                        );
 
-                            tracing::trace!(
-                                surface_id = layer.wl_surface().id().protocol_id(),
-                                has_state = blur_state_debug.is_some(),
-                                has_data = blur_state_debug
-                                    .as_ref()
-                                    .and_then(|s| s.data.as_ref())
-                                    .is_some(),
-                                has_region = blur_regions.is_some(),
-                                region_count = blur_regions.map(|r| r.len()).unwrap_or(0),
-                                "Layer blur rendering"
+                        let has_per_region_blur = blur_regions.is_some();
+                        let blur_geos: Vec<Rectangle<i32, Local>> =
+                            if let Some(regions) = blur_regions {
+                                regions
+                                    .iter()
+                                    .filter_map(|region| {
+                                        let geo = Rectangle::new(
+                                            (
+                                                local_geo.loc.x + region.loc.x,
+                                                local_geo.loc.y + region.loc.y,
+                                            )
+                                                .into(),
+                                            region.size.as_local(),
+                                        );
+                                        // Clamp blur rect to surface bounds so
+                                        // rects that arrive before a pending resize
+                                        // never overflow the current buffer.
+                                        let geo = geo.intersection(local_geo)?;
+                                        tracing::trace!(
+                                            surface_id = layer.wl_surface().id().protocol_id(),
+                                            region_loc_x = region.loc.x,
+                                            region_loc_y = region.loc.y,
+                                            region_w = region.size.w,
+                                            region_h = region.size.h,
+                                            final_x = geo.loc.x,
+                                            final_y = geo.loc.y,
+                                            final_w = geo.size.w,
+                                            final_h = geo.size.h,
+                                            surface_x = local_geo.loc.x,
+                                            surface_y = local_geo.loc.y,
+                                            surface_w = local_geo.size.w,
+                                            surface_h = local_geo.size.h,
+                                            blur_alpha,
+                                            "Layer blur: per-region rect"
+                                        );
+                                        Some(geo)
+                                    })
+                                    .collect()
+                            } else {
+                                vec![local_geo]
+                            };
+
+                        // Per-region blur uses a default card corner radius
+                        // since the KDE blur protocol doesn't carry radii.
+                        const PER_REGION_CORNER_RADIUS: f32 = 8.0;
+
+                        for blur_geo in blur_geos {
+                            let (blur_corner_radius, blur_border) = if has_per_region_blur {
+                                ([PER_REGION_CORNER_RADIUS; 4], true)
+                            } else {
+                                (corner_radius, !has_client_corner_radius)
+                            };
+
+                            let blurred_element = BlurredBackdropShader::element(
+                                renderer,
+                                &blur_info.texture,
+                                blur_geo,
+                                blur_info.size,
+                                blur_info.screen_size,
+                                blur_info.scale.x,
+                                output_transform,
+                                blur_corner_radius,
+                                blur_alpha,
+                                BLUR_TINT_COLOR,
+                                BLUR_TINT_STRENGTH,
+                                blur_border,
                             );
 
-                            let has_per_region_blur = blur_regions.is_some();
-                            let blur_geos: Vec<Rectangle<i32, Local>> =
-                                if let Some(regions) = blur_regions {
-                                    regions
-                                        .iter()
-                                        .filter_map(|region| {
-                                            let geo = Rectangle::new(
-                                                (
-                                                    local_geo.loc.x + region.loc.x,
-                                                    local_geo.loc.y + region.loc.y,
-                                                )
-                                                    .into(),
-                                                region.size.as_local(),
-                                            );
-                                            // Clamp blur rect to surface bounds so
-                                            // rects that arrive before a pending resize
-                                            // never overflow the current buffer.
-                                            let geo = geo.intersection(local_geo)?;
-                                            tracing::trace!(
-                                                surface_id = layer.wl_surface().id().protocol_id(),
-                                                region_loc_x = region.loc.x,
-                                                region_loc_y = region.loc.y,
-                                                region_w = region.size.w,
-                                                region_h = region.size.h,
-                                                final_x = geo.loc.x,
-                                                final_y = geo.loc.y,
-                                                final_w = geo.size.w,
-                                                final_h = geo.size.h,
-                                                surface_x = local_geo.loc.x,
-                                                surface_y = local_geo.loc.y,
-                                                surface_w = local_geo.size.w,
-                                                surface_h = local_geo.size.h,
-                                                blur_alpha,
-                                                "Layer blur: per-region rect"
-                                            );
-                                            Some(geo)
-                                        })
-                                        .collect()
-                                } else {
-                                    vec![local_geo]
-                                };
-
-                            // Per-region blur uses a default card corner radius
-                            // since the KDE blur protocol doesn't carry radii.
-                            const PER_REGION_CORNER_RADIUS: f32 = 8.0;
-
-                            for blur_geo in blur_geos {
-                                let (blur_corner_radius, blur_border) = if has_per_region_blur {
-                                    ([PER_REGION_CORNER_RADIUS; 4], true)
-                                } else {
-                                    (corner_radius, !has_client_corner_radius)
-                                };
-
-                                let blurred_element = BlurredBackdropShader::element(
-                                    renderer,
-                                    &blur_info.texture,
-                                    blur_geo,
-                                    blur_info.size,
-                                    blur_info.screen_size,
-                                    blur_info.scale.x,
-                                    output_transform,
-                                    blur_corner_radius,
-                                    blur_alpha,
-                                    BLUR_TINT_COLOR,
-                                    BLUR_TINT_STRENGTH,
-                                    blur_border,
-                                );
-
-                                let backdrop_element: WorkspaceRenderElement<R> =
-                                    Into::<CosmicMappedRenderElement<R>>::into(blurred_element)
-                                        .into();
-                                if let Some(cropped) = crop_to_output(backdrop_element) {
-                                    elements.push(cropped.into());
-                                }
+                            let backdrop_element: WorkspaceRenderElement<R> =
+                                Into::<CosmicMappedRenderElement<R>>::into(blurred_element).into();
+                            if let Some(cropped) = crop_to_output(backdrop_element) {
+                                elements.push(cropped.into());
                             }
                         }
                     }
                 }
-                Stage::OverrideRedirect { surface, location } => {
-                    elements.extend(surface.wl_surface().into_iter().flat_map(|surface| {
-                        render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
-                            renderer,
-                            &surface,
-                            location
-                                .to_local(output)
-                                .as_logical()
-                                .to_physical_precise_round(scale),
-                            Scale::from(scale),
-                            1.0,
-                            FRAME_TIME_FILTER,
-                        )
-                        .into_iter()
-                        .flat_map(crop_to_output)
-                        .map(Into::into)
-                    }));
-                }
-                Stage::StickyPopups(layout) => {
-                    let alpha = match &overview.0 {
-                        OverviewMode::Started(_, started) => {
-                            (1.0 - (Instant::now().duration_since(*started).as_millis()
-                                / ANIMATION_DURATION.as_millis())
-                                as f32)
-                                .max(0.0)
-                                * 0.4
-                                + 0.6
-                        }
-                        OverviewMode::Ended(_, ended) => {
-                            ((Instant::now().duration_since(*ended).as_millis()
-                                / ANIMATION_DURATION.as_millis())
-                                as f32)
-                                * 0.4
-                                + 0.6
-                        }
-                        OverviewMode::Active(_) => 0.6,
-                        OverviewMode::None => 1.0,
-                    };
-
-                    elements.extend(
-                        layout
-                            .render_popups(renderer, alpha)
-                            .into_iter()
-                            .map(Into::into)
-                            .flat_map(crop_to_output)
-                            .map(Into::into),
-                    );
-                }
-                Stage::Sticky(layout) => {
-                    let alpha = match &overview.0 {
-                        OverviewMode::Started(_, started) => {
-                            (1.0 - (Instant::now().duration_since(*started).as_millis()
-                                / ANIMATION_DURATION.as_millis())
-                                as f32)
-                                .max(0.0)
-                                * 0.4
-                                + 0.6
-                        }
-                        OverviewMode::Ended(_, ended) => {
-                            ((Instant::now().duration_since(*ended).as_millis()
-                                / ANIMATION_DURATION.as_millis())
-                                as f32)
-                                * 0.4
-                                + 0.6
-                        }
-                        OverviewMode::Active(_) => 0.6,
-                        OverviewMode::None => 1.0,
-                    };
-
-                    let current_focus = (!move_active && is_active_space)
-                        .then_some(last_active_seat)
-                        .map(|seat| workspace.focus_stack.get(seat));
-
-                    elements.extend(
-                        layout
-                            .render(
-                                renderer,
-                                current_focus.as_ref().and_then(|stack| {
-                                    stack.last().and_then(|t| match t {
-                                        FocusTarget::Window(w) => Some(w),
-                                        _ => None,
-                                    })
-                                }),
-                                resize_indicator.clone(),
-                                active_hint,
-                                alpha,
-                                theme.cosmic(),
-                                element_filter.clone(),
-                                None, // No attached orb for sticky layer
-                            )
-                            .into_iter()
-                            .map(Into::into)
-                            .flat_map(crop_to_output)
-                            .map(Into::into),
+            }
+            Stage::OverrideRedirect { surface, location } => {
+                elements.extend(surface.wl_surface().into_iter().flat_map(|surface| {
+                    render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
+                        renderer,
+                        &surface,
+                        location
+                            .to_local(output)
+                            .as_logical()
+                            .to_physical_precise_round(scale),
+                        Scale::from(scale),
+                        1.0,
+                        FRAME_TIME_FILTER,
                     )
-                }
-                Stage::WorkspacePopups { workspace, offset } => {
-                    elements.extend(
-                        match workspace.render_popups(
+                    .into_iter()
+                    .flat_map(crop_to_output)
+                    .map(Into::into)
+                }));
+            }
+            Stage::StickyPopups(layout) => {
+                let alpha = match &overview.0 {
+                    OverviewMode::Started(_, started) => {
+                        (1.0 - (Instant::now().duration_since(*started).as_millis()
+                            / ANIMATION_DURATION.as_millis()) as f32)
+                            .max(0.0)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Ended(_, ended) => {
+                        ((Instant::now().duration_since(*ended).as_millis()
+                            / ANIMATION_DURATION.as_millis()) as f32)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Active(_) => 0.6,
+                    OverviewMode::None => 1.0,
+                };
+
+                elements.extend(
+                    layout
+                        .render_popups(renderer, alpha)
+                        .into_iter()
+                        .map(Into::into)
+                        .flat_map(crop_to_output)
+                        .map(Into::into),
+                );
+            }
+            Stage::Sticky(layout) => {
+                let alpha = match &overview.0 {
+                    OverviewMode::Started(_, started) => {
+                        (1.0 - (Instant::now().duration_since(*started).as_millis()
+                            / ANIMATION_DURATION.as_millis()) as f32)
+                            .max(0.0)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Ended(_, ended) => {
+                        ((Instant::now().duration_since(*ended).as_millis()
+                            / ANIMATION_DURATION.as_millis()) as f32)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Active(_) => 0.6,
+                    OverviewMode::None => 1.0,
+                };
+
+                let current_focus = (!move_active && is_active_space)
+                    .then_some(last_active_seat)
+                    .map(|seat| workspace.focus_stack.get(seat));
+
+                elements.extend(
+                    layout
+                        .render(
                             renderer,
-                            last_active_seat,
-                            !move_active && is_active_space,
-                            overview.clone(),
-                            theme.cosmic(),
-                        ) {
-                            Ok(elements) => {
-                                elements
-                                    .into_iter()
-                                    .flat_map(crop_to_output)
-                                    .map(|element| {
-                                        CosmicElement::Workspace(
-                                            RelocateRenderElement::from_element(
-                                                element,
-                                                offset.to_physical_precise_round(scale),
-                                                Relocate::Relative,
-                                            ),
-                                        )
-                                    })
-                            }
-                            Err(_) => {
-                                return ControlFlow::Break(Err(OutputNoMode));
-                            }
-                        },
-                    );
-                }
-                Stage::Workspace { workspace, offset } => {
-                    elements.extend(
-                        match workspace.render(
-                            renderer,
-                            last_active_seat,
-                            !move_active && is_active_space,
-                            overview.clone(),
+                            current_focus.as_ref().and_then(|stack| {
+                                stack.last().and_then(|t| match t {
+                                    FocusTarget::Window(w) => Some(w),
+                                    _ => None,
+                                })
+                            }),
                             resize_indicator.clone(),
                             active_hint,
+                            alpha,
                             theme.cosmic(),
                             element_filter.clone(),
-                            voice_mode_alpha,
-                            attached_orb_state.as_ref(),
-                        ) {
-                            Ok(elements) => {
-                                elements
-                                    .into_iter()
-                                    .flat_map(crop_to_output)
-                                    .map(|element| {
-                                        CosmicElement::Workspace(
-                                            RelocateRenderElement::from_element(
-                                                element,
-                                                offset.to_physical_precise_round(scale),
-                                                Relocate::Relative,
-                                            ),
-                                        )
-                                    })
-                            }
-                            Err(_) => {
-                                return ControlFlow::Break(Err(OutputNoMode));
-                            }
-                        },
-                    );
-                }
-            };
+                            None, // No attached orb for sticky layer
+                        )
+                        .into_iter()
+                        .map(Into::into)
+                        .flat_map(crop_to_output)
+                        .map(Into::into),
+                )
+            }
+            Stage::WorkspacePopups { workspace, offset } => {
+                elements.extend(
+                    match workspace.render_popups(
+                        renderer,
+                        last_active_seat,
+                        !move_active && is_active_space,
+                        overview.clone(),
+                        theme.cosmic(),
+                    ) {
+                        Ok(elements) => {
+                            elements
+                                .into_iter()
+                                .flat_map(crop_to_output)
+                                .map(|element| {
+                                    CosmicElement::Workspace(RelocateRenderElement::from_element(
+                                        element,
+                                        offset.to_physical_precise_round(scale),
+                                        Relocate::Relative,
+                                    ))
+                                })
+                        }
+                        Err(_) => {
+                            return ControlFlow::Break(Err(OutputNoMode));
+                        }
+                    },
+                );
+            }
+            Stage::Workspace { workspace, offset } => {
+                elements.extend(
+                    match workspace.render(
+                        renderer,
+                        last_active_seat,
+                        !move_active && is_active_space,
+                        overview.clone(),
+                        resize_indicator.clone(),
+                        active_hint,
+                        theme.cosmic(),
+                        element_filter.clone(),
+                        voice_mode_alpha,
+                        attached_orb_state.as_ref(),
+                    ) {
+                        Ok(elements) => {
+                            elements
+                                .into_iter()
+                                .flat_map(crop_to_output)
+                                .map(|element| {
+                                    CosmicElement::Workspace(RelocateRenderElement::from_element(
+                                        element,
+                                        offset.to_physical_precise_round(scale),
+                                        Relocate::Relative,
+                                    ))
+                                })
+                        }
+                        Err(_) => {
+                            return ControlFlow::Break(Err(OutputNoMode));
+                        }
+                    },
+                );
+            }
+        };
 
-            ControlFlow::Continue(())
-        },
-    )?;
+        ControlFlow::Continue(())
+    })?;
 
     let ws_elapsed = ws_start.elapsed();
     // Only log at debug level when workspace_elements takes a long time (>2ms)
@@ -2004,17 +1983,15 @@ impl PostprocessState {
         if let (Some(tex), Some(tracker)) = (
             self.cursor_texture.as_ref(),
             self.cursor_damage_tracker.as_ref(),
-        ) {
-            if tex.format().is_some_and(|f| f == format)
-                && tracker.mode()
-                    == &(OutputModeSource::Static {
-                        size,
-                        scale,
-                        transform: Transform::Normal,
-                    })
-            {
-                return Ok(());
-            }
+        ) && tex.format().is_some_and(|f| f == format)
+            && tracker.mode()
+                == &(OutputModeSource::Static {
+                    size,
+                    scale,
+                    transform: Transform::Normal,
+                })
+        {
+            return Ok(());
         }
 
         let texture = Offscreen::<GlesTexture>::create_buffer(renderer, format, buffer_size)?;
@@ -2459,7 +2436,7 @@ where
             let bg_render_ok = if let Some(bg_texture) = blur_state.background_texture.as_mut() {
                 let mut blur_dt = OutputDamageTracker::new(output_size, scale, Transform::Normal);
 
-                let render_result = (|| {
+                let render_result = {
                     let mut gles_frame = bg_texture.render();
 
                     let render_res = gles_frame.draw::<_, RenderError<R::Error>>(|tex| {
@@ -2474,12 +2451,12 @@ where
                         );
                         match res {
                             Ok(_) => Ok(Vec::new()),
-                            Err(e) => Err(e.into()),
+                            Err(e) => Err(e),
                         }
                     });
 
                     render_res.map_err(|_| ())
-                })();
+                };
 
                 render_result.is_ok()
             } else {
@@ -2747,7 +2724,7 @@ where
                     let mut blur_dt =
                         OutputDamageTracker::new(output_size, scale, Transform::Normal);
 
-                    let render_result = (|| {
+                    let render_result = {
                         let mut gles_frame = bg_texture.render();
 
                         let render_res = gles_frame.draw::<_, RenderError<R::Error>>(|tex| {
@@ -2762,12 +2739,12 @@ where
                             );
                             match res {
                                 Ok(_) => Ok(Vec::new()),
-                                Err(e) => Err(e.into()),
+                                Err(e) => Err(e),
                             }
                         });
 
                         render_res.map_err(|_| ())
-                    })();
+                    };
 
                     render_result.is_ok()
                 } else {

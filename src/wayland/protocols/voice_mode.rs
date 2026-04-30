@@ -385,16 +385,14 @@ impl VoiceModeState {
         *self.pending_stop.lock().unwrap() = None;
         *self.activated_on_demand.lock().unwrap() = false;
 
-        if let Some(surface_weak) = active_surface {
-            if let Ok(surface) = surface_weak.upgrade() {
-                if let Some(receiver) = self.find_receiver_by_surface(&surface) {
-                    if let Ok(resource) = receiver.resource.upgrade() {
-                        info!("Sending voice stop to receiver");
-                        resource.stop();
-                        return;
-                    }
-                }
-            }
+        if let Some(surface_weak) = active_surface
+            && let Ok(surface) = surface_weak.upgrade()
+            && let Some(receiver) = self.find_receiver_by_surface(&surface)
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending voice stop to receiver");
+            resource.stop();
+            return;
         }
         debug!("No active receiver to send stop to");
     }
@@ -404,24 +402,22 @@ impl VoiceModeState {
     pub fn send_will_stop(&self) -> Option<u32> {
         let active_surface = self.active_receiver_surface.lock().unwrap().clone();
 
-        if let Some(surface_weak) = active_surface {
-            if let Ok(surface) = surface_weak.upgrade() {
-                if let Some(receiver) = self.find_receiver_by_surface(&surface) {
-                    if let Ok(resource) = receiver.resource.upgrade() {
-                        let serial = self.serial_counter.fetch_add(1, Ordering::SeqCst);
-                        info!(serial, "Sending will_stop to receiver");
-                        resource.will_stop(serial);
+        if let Some(surface_weak) = active_surface
+            && let Ok(surface) = surface_weak.upgrade()
+            && let Some(receiver) = self.find_receiver_by_surface(&surface)
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            let serial = self.serial_counter.fetch_add(1, Ordering::SeqCst);
+            info!(serial, "Sending will_stop to receiver");
+            resource.will_stop(serial);
 
-                        // Store pending stop state
-                        *self.pending_stop.lock().unwrap() = Some(PendingStop {
-                            serial,
-                            sent_at: Instant::now(),
-                        });
+            // Store pending stop state
+            *self.pending_stop.lock().unwrap() = Some(PendingStop {
+                serial,
+                sent_at: Instant::now(),
+            });
 
-                        return Some(serial);
-                    }
-                }
-            }
+            return Some(serial);
         }
         debug!("No active receiver to send will_stop to");
         None
@@ -476,16 +472,14 @@ impl VoiceModeState {
         *self.pending_stop.lock().unwrap() = None;
         *self.activated_on_demand.lock().unwrap() = false;
 
-        if let Some(surface_weak) = active_surface {
-            if let Ok(surface) = surface_weak.upgrade() {
-                if let Some(receiver) = self.find_receiver_by_surface(&surface) {
-                    if let Ok(resource) = receiver.resource.upgrade() {
-                        info!("Sending voice cancel to receiver");
-                        resource.cancel();
-                        return;
-                    }
-                }
-            }
+        if let Some(surface_weak) = active_surface
+            && let Ok(surface) = surface_weak.upgrade()
+            && let Some(receiver) = self.find_receiver_by_surface(&surface)
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending voice cancel to receiver");
+            resource.cancel();
+            return;
         }
         debug!("No active receiver to send cancel to");
     }
@@ -494,12 +488,12 @@ impl VoiceModeState {
     /// This tells the client to focus its text input field
     /// Returns true if the event was sent successfully
     pub fn send_focus_input(&self) -> bool {
-        if let Some(receiver) = self.find_default_receiver() {
-            if let Ok(resource) = receiver.resource.upgrade() {
-                info!("Sending focus_input to default receiver");
-                resource.focus_input();
-                return true;
-            }
+        if let Some(receiver) = self.find_default_receiver()
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending focus_input to default receiver");
+            resource.focus_input();
+            return true;
         }
         debug!("No default receiver to send focus_input to");
         false
@@ -516,39 +510,35 @@ impl VoiceModeState {
         surface: Option<&WlSurface>,
     ) -> Option<WlSurface> {
         // First try the focused surface if it has a non-default receiver
-        if let Some(surface) = surface {
-            if let Some(receiver) = self.find_receiver_by_surface(surface) {
-                if !receiver.is_default {
-                    if let Ok(resource) = receiver.resource.upgrade() {
-                        info!("Sending focus_input to focused surface's receiver");
-                        resource.focus_input();
-                        return Some(surface.clone());
-                    }
-                }
-            }
+        if let Some(surface) = surface
+            && let Some(receiver) = self.find_receiver_by_surface(surface)
+            && !receiver.is_default
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending focus_input to focused surface's receiver");
+            resource.focus_input();
+            return Some(surface.clone());
         }
 
         // Try the last focused non-default receiver
-        if let Some(last_surface) = self.get_last_focused_receiver() {
-            if let Some(receiver) = self.find_receiver_by_surface(&last_surface) {
-                if !receiver.is_default {
-                    if let Ok(resource) = receiver.resource.upgrade() {
-                        info!("Sending focus_input to last-focused receiver");
-                        resource.focus_input();
-                        return Some(last_surface);
-                    }
-                }
-            }
+        if let Some(last_surface) = self.get_last_focused_receiver()
+            && let Some(receiver) = self.find_receiver_by_surface(&last_surface)
+            && !receiver.is_default
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending focus_input to last-focused receiver");
+            resource.focus_input();
+            return Some(last_surface);
         }
 
         // Fall back to default receiver - also return the surface so it can be focused
-        if let Some(receiver) = self.find_default_receiver() {
-            if let Ok(resource) = receiver.resource.upgrade() {
-                info!("Sending focus_input to default receiver (returning surface for focus)");
-                resource.focus_input();
-                // Return the surface so the compositor can set keyboard focus to it
-                return receiver.surface.upgrade().ok();
-            }
+        if let Some(receiver) = self.find_default_receiver()
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            info!("Sending focus_input to default receiver (returning surface for focus)");
+            resource.focus_input();
+            // Return the surface so the compositor can set keyboard focus to it
+            return receiver.surface.upgrade().ok();
         }
         debug!("No default receiver to send focus_input to");
         None
@@ -557,13 +547,13 @@ impl VoiceModeState {
     /// Update the last focused non-default receiver when focus changes
     /// Call this when a surface with a voice receiver gains keyboard focus
     pub fn update_last_focused_receiver(&self, surface: Option<&WlSurface>) {
-        if let Some(surface) = surface {
-            if let Some(receiver) = self.find_receiver_by_surface(surface) {
-                // Only track non-default receivers
-                if !receiver.is_default {
-                    info!("Updating last focused voice receiver");
-                    *self.last_focused_receiver.lock().unwrap() = Some(surface.downgrade());
-                }
+        if let Some(surface) = surface
+            && let Some(receiver) = self.find_receiver_by_surface(surface)
+        {
+            // Only track non-default receivers
+            if !receiver.is_default {
+                info!("Updating last focused voice receiver");
+                *self.last_focused_receiver.lock().unwrap() = Some(surface.downgrade());
             }
         }
     }
@@ -579,19 +569,19 @@ impl VoiceModeState {
 
     /// Send orb_attached event to a surface's receiver
     pub fn send_orb_attached(&self, surface: &WlSurface, x: i32, y: i32, width: i32, height: i32) {
-        if let Some(receiver) = self.find_receiver_by_surface(surface) {
-            if let Ok(resource) = receiver.resource.upgrade() {
-                resource.orb_attached(x, y, width, height);
-            }
+        if let Some(receiver) = self.find_receiver_by_surface(surface)
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            resource.orb_attached(x, y, width, height);
         }
     }
 
     /// Send orb_detached event to a surface's receiver
     pub fn send_orb_detached(&self, surface: &WlSurface) {
-        if let Some(receiver) = self.find_receiver_by_surface(surface) {
-            if let Ok(resource) = receiver.resource.upgrade() {
-                resource.orb_detached();
-            }
+        if let Some(receiver) = self.find_receiver_by_surface(surface)
+            && let Ok(resource) = receiver.resource.upgrade()
+        {
+            resource.orb_detached();
         }
     }
 

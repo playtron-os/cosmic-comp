@@ -308,18 +308,18 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
-        if !has_fullscreen {
-            // previous bottom layer popups
-            for (layer, popup, location, _alpha) in
-                layer_popups(output, Layer::Bottom, element_filter, &home_visibility)
-            {
-                callback(Stage::LayerPopup {
-                    layer,
-                    popup: &popup,
-                    location: location + offset.as_global(),
-                })?;
-            }
+    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+        && !has_fullscreen
+    {
+        // previous bottom layer popups
+        for (layer, popup, location, _alpha) in
+            layer_popups(output, Layer::Bottom, element_filter, &home_visibility)
+        {
+            callback(Stage::LayerPopup {
+                layer,
+                popup: &popup,
+                location: location + offset.as_global(),
+            })?;
         }
     }
 
@@ -336,18 +336,18 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
-        if !has_fullscreen {
-            // previous background layer popups
-            for (layer, popup, location, _alpha) in
-                layer_popups(output, Layer::Background, element_filter, &home_visibility)
-            {
-                callback(Stage::LayerPopup {
-                    layer,
-                    popup: &popup,
-                    location: location + offset.as_global(),
-                })?;
-            }
+    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+        && !has_fullscreen
+    {
+        // previous background layer popups
+        for (layer, popup, location, _alpha) in
+            layer_popups(output, Layer::Background, element_filter, &home_visibility)
+        {
+            callback(Stage::LayerPopup {
+                layer,
+                popup: &popup,
+                location: location + offset.as_global(),
+            })?;
         }
     }
 
@@ -404,20 +404,20 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
-        if !has_fullscreen {
-            // previous bottom layer
-            for (layer, mut location, alpha, blur_alpha) in
-                layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
-            {
-                location += offset.as_global();
-                callback(Stage::LayerSurface {
-                    layer,
-                    location,
-                    alpha,
-                    blur_alpha,
-                })?;
-            }
+    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+        && !has_fullscreen
+    {
+        // previous bottom layer
+        for (layer, mut location, alpha, blur_alpha) in
+            layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
+        {
+            location += offset.as_global();
+            callback(Stage::LayerSurface {
+                layer,
+                location,
+                alpha,
+                blur_alpha,
+            })?;
         }
     }
 
@@ -436,20 +436,20 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref() {
-        if !has_fullscreen {
-            // previous background layer
-            for (layer, mut location, alpha, blur_alpha) in
-                layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
-            {
-                location += offset.as_global();
-                callback(Stage::LayerSurface {
-                    layer,
-                    location,
-                    alpha,
-                    blur_alpha,
-                })?;
-            }
+    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+        && !has_fullscreen
+    {
+        // previous background layer
+        for (layer, mut location, alpha, blur_alpha) in
+            layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
+        {
+            location += offset.as_global();
+            callback(Stage::LayerSurface {
+                layer,
+                location,
+                alpha,
+                blur_alpha,
+            })?;
         }
     }
 
@@ -596,7 +596,7 @@ fn layer_surfaces<'a>(
         let surface_id = s.wl_surface().id();
         let namespace = s.namespace();
         let (mut visible, mut alpha) =
-            home_visibility.surface_visibility(&surface_id, Some(layer), Some(&namespace));
+            home_visibility.surface_visibility(&surface_id, Some(layer), Some(namespace));
 
         // Apply layer fade-in alpha if this surface is still fading in
         let is_fading_in =

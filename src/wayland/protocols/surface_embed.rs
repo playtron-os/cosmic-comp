@@ -805,26 +805,24 @@ where
                 embed_data.commit();
 
                 // Notify handler if geometry, corner_radius, or anchor changed
-                if old_geometry != embed_data.geometry
+                if (old_geometry != embed_data.geometry
                     || old_corner_radius != embed_data.corner_radius
-                    || old_anchor_config != embed_data.anchor_config
-                {
-                    if let (Ok(parent), Some(toplevel)) =
+                    || old_anchor_config != embed_data.anchor_config)
+                    && let (Ok(parent), Some(toplevel)) =
                         (embed_data.parent.upgrade(), embed_data.toplevel.clone())
-                    {
-                        let geometry = embed_data.geometry;
-                        let corner_radius = embed_data.corner_radius;
-                        let anchor_config = embed_data.anchor_config;
-                        drop(embed_data);
-                        state.embed_geometry_changed(
-                            &parent,
-                            &toplevel,
-                            geometry,
-                            corner_radius,
-                            anchor_config,
-                            resource,
-                        );
-                    }
+                {
+                    let geometry = embed_data.geometry;
+                    let corner_radius = embed_data.corner_radius;
+                    let anchor_config = embed_data.anchor_config;
+                    drop(embed_data);
+                    state.embed_geometry_changed(
+                        &parent,
+                        &toplevel,
+                        geometry,
+                        corner_radius,
+                        anchor_config,
+                        resource,
+                    );
                 }
             }
         }

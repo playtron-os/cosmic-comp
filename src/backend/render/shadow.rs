@@ -240,7 +240,7 @@ impl ShadowShader {
         let mut cache = user_data.get::<LayerShadowCache>().unwrap().borrow_mut();
 
         if cache
-            .get(&surface_id)
+            .get(surface_id)
             .filter(|(old_params, _)| &params == old_params)
             .is_none()
         {

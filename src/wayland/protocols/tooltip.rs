@@ -283,7 +283,7 @@ impl TooltipManagerState {
             }
 
             let pointer_over_parent =
-                cursor_surface.map_or(false, |s| s.id() == reg.parent_surface.id());
+                cursor_surface.is_some_and(|s| s.id() == reg.parent_surface.id());
 
             if pointer_over_parent {
                 // Apply offset in the direction the tooltip expands,

@@ -141,7 +141,7 @@ impl HomeVisibilityState {
     fn broadcast_home_state(&self, is_home: bool) {
         let mut managers = self.managers.lock().unwrap();
         managers.retain(|weak| {
-            if let Some(manager) = weak.upgrade().ok() {
+            if let Ok(manager) = weak.upgrade() {
                 manager.home_state(if is_home { 1 } else { 0 });
                 true
             } else {
@@ -257,7 +257,7 @@ where
         match request {
             zcosmic_home_visibility_v1::Request::Destroy => {
                 // Remove surface from home-only tracking in Shell
-                if let Some(surface) = data.surface.upgrade().ok() {
+                if let Ok(surface) = data.surface.upgrade() {
                     let surface_id = surface.id();
                     state.remove_surface_visibility(surface_id.clone());
                     debug!(?surface_id, "Home visibility controller destroyed");
@@ -267,7 +267,7 @@ where
                 let visibility_mode = VisibilityMode::from(mode);
                 *data.mode.lock().unwrap() = visibility_mode;
 
-                if let Some(surface) = data.surface.upgrade().ok() {
+                if let Ok(surface) = data.surface.upgrade() {
                     let surface_id = surface.id();
                     state.set_surface_visibility_mode(surface_id.clone(), visibility_mode);
                     debug!(

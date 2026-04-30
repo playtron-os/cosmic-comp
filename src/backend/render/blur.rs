@@ -323,7 +323,7 @@ impl BlurRenderState {
             downsample_enabled,
             blur_size,
         ) {
-            Ok(()) => return Ok(true),
+            Ok(()) => Ok(true),
             Err(err) => {
                 // Check if this is an unsupported pixel format error
                 let err_str = format!("{:?}", err);
@@ -354,7 +354,7 @@ impl BlurRenderState {
                     return Ok(true);
                 }
                 // Other errors are returned as-is
-                return Err(err);
+                Err(err)
             }
         }
     }
@@ -772,10 +772,10 @@ pub fn store_layer_blur_last_update(hash_key: &str) {
 /// Check if layer blur should be throttled (content changed but update was too recent).
 /// Returns true if we should skip re-blurring this frame.
 pub fn should_throttle_layer_blur(hash_key: &str) -> bool {
-    if let Ok(cache) = LAYER_BLUR_LAST_UPDATE.read() {
-        if let Some(last_update) = cache.get(hash_key) {
-            return last_update.elapsed() < blur_throttle_interval();
-        }
+    if let Ok(cache) = LAYER_BLUR_LAST_UPDATE.read()
+        && let Some(last_update) = cache.get(hash_key)
+    {
+        return last_update.elapsed() < blur_throttle_interval();
     }
     false
 }
