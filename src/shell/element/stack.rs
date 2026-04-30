@@ -2008,10 +2008,11 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), <R>::Error> {
         match self {
             CosmicStackRenderElement::Header(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicStackRenderElement::Shadow(elem) | CosmicStackRenderElement::Border(elem) => {
                 RenderElement::<GlowRenderer>::draw(
@@ -2021,14 +2022,15 @@ where
                     dst,
                     damage,
                     opaque_regions,
+                    None,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
             CosmicStackRenderElement::Window(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicStackRenderElement::Clipped(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
         }
     }

@@ -253,10 +253,12 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), R::Error> {
         BorrowMut::<GlesFrame>::borrow_mut(<R as AsGlowRenderer>::glow_frame_mut(frame))
             .override_default_tex_program(self.program.clone(), self.uniforms.clone());
-        self.inner.draw(frame, src, dst, damage, opaque_regions)?;
+        self.inner
+            .draw(frame, src, dst, damage, opaque_regions, None)?;
         BorrowMut::<GlesFrame>::borrow_mut(<R as AsGlowRenderer>::glow_frame_mut(frame))
             .clear_tex_program_override();
         Ok(())

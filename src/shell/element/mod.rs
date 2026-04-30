@@ -1356,19 +1356,20 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), R::Error> {
         match self {
             CosmicMappedRenderElement::Stack(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::Window(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::TiledStack(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::TiledWindow(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::TiledOverlay(elem) => RenderElement::<GlowRenderer>::draw(
                 elem,
@@ -1377,19 +1378,20 @@ where
                 dst,
                 damage,
                 opaque_regions,
+                None,
             )
             .map_err(FromGlesError::from_gles_error),
             CosmicMappedRenderElement::MovingStack(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::MovingWindow(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::GrabbedStack(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::GrabbedWindow(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             CosmicMappedRenderElement::FocusIndicator(elem) => RenderElement::<GlowRenderer>::draw(
                 elem,
@@ -1398,6 +1400,7 @@ where
                 dst,
                 damage,
                 opaque_regions,
+                None,
             )
             .map_err(FromGlesError::from_gles_error),
             CosmicMappedRenderElement::Overlay(elem) => RenderElement::<GlowRenderer>::draw(
@@ -1407,6 +1410,7 @@ where
                 dst,
                 damage,
                 opaque_regions,
+                None,
             )
             .map_err(FromGlesError::from_gles_error),
             CosmicMappedRenderElement::BlurBackdrop(elem) => RenderElement::<GlowRenderer>::draw(
@@ -1416,10 +1420,11 @@ where
                 dst,
                 damage,
                 opaque_regions,
+                None,
             )
             .map_err(FromGlesError::from_gles_error),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions)
+                elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => {
@@ -1431,6 +1436,7 @@ where
                     dst,
                     damage,
                     opaque_regions,
+                    None,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }

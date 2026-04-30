@@ -46,6 +46,8 @@ pub mod utils;
 pub mod wayland;
 pub mod xwayland;
 
+smithay::delegate_dispatch2!(State);
+
 #[cfg(feature = "profile-with-tracy")]
 #[global_allocator]
 static GLOBAL: profiling::tracy_client::ProfiledAllocator<std::alloc::System> =

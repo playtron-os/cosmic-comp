@@ -6,9 +6,7 @@ use crate::{
     backend::kms::Surface,
     state::{BackendData, State},
     utils::prelude::OutputExt,
-    wayland::protocols::output_power::{
-        OutputPowerHandler, OutputPowerState, delegate_output_power,
-    },
+    wayland::protocols::output_power::{OutputPowerHandler, OutputPowerState},
 };
 
 pub fn set_all_surfaces_dpms_on(state: &mut State) {
@@ -74,5 +72,3 @@ impl OutputPowerHandler for State {
         }
     }
 }
-
-delegate_output_power!(State);

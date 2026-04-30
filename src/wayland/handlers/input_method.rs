@@ -2,7 +2,6 @@
 
 use crate::state::State;
 use smithay::{
-    delegate_input_method_manager,
     desktop::{PopupKind, PopupManager, space::SpaceElement},
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::Rectangle,
@@ -34,5 +33,3 @@ impl InputMethodHandler for State {
 
     fn popup_repositioned(&mut self, _: PopupSurface) {}
 }
-
-delegate_input_method_manager!(State);

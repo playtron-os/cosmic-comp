@@ -10,7 +10,6 @@ use crate::{
     wayland::protocols::blur::{get_blur_radius, has_blur as surface_has_blur},
 };
 use smithay::{
-    delegate_layer_shell,
     desktop::{LayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output},
     output::Output,
     reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
@@ -191,5 +190,3 @@ impl WlrLayerShellHandler for State {
         }
     }
 }
-
-delegate_layer_shell!(State);

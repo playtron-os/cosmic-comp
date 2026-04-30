@@ -853,6 +853,7 @@ where
             dst,
             &damage,
             &[],
+            None,
         )?;
 
         drop(frame);
@@ -1006,6 +1007,7 @@ where
             dst,
             &damage,
             &[],
+            None,
         )?;
 
         drop(frame);
@@ -1197,6 +1199,7 @@ where
             dst,
             &damage,
             &[],
+            None,
         )?;
 
         // Finish the frame
