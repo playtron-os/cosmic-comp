@@ -3,7 +3,6 @@
 use crate::wayland::protocols::voice_mode::VoiceModeHandler;
 use crate::{shell::SessionLock, state::State, utils::prelude::*};
 use smithay::{
-    delegate_session_lock,
     output::Output,
     reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
     utils::Size,
@@ -75,5 +74,3 @@ impl SessionLockHandler for State {
         }
     }
 }
-
-delegate_session_lock!(State);

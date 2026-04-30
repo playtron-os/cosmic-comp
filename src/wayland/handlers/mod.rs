@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod a11y;
-pub mod alpha_modifier;
 pub mod animated_resize;
 pub mod backdrop_color;
 pub mod blur;
@@ -35,25 +34,18 @@ pub mod output_configuration;
 pub mod output_power;
 pub mod overlap_notify;
 pub mod pointer_constraints;
-pub mod pointer_gestures;
-pub mod presentation;
 pub mod primary_selection;
-pub mod relative_pointer;
 pub mod screencopy;
 pub mod seat;
 pub mod security_context;
 pub mod selection;
 pub mod session_lock;
 pub mod shm;
-pub mod single_pixel_buffer;
 pub mod surface_embed;
 pub mod tablet_manager;
-pub mod text_input;
 pub mod tooltip;
 pub mod toplevel_info;
 pub mod toplevel_management;
-pub mod viewporter;
-pub mod virtual_keyboard;
 pub mod voice_mode;
 pub mod workspace;
 pub mod xdg_activation;

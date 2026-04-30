@@ -16,7 +16,10 @@ use smithay::{
     desktop::{LayerSurface, layer_map_for_output},
     output::Output,
     reexports::{
-        wayland_protocols::ext::foreign_toplevel_list::v1::server::ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+        wayland_protocols::ext::foreign_toplevel_list::v1::server::{
+            ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+            ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+        },
         wayland_protocols_wlr::layer_shell::v1::server::{
             zwlr_layer_shell_v1::Layer as WlrLayer, zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         },
@@ -24,7 +27,9 @@ use smithay::{
     },
     utils::{Logical, Rectangle},
     wayland::{
-        foreign_toplevel_list::ForeignToplevelListHandler,
+        foreign_toplevel_list::{
+            ForeignToplevelHandle, ForeignToplevelListGlobalData, ForeignToplevelListHandler,
+        },
         shell::wlr_layer::{ExclusiveZone, Layer},
     },
 };
@@ -79,8 +84,10 @@ impl OverlapNotifyState {
             + Dispatch<ZcosmicOverlapNotificationV1, ()>
             + OverlapNotifyHandler
             + GlobalDispatch<ZcosmicToplevelInfoV1, ToplevelInfoGlobalData>
+            + GlobalDispatch<ExtForeignToplevelListV1, ForeignToplevelListGlobalData>
             + Dispatch<ZcosmicToplevelInfoV1, ()>
             + Dispatch<ZcosmicToplevelHandleV1, ToplevelHandleState<W>>
+            + Dispatch<ExtForeignToplevelHandleV1, ForeignToplevelHandle>
             + ForeignToplevelListHandler
             + ToplevelInfoHandler<Window = W>
             + 'static,

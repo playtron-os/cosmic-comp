@@ -12,6 +12,7 @@ use smithay::{
             backend::GlobalId,
         },
     },
+    wayland::{Dispatch2, GlobalDispatch2},
 };
 use std::{collections::HashMap, mem};
 use wayland_backend::{protocol::WEnum, server::ClientId};
@@ -76,47 +77,43 @@ pub struct OutputPowerManagerGlobalData {
     filter: Box<dyn for<'a> Fn(&'a Client) -> bool + Send + Sync>,
 }
 
+/// User data for `ZwlrOutputPowerManagerV1` resource instances.
+pub struct OutputPowerManagerData;
+
 pub struct OutputPowerData {
     output: WeakOutput,
 }
 
-impl<D> GlobalDispatch<ZwlrOutputPowerManagerV1, OutputPowerManagerGlobalData, D>
-    for OutputPowerState
+impl<D> GlobalDispatch2<ZwlrOutputPowerManagerV1, D> for OutputPowerManagerGlobalData
 where
-    D: GlobalDispatch<ZwlrOutputPowerManagerV1, OutputPowerManagerGlobalData>
-        + Dispatch<ZwlrOutputPowerManagerV1, ()>
-        + 'static,
+    D: Dispatch<ZwlrOutputPowerManagerV1, OutputPowerManagerData> + 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _dh: &DisplayHandle,
         _client: &Client,
         resource: New<ZwlrOutputPowerManagerV1>,
-        _global_data: &OutputPowerManagerGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, OutputPowerManagerData);
     }
 
-    fn can_view(client: Client, global_data: &OutputPowerManagerGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrOutputPowerManagerV1, (), D> for OutputPowerState
+impl<D> Dispatch2<ZwlrOutputPowerManagerV1, D> for OutputPowerManagerData
 where
-    D: GlobalDispatch<ZwlrOutputPowerManagerV1, OutputPowerManagerGlobalData>
-        + Dispatch<ZwlrOutputPowerManagerV1, ()>
-        + Dispatch<ZwlrOutputPowerV1, OutputPowerData>
-        + OutputPowerHandler
-        + 'static,
+    D: Dispatch<ZwlrOutputPowerV1, OutputPowerData> + OutputPowerHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         _obj: &ZwlrOutputPowerManagerV1,
         request: zwlr_output_power_manager_v1::Request,
-        _data: &(),
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -146,22 +143,22 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputPowerV1, OutputPowerData, D> for OutputPowerState
+impl<D> Dispatch2<ZwlrOutputPowerV1, D> for OutputPowerData
 where
-    D: Dispatch<ZwlrOutputPowerV1, OutputPowerData> + OutputPowerHandler + 'static,
+    D: OutputPowerHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         obj: &ZwlrOutputPowerV1,
         request: zwlr_output_power_v1::Request,
-        data: &OutputPowerData,
         _dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
         match request {
             zwlr_output_power_v1::Request::SetMode { mode } => {
-                if let Some(output) = data.output.upgrade() {
+                if let Some(output) = self.output.upgrade() {
                     let on = match mode {
                         WEnum::Value(zwlr_output_power_v1::Mode::On) => true,
                         WEnum::Value(zwlr_output_power_v1::Mode::Off) => false,
@@ -195,12 +192,7 @@ where
         }
     }
 
-    fn destroyed(
-        state: &mut D,
-        _client: ClientId,
-        obj: &ZwlrOutputPowerV1,
-        _data: &OutputPowerData,
-    ) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, obj: &ZwlrOutputPowerV1) {
         state.output_power_state().output_powers.remove(obj);
     }
 }
@@ -212,18 +204,3 @@ fn output_power_mode(on: bool) -> zwlr_output_power_v1::Mode {
         zwlr_output_power_v1::Mode::Off
     }
 }
-
-macro_rules! delegate_output_power {
-    ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
-        smithay::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::output_power_management::v1::server::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1: $crate::wayland::protocols::output_power::OutputPowerManagerGlobalData
-        ] => $crate::wayland::protocols::output_power::OutputPowerState);
-        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::output_power_management::v1::server::zwlr_output_power_manager_v1::ZwlrOutputPowerManagerV1: ()
-        ] => $crate::wayland::protocols::output_power::OutputPowerState);
-        smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            smithay::reexports::wayland_protocols_wlr::output_power_management::v1::server::zwlr_output_power_v1::ZwlrOutputPowerV1: $crate::wayland::protocols::output_power::OutputPowerData
-        ] => $crate::wayland::protocols::output_power::OutputPowerState);
-    };
-}
-pub(crate) use delegate_output_power;

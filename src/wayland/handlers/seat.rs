@@ -8,7 +8,6 @@ use crate::{
     wayland::handlers::surface_embed::is_wl_surface_embedded,
 };
 use smithay::{
-    delegate_cursor_shape, delegate_seat,
     input::{
         SeatHandler, SeatState,
         keyboard::LedState,
@@ -79,6 +78,3 @@ impl SeatHandler for State {
         devices.update_led_state(led_state);
     }
 }
-
-delegate_seat!(State);
-delegate_cursor_shape!(State);

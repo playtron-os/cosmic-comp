@@ -979,16 +979,16 @@ impl SpaceElement for CosmicSurface {
         output: &Output,
         overlap: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
     ) {
-        SpaceElement::output_enter(&self.0, output, overlap)
+        SpaceElement::output_enter(&self.0, output, overlap);
     }
 
     fn output_leave(&self, output: &Output) {
-        SpaceElement::output_leave(&self.0, output)
+        SpaceElement::output_leave(&self.0, output);
     }
 
     #[profiling::function]
     fn refresh(&self) {
-        SpaceElement::refresh(&self.0)
+        SpaceElement::refresh(&self.0);
     }
 }
 
