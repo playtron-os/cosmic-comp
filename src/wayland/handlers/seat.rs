@@ -48,18 +48,16 @@ impl SeatHandler for State {
 
     fn cursor_image(&mut self, seat: &smithay::input::Seat<Self>, image: CursorImageStatus) {
         // Block resize cursor requests from embedded windows
-        if let CursorImageStatus::Named(icon) = &image {
-            if is_resize_cursor(*icon) {
-                // Check if the current pointer focus is an embedded surface
-                if let Some(pointer) = seat.get_pointer() {
-                    if let Some(focus) = pointer.current_focus() {
-                        if let Some(wl_surface) = focus.wl_surface() {
-                            if is_wl_surface_embedded(&wl_surface) {
-                                return;
-                            }
-                        }
-                    }
-                }
+        if let CursorImageStatus::Named(icon) = &image
+            && is_resize_cursor(*icon)
+        {
+            // Check if the current pointer focus is an embedded surface
+            if let Some(pointer) = seat.get_pointer()
+                && let Some(focus) = pointer.current_focus()
+                && let Some(wl_surface) = focus.wl_surface()
+                && is_wl_surface_embedded(&wl_surface)
+            {
+                return;
             }
         }
         seat.set_cursor_image_status(image);

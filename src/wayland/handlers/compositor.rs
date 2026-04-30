@@ -80,7 +80,8 @@ fn xdg_popup_ensure_initial_configure(popup: &PopupKind) {
 
 fn layer_surface_check_inital_configure(surface: &LayerSurface) -> bool {
     // send the initial configure if relevant
-    let initial_configure_sent = with_states(surface.wl_surface(), |states| {
+
+    with_states(surface.wl_surface(), |states| {
         states
             .data_map
             .get::<Mutex<LayerSurfaceAttributes>>()
@@ -88,9 +89,7 @@ fn layer_surface_check_inital_configure(surface: &LayerSurface) -> bool {
             .lock()
             .unwrap()
             .initial_configure_sent
-    });
-
-    initial_configure_sent
+    })
 }
 
 pub fn client_compositor_state(client: &Client) -> &CompositorClientState {
@@ -202,23 +201,24 @@ impl CompositorHandler for State {
                     })
             });
             if let Some(dmabuf) = maybe_dmabuf {
-                if let Some(acquire_point) = acquire_point {
-                    if let Ok((blocker, source)) = acquire_point.generate_blocker() {
-                        let client = surface.client().unwrap();
-                        let res = state.common.event_loop_handle.insert_source(
-                            source,
-                            move |_, _, state| {
+                if let Some(acquire_point) = acquire_point
+                    && let Ok((blocker, source)) = acquire_point.generate_blocker()
+                {
+                    let client = surface.client().unwrap();
+                    let res =
+                        state
+                            .common
+                            .event_loop_handle
+                            .insert_source(source, move |_, _, state| {
                                 let dh = state.common.display_handle.clone();
                                 state
                                     .client_compositor_state(&client)
                                     .blocker_cleared(state, &dh);
                                 Ok(())
-                            },
-                        );
-                        if res.is_ok() {
-                            add_blocker(surface, blocker);
-                            return;
-                        }
+                            });
+                    if res.is_ok() {
+                        add_blocker(surface, blocker);
+                        return;
                     }
                 }
                 if let Ok((blocker, source)) = dmabuf.generate_blocker(Interest::READ) {
@@ -370,7 +370,7 @@ impl CompositorHandler for State {
             .cloned();
 
         if let Some(ref output) = layer_output {
-            let changed = layer_map_for_output(&output).arrange();
+            let changed = layer_map_for_output(output).arrange();
             if changed {
                 shell.workspaces.recalculate();
             }
@@ -384,7 +384,7 @@ impl CompositorHandler for State {
             // Update layer blur cache when layer surfaces are committed
             // (blur protocol state may have changed)
             crate::wayland::handlers::layer_shell::update_layer_blur_state(
-                &output,
+                output,
                 shell.hidden_surfaces(),
             );
         }
@@ -440,68 +440,67 @@ impl State {
                 .pending_windows
                 .iter()
                 .find(|pending| pending.surface.wl_surface().as_deref() == Some(surface))
+                && let Some(toplevel) = pending.surface.0.toplevel()
             {
-                if let Some(toplevel) = pending.surface.0.toplevel() {
-                    let initial_size = if let Some(output) = pending.fullscreen.as_ref() {
-                        Some(output.geometry().size.as_logical())
-                    } else if pending.maximized {
-                        let active_output = shell.seats.last_active().active_output();
-                        let zone = layer_map_for_output(&active_output).non_exclusive_zone();
-                        Some(zone.size)
-                    } else {
-                        // For floating windows, set bounds so the client picks a
-                        // size that won't be further reduced by map_internal().
-                        // map_internal() caps windows without a max_size to 2/3 of
-                        // the non-exclusive zone. Subtract SSD_HEIGHT from the
-                        // height so that content + SSD header fits within the cap.
-                        use crate::shell::element::window::SSD_HEIGHT;
-                        let active_output = shell.seats.last_active().active_output();
-                        let zone = layer_map_for_output(&active_output).non_exclusive_zone();
-                        let has_ssd = !pending.surface.is_decorated(true);
-                        let ssd_h = if has_ssd { SSD_HEIGHT } else { 0 };
-                        let bounds = Size::from((zone.size.w / 3 * 2, zone.size.h / 3 * 2 - ssd_h));
-                        toplevel.with_pending_state(|state| {
-                            state.bounds = Some(bounds);
-                        });
-                        None
-                    };
-                    let has_buffer =
-                        with_renderer_surface_state(surface, |state| state.buffer().is_some())
-                            .unwrap_or(false);
-                    if toplevel_ensure_initial_configure(toplevel, initial_size) && has_buffer {
-                        let window = pending.surface.clone();
-                        window.on_commit();
+                let initial_size = if let Some(output) = pending.fullscreen.as_ref() {
+                    Some(output.geometry().size.as_logical())
+                } else if pending.maximized {
+                    let active_output = shell.seats.last_active().active_output();
+                    let zone = layer_map_for_output(&active_output).non_exclusive_zone();
+                    Some(zone.size)
+                } else {
+                    // For floating windows, set bounds so the client picks a
+                    // size that won't be further reduced by map_internal().
+                    // map_internal() caps windows without a max_size to 2/3 of
+                    // the non-exclusive zone. Subtract SSD_HEIGHT from the
+                    // height so that content + SSD header fits within the cap.
+                    use crate::shell::element::window::SSD_HEIGHT;
+                    let active_output = shell.seats.last_active().active_output();
+                    let zone = layer_map_for_output(&active_output).non_exclusive_zone();
+                    let has_ssd = !pending.surface.is_decorated(true);
+                    let ssd_h = if has_ssd { SSD_HEIGHT } else { 0 };
+                    let bounds = Size::from((zone.size.w / 3 * 2, zone.size.h / 3 * 2 - ssd_h));
+                    toplevel.with_pending_state(|state| {
+                        state.bounds = Some(bounds);
+                    });
+                    None
+                };
+                let has_buffer =
+                    with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                        .unwrap_or(false);
+                if toplevel_ensure_initial_configure(toplevel, initial_size) && has_buffer {
+                    let window = pending.surface.clone();
+                    window.on_commit();
 
-                        // Check if this window matches any pending PID-based embed requests
-                        // BEFORE mapping, so the surface is marked as embedded before rendering.
-                        // This prevents the window from appearing as a separate window for a few frames.
-                        // Drop shell lock first as check_pending_pid_embeds_for_window needs &mut self
+                    // Check if this window matches any pending PID-based embed requests
+                    // BEFORE mapping, so the surface is marked as embedded before rendering.
+                    // This prevents the window from appearing as a separate window for a few frames.
+                    // Drop shell lock first as check_pending_pid_embeds_for_window needs &mut self
+                    std::mem::drop(shell);
+                    self.check_pending_pid_embeds_for_window(&window);
+
+                    // Re-acquire shell lock for map_window
+                    let mut shell = self.common.shell.write();
+                    let res = shell.map_window(
+                        &window,
+                        &mut self.common.toplevel_info_state,
+                        &mut self.common.workspace_state,
+                        &self.common.event_loop_handle,
+                    );
+                    std::mem::drop(shell);
+
+                    // After mapping, if this window is an embedded child, ensure it's
+                    // on the same output as its parent (it may have been placed on the
+                    // wrong output based on cursor position).
+                    self.ensure_embedded_on_parent_output(&window);
+
+                    if let Some(target) = res {
+                        let shell = self.common.shell.read();
+                        let seat = shell.seats.last_active().clone();
                         std::mem::drop(shell);
-                        self.check_pending_pid_embeds_for_window(&window);
-
-                        // Re-acquire shell lock for map_window
-                        let mut shell = self.common.shell.write();
-                        let res = shell.map_window(
-                            &window,
-                            &mut self.common.toplevel_info_state,
-                            &mut self.common.workspace_state,
-                            &self.common.event_loop_handle,
-                        );
-                        std::mem::drop(shell);
-
-                        // After mapping, if this window is an embedded child, ensure it's
-                        // on the same output as its parent (it may have been placed on the
-                        // wrong output based on cursor position).
-                        self.ensure_embedded_on_parent_output(&window);
-
-                        if let Some(target) = res {
-                            let shell = self.common.shell.read();
-                            let seat = shell.seats.last_active().clone();
-                            std::mem::drop(shell);
-                            Shell::set_focus(self, Some(&target), &seat, None, true);
-                        }
-                        return true;
+                        Shell::set_focus(self, Some(&target), &seat, None, true);
                     }
+                    return true;
                 }
             }
         }
@@ -513,34 +512,33 @@ impl State {
             .iter()
             .find(|pending| pending.surface.wl_surface() == surface)
             .map(|pending| pending.surface.clone())
+            && !layer_surface_check_inital_configure(&layer_surface)
         {
-            if !layer_surface_check_inital_configure(&layer_surface) {
-                // compute initial dimensions by mapping
-                let target = shell.map_layer(&layer_surface);
+            // compute initial dimensions by mapping
+            let target = shell.map_layer(&layer_surface);
 
-                let map_output = shell
-                    .outputs()
-                    .find(|o| {
-                        let map = layer_map_for_output(o);
-                        map.layer_for_surface(layer_surface.wl_surface(), WindowSurfaceType::ALL)
-                            .is_some()
-                    })
-                    .cloned();
-                if let Some(output) = map_output {
-                    crate::wayland::handlers::layer_shell::update_layer_blur_state(
-                        &output,
-                        shell.hidden_surfaces(),
-                    );
-                }
-
-                if let Some(target) = target {
-                    let seat = shell.seats.last_active().clone();
-                    std::mem::drop(shell);
-                    Shell::set_focus(self, Some(&target), &seat, None, false);
-                }
-                layer_surface.layer_surface().send_configure();
-                return true;
+            let map_output = shell
+                .outputs()
+                .find(|o| {
+                    let map = layer_map_for_output(o);
+                    map.layer_for_surface(layer_surface.wl_surface(), WindowSurfaceType::ALL)
+                        .is_some()
+                })
+                .cloned();
+            if let Some(output) = map_output {
+                crate::wayland::handlers::layer_shell::update_layer_blur_state(
+                    &output,
+                    shell.hidden_surfaces(),
+                );
             }
+
+            if let Some(target) = target {
+                let seat = shell.seats.last_active().clone();
+                std::mem::drop(shell);
+                Shell::set_focus(self, Some(&target), &seat, None, false);
+            }
+            layer_surface.layer_surface().send_configure();
+            return true;
         };
 
         false

@@ -454,19 +454,22 @@ impl CosmicWindowInternal {
         let clip = (!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows);
         let round = !is_tiled || appearance.clip_tiled_windows;
-        let radii = round
-            .then(|| {
+        let radii = if round {
+            {
                 self.theme
                     .lock()
                     .unwrap()
                     .cosmic()
                     .radius_window()
                     .map(|x| x.round() as u8)
-            })
-            .unwrap_or([0; 4]);
+            }
+        } else {
+            [0; 4]
+        };
 
         let surface_corners = self.window.corner_radius(geometry_size);
-        let result = match (has_ssd, clip) {
+
+        match (has_ssd, clip) {
             (_has_ssd, true) => {
                 let mut corners = surface_corners.unwrap_or(radii);
 
@@ -479,9 +482,7 @@ impl CosmicWindowInternal {
             }
             (true, false) => surface_corners.unwrap_or([default_radius; 4]),
             (false, false) => surface_corners.unwrap_or([default_radius; 4]),
-        };
-
-        result
+        }
     }
 }
 
@@ -967,36 +968,35 @@ impl Program for CosmicWindowInternal {
     ) -> Task<Self::Message> {
         match message {
             Message::DragStart => {
-                if let Some((seat, serial)) = last_seat.cloned() {
-                    if let Some(surface) = self.window.wl_surface().map(Cow::into_owned) {
-                        loop_handle.insert_idle(move |state| {
-                            let res = state.common.shell.write().move_request(
-                                &surface,
-                                &seat,
-                                serial,
-                                ReleaseMode::NoMouseButtons,
-                                false,
-                                &state.common.config,
-                                &state.common.event_loop_handle,
-                                false,
-                            );
-                            if let Some((grab, focus)) = res {
-                                if grab.is_touch_grab() {
-                                    seat.get_touch().unwrap().set_grab(state, grab, serial);
-                                } else {
-                                    seat.get_pointer()
-                                        .unwrap()
-                                        .set_grab(state, grab, serial, focus);
-                                    // Re-set Grabbing cursor after set_grab(), because
-                                    // Focus::Clear triggers leave() on the SSD header
-                                    // which calls unset_shape() and resets the cursor.
-                                    let cursor_state =
-                                        seat.user_data().get::<CursorState>().unwrap();
-                                    cursor_state.lock().unwrap().set_shape(CursorIcon::Grabbing);
-                                }
+                if let Some((seat, serial)) = last_seat.cloned()
+                    && let Some(surface) = self.window.wl_surface().map(Cow::into_owned)
+                {
+                    loop_handle.insert_idle(move |state| {
+                        let res = state.common.shell.write().move_request(
+                            &surface,
+                            &seat,
+                            serial,
+                            ReleaseMode::NoMouseButtons,
+                            false,
+                            &state.common.config,
+                            &state.common.event_loop_handle,
+                            false,
+                        );
+                        if let Some((grab, focus)) = res {
+                            if grab.is_touch_grab() {
+                                seat.get_touch().unwrap().set_grab(state, grab, serial);
+                            } else {
+                                seat.get_pointer()
+                                    .unwrap()
+                                    .set_grab(state, grab, serial, focus);
+                                // Re-set Grabbing cursor after set_grab(), because
+                                // Focus::Clear triggers leave() on the SSD header
+                                // which calls unset_shape() and resets the cursor.
+                                let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+                                cursor_state.lock().unwrap().set_shape(CursorIcon::Grabbing);
                             }
-                        });
-                    }
+                        }
+                    });
                 }
             }
             Message::Minimize => {
@@ -1020,50 +1020,50 @@ impl Program for CosmicWindowInternal {
             }
             Message::Close => self.window.close(),
             Message::Menu => {
-                if let Some((seat, serial)) = last_seat.cloned() {
-                    if let Some(surface) = self.window.wl_surface().map(Cow::into_owned) {
-                        loop_handle.insert_idle(move |state| {
-                            let shell = state.common.shell.read();
-                            if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
-                                let position = if let Some((output, set)) =
-                                    shell.workspaces.sets.iter().find(|(_, set)| {
-                                        set.sticky_layer.mapped().any(|m| m == &mapped)
-                                    }) {
-                                    set.sticky_layer
-                                        .element_geometry(&mapped)
-                                        .unwrap()
-                                        .loc
-                                        .to_global(output)
-                                } else if let Some(workspace) = shell.space_for(&mapped) {
-                                    let Some(elem_geo) = workspace.element_geometry(&mapped) else {
-                                        return;
-                                    };
-                                    elem_geo.loc.to_global(&workspace.output)
-                                } else {
+                if let Some((seat, serial)) = last_seat.cloned()
+                    && let Some(surface) = self.window.wl_surface().map(Cow::into_owned)
+                {
+                    loop_handle.insert_idle(move |state| {
+                        let shell = state.common.shell.read();
+                        if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
+                            let position = if let Some((output, set)) =
+                                shell.workspaces.sets.iter().find(|(_, set)| {
+                                    set.sticky_layer.mapped().any(|m| m == &mapped)
+                                }) {
+                                set.sticky_layer
+                                    .element_geometry(&mapped)
+                                    .unwrap()
+                                    .loc
+                                    .to_global(output)
+                            } else if let Some(workspace) = shell.space_for(&mapped) {
+                                let Some(elem_geo) = workspace.element_geometry(&mapped) else {
                                     return;
                                 };
+                                elem_geo.loc.to_global(&workspace.output)
+                            } else {
+                                return;
+                            };
 
-                                let pointer = seat.get_pointer().unwrap();
-                                let mut cursor = pointer.current_location().to_i32_round();
-                                cursor.y -= SSD_HEIGHT;
+                            let pointer = seat.get_pointer().unwrap();
+                            let mut cursor = pointer.current_location().to_i32_round();
+                            cursor.y -= SSD_HEIGHT;
 
-                                let res = shell.menu_request(
-                                    &surface,
-                                    &seat,
-                                    serial,
-                                    cursor - position.as_logical(),
-                                    false,
-                                    &state.common.config,
-                                    &state.common.event_loop_handle,
-                                );
+                            let res = shell.menu_request(
+                                &surface,
+                                &seat,
+                                serial,
+                                cursor - position.as_logical(),
+                                false,
+                                &state.common.config,
+                                &state.common.event_loop_handle,
+                            );
 
-                                std::mem::drop(shell);
-                                if let Some((grab, focus)) = res {
-                                    pointer.set_grab(state, grab, serial, focus);
-                                }
+                            std::mem::drop(shell);
+                            if let Some((grab, focus)) = res {
+                                pointer.set_grab(state, grab, serial, focus);
                             }
-                        });
-                    }
+                        }
+                    });
                 }
             }
         }

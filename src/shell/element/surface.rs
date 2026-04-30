@@ -751,15 +751,13 @@ impl CosmicSurface {
                         .primary_scanout_feedback
                         .as_ref()
                         .unwrap_or(&feedback.render_feedback)
+                } else if frame_time_filter_fn(data) == Kind::ScanoutCandidate {
+                    feedback
+                        .overlay_scanout_feedback
+                        .as_ref()
+                        .unwrap_or(&feedback.render_feedback)
                 } else {
-                    if frame_time_filter_fn(data) == Kind::ScanoutCandidate {
-                        feedback
-                            .overlay_scanout_feedback
-                            .as_ref()
-                            .unwrap_or(&feedback.render_feedback)
-                    } else {
-                        &feedback.render_feedback
-                    }
+                    &feedback.render_feedback
                 }
             })
     }
@@ -817,10 +815,10 @@ impl CosmicSurface {
                         let render_pos = if let Some(override_data) = tooltip_override {
                             // During show-delay the override has a future show_at —
                             // produce zero elements so the popup is invisible until then.
-                            if let Some(show_at) = override_data.show_at {
-                                if std::time::Instant::now() < show_at {
-                                    return Vec::new();
-                                }
+                            if let Some(show_at) = override_data.show_at
+                                && std::time::Instant::now() < show_at
+                            {
+                                return Vec::new();
                             }
 
                             let popup_geo = popup.geometry();
@@ -1096,6 +1094,6 @@ fn with_toplevel_state<T, F: FnOnce(Option<&smithay::wayland::shell::xdg::Toplev
     if pending {
         toplevel.with_pending_state(|pending| cb(Some(pending)))
     } else {
-        toplevel.with_committed_state(|committed| cb(committed))
+        toplevel.with_committed_state(cb)
     }
 }

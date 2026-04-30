@@ -1,5 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    clippy::wrong_self_convention,
+    clippy::mutable_key_type,
+    clippy::doc_lazy_continuation,
+    clippy::single_match,
+    clippy::unnecessary_get_then_check,
+    clippy::needless_range_loop,
+    clippy::len_without_is_empty,
+    clippy::missing_safety_doc,
+    clippy::match_like_matches_macro,
+    clippy::field_reassign_with_default
+)]
+
 use calloop::timer::{TimeoutAction, Timer};
 use smithay::{
     reexports::{

@@ -908,13 +908,12 @@ impl FloatingLayout {
 
         mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
-        if mapped.floating_tiled.lock().unwrap().take().is_some() {
-            if let Some(state) = mapped.maximized_state.lock().unwrap().as_mut() {
-                if let Some(real_old_geo) = *mapped.last_geometry.lock().unwrap() {
-                    state.original_geometry = real_old_geo;
-                }
-            };
-        }
+        if mapped.floating_tiled.lock().unwrap().take().is_some()
+            && let Some(state) = mapped.maximized_state.lock().unwrap().as_mut()
+            && let Some(real_old_geo) = *mapped.last_geometry.lock().unwrap()
+        {
+            state.original_geometry = real_old_geo;
+        };
         self.space
             .map_element(mapped, target_geometry.loc.as_logical(), true);
         self.space.refresh();
@@ -1222,10 +1221,10 @@ impl FloatingLayout {
                 mapped_geometry.size = last_size;
             }
         } else if !window.is_maximized(true) {
-            if window.active_window().has_pending_changes() {
-                if let Some(pending_size) = window.pending_size() {
-                    mapped_geometry.size = pending_size.as_local();
-                }
+            if window.active_window().has_pending_changes()
+                && let Some(pending_size) = window.pending_size()
+            {
+                mapped_geometry.size = pending_size.as_local();
             }
             *window.last_geometry.lock().unwrap() = Some(mapped_geometry);
         }
@@ -2224,32 +2223,30 @@ impl FloatingLayout {
                 .wl_surface()
                 .map(|s| s.id().to_string());
 
-            if let Some(ref sid) = surface_id {
-                if let Some(embed_info) =
+            if let Some(ref sid) = surface_id
+                && let Some(embed_info) =
                     crate::wayland::handlers::surface_embed::get_embed_render_info(
                         &elem.active_window(),
                     )
-                {
-                    // This element is embedded - check if its parent still exists
-                    // Check globally: parent is valid if it has embeds registered OR is being grabbed
-                    let parent_valid =
-                        crate::wayland::handlers::surface_embed::is_valid_embed_parent(
-                            &embed_info.parent_surface_id,
-                        );
-                    let parent_grabbed = crate::wayland::handlers::surface_embed::is_parent_grabbed(
-                        &embed_info.parent_surface_id,
-                    );
+            {
+                // This element is embedded - check if its parent still exists
+                // Check globally: parent is valid if it has embeds registered OR is being grabbed
+                let parent_valid = crate::wayland::handlers::surface_embed::is_valid_embed_parent(
+                    &embed_info.parent_surface_id,
+                );
+                let parent_grabbed = crate::wayland::handlers::surface_embed::is_parent_grabbed(
+                    &embed_info.parent_surface_id,
+                );
 
-                    // Only clear if parent is not found anywhere
-                    if !parent_valid && !parent_grabbed {
-                        tracing::info!(
-                            "Parent surface '{}' no longer valid (not in global registry, not grabbed), clearing embed for surface '{}' (app_id='{}')",
-                            embed_info.parent_surface_id,
-                            sid,
-                            embed_info.embedded_app_id
-                        );
-                        crate::wayland::handlers::surface_embed::unmark_surface_embedded(sid);
-                    }
+                // Only clear if parent is not found anywhere
+                if !parent_valid && !parent_grabbed {
+                    tracing::info!(
+                        "Parent surface '{}' no longer valid (not in global registry, not grabbed), clearing embed for surface '{}' (app_id='{}')",
+                        embed_info.parent_surface_id,
+                        sid,
+                        embed_info.embedded_app_id
+                    );
+                    crate::wayland::handlers::surface_embed::unmark_surface_embedded(sid);
                 }
             }
         }
@@ -2403,27 +2400,24 @@ impl FloatingLayout {
                     finalized,
                     ..
                 } = anim
+                    && !*finalized
+                    && now.duration_since(*start) >= ANIMATION_DURATION
                 {
-                    if !*finalized && now.duration_since(*start) >= ANIMATION_DURATION {
-                        tracing::debug!(
-                            app_id = %mapped.active_window().app_id(),
-                            is_maximize = ?*is_maximize,
-                            target = ?*target_geometry,
-                            "[PIPELINE] Animation complete, applying final state"
-                        );
-                        if let Some(maximize) = *is_maximize {
-                            mapped.set_maximized(maximize);
-                            mapped.set_tiled(maximize);
-                        }
-                        mapped.set_geometry(target_geometry.to_global(output));
-                        mapped.configure();
-                        self.space.map_element(
-                            mapped.clone(),
-                            target_geometry.loc.as_logical(),
-                            false,
-                        );
-                        *finalized = true;
+                    tracing::debug!(
+                        app_id = %mapped.active_window().app_id(),
+                        is_maximize = ?*is_maximize,
+                        target = ?*target_geometry,
+                        "[PIPELINE] Animation complete, applying final state"
+                    );
+                    if let Some(maximize) = *is_maximize {
+                        mapped.set_maximized(maximize);
+                        mapped.set_tiled(maximize);
                     }
+                    mapped.set_geometry(target_geometry.to_global(output));
+                    mapped.configure();
+                    self.space
+                        .map_element(mapped.clone(), target_geometry.loc.as_logical(), false);
+                    *finalized = true;
                 }
             }
         }
@@ -2837,16 +2831,14 @@ impl FloatingLayout {
                 .active_window()
                 .wl_surface()
                 .map(|s| s.id().to_string())
+                && crate::wayland::handlers::surface_embed::is_surface_id_pending_embed(&surface_id)
             {
-                if crate::wayland::handlers::surface_embed::is_surface_id_pending_embed(&surface_id)
-                {
-                    tracing::debug!(
-                        app_id = %elem.active_window().app_id(),
-                        surface_id = %surface_id,
-                        "Hiding window - pending embed for this surface"
-                    );
-                    continue;
-                }
+                tracing::debug!(
+                    app_id = %elem.active_window().app_id(),
+                    surface_id = %surface_id,
+                    "Hiding window - pending embed for this surface"
+                );
+                continue;
             }
 
             // Convert front-to-back index to back-to-front z-index
@@ -2892,15 +2884,15 @@ impl FloatingLayout {
             }
 
             // For LayerBlurCapture: skip grabbed/dragged window (they shouldn't appear in layer blur)
-            if let Some(grabbed_key) = layer_blur_grabbed_key {
-                if elem.key() == *grabbed_key {
-                    tracing::debug!(
-                        window_class = %elem.active_window().app_id(),
-                        z_idx = z_idx,
-                        "Skipping grabbed window during layer blur capture"
-                    );
-                    continue;
-                }
+            if let Some(grabbed_key) = layer_blur_grabbed_key
+                && elem.key() == *grabbed_key
+            {
+                tracing::debug!(
+                    window_class = %elem.active_window().app_id(),
+                    z_idx = z_idx,
+                    "Skipping grabbed window during layer blur capture"
+                );
+                continue;
             }
 
             let anim_opt = self.animations.get(elem);
@@ -3075,26 +3067,26 @@ impl FloatingLayout {
 
             // If this window has the attached voice orb, insert it behind window content
             // (In front-to-back rendering: content -> shadow -> orb -> backdrop)
-            if let Some(orb_state) = attached_orb_state {
-                if let Some(attached_surface_id) = orb_state.attached_surface_id_for_render() {
-                    let window_surface_id = elem
-                        .active_window()
-                        .wl_surface()
-                        .map(|s| s.id().to_string());
+            if let Some(orb_state) = attached_orb_state
+                && let Some(attached_surface_id) = orb_state.attached_surface_id_for_render()
+            {
+                let window_surface_id = elem
+                    .active_window()
+                    .wl_surface()
+                    .map(|s| s.id().to_string());
 
-                    if window_surface_id.as_deref() == Some(attached_surface_id) {
-                        let output_geo = output.geometry().as_logical();
-                        let current_window_geo = geometry.as_logical();
+                if window_surface_id.as_deref() == Some(attached_surface_id) {
+                    let output_geo = output.geometry().as_logical();
+                    let current_window_geo = geometry.as_logical();
 
-                        if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
-                            renderer,
-                            orb_state,
-                            output_geo,
-                            Some(current_window_geo),
-                            Some(window_border_radius),
-                        ) {
-                            window_elements.push(orb_element.into());
-                        }
+                    if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
+                        renderer,
+                        orb_state,
+                        output_geo,
+                        Some(current_window_geo),
+                        Some(window_border_radius),
+                    ) {
+                        window_elements.push(orb_element.into());
                     }
                 }
             }
@@ -3208,25 +3200,22 @@ impl FloatingLayout {
 
             // Render backdrop color for windows that set the backdrop_color protocol
             // (only when blur is not already providing a backdrop)
-            if !elem.has_blur() || blur_ctx.is_some() {
-                if let Some(wl_surface) = elem.active_window().wl_surface() {
-                    if let Some(color) = get_surface_backdrop_color(&wl_surface) {
-                        let backdrop_geo = tiled_anim_geometry.unwrap_or(geometry);
-                        let corner_radius = elem.blur_corner_radius(
-                            backdrop_geo.size.as_logical(),
-                            indicator_thickness,
-                        );
-                        let backdrop = BackdropShader::element(
-                            renderer,
-                            Key::Window(Usage::Overlay, elem.key()),
-                            backdrop_geo,
-                            corner_radius,
-                            alpha * color.alpha_f32(),
-                            color.to_rgb_f32(),
-                        );
-                        window_elements.push(backdrop.into());
-                    }
-                }
+            if (!elem.has_blur() || blur_ctx.is_some())
+                && let Some(wl_surface) = elem.active_window().wl_surface()
+                && let Some(color) = get_surface_backdrop_color(&wl_surface)
+            {
+                let backdrop_geo = tiled_anim_geometry.unwrap_or(geometry);
+                let corner_radius =
+                    elem.blur_corner_radius(backdrop_geo.size.as_logical(), indicator_thickness);
+                let backdrop = BackdropShader::element(
+                    renderer,
+                    Key::Window(Usage::Overlay, elem.key()),
+                    backdrop_geo,
+                    corner_radius,
+                    alpha * color.alpha_f32(),
+                    color.to_rgb_f32(),
+                );
+                window_elements.push(backdrop.into());
             }
 
             // Now apply animation transformations

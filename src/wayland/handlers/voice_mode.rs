@@ -88,7 +88,7 @@ impl VoiceModeHandler for State {
                     info!("Using grabbed window as voice receiver");
                     (
                         Some(grabbed_surface.clone()),
-                        Some((geo.clone(), surface_id.clone())),
+                        Some((*geo, surface_id.clone())),
                     )
                 } else if let Some(surface) = focused_surface {
                     // Fall back to focused surface check
@@ -370,12 +370,12 @@ impl VoiceModeHandler for State {
         let workspace = shell.active_space(&output);
         let window_info = workspace.and_then(|ws| {
             ws.mapped().find_map(|mapped| {
-                if let Some(wl_surface) = mapped.active_window().wl_surface() {
-                    if wl_surface.id() == surface.id() {
-                        let window_geo = SpaceElement::geometry(mapped);
-                        let surface_id = wl_surface.id().to_string();
-                        return Some((window_geo, surface_id));
-                    }
+                if let Some(wl_surface) = mapped.active_window().wl_surface()
+                    && wl_surface.id() == surface.id()
+                {
+                    let window_geo = SpaceElement::geometry(mapped);
+                    let surface_id = wl_surface.id().to_string();
+                    return Some((window_geo, surface_id));
                 }
                 None
             })

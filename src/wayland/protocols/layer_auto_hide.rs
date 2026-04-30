@@ -87,12 +87,11 @@ pub fn get_surface_auto_hide(surface: &WlSurface) -> Option<AutoHideEdge> {
 /// Retrieves the protocol object from the surface's data map.
 pub fn send_auto_hide_visibility(surface: &WlSurface, visible: bool) {
     with_states(surface, |states| {
-        if let Some(hook_ids) = states.data_map.get::<SurfaceHookId>() {
-            if let Some((_, weak_obj)) = hook_ids.lock().unwrap().as_ref() {
-                if let Ok(obj) = weak_obj.upgrade() {
-                    obj.visibility_changed(if visible { 1 } else { 0 });
-                }
-            }
+        if let Some(hook_ids) = states.data_map.get::<SurfaceHookId>()
+            && let Some((_, weak_obj)) = hook_ids.lock().unwrap().as_ref()
+            && let Ok(obj) = weak_obj.upgrade()
+        {
+            obj.visibility_changed(if visible { 1 } else { 0 });
         }
     });
 }
