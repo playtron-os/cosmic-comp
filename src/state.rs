@@ -90,7 +90,9 @@ use smithay::{
     utils::{Clock, Monotonic, Point},
     wayland::{
         alpha_modifier::AlphaModifierState,
-        compositor::{CompositorClientState, CompositorState, SurfaceData},
+        compositor::{
+            CompositorClientState, CompositorState, SUBSURFACE_ROLE, SurfaceData, with_states,
+        },
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufFeedback, DmabufGlobal, DmabufState},
         fractional_scale::{FractionalScaleManagerState, with_fractional_scale},
@@ -1012,9 +1014,9 @@ impl Common {
                 render_element_states,
                 primary_scanout_output_compare,
             );
-            if let Some(output) = primary_scanout_output {
+            if let Some(ref primary) = primary_scanout_output {
                 with_fractional_scale(states, |fraction_scale| {
-                    fraction_scale.set_preferred_scale(output.current_scale().fractional_scale());
+                    fraction_scale.set_preferred_scale(primary.current_scale().fractional_scale());
                 });
             }
         };
@@ -1092,6 +1094,61 @@ impl Common {
                 layer_surface.with_surfaces(processor);
             }
         }
+
+        // Second pass: propagate fractional scale to CSD subsurfaces.
+        // CSD subsurfaces (e.g. libdecor decorations) are not directly rendered by the
+        // compositor, so they never appear in render_element_states and
+        // update_surface_primary_scanout_output always returns None for them.
+        // After the first pass sets each root surface's primary scanout output, we check
+        // which windows are on this output and propagate its scale to their subsurfaces.
+        let propagate_subsurface_scale = |wl_surface: &WlSurface| {
+            let root_on_output = with_states(wl_surface, |states| {
+                surface_primary_scanout_output(wl_surface, states)
+                    .map(|o| &o == output)
+                    .unwrap_or(false)
+            });
+            if root_on_output {
+                with_surfaces_surface_tree(wl_surface, |_surface, states| {
+                    if states.role == Some(SUBSURFACE_ROLE) {
+                        with_fractional_scale(states, |fraction_scale| {
+                            fraction_scale
+                                .set_preferred_scale(output.current_scale().fractional_scale());
+                        });
+                    }
+                });
+            }
+        };
+
+        for set in shell.workspaces.sets.values() {
+            set.sticky_layer.mapped().for_each(|mapped| {
+                for (window, _) in mapped.windows() {
+                    if let Some(surface) = window.wl_surface() {
+                        propagate_subsurface_scale(&surface);
+                    }
+                }
+            });
+        }
+
+        for space in shell.workspaces.spaces() {
+            if let Some(window) = space.get_fullscreen()
+                && let Some(surface) = window.wl_surface()
+            {
+                propagate_subsurface_scale(&surface);
+            }
+            space.mapped().for_each(|mapped| {
+                for (window, _) in mapped.windows() {
+                    if let Some(surface) = window.wl_surface() {
+                        propagate_subsurface_scale(&surface);
+                    }
+                }
+            });
+        }
+
+        shell.override_redirect_windows.iter().for_each(|or| {
+            if let Some(wl_surface) = or.wl_surface() {
+                propagate_subsurface_scale(&wl_surface);
+            }
+        });
     }
 
     #[profiling::function]
