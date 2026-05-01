@@ -377,7 +377,11 @@ mod tests {
         assert_eq!(config.primary_binding.key, "F23");
         assert!(!config.primary_binding.modifiers.shift);
         assert!(config.primary_binding.modifiers.logo);
-        assert!(config.fallback_binding.is_none());
+        let fallback = config
+            .fallback_binding
+            .expect("should have fallback binding");
+        assert_eq!(fallback.key, "F18");
+        assert_eq!(fallback.modifiers, VoiceModifiers::none());
     }
 
     #[test]
