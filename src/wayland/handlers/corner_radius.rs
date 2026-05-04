@@ -16,9 +16,7 @@ impl CornerRadiusHandler for State {
         _: &cosmic_corner_radius_toplevel_v1::CosmicCornerRadiusToplevelV1,
         data: &CornerRadiusData,
     ) {
-        if force_redraw(self, data).is_none() {
-            tracing::warn!("Failed to force redraw for corner radius change.");
-        }
+        force_redraw(self, data);
     }
 
     fn unset_corner_radius(
@@ -26,24 +24,23 @@ impl CornerRadiusHandler for State {
         _: &cosmic_corner_radius_toplevel_v1::CosmicCornerRadiusToplevelV1,
         data: &CornerRadiusData,
     ) {
-        if force_redraw(self, data).is_none() {
-            tracing::warn!("Failed to force redraw for corner radius reset.");
-        }
+        force_redraw(self, data);
     }
 }
 
-fn force_redraw(state: &mut State, data: &CornerRadiusData) -> Option<()> {
+fn force_redraw(state: &mut State, data: &CornerRadiusData) {
     let guard = data.lock().unwrap();
-
-    let toplevel = guard.toplevel.upgrade().ok()?;
-
-    let surface = state.common.xdg_shell_state.get_toplevel(&toplevel)?;
-
+    let Some(toplevel) = guard.toplevel.upgrade().ok() else {
+        return;
+    };
+    let Some(surface) = state.common.xdg_shell_state.get_toplevel(&toplevel) else {
+        return;
+    };
     let guard = state.common.shell.read();
-    let output = guard.visible_output_for_surface(surface.wl_surface())?;
-
+    let Some(output) = guard.visible_output_for_surface(surface.wl_surface()) else {
+        return;
+    };
     state.backend.schedule_render(output);
-    Some(())
 }
 
 delegate_corner_radius!(State);

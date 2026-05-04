@@ -471,14 +471,9 @@ impl CosmicWindowInternal {
 
         match (has_ssd, clip) {
             (_has_ssd, true) => {
-                let mut corners = surface_corners.unwrap_or(radii);
-
-                corners[0] = radii[0].max(corners[0]);
-                corners[1] = radii[1].max(corners[1]);
-                corners[2] = radii[2].max(corners[2]);
-                corners[3] = radii[3].max(corners[3]);
-
-                corners
+                // If client explicitly set corner radius, use it directly;
+                // otherwise fall back to theme radii
+                surface_corners.unwrap_or(radii)
             }
             (true, false) => surface_corners.unwrap_or([default_radius; 4]),
             (false, false) => surface_corners.unwrap_or([default_radius; 4]),
@@ -789,6 +784,7 @@ impl CosmicWindow {
         let clip = ((!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows))
             && !is_maximized;
+
         if has_ssd && !clip && !is_embedded {
             // bottom corners
             radii[0] = 0;
@@ -857,10 +853,14 @@ impl CosmicWindow {
                 radii[1] = 0;
                 radii[3] = 0;
             }
-            if radii.iter().any(|x| *x != 0)
-                && clip
-                && ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radii)
-            {
+            let any_nonzero = radii.iter().any(|x| *x != 0);
+            let will_clip_result = if any_nonzero && clip {
+                ClippedSurfaceRenderElement::will_clip(&elem, scale, geo, radii)
+            } else {
+                false
+            };
+
+            if any_nonzero && clip && will_clip_result {
                 CosmicWindowRenderElement::Clipped(ClippedSurfaceRenderElement::new(
                     renderer, elem, scale, geo, radii,
                 ))
