@@ -70,11 +70,11 @@ pub struct XWaylandState {
     pub last_modifier_state: Option<ModifiersState>,
     pub clipboard_selection_dirty: Option<Vec<String>>,
     pub primary_selection_dirty: Option<Vec<String>>,
-    pub xrdb_thread: Sender<(String, u32)>,
+    pub xrdb_thread: Sender<(String, u32, u32)>,
 }
 
-fn xrdb_thread(rx: Receiver<(String, u32)>, display: u32) {
-    while let Ok((cursor_theme, cursor_size)) = rx.recv() {
+fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: u32) {
+    while let Ok((cursor_theme, cursor_size, dpi)) = rx.recv() {
         if let Ok(mut child) = std::process::Command::new("xrdb")
             .arg("-merge")
             .env("DISPLAY", format!(":{}", display))
@@ -82,8 +82,8 @@ fn xrdb_thread(rx: Receiver<(String, u32)>, display: u32) {
             .spawn()
         {
             let resources = format!(
-                "Xcursor.theme: {}\nXcursor.size: {}\n",
-                cursor_theme, cursor_size,
+                "Xcursor.theme: {}\nXcursor.size: {}\nXft.dpi: {}\n",
+                cursor_theme, cursor_size, dpi,
             );
             if let Some(mut stdin) = child.stdin.take()
                 && let Err(err) = stdin.write_all(resources.as_bytes())
@@ -712,6 +712,7 @@ impl Common {
                 .send((
                     cosmic::icon_theme::default(),
                     (new_scale * cursor_size as f64).round() as u32,
+                    (new_scale * 96.0).round() as u32,
                 ))
                 .is_err()
             {
