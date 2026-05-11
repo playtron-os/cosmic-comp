@@ -781,7 +781,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -1286,7 +1286,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1610,7 +1610,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2773,7 +2773,7 @@ dependencies = [
 [[package]]
 name = "icetron"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#a630b1df3c065525b9ec5ec18109cf6dccadbd12"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2799,8 +2799,8 @@ dependencies = [
 
 [[package]]
 name = "icetron-themes"
-version = "1.7.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#90216b40176e9678a80b5d26c4e11ab53f9939a2"
+version = "1.8.0"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#55086d4cff7c41fd4d3f7bcd6e6f3df4ef57cd97"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -2811,12 +2811,12 @@ dependencies = [
 [[package]]
 name = "icetron_assets"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#a630b1df3c065525b9ec5ec18109cf6dccadbd12"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
 
 [[package]]
 name = "icetron_utils"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#a630b1df3c065525b9ec5ec18109cf6dccadbd12"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
 dependencies = [
  "freedesktop-icons",
  "tracing",
@@ -3261,7 +3261,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3928,7 +3928,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4532,7 +4532,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5549,7 +5549,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6094,7 +6094,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6288,7 +6288,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6706,7 +6706,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5f7c95348f20c1c913d72157b3c6dee6ea3e30b3d19502c5a7f6d3f160dacbf"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -6776,7 +6776,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7473,7 +7473,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
