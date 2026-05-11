@@ -564,7 +564,7 @@ pub struct Shell {
     pub previous_workspace_idx: Option<(Serial, WeakOutput, usize)>,
     pub xwayland_keyboard_grab: Option<XWaylandKeyboardGrab<State>>,
 
-    theme: cosmic::Theme,
+    theme: crate::comp_theme::CompTheme,
     pub active_hint: bool,
     overview_mode: OverviewMode,
     swap_indicator: Option<SwapIndicator>,
@@ -691,7 +691,7 @@ pub struct WorkspaceSet {
     pub group: WorkspaceGroupHandle,
     tiling_enabled: bool,
     output: Output,
-    theme: cosmic::Theme,
+    theme: crate::comp_theme::CompTheme,
     appearance: AppearanceConfig,
     pub sticky_layer: FloatingLayout,
     pub minimized_windows: Vec<MinimizedWindow>,
@@ -704,7 +704,7 @@ fn create_workspace(
     group_handle: &WorkspaceGroupHandle,
     active: bool,
     tiling: bool,
-    theme: cosmic::Theme,
+    theme: crate::comp_theme::CompTheme,
     appearance: AppearanceConfig,
 ) -> Workspace {
     let workspace_handle = state
@@ -744,7 +744,7 @@ fn create_workspace_from_pinned(
     output: &Output,
     group_handle: &WorkspaceGroupHandle,
     active: bool,
-    theme: cosmic::Theme,
+    theme: crate::comp_theme::CompTheme,
     appearance: AppearanceConfig,
 ) -> Workspace {
     let workspace_handle = state
@@ -809,7 +809,7 @@ impl WorkspaceSet {
         state: &mut WorkspaceUpdateGuard<'_, State>,
         output: &Output,
         tiling_enabled: bool,
-        theme: &cosmic::Theme,
+        theme: &crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) -> WorkspaceSet {
         let group_handle = state.create_workspace_group();
@@ -1069,21 +1069,23 @@ pub struct Workspaces {
     backup_set: Option<WorkspaceSet>,
     pub layout: WorkspaceLayout,
     mode: WorkspaceMode,
+    tiling_enabled: bool,
     autotile: bool,
     autotile_behavior: TileBehavior,
-    theme: cosmic::Theme,
+    theme: crate::comp_theme::CompTheme,
     appearance: AppearanceConfig,
     // Persisted workspace to add on first `output_add`
     persisted_workspaces: Vec<PinnedWorkspace>,
 }
 
 impl Workspaces {
-    pub fn new(config: &Config, theme: cosmic::Theme) -> Workspaces {
+    pub fn new(config: &Config, theme: crate::comp_theme::CompTheme) -> Workspaces {
         Workspaces {
             sets: IndexMap::new(),
             backup_set: None,
             layout: config.cosmic_conf.workspaces.workspace_layout,
             mode: config.cosmic_conf.workspaces.workspace_mode,
+            tiling_enabled: config.cosmic_conf.tiling_enabled,
             autotile: config.cosmic_conf.autotile,
             autotile_behavior: config.cosmic_conf.autotile_behavior,
             theme,
@@ -1112,7 +1114,7 @@ impl Workspaces {
                 WorkspaceSet::new(
                     workspace_state,
                     output,
-                    self.autotile,
+                    self.effective_autotile(),
                     &self.theme,
                     self.appearance,
                 )
@@ -1650,7 +1652,7 @@ impl Workspaces {
         )
     }
 
-    pub fn set_theme(&mut self, theme: cosmic::Theme) {
+    pub fn set_theme(&mut self, theme: crate::comp_theme::CompTheme) {
         for (_, s) in &mut self.sets {
             s.theme = theme.clone();
 
@@ -1701,19 +1703,26 @@ impl Workspaces {
         self.apply_tile_change(guard, seats);
     }
 
+    /// The effective tiling state: autotile is only active when the global
+    /// tiling feature is enabled.
+    fn effective_autotile(&self) -> bool {
+        self.tiling_enabled && self.autotile
+    }
+
     fn apply_tile_change<'a>(
         &mut self,
         guard: &mut WorkspaceUpdateGuard<'_, State>,
         seats: impl Iterator<Item = &'a Seat<State>>,
     ) {
+        let effective = self.effective_autotile();
         let seats = seats.cloned().collect::<Vec<_>>();
         for (_, set) in &mut self.sets {
-            set.tiling_enabled = self.autotile;
+            set.tiling_enabled = effective;
 
             if matches!(self.autotile_behavior, TileBehavior::Global) {
                 // must apply change to all workspaces now
                 for w in &mut set.workspaces {
-                    if w.tiling_enabled == self.autotile {
+                    if w.tiling_enabled == effective {
                         continue;
                     }
                     for s in &seats {
@@ -1731,6 +1740,16 @@ impl Workspaces {
         seats: impl Iterator<Item = &'a Seat<State>>,
     ) {
         self.autotile = autotile;
+        self.apply_tile_change(guard, seats);
+    }
+
+    pub fn update_tiling_enabled<'a>(
+        &mut self,
+        enabled: bool,
+        guard: &mut WorkspaceUpdateGuard<'_, State>,
+        seats: impl Iterator<Item = &'a Seat<State>>,
+    ) {
+        self.tiling_enabled = enabled;
         self.apply_tile_change(guard, seats);
     }
 
@@ -1917,7 +1936,7 @@ impl Common {
 
 impl Shell {
     pub fn new(config: &Config) -> Self {
-        let theme = cosmic::theme::system_preference();
+        let theme = crate::comp_theme::CompTheme::from_current();
 
         let tiling_exceptions = layout::TilingExceptions::new(config.tiling_exceptions.iter());
 
@@ -2692,38 +2711,54 @@ impl Shell {
     }
 
     pub fn animations_going(&self) -> bool {
-        self.workspaces.sets.values().any(|set| {
+        let workspace_sets = self.workspaces.sets.values().any(|set| {
             set.previously_active
                 .as_ref()
                 .is_some_and(|(_, delta)| delta.is_animating())
                 || set.sticky_layer.animations_going()
-        }) || !matches!(
+        });
+        let overview = !matches!(
             self.overview_mode,
             OverviewMode::None | OverviewMode::Active(_)
-        ) || !matches!(
+        );
+        let resize = !matches!(
             self.resize_mode,
             ResizeMode::None | ResizeMode::Active(_, _)
-        ) || self.home_mode.is_animating()
-            || self.voice_mode.is_animating()
-            || self.voice_orb_state.needs_continuous_render()
-            || self
-                .workspaces
-                .spaces()
-                .any(|workspace| workspace.animations_going())
-            || self.zoom_state.as_ref().is_some_and(|_| {
-                self.outputs().any(|o| {
-                    o.user_data()
-                        .get::<Mutex<OutputZoomState>>()
-                        .is_some_and(|state| state.lock().unwrap().is_animating())
-                })
+        );
+        let home = self.home_mode.is_animating();
+        let voice = self.voice_mode.is_animating();
+        let voice_orb = self.voice_orb_state.needs_continuous_render();
+        let workspaces = self
+            .workspaces
+            .spaces()
+            .any(|workspace| workspace.animations_going());
+        let zoom = self.zoom_state.as_ref().is_some_and(|_| {
+            self.outputs().any(|o| {
+                o.user_data()
+                    .get::<Mutex<OutputZoomState>>()
+                    .is_some_and(|state| state.lock().unwrap().is_animating())
             })
-            || self
-                .auto_hide_surfaces
-                .iter()
-                .any(|s| s.visibility.is_animating())
-            || !self.layer_fade_in.is_empty()
-            || !self.pending_layer_fade_in.is_empty()
-            || !self.layer_fade_out.is_empty()
+        });
+        let auto_hide = self
+            .auto_hide_surfaces
+            .iter()
+            .any(|s| s.visibility.is_animating());
+        let fade_in = !self.layer_fade_in.is_empty();
+        let pending_fade = !self.pending_layer_fade_in.is_empty();
+        let fade_out = !self.layer_fade_out.is_empty();
+
+        workspace_sets
+            || overview
+            || resize
+            || home
+            || voice
+            || voice_orb
+            || workspaces
+            || zoom
+            || auto_hide
+            || fade_in
+            || pending_fade
+            || fade_out
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -3647,7 +3682,7 @@ impl Shell {
         // the timer would drop alpha back to 0 and cause a visible blink) and
         // when fully visible (blur region update, no animation needed).
         if !is_pending && !is_fading_out {
-            tracing::debug!(
+            tracing::trace!(
                 ?surface_id,
                 is_already_fading_in,
                 is_hidden,
@@ -3661,7 +3696,7 @@ impl Shell {
             return;
         }
 
-        tracing::debug!(
+        tracing::trace!(
             ?surface_id,
             is_already_fading_in,
             is_fading_out,
@@ -5789,7 +5824,7 @@ impl Shell {
             GrabStartData::Touch(start_data) => Trigger::Touch(start_data.slot),
         };
         let active_hint = if config.cosmic_conf.active_hint {
-            self.theme.cosmic().active_hint as u8
+            self.theme.active_hint as u8
         } else {
             0
         };
@@ -7018,11 +7053,11 @@ impl Shell {
 
     pub fn update_toolkit(
         &mut self,
-        toolkit: cosmic::config::CosmicTk,
+        toolkit: crate::toolkit_config::ToolkitConfig,
         xdg_activation_state: &XdgActivationState,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
-        let mut container = cosmic::config::COSMIC_TK.write().unwrap();
+        let mut container = crate::toolkit_config::TOOLKIT_CONFIG.write().unwrap();
         if *container != toolkit {
             *container = toolkit;
             drop(container);
@@ -7033,7 +7068,7 @@ impl Shell {
 
     pub fn set_theme(
         &mut self,
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         xdg_activation_state: &XdgActivationState,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
@@ -7042,7 +7077,7 @@ impl Shell {
         self.workspaces.set_theme(theme.clone());
     }
 
-    pub fn theme(&self) -> &cosmic::Theme {
+    pub fn theme(&self) -> &crate::comp_theme::CompTheme {
         &self.theme
     }
 

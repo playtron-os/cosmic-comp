@@ -1113,7 +1113,7 @@ where
         )?;
     }
 
-    tracing::debug!(
+    tracing::trace!(
         iterations = iterations,
         tex_w = tex_size.w,
         tex_h = tex_size.h,

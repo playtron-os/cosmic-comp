@@ -1,63 +1,135 @@
-// insert into the event loop, a watcher for the theme & theme mode for changes
-
-// update a Arc<Mutex<Theme>> in the state on change of the theme and mark all interfaces for a redraw.
+// Theme watching — monitors color mode and brand changes via inotify,
+// reloads CompTheme and propagates to the shell.
 
 use calloop::LoopHandle;
-use cosmic::cosmic_theme::{Theme, ThemeMode, palette};
+use tracing::{info, warn};
 
+use crate::comp_theme::CompTheme;
 use crate::state::State;
 
-pub(crate) fn _group_color(theme: &Theme) -> [f32; 3] {
-    let neutral_8 = theme.palette.neutral_8;
-    [neutral_8.red, neutral_8.green, neutral_8.blue]
+/// Describes what changed on disk.
+#[derive(Debug, Clone)]
+pub enum ThemeEvent {
+    /// Color mode or brand theme file changed — reload theme.
+    Changed,
 }
 
-pub(crate) fn active_window_hint(theme: &Theme) -> palette::Srgba {
-    if let Some(hint) = theme.window_hint {
-        palette::Srgba::from(hint)
-    } else {
-        theme.accent_color()
+/// Start watching theme-related config files and reload `CompTheme` on changes.
+///
+/// Watches:
+/// - `~/.config/cosmic/com.system76.CosmicTheme.Mode/v1/` (color mode)
+/// - `~/.config/icetron/` (brand theme symlink)
+///
+/// When either changes, builds a new `CompTheme` and calls `shell.set_theme()`.
+pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), Box<dyn std::error::Error>> {
+    use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let color_mode_dir =
+        dirs::config_dir().map(|d| d.join("cosmic/com.system76.CosmicTheme.Mode/v1"));
+    let theme_dir = dirs::config_dir().map(|d| d.join("icetron"));
+
+    if color_mode_dir.is_none() && theme_dir.is_none() {
+        warn!("Cannot determine config paths; theme watching disabled");
+        return Ok(());
     }
-}
 
-pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), cosmic_config::Error> {
-    let (ping_tx, ping_rx) = calloop::ping::make_ping().unwrap();
-    let config_mode_helper = ThemeMode::config()?;
-    let config_dark_helper = Theme::dark_config()?;
-    let config_light_helper = Theme::light_config()?;
+    // Ensure dirs exist
+    if let Some(ref dir) = color_mode_dir {
+        std::fs::create_dir_all(dir).ok();
+    }
+    if let Some(ref dir) = theme_dir {
+        std::fs::create_dir_all(dir).ok();
+    }
 
-    if let Err(e) = handle.insert_source(ping_rx, move |_, _, state| {
-        let new_theme = cosmic::theme::system_preference();
-        let theme = &mut state.common.theme;
+    let (tx, rx) = calloop::channel::channel::<ThemeEvent>();
 
-        if theme.theme_type != new_theme.theme_type {
-            *theme = new_theme;
-            let mut workspace_guard = state.common.workspace_state.update();
-            state.common.shell.write().set_theme(
-                theme.clone(),
-                &state.common.xdg_activation_state,
-                &mut workspace_guard,
-            );
-        }
-    }) {
-        tracing::error!("{e}");
-    };
+    // Spawn a background OS thread for the notify watcher
+    let color_dir_clone = color_mode_dir.clone();
+    let theme_dir_clone = theme_dir.clone();
 
-    let ping_tx_clone = ping_tx.clone();
-    let theme_watcher_mode = config_mode_helper.watch(move |_, _keys| {
-        ping_tx_clone.ping();
-    })?;
-    let ping_tx_clone = ping_tx.clone();
-    let theme_watcher_light = config_light_helper.watch(move |_, _keys| {
-        ping_tx_clone.ping();
-    })?;
-    let theme_watcher_dark = config_dark_helper.watch(move |_, _keys| {
-        ping_tx.ping();
-    })?;
+    std::thread::Builder::new()
+        .name("theme-watcher".into())
+        .spawn(move || {
+            let (notify_tx, notify_rx) = std::sync::mpsc::channel();
 
-    std::mem::forget(theme_watcher_dark);
-    std::mem::forget(theme_watcher_light);
-    std::mem::forget(theme_watcher_mode);
+            let Ok(mut watcher) = RecommendedWatcher::new(notify_tx, Config::default()) else {
+                warn!("Failed to create theme file watcher");
+                return;
+            };
+
+            if let Some(ref dir) = color_dir_clone
+                && let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive)
+            {
+                warn!("Failed to watch color mode dir {}: {e}", dir.display());
+            }
+            if let Some(ref dir) = theme_dir_clone
+                && let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive)
+            {
+                warn!("Failed to watch theme config dir {}: {e}", dir.display());
+            }
+
+            info!("Theme file watcher started");
+
+            for e in notify_rx.into_iter().flatten() {
+                if matches!(
+                    e.kind,
+                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                ) && tx.send(ThemeEvent::Changed).is_err()
+                {
+                    break;
+                }
+            }
+        })?;
+
+    // Register the calloop channel source — callback runs on compositor main loop
+    handle
+        .insert_source(rx, |event, _, state| {
+            if let calloop::channel::Event::Msg(ThemeEvent::Changed) = event {
+                reload_theme(state);
+            }
+        })
+        .map_err(|e| format!("Failed to insert theme watcher source: {e}"))?;
+
+    // Also load the real theme at startup (replacing the hardcoded dark default)
+    // We do this after watcher setup so we don't miss events during load.
+    // Note: state isn't available here — initial load happens via State::new().
 
     Ok(())
+}
+
+/// Reload the theme from disk and propagate to the shell.
+fn reload_theme(state: &mut State) {
+    use icetron_themes::color_mode::{Mode, get_color_mode};
+    use icetron_themes::dynamic::DynamicTheme;
+
+    let is_dark = matches!(get_color_mode(), Mode::Dark);
+    let theme_name = DynamicTheme::current_theme_name();
+
+    let new_theme = match theme_name {
+        Some(ref name) => CompTheme::from_file(name, is_dark),
+        None => {
+            // No brand configured — use fallback with correct color mode
+            let fallback = CompTheme::default();
+            if fallback.is_dark == is_dark {
+                fallback
+            } else {
+                CompTheme::from_file("playtron", is_dark)
+            }
+        }
+    };
+
+    info!(
+        theme_name = ?theme_name,
+        is_dark,
+        "Reloading compositor theme"
+    );
+
+    state.common.theme = new_theme.clone();
+    let shell = state.common.shell.clone();
+    let mut workspace_guard = state.common.workspace_state.update();
+    shell.write().set_theme(
+        new_theme,
+        &state.common.xdg_activation_state,
+        &mut workspace_guard,
+    );
 }

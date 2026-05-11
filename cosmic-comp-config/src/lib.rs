@@ -77,6 +77,8 @@ pub struct CosmicCompConfig {
     pub input_devices: HashMap<String, input::InputConfig>,
     pub xkb_config: XkbConfig,
     pub keyboard_config: KeyboardConfig,
+    /// Whether tiling window management is enabled
+    pub tiling_enabled: bool,
     /// Autotiling enabled
     pub autotile: bool,
     /// Determines the behavior of the autotile variable
@@ -126,6 +128,7 @@ impl Default for CosmicCompConfig {
             input_devices: Default::default(),
             xkb_config: Default::default(),
             keyboard_config: Default::default(),
+            tiling_enabled: false,
             autotile: Default::default(),
             autotile_behavior: Default::default(),
             active_hint: true,

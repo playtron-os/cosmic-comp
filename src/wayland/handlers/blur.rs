@@ -16,7 +16,7 @@ impl BlurHandler for State {
         std::mem::drop(shell);
 
         let surface_id = surface.id();
-        tracing::debug!(
+        tracing::trace!(
             surface_protocol_id = surface.id().protocol_id(),
             "blur_set: surface committed new blur, calling restart_layer_fade_in"
         );

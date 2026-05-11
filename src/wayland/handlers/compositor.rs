@@ -452,13 +452,16 @@ impl State {
                     // For floating windows, set bounds so the client picks a
                     // size that won't be further reduced by map_internal().
                     // map_internal() caps windows without a max_size to 2/3 of
-                    // the non-exclusive zone. Subtract SSD_HEIGHT from the
+                    // the non-exclusive zone. Subtract SSD height from the
                     // height so that content + SSD header fits within the cap.
-                    use crate::shell::element::window::SSD_HEIGHT;
                     let active_output = shell.seats.last_active().active_output();
                     let zone = layer_map_for_output(&active_output).non_exclusive_zone();
                     let has_ssd = !pending.surface.is_decorated(true);
-                    let ssd_h = if has_ssd { SSD_HEIGHT } else { 0 };
+                    let ssd_h = if has_ssd {
+                        icetron::prelude::header_height(&**shell.theme()) as i32
+                    } else {
+                        0
+                    };
                     let bounds = Size::from((zone.size.w / 3 * 2, zone.size.h / 3 * 2 - ssd_h));
                     toplevel.with_pending_state(|state| {
                         state.bounds = Some(bounds);

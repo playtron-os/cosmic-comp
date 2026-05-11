@@ -1,14 +1,17 @@
 use std::{sync::Mutex, time::Instant};
 
 use calloop::LoopHandle;
-use cosmic::{
-    Apply,
-    iced::{Alignment, Background, Border, Length, alignment::Vertical},
-    iced_widget, theme,
-    widget::{self, icon::Named},
-};
 use cosmic_comp_config::ZoomMovement;
 use cosmic_config::ConfigSet;
+use iced_core::{Alignment, Length, alignment::Vertical};
+use iced_runtime;
+use iced_widget::svg::{self, Svg};
+use iced_widget::{self, button, container, row};
+use icetron::components::divider::vertical_divider;
+use icetron::icetron_assets::icons::system::{
+    ADD_LINE, CHEVRONDOWN, CLOSE_LINE, MORE_LINE, SUBTRACT_LINE,
+};
+use icetron::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source, styled_text};
 use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::{
     backend::renderer::{ImportMem, Renderer, element::AsRenderElements},
@@ -16,10 +19,11 @@ use smithay::{
     input::{
         Seat,
         pointer::{
-            AxisFrame, ButtonEvent, Focus, GestureHoldBeginEvent, GestureHoldEndEvent,
-            GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
-            GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
-            MotionEvent as PointerMotionEvent, PointerTarget, RelativeMotionEvent,
+            AxisFrame, ButtonEvent, CursorImageStatus, Focus, GestureHoldBeginEvent,
+            GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+            GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, MotionEvent as PointerMotionEvent, PointerTarget,
+            RelativeMotionEvent,
         },
         touch::{
             DownEvent, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent, TouchTarget,
@@ -32,8 +36,13 @@ use smithay::{
 use tracing::error;
 
 use crate::{
+    backend::render::cursor::CursorState,
+    comp_theme::CompTheme,
+    shell::element::window::mouse_interaction_to_cursor_icon,
     state::State,
     utils::{
+        apply::Apply,
+        iced::CompElement,
         iced::{IcedElement, Program},
         prelude::*,
         tween::EasePoint,
@@ -71,7 +80,7 @@ impl OutputZoomState {
         increment: u32,
         movement: ZoomMovement,
         loop_handle: LoopHandle<'static, State>,
-        theme: cosmic::Theme,
+        theme: CompTheme,
     ) -> OutputZoomState {
         let cursor_position = seat.get_pointer().unwrap().current_location().as_global();
         let output_geometry = output.geometry().to_f64();
@@ -424,11 +433,19 @@ fn global_pos_to_screen_space(
 
 pub type ZoomElement = IcedElement<ZoomProgram>;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum OpenMenu {
+    None,
+    Increment,
+    More,
+}
+
 pub struct ZoomProgram {
     level: f64,
     increments: Vec<u32>,
     increment_idx: usize,
     movement: ZoomMovement,
+    open_menu: OpenMenu,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -438,6 +455,7 @@ pub enum ZoomMessage {
     Increment,
     More,
     Close,
+    MenuClosed,
     Update {
         level: f64,
         increment: u32,
@@ -467,6 +485,7 @@ impl ZoomProgram {
             increments,
             increment_idx,
             movement,
+            open_menu: OpenMenu::None,
         }
     }
 }
@@ -474,57 +493,108 @@ impl ZoomProgram {
 impl Program for ZoomProgram {
     type Message = ZoomMessage;
 
-    fn view(&self) -> cosmic::Element<'_, Self::Message> {
-        widget::row::with_children(vec![
-            widget::button::icon(Named::new("list-remove-symbolic").size(16).prefer_svg(true))
-                .on_press(ZoomMessage::Decrease)
-                .into(),
-            widget::text(format!("{}%", (self.level * 100.).round()))
-                .align_y(Vertical::Center)
-                .width(Length::Shrink)
-                .into(),
-            widget::button::icon(Named::new("list-add-symbolic").size(16).prefer_svg(true))
-                .on_press(ZoomMessage::Increase)
-                .into(),
-            widget::divider::vertical::default().into(),
-            widget::button::text(format!("{}%", self.increments[self.increment_idx]))
-                .trailing_icon(Named::new("pan-down-symbolic").size(16).prefer_svg(true))
-                .on_press(ZoomMessage::Increment)
-                .class(theme::Button::MenuFolder)
-                .into(),
-            widget::button::icon(Named::new("view-more-symbolic").size(16).prefer_svg(true))
-                .on_press(ZoomMessage::More)
-                .into(),
-            widget::divider::vertical::default().into(),
-            widget::button::icon(
-                Named::new("window-close-symbolic")
-                    .size(16)
-                    .prefer_svg(true),
+    fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        // Helper: icon button using icetron_assets SVG bytes
+        let icon_color = theme.fill_skim();
+        let icon_btn =
+            |icon_bytes: &'static [u8], msg: ZoomMessage| -> CompElement<'_, ZoomMessage> {
+                IconButton::new(Source::Memory(icon_bytes), &**theme)
+                    .on_press(msg)
+                    .button_type(ButtonIconType::Ghost)
+                    .size(ButtonIconSize::Small)
+                    .icon_color(icon_color)
+                    .into()
+            };
+
+        let text_style = theme.text_styles().body();
+        let text_color = theme.text_primary();
+        let text_white = theme.text_white();
+        let surface_style: container::Style = theme.surface_container_style().into();
+        let state_default = theme.state_default();
+        let state_hovered_neutral = theme.state_hovered_neutral();
+
+        // Trigger colors: white text/icon on accent bg when that specific menu is open
+        let increment_open = self.open_menu == OpenMenu::Increment;
+        let more_open = self.open_menu == OpenMenu::More;
+        let trigger_text_color = if increment_open {
+            text_white
+        } else {
+            text_color
+        };
+        let trigger_icon_color = if increment_open {
+            text_white
+        } else {
+            icon_color
+        };
+        let more_icon_color = if more_open { text_white } else { icon_color };
+
+        row![
+            icon_btn(SUBTRACT_LINE, ZoomMessage::Decrease),
+            styled_text(
+                format!("{}%", (self.level * 100.).round()),
+                text_style,
+                text_color,
             )
-            .on_press(ZoomMessage::Close)
-            .into(),
-        ])
+            .align_y(Vertical::Center)
+            .width(Length::Shrink),
+            icon_btn(ADD_LINE, ZoomMessage::Increase),
+            vertical_divider(&**theme),
+            button(
+                row![
+                    styled_text(
+                        format!("{}%", self.increments[self.increment_idx]),
+                        text_style,
+                        trigger_text_color,
+                    ),
+                    Svg::new(svg::Handle::from_memory(CHEVRONDOWN))
+                        .width(16.0)
+                        .height(16.0)
+                        .style(move |_theme, _status| svg::Style {
+                            color: Some(trigger_icon_color),
+                        }),
+                ]
+                .spacing(4.0)
+                .align_y(Alignment::Center)
+            )
+            .on_press(ZoomMessage::Increment)
+            .padding(4)
+            .style(move |_theme, status| {
+                let (bg, txt) = if increment_open {
+                    (state_default, text_white)
+                } else {
+                    match status {
+                        button::Status::Hovered => (state_hovered_neutral, text_color),
+                        button::Status::Pressed => (state_default, text_white),
+                        _ => (iced_core::Color::TRANSPARENT, text_color),
+                    }
+                };
+                button::Style {
+                    background: Some(iced_core::Background::Color(bg)),
+                    border: iced_core::Border::default().rounded(theme.radii_md()),
+                    text_color: txt,
+                    ..Default::default()
+                }
+            }),
+            IconButton::new(Source::Memory(MORE_LINE), &**theme)
+                .on_press(ZoomMessage::More)
+                .button_type(if more_open {
+                    ButtonIconType::Primary
+                } else {
+                    ButtonIconType::Ghost
+                })
+                .size(ButtonIconSize::Small)
+                .icon_color(more_icon_color),
+            vertical_divider(&**theme),
+            icon_btn(CLOSE_LINE, ZoomMessage::Close),
+        ]
         .spacing(8.)
         .height(Length::Fixed(32.))
         .width(Length::Shrink)
         .align_y(Alignment::Center)
-        .apply(widget::container)
+        .apply(container)
         .padding(8)
-        .class(theme::Container::custom(|theme| {
-            let cosmic = theme.cosmic();
-            let component = &cosmic.background.component;
-            iced_widget::container::Style {
-                icon_color: Some(component.on.into()),
-                text_color: Some(component.on.into()),
-                background: Some(Background::Color(component.base.into())),
-                border: Border {
-                    radius: cosmic.radius_s().into(),
-                    width: 1.0,
-                    color: component.divider.into(),
-                },
-                shadow: Default::default(),
-            }
-        }))
+        .class(Box::new(move |_: &iced_core::Theme| surface_style)
+            as Box<dyn Fn(&iced_core::Theme) -> container::Style>)
         .into()
     }
 
@@ -533,7 +603,7 @@ impl Program for ZoomProgram {
         message: Self::Message,
         loop_handle: &LoopHandle<'static, State>,
         last_seat: Option<&(Seat<State>, Serial)>,
-    ) -> cosmic::Task<Self::Message> {
+    ) -> iced_runtime::Task<Self::Message> {
         match message {
             ZoomMessage::Decrease => {
                 let _ = loop_handle.insert_idle(|state| {
@@ -554,6 +624,7 @@ impl Program for ZoomProgram {
                 });
             }
             ZoomMessage::More => {
+                self.open_menu = OpenMenu::More;
                 let movement = self.movement;
                 if let Some((seat, serial)) = last_seat.cloned() {
                     let _ = loop_handle.insert_idle(move |state| {
@@ -585,6 +656,7 @@ impl Program for ZoomProgram {
                                     elem_location.y + elem_size.h / 2.,
                                 ));
                                 let level = output_state_ref.level;
+                                let zoom_element = output_state_ref.element.clone();
                                 std::mem::drop(output_state_ref);
 
                                 let grab = MenuGrab::new(
@@ -700,7 +772,11 @@ impl Program for ZoomProgram {
                                     Some(level.min(4.)),
                                     state.common.event_loop_handle.clone(),
                                     state.common.theme.clone(),
-                                );
+                                )
+                                .on_close({
+                                    let elem = zoom_element.clone();
+                                    move || elem.queue_message(ZoomMessage::MenuClosed)
+                                });
 
                                 std::mem::drop(shell);
                                 if grab.is_touch_grab() {
@@ -719,6 +795,7 @@ impl Program for ZoomProgram {
                 }
             }
             ZoomMessage::Increment => {
+                self.open_menu = OpenMenu::Increment;
                 if let Some((seat, serial)) = last_seat.cloned() {
                     let increments = self.increments.clone();
                     let _ = loop_handle.insert_idle(move |state| {
@@ -750,6 +827,7 @@ impl Program for ZoomProgram {
                                     elem_location.y + (elem_size.h / 2.),
                                 ));
                                 let level = output_state_ref.level;
+                                let zoom_element = output_state_ref.element.clone();
                                 std::mem::drop(output_state_ref);
 
                                 let grab = MenuGrab::new(
@@ -781,11 +859,18 @@ impl Program for ZoomProgram {
                                         })
                                     }),
                                     position.to_global(&output).to_i32_round(),
-                                    MenuAlignment::PREFER_CENTERED,
+                                    MenuAlignment::horizontally_centered(
+                                        (elem_size.h / 2.).round() as u32,
+                                        false,
+                                    ),
                                     Some(level.min(4.)),
                                     state.common.event_loop_handle.clone(),
                                     state.common.theme.clone(),
-                                );
+                                )
+                                .on_close({
+                                    let elem = zoom_element.clone();
+                                    move || elem.queue_message(ZoomMessage::MenuClosed)
+                                });
 
                                 std::mem::drop(shell);
                                 if grab.is_touch_grab() {
@@ -820,11 +905,15 @@ impl Program for ZoomProgram {
                     state.common.update_config();
                 });
             }
+            ZoomMessage::MenuClosed => {
+                self.open_menu = OpenMenu::None;
+            }
             ZoomMessage::Update {
                 level,
                 increment,
                 movement,
             } => {
+                self.open_menu = OpenMenu::None;
                 self.level = level;
                 self.movement = movement;
 
@@ -842,7 +931,7 @@ impl Program for ZoomProgram {
                 }
             }
         }
-        cosmic::Task::none()
+        iced_runtime::Task::none()
     }
 }
 
@@ -867,14 +956,26 @@ impl From<IcedElement<ContextMenu>> for ZoomFocusTarget {
 impl PointerTarget<State> for ZoomFocusTarget {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
         match self {
-            ZoomFocusTarget::Main(elem) => PointerTarget::enter(elem, seat, data, event),
+            ZoomFocusTarget::Main(elem) => {
+                PointerTarget::enter(elem, seat, data, event);
+                let cursor_icon = mouse_interaction_to_cursor_icon(elem.mouse_interaction());
+                let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+                cursor_state.lock().unwrap().set_shape(cursor_icon);
+                seat.set_cursor_image_status(CursorImageStatus::default_named());
+            }
             ZoomFocusTarget::Menu(elem) => PointerTarget::enter(elem, seat, data, event),
         }
     }
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
         match self {
-            ZoomFocusTarget::Main(elem) => PointerTarget::motion(elem, seat, data, event),
+            ZoomFocusTarget::Main(elem) => {
+                PointerTarget::motion(elem, seat, data, event);
+                let cursor_icon = mouse_interaction_to_cursor_icon(elem.mouse_interaction());
+                let cursor_state = seat.user_data().get::<CursorState>().unwrap();
+                cursor_state.lock().unwrap().set_shape(cursor_icon);
+                seat.set_cursor_image_status(CursorImageStatus::default_named());
+            }
             ZoomFocusTarget::Menu(elem) => PointerTarget::motion(elem, seat, data, event),
         }
     }

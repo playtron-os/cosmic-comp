@@ -710,7 +710,7 @@ impl Common {
             if xwayland
                 .xrdb_thread
                 .send((
-                    cosmic::icon_theme::default(),
+                    crate::toolkit_config::icon_theme_default(),
                     (new_scale * cursor_size as f64).round() as u32,
                     (new_scale * 96.0).round() as u32,
                 ))

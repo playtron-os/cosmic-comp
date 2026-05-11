@@ -277,7 +277,7 @@ pub struct Common {
     pub gesture_state: Option<GestureState>,
 
     pub kiosk_child: Option<Child>,
-    pub theme: cosmic::Theme,
+    pub theme: crate::comp_theme::CompTheme,
 
     // wayland state
     pub animated_resize_state: AnimatedResizeState,
@@ -812,7 +812,7 @@ impl State {
                 gesture_state: None,
 
                 kiosk_child: None,
-                theme: cosmic::theme::system_preference(),
+                theme: crate::comp_theme::CompTheme::from_current(),
 
                 animated_resize_state,
                 backdrop_color_state,

@@ -894,7 +894,7 @@ fn process_blur(
 
         if can_reuse_cache {
             let group_elapsed = group_start.elapsed();
-            tracing::debug!(
+            tracing::trace!(
                 group = group_idx,
                 windows = group.windows.len(),
                 capture_us = capture_elapsed.as_micros(),
@@ -906,7 +906,7 @@ fn process_blur(
             continue;
         }
 
-        tracing::debug!(
+        tracing::trace!(
             group = group_idx,
             content_changed = content_changed,
             all_cached = all_cached,
@@ -1053,7 +1053,7 @@ fn process_blur(
         let blur_passes_elapsed = blur_passes_start.elapsed();
         let group_elapsed = group_start.elapsed();
 
-        tracing::debug!(
+        tracing::trace!(
             group = group_idx,
             windows = group.windows.len(),
             capture_us = capture_elapsed.as_micros(),
@@ -1067,7 +1067,7 @@ fn process_blur(
 
     let window_blur_elapsed = window_blur_start.elapsed();
     if !blur_groups.is_empty() {
-        tracing::debug!(
+        tracing::trace!(
             output = %output_name,
             window_blur_groups = blur_groups.len(),
             window_blur_us = window_blur_elapsed.as_micros(),
@@ -1127,7 +1127,7 @@ fn process_blur(
                 .or_insert(layer_info.blur_radius);
         }
 
-        tracing::debug!(
+        tracing::trace!(
             output = %output_name,
             total_layer_surfaces = layer_blur_surfaces.len(),
             layer_groups = surfaces_by_group.len(),
@@ -1213,7 +1213,7 @@ fn process_blur(
 
             // If content unchanged and all cached, skip
             if !content_changed && all_cached {
-                tracing::debug!(
+                tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
                     capture_us = capture_elapsed.as_micros(),
@@ -1242,7 +1242,7 @@ fn process_blur(
                 continue;
             }
 
-            tracing::debug!(
+            tracing::trace!(
                 layer = ?layer_type,
                 surfaces = surfaces.len(),
                 capture_elements = capture_elements.len(),
@@ -1374,7 +1374,7 @@ fn process_blur(
                         // blur texture so the animation starts from alpha=0
                         // instead of wherever the timer has drifted to.
                         if !uncached_surfaces.is_empty() {
-                            tracing::debug!(
+                            tracing::trace!(
                                 output = %output_name,
                                 layer = ?layer_type,
                                 uncached_count = uncached_surfaces.len(),
@@ -1395,7 +1395,7 @@ fn process_blur(
             let blur_passes_elapsed = blur_passes_start.elapsed();
             let layer_group_elapsed = layer_group_start.elapsed();
 
-            tracing::debug!(
+            tracing::trace!(
                 layer = ?layer_type,
                 surfaces = surfaces.len(),
                 capture_us = capture_elapsed.as_micros(),
@@ -1408,7 +1408,7 @@ fn process_blur(
         }
 
         let layer_blur_elapsed = layer_blur_start.elapsed();
-        tracing::debug!(
+        tracing::trace!(
             output = %output_name,
             total_layer_surfaces = layer_blur_surfaces.len(),
             layer_blur_us = layer_blur_elapsed.as_micros(),
@@ -1419,7 +1419,7 @@ fn process_blur(
     blur_state.blur_applied = any_blur_applied;
 
     let blur_elapsed = blur_start.elapsed();
-    tracing::debug!(
+    tracing::trace!(
         output = %output_name,
         blur_groups = blur_groups.len(),
         blur_applied = any_blur_applied,

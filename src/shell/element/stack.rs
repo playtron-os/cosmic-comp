@@ -25,14 +25,15 @@ use crate::{
     wayland::handlers::surface_embed::is_surface_embedded,
 };
 use calloop::LoopHandle;
-use cosmic::{
-    Apply, Element as CosmicElement, Theme,
-    iced::{Alignment, id::Id, widget as iced_widget},
-    iced_core::{Background, Border, Color, Length, border::Radius},
-    iced_runtime::Task,
-    iced_widget::scrollable::AbsoluteOffset,
-    theme, widget as cosmic_widget,
+use iced_core::{
+    Alignment, Background, Border, Color, Length, Padding, border::Radius, widget::Id,
 };
+use iced_runtime::Task;
+use iced_widget::{self, button, column, container, mouse_area, row, scrollable::AbsoluteOffset};
+
+use crate::comp_theme::CompTheme;
+use crate::utils::iced::CompElement;
+
 use cosmic_comp_config::AppearanceConfig;
 use cosmic_settings_config::shortcuts;
 use shortcuts::action::{Direction, FocusDirection};
@@ -82,7 +83,6 @@ use std::{
 };
 
 mod tab;
-mod tab_text;
 mod tabs;
 
 use self::{
@@ -119,11 +119,16 @@ pub struct CosmicStackInternal {
     geometry: Mutex<Option<Rectangle<i32, Global>>>,
     mask: Mutex<Option<tiny_skia::Mask>>,
     tiled: AtomicBool,
-    theme: Mutex<cosmic::Theme>,
+    theme: Mutex<CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
 
 impl CosmicStackInternal {
+    /// Tab bar height derived from the current theme's window control style.
+    fn tab_height(&self) -> i32 {
+        icetron::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+    }
+
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
         let value = focus.map_or(0, |x| x as u8);
         unsafe { Focus::from_u8(self.pointer_entered.swap(value, Ordering::SeqCst)) }
@@ -134,8 +139,6 @@ impl CosmicStackInternal {
     }
 }
 
-pub const TAB_HEIGHT: i32 = 24;
-
 #[derive(Debug, Clone)]
 pub enum MoveResult {
     Handled,
@@ -144,10 +147,15 @@ pub enum MoveResult {
 }
 
 impl CosmicStack {
+    /// Tab bar height for this stack, derived from its theme.
+    pub fn tab_height(&self) -> i32 {
+        self.0.with_program(|p| p.tab_height())
+    }
+
     pub fn new<I: Into<CosmicSurface>>(
         windows: impl Iterator<Item = I>,
         handle: LoopHandle<'static, crate::state::State>,
-        theme: cosmic::Theme,
+        theme: CompTheme,
         appearance: AppearanceConfig,
     ) -> CosmicStack {
         let windows = windows.map(Into::into).collect::<Vec<_>>();
@@ -179,7 +187,7 @@ impl CosmicStack {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, TAB_HEIGHT),
+            (width, icetron::prelude::header_height(&*theme) as i32),
             handle,
             theme,
         ))
@@ -202,9 +210,9 @@ impl CosmicStack {
             }
 
             if let Some(mut geo) = *p.geometry.lock().unwrap() {
-                geo.loc.y += TAB_HEIGHT;
-                geo.size.h -= TAB_HEIGHT;
-                window.set_geometry(geo, TAB_HEIGHT as u32);
+                geo.loc.y += p.tab_height();
+                geo.size.h -= p.tab_height();
+                window.set_geometry(geo, p.tab_height() as u32);
             }
             window.send_configure();
             if let Some(idx) = idx {
@@ -221,8 +229,10 @@ impl CosmicStack {
             }
             p.scroll_to_focus.store(true, Ordering::SeqCst);
         });
-        self.0
-            .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+        self.0.resize(Size::from((
+            self.active().geometry().size.w,
+            self.tab_height(),
+        )));
         self.0.force_redraw()
     }
 
@@ -249,8 +259,10 @@ impl CosmicStack {
 
             p.active.fetch_min(windows.len() - 1, Ordering::SeqCst);
         });
-        self.0
-            .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+        self.0.resize(Size::from((
+            self.active().geometry().size.w,
+            self.tab_height(),
+        )));
         self.0.force_redraw()
     }
 
@@ -278,8 +290,10 @@ impl CosmicStack {
 
             Some(window)
         });
-        self.0
-            .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+        self.0.resize(Size::from((
+            self.active().geometry().size.w,
+            self.tab_height(),
+        )));
         self.0.force_redraw();
         window
     }
@@ -401,8 +415,10 @@ impl CosmicStack {
         });
 
         if update {
-            self.0
-                .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+            self.0.resize(Size::from((
+                self.active().geometry().size.w,
+                self.tab_height(),
+            )));
         }
 
         result
@@ -455,8 +471,10 @@ impl CosmicStack {
         });
 
         if !matches!(result, MoveResult::Default) {
-            self.0
-                .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+            self.0.resize(Size::from((
+                self.active().geometry().size.w,
+                self.tab_height(),
+            )));
         }
 
         result
@@ -489,8 +507,10 @@ impl CosmicStack {
                 }
             }
         });
-        self.0
-            .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+        self.0.resize(Size::from((
+            self.active().geometry().size.w,
+            self.tab_height(),
+        )));
         self.0.force_redraw()
     }
 
@@ -526,8 +546,8 @@ impl CosmicStack {
                     || (point_i32.y - geo.loc.y >= -RESIZE_BORDER && point_i32.y - geo.loc.y < 0)
                     || (point_i32.x - geo.loc.x >= geo.size.w
                         && point_i32.x - geo.loc.x < geo.size.w + RESIZE_BORDER)
-                    || (point_i32.y - geo.loc.y >= geo.size.h + TAB_HEIGHT
-                        && point_i32.y - geo.loc.y < geo.size.h + TAB_HEIGHT + RESIZE_BORDER)
+                    || (point_i32.y - geo.loc.y >= geo.size.h + p.tab_height()
+                        && point_i32.y - geo.loc.y < geo.size.h + p.tab_height() + RESIZE_BORDER)
                 {
                     stack_ui = Some((
                         PointerFocusTarget::StackUI(self.clone()),
@@ -535,7 +555,7 @@ impl CosmicStack {
                     ));
                 }
 
-                if point_i32.y - geo.loc.y < TAB_HEIGHT {
+                if point_i32.y - geo.loc.y < p.tab_height() {
                     stack_ui = Some((
                         PointerFocusTarget::StackUI(self.clone()),
                         Point::from((0., 0.)),
@@ -543,7 +563,7 @@ impl CosmicStack {
                 }
             }
 
-            relative_pos.y -= TAB_HEIGHT as f64;
+            relative_pos.y -= p.tab_height() as f64;
 
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
             stack_ui.or_else(|| {
@@ -551,7 +571,7 @@ impl CosmicStack {
                     |(target, surface_offset)| {
                         (
                             target,
-                            surface_offset.to_f64() + Point::from((0., TAB_HEIGHT as f64)),
+                            surface_offset.to_f64() + Point::from((0., p.tab_height() as f64)),
                         )
                     },
                 )
@@ -560,7 +580,7 @@ impl CosmicStack {
     }
 
     pub fn offset(&self) -> Point<i32, Logical> {
-        Point::from((0, TAB_HEIGHT))
+        Point::from((0, self.tab_height()))
     }
 
     pub fn pending_size(&self) -> Option<Size<i32, Logical>> {
@@ -570,12 +590,12 @@ impl CosmicStack {
 
     pub fn set_geometry(&self, geo: Rectangle<i32, Global>) {
         self.0.with_program(|p| {
-            let loc = (geo.loc.x, geo.loc.y + TAB_HEIGHT);
-            let size = (geo.size.w, geo.size.h - TAB_HEIGHT);
+            let loc = (geo.loc.x, geo.loc.y + p.tab_height());
+            let size = (geo.size.w, geo.size.h - p.tab_height());
 
             let win_geo = Rectangle::new(loc.into(), size.into());
             for window in p.windows.lock().unwrap().iter() {
-                window.set_geometry(win_geo, TAB_HEIGHT as u32);
+                window.set_geometry(win_geo, p.tab_height() as u32);
             }
 
             *p.geometry.lock().unwrap() = Some(geo);
@@ -588,7 +608,7 @@ impl CosmicStack {
             surface.0.on_commit();
             if self.active() == surface {
                 self.0
-                    .resize(Size::from((surface.geometry().size.w, TAB_HEIGHT)));
+                    .resize(Size::from((surface.geometry().size.w, self.tab_height())));
             }
         }
     }
@@ -642,7 +662,7 @@ impl CosmicStack {
         R::TextureId: Send + Clone + 'static,
         C: From<CosmicStackRenderElement<R>>,
     {
-        let window_loc = location + Point::from((0, (TAB_HEIGHT as f64 * scale.y) as i32));
+        let window_loc = location + Point::from((0, (self.tab_height() as f64 * scale.y) as i32));
         self.0.with_program(|p| {
             let windows = p.windows.lock().unwrap();
             let active = p.active.load(Ordering::SeqCst);
@@ -695,7 +715,6 @@ impl CosmicStack {
             let radii = if round {
                 {
                     theme
-                        .cosmic()
                         .radius_window()
                         .map(|x| (x * scale as f32).round() as u8)
                 }
@@ -704,7 +723,7 @@ impl CosmicStack {
             };
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
-            geo.size.h += TAB_HEIGHT as f64;
+            geo.size.h += p.tab_height() as f64;
             if let Some(max_size) = max_size {
                 geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
             }
@@ -723,7 +742,7 @@ impl CosmicStack {
                     radii,
                     if activated { alpha } else { alpha * 0.75 },
                     output_scale.x,
-                    theme.cosmic().is_dark,
+                    theme.is_dark,
                 ))
                 .into(),
             )
@@ -756,7 +775,7 @@ impl CosmicStack {
             .with_program(|p| p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)].geometry())
             .to_physical_precise_round(scale);
         let stack_loc = location + geometry.loc;
-        let window_loc = location + Point::from((0, (TAB_HEIGHT as f64 * scale.y) as i32));
+        let window_loc = location + Point::from((0, (self.tab_height() as f64 * scale.y) as i32));
 
         let mut elements = AsRenderElements::<R>::render_elements::<CosmicStackRenderElement<R>>(
             &self.0, renderer, stack_loc, scale, alpha,
@@ -772,11 +791,11 @@ impl CosmicStack {
             let is_embedded = is_surface_embedded(&windows[active]);
 
             let round = (appearance.clip_tiled_windows || !tiled) && !maximized;
-            let radii = round.then(|| theme.cosmic().radius_window().map(|x| x.round() as u8));
+            let radii = round.then(|| theme.radius_window().map(|x| x.round() as u8));
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
             geo.loc += location.to_f64().to_logical(scale);
-            geo.size.h += TAB_HEIGHT as f64;
+            geo.size.h += p.tab_height() as f64;
             if let Some(max_size) = max_size {
                 geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
             }
@@ -831,11 +850,17 @@ impl CosmicStack {
         elements.into_iter().map(C::from).collect()
     }
 
-    pub(crate) fn set_theme(&self, theme: cosmic::Theme) {
+    pub(crate) fn set_theme(&self, theme: CompTheme) {
         self.0.with_program(|p| {
             *p.theme.lock().unwrap() = theme.clone();
         });
         self.0.set_theme(theme);
+        // Resize the IcedElement to the new tab height so there's no gap
+        // between tab bar and window content after a theme change.
+        self.0.resize(Size::from((
+            self.active().geometry().size.w,
+            self.tab_height(),
+        )));
     }
 
     pub fn update_appearance_conf(&self, appearance: &AppearanceConfig) {
@@ -906,7 +931,7 @@ impl CosmicStack {
                     }
                 }
             })
-            .map(|size| size + (0, TAB_HEIGHT).into())
+            .map(|size| size + (0, self.tab_height()).into())
     }
     pub fn max_size(&self) -> Option<Size<i32, Logical>> {
         let theoretical_max = self
@@ -937,7 +962,7 @@ impl CosmicStack {
                     ),
                 }
             })
-            .map(|size| size + (0, TAB_HEIGHT).into());
+            .map(|size| size + (0, self.tab_height()).into());
         // The problem is, with accumulated sizes, the minimum size could be larger than our maximum...
         let min_size = self.min_size();
         match (theoretical_max, min_size) {
@@ -959,7 +984,6 @@ impl CosmicStack {
                 .theme
                 .lock()
                 .unwrap()
-                .cosmic()
                 .radius_window()
                 .map(|val| val.round() as u8);
 
@@ -1002,6 +1026,8 @@ pub enum Message {
     PotentialTabDragStart(usize),
     Activate(usize),
     Close(usize),
+    Minimize,
+    Maximize,
     ScrollForward,
     ScrollBack,
     Scrolled,
@@ -1111,6 +1137,7 @@ impl Program for CosmicStackInternal {
                         .wl_surface()
                         .map(Cow::into_owned)
                     {
+                        let tab_h = self.tab_height();
                         loop_handle.insert_idle(move |state| {
                             let shell = state.common.shell.read();
                             if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
@@ -1137,7 +1164,7 @@ impl Program for CosmicStackInternal {
                                     .unwrap()
                                     .current_location()
                                     .to_i32_round();
-                                cursor.y -= TAB_HEIGHT;
+                                cursor.y -= tab_h;
                                 let res = shell.menu_request(
                                     &surface,
                                     &seat,
@@ -1165,6 +1192,7 @@ impl Program for CosmicStackInternal {
                         .wl_surface()
                         .map(Cow::into_owned)
                 {
+                    let tab_h = self.tab_height();
                     loop_handle.insert_idle(move |state| {
                         let shell = state.common.shell.read();
                         if let Some(mapped) = shell.element_for_surface(&surface).cloned()
@@ -1180,7 +1208,7 @@ impl Program for CosmicStackInternal {
                                 .unwrap()
                                 .current_location()
                                 .to_i32_round();
-                            cursor.y -= TAB_HEIGHT;
+                            cursor.y -= tab_h;
                             let res = shell.menu_request(
                                 &surface,
                                 &seat,
@@ -1201,49 +1229,51 @@ impl Program for CosmicStackInternal {
                     });
                 }
             }
+            Message::Minimize => {
+                let active = self.active.load(Ordering::SeqCst);
+                if let Some(surface) = self.windows.lock().unwrap()[active]
+                    .wl_surface()
+                    .map(Cow::into_owned)
+                {
+                    loop_handle.insert_idle(move |state| {
+                        let mut shell = state.common.shell.write();
+                        shell.minimize_request(&surface);
+                    });
+                }
+            }
+            Message::Maximize => {
+                let active = self.active.load(Ordering::SeqCst);
+                if let Some(surface) = self.windows.lock().unwrap()[active]
+                    .wl_surface()
+                    .map(Cow::into_owned)
+                {
+                    loop_handle.insert_idle(move |state| {
+                        let mut shell = state.common.shell.write();
+                        if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
+                            let seat = shell.seats.last_active().clone();
+                            shell.maximize_toggle(&mapped, &seat, &state.common.event_loop_handle);
+                        }
+                    });
+                }
+            }
             _ => unreachable!(),
         }
         Task::none()
     }
 
-    fn view(&self) -> CosmicElement<'_, Self::Message> {
-        HOOKS.get().unwrap().stack_decorations.view(self)
+    fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        HOOKS.get().unwrap().stack_decorations.view(self, theme)
     }
 
     fn foreground(
         &self,
-        pixels: &mut tiny_skia::PixmapMut<'_>,
-        damage: &[Rectangle<i32, Buffer>],
-        scale: f32,
-        theme: &Theme,
+        _pixels: &mut tiny_skia::PixmapMut<'_>,
+        _damage: &[Rectangle<i32, Buffer>],
+        _scale: f32,
+        _theme: &CompTheme,
     ) {
-        if self.group_focused.load(Ordering::SeqCst) {
-            let border = Rectangle::new(
-                (0, ((TAB_HEIGHT as f32 * scale) - scale).floor() as i32).into(),
-                (pixels.width() as i32, scale.ceil() as i32).into(),
-            );
-
-            let mut paint = tiny_skia::Paint::default();
-            let (b, g, r, a) = theme.cosmic().accent_color().into_components();
-            paint.set_color(tiny_skia::Color::from_rgba(r, g, b, a).unwrap());
-
-            for rect in damage {
-                if let Some(overlap) = rect.intersection(border) {
-                    pixels.fill_rect(
-                        tiny_skia::Rect::from_xywh(
-                            overlap.loc.x as f32,
-                            overlap.loc.y as f32,
-                            overlap.size.w as f32,
-                            overlap.size.h as f32,
-                        )
-                        .unwrap(),
-                        &paint,
-                        Default::default(),
-                        None,
-                    )
-                }
-            }
-        }
+        // app_header's show_border handles the bottom border line;
+        // no additional foreground drawing needed.
     }
 }
 
@@ -1251,112 +1281,206 @@ impl Program for CosmicStackInternal {
 pub struct DefaultDecorations;
 
 impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
-    fn view(&self, stack: &CosmicStackInternal) -> cosmic::Element<'_, Message> {
+    fn view<'a>(
+        &'a self,
+        stack: &'a CosmicStackInternal,
+        theme: &'a CompTheme,
+    ) -> CompElement<'a, Message> {
         let windows = stack.windows.lock().unwrap();
         if stack.geometry.lock().unwrap().is_none() {
             return iced_widget::row(Vec::new()).into();
         };
         let active = stack.active.load(Ordering::SeqCst);
         let group_focused = stack.group_focused.load(Ordering::SeqCst);
+        let _activated = stack.activated.load(Ordering::SeqCst);
+        let maximized = windows[active].is_maximized(false);
 
-        let elements = vec![
-            cosmic_widget::icon::from_name("window-stack-symbolic")
-                .size(16)
-                .prefer_svg(true)
-                .icon()
-                .class(if group_focused {
-                    theme::Svg::custom(|theme| iced_widget::svg::Style {
-                        color: Some(if theme.cosmic().is_dark {
-                            Color::BLACK
-                        } else {
-                            Color::WHITE
-                        }),
-                    })
-                } else {
-                    theme::Svg::Default
-                })
-                .apply(iced_widget::container)
-                .padding([4, 24])
-                .align_y(Alignment::Center)
-                .apply(iced_widget::mouse_area)
-                .on_press(Message::DragStart)
-                .on_right_press(Message::Menu)
-                .into(),
-            CosmicElement::new(
-                Tabs::new(
-                    windows.iter().enumerate().map(|(i, w)| {
-                        let user_data = w.user_data();
-                        user_data.insert_if_missing(Id::unique);
-                        Tab::new(
-                            w.title(),
-                            w.app_id(),
-                            user_data.get::<Id>().unwrap().clone(),
-                        )
-                        .on_press(Message::PotentialTabDragStart(i))
-                        .on_right_click(Message::TabMenu(i))
-                        .on_close(Message::Close(i))
-                    }),
-                    active,
-                    windows[active].is_activated(false),
-                    group_focused,
-                )
-                .id(SCROLLABLE_ID.clone())
-                .force_visible(
-                    stack
-                        .scroll_to_focus
-                        .load(Ordering::SeqCst)
-                        .then_some(active),
-                )
+        // Build the tab strip
+        let tabs_element: CompElement<'_, Message> = iced_core::Element::new(
+            Tabs::new(
+                windows.iter().enumerate().map(|(i, w)| {
+                    let user_data = w.user_data();
+                    user_data.insert_if_missing(Id::unique);
+                    Tab::new(
+                        w.title(),
+                        w.app_id(),
+                        user_data.get::<Id>().unwrap().clone(),
+                    )
+                    .on_press(Message::PotentialTabDragStart(i))
+                    .on_right_click(Message::TabMenu(i))
+                    .on_close(Message::Close(i))
+                }),
+                active,
+                windows[active].is_activated(false),
+                group_focused,
+                theme,
+            )
+            .id(SCROLLABLE_ID.clone())
+            .force_visible(
+                stack
+                    .scroll_to_focus
+                    .load(Ordering::SeqCst)
+                    .then_some(active),
+            )
+            .height(Length::Fill)
+            .width(Length::Fill),
+        );
+
+        // Window control buttons using icetron styling
+        use icetron::icetron_assets::icons::brand_humain::{CLOSE, MAXIMIZE, MINIMIZE, UNMAXIMIZE};
+        use icetron::prelude::{ghost_button_style, icon_svg};
+
+        let icon_size = theme.ui_size_icon_2xs();
+        let btn_size = theme.ui_size_icon_2md();
+        let btn_radius = theme.radii_max();
+        let icon_color = theme.fill_skim();
+        let error_color = theme.feedback_error_primary();
+        let error_bg = theme.feedback_error_tertiary();
+
+        let minimize_btn: CompElement<'a, Message> = button(
+            container(icon_svg(MINIMIZE, icon_size, icon_color))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .on_press(Message::Minimize)
+        .padding(0.0)
+        .height(Length::Fixed(btn_size))
+        .width(Length::Fixed(btn_size))
+        .style(ghost_button_style(&**theme, btn_radius))
+        .into();
+
+        let maximize_icon = if maximized { UNMAXIMIZE } else { MAXIMIZE };
+        let maximize_btn: CompElement<'a, Message> = button(
+            container(icon_svg(maximize_icon, icon_size, icon_color))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .on_press(Message::Maximize)
+        .padding(0.0)
+        .height(Length::Fixed(btn_size))
+        .width(Length::Fixed(btn_size))
+        .style(ghost_button_style(&**theme, btn_radius))
+        .into();
+
+        let close_btn: CompElement<'a, Message> = button(
+            container(icon_svg(CLOSE, icon_size, icon_color))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+        )
+        .on_press(Message::Close(active))
+        .padding(0.0)
+        .height(Length::Fixed(btn_size))
+        .width(Length::Fixed(btn_size))
+        .style(move |_theme: &iced_core::Theme, status| match status {
+            button::Status::Hovered | button::Status::Pressed => button::Style {
+                background: Some(Background::Color(error_bg)),
+                border: Border::default().rounded(btn_radius),
+                text_color: error_color,
+                ..Default::default()
+            },
+            _ => button::Style {
+                background: None,
+                border: Border::default().rounded(btn_radius),
+                text_color: icon_color,
+                ..Default::default()
+            },
+        })
+        .into();
+
+        let btn_spacing = theme.spacing_0_5();
+        let controls: CompElement<'a, Message> = row![minimize_btn, maximize_btn, close_btn]
+            .spacing(btn_spacing)
+            .align_y(Alignment::Center)
+            .into();
+
+        // Action bar container with subtle background on focus
+        let bar_padding = theme.ui_padding_xs();
+        let controls_bar: CompElement<'a, Message> = container(controls)
+            .padding(Padding {
+                top: bar_padding,
+                bottom: bar_padding,
+                left: bar_padding,
+                right: bar_padding,
+            })
+            .align_y(Alignment::Center)
+            .into();
+
+        // Main header row: tabs + window controls
+        let h_padding = theme.ui_padding_lg();
+        let header_row: CompElement<'a, Message> = row![
+            container(tabs_element)
+                .width(Length::Fill)
                 .height(Length::Fill)
-                .width(Length::Fill),
-            ),
-            iced_widget::horizontal_space()
-                .width(Length::Fixed(0.0))
-                .apply(iced_widget::container)
-                .padding([64, 24])
-                .apply(iced_widget::mouse_area)
-                .on_press(Message::DragStart)
-                .on_right_press(Message::Menu)
-                .into(),
-        ];
+                .align_y(Alignment::Center),
+            controls_bar,
+        ]
+        .spacing(theme.ui_gap_sm())
+        .align_y(Alignment::Center)
+        .padding(Padding {
+            top: 0.0,
+            right: h_padding,
+            bottom: 0.0,
+            left: h_padding,
+        })
+        .width(Length::Fill)
+        .height(Length::Fixed(stack.tab_height() as f32))
+        .into();
 
-        let radius = if windows[active].is_maximized(false)
+        // Bottom border line
+        let border_color = theme.stroke_subtler();
+        let border_width = theme.border_width1();
+        let border_line: CompElement<'a, Message> =
+            container(iced_widget::Space::new().height(0.0))
+                .width(Length::Fill)
+                .height(Length::Fixed(border_width))
+                .style(move |_theme: &iced_core::Theme| container::Style {
+                    background: Some(Background::Color(border_color)),
+                    ..Default::default()
+                })
+                .into();
+
+        // Stack header row + border vertically
+        let header_content: CompElement<'a, Message> =
+            column![header_row, border_line].width(Length::Fill).into();
+
+        // Wrap in mouse_area for drag and right-click
+        let interactive: CompElement<'a, Message> = mouse_area(header_content)
+            .on_drag(Message::DragStart)
+            .on_right_press(Message::Menu)
+            .interaction(iced_core::mouse::Interaction::Grab)
+            .into();
+
+        // Outer container with background and corner radius
+        let fill_default = theme.fill_default();
+        let top_radius = if maximized
             || (stack.tiled.load(Ordering::Acquire)
                 && !stack.appearance_conf.lock().unwrap().clip_tiled_windows)
         {
-            Radius::from(0.0)
+            0.0
         } else {
-            let radii = stack.theme.lock().unwrap().cosmic().radius_window();
-            Radius::from([radii[0], radii[1], 0., 0.])
+            theme.radius_window()[0]
         };
-        let group_focused = stack.group_focused.load(Ordering::SeqCst);
 
-        iced_widget::row(elements)
-            .height(TAB_HEIGHT as u16)
+        container(interactive)
             .width(Length::Fill)
-            .apply(iced_widget::container)
-            .align_y(Alignment::Center)
-            .class(theme::Container::custom(move |theme| {
-                let cosmic_theme = theme.cosmic();
-
-                let background = if group_focused {
-                    cosmic_theme.accent_color()
-                } else {
-                    cosmic_theme.primary_container_color()
-                };
-
-                iced_widget::container::Style {
-                    icon_color: Some(cosmic_theme.background.on.into()),
-                    text_color: Some(cosmic_theme.background.on.into()),
-                    background: Some(Background::Color(background.into())),
-                    border: Border {
-                        radius,
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
+            .height(Length::Fixed(stack.tab_height() as f32))
+            .style(move |_theme: &iced_core::Theme| container::Style {
+                text_color: None,
+                background: Some(Background::Color(fill_default)),
+                border: Border {
+                    radius: Radius {
+                        top_left: top_radius,
+                        top_right: top_radius,
+                        bottom_right: 0.0,
+                        bottom_left: 0.0,
                     },
-                    shadow: Default::default(),
-                }
-            }))
+                    width: 0.0,
+                    color: Color::TRANSPARENT,
+                },
+                shadow: Default::default(),
+                snap: false,
+                border_only: false,
+            })
             .into()
     }
 }
@@ -1377,7 +1501,7 @@ impl SpaceElement for CosmicStack {
                 SpaceElement::bbox(&p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)]);
             bbox.loc -= Point::from((RESIZE_BORDER, RESIZE_BORDER));
             bbox.size += Size::from((RESIZE_BORDER * 2, RESIZE_BORDER * 2));
-            bbox.size.h += TAB_HEIGHT;
+            bbox.size.h += p.tab_height();
             bbox
         })
     }
@@ -1429,7 +1553,7 @@ impl SpaceElement for CosmicStack {
         self.0.with_program(|p| {
             let mut geo =
                 SpaceElement::geometry(&p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)]);
-            geo.size.h += TAB_HEIGHT;
+            geo.size.h += p.tab_height();
             geo
         })
     }
@@ -1459,8 +1583,10 @@ impl SpaceElement for CosmicStack {
             let active = p.active.load(Ordering::SeqCst);
 
             if old_active != active {
-                self.0
-                    .resize(Size::from((self.active().geometry().size.w, TAB_HEIGHT)));
+                self.0.resize(Size::from((
+                    self.active().geometry().size.w,
+                    p.tab_height(),
+                )));
                 self.0.force_redraw();
             }
 
@@ -1558,7 +1684,7 @@ impl PointerTarget<State> for CosmicStack {
         let mut event = event.clone();
         self.0.with_program(|p| {
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
-            let Some(next) = Focus::under(active_window, TAB_HEIGHT, event.location) else {
+            let Some(next) = Focus::under(active_window, p.tab_height(), event.location) else {
                 return;
             };
             let _old_focus = p.swap_focus(Some(next));
@@ -1587,7 +1713,7 @@ impl PointerTarget<State> for CosmicStack {
         self.0.with_program(|p| {
             let active = p.active.load(Ordering::SeqCst);
             let active_window = &p.windows.lock().unwrap()[active];
-            let Some(next) = Focus::under(active_window, TAB_HEIGHT, event.location) else {
+            let Some(next) = Focus::under(active_window, p.tab_height(), event.location) else {
                 return;
             };
             let _previous = p.swap_focus(Some(next));
@@ -1609,7 +1735,7 @@ impl PointerTarget<State> for CosmicStack {
 
         PointerTarget::motion(&self.0, seat, data, &event);
         if event.location.y < 0.0
-            || event.location.y > TAB_HEIGHT as f64
+            || event.location.y > self.tab_height() as f64
             || event.location.x < 64.0
             || event.location.x > (active_window_geo.size.w as f64 - 64.0)
         {
@@ -1821,7 +1947,7 @@ impl TouchTarget<State> for CosmicStack {
         TouchTarget::motion(&self.0, seat, data, &event, seq);
 
         if event.location.y < 0.0
-            || event.location.y > TAB_HEIGHT as f64
+            || event.location.y > self.tab_height() as f64
             || event.location.x < 64.0
             || event.location.x > (active_window_geo.size.w as f64 - 64.0)
         {

@@ -43,7 +43,7 @@ pub mod key_bindings;
 mod types;
 pub mod voice;
 
-use cosmic::config::CosmicTk;
+use crate::toolkit_config::{ToolkitConfig, icon_theme_default, icon_theme_set_default};
 pub use cosmic_comp_config::EdidProduct;
 use cosmic_comp_config::{
     AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior, XkbConfig, XwaylandDescaling,
@@ -194,10 +194,10 @@ impl Config {
             });
 
         // Listen for updates to the toolkit config
-        if let Ok(tk_config) = cosmic_config::Config::new("com.system76.CosmicTk", 1) {
-            fn handle_new_toolkit_config(config: CosmicTk, state: &mut State) {
-                if cosmic::icon_theme::default() != config.icon_theme {
-                    cosmic::icon_theme::set_default(config.icon_theme.clone());
+        if let Ok(tk_config_ctx) = cosmic_config::Config::new("com.system76.CosmicTk", 1) {
+            fn handle_new_toolkit_config(config: ToolkitConfig, state: &mut State) {
+                if icon_theme_default() != config.icon_theme {
+                    icon_theme_set_default(config.icon_theme.clone());
                     state.common.update_xwayland_settings();
                 }
 
@@ -209,41 +209,40 @@ impl Config {
                 );
             }
 
-            let config = CosmicTk::get_entry(&tk_config).unwrap_or_else(|(errs, c)| {
-                if cfg!(debug_assertions) {
-                    for err in errs {
-                        warn!(?err, "");
-                    }
-                }
-                c
-            });
+            // Read initial toolkit config
+            let config = ToolkitConfig::default();
             let _ = loop_handle.insert_idle(move |state| {
                 handle_new_toolkit_config(config, state);
             });
 
-            match cosmic_config::calloop::ConfigWatchSource::new(&tk_config) {
+            // Watch for toolkit config changes via cosmic-config
+            match cosmic_config::calloop::ConfigWatchSource::new(&tk_config_ctx) {
                 Ok(source) => {
                     if let Err(err) =
                         loop_handle.insert_source(source, |(config, _keys), (), state| {
-                            let config =
-                                CosmicTk::get_entry(&config).unwrap_or_else(|(errs, c)| {
-                                    if cfg!(debug_assertions) {
-                                        for err in errs {
-                                            warn!(?err, "");
-                                        }
-                                    }
-                                    c
-                                });
-                            handle_new_toolkit_config(config, state);
+                            // Re-read all toolkit fields on any change
+                            let tk = ToolkitConfig {
+                                icon_theme: config
+                                    .get::<String>("icon_theme")
+                                    .unwrap_or_else(|_| "Adwaita".to_string()),
+                                show_minimize: config.get::<bool>("show_minimize").unwrap_or(true),
+                                show_maximize: config.get::<bool>("show_maximize").unwrap_or(true),
+                                apply_theme_global: config
+                                    .get::<bool>("apply_theme_global")
+                                    .unwrap_or(true),
+                            };
+                            handle_new_toolkit_config(tk, state);
                         })
                     {
                         warn!(?err, "Failed to watch com.system76.CosmicTk config");
                     }
                 }
-                Err(err) => warn!(
-                    ?err,
-                    "failed to create config watch source for com.system76.CosmicTk"
-                ),
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        "Failed to create config watch source for com.system76.CosmicTk"
+                    );
+                }
             }
         }
 
@@ -893,6 +892,20 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 state.common.config.cosmic_conf.workspaces =
                     get_config::<WorkspaceConfig>(&config, "workspaces");
                 state.common.update_config();
+            }
+            "tiling_enabled" => {
+                let new = get_config::<bool>(&config, "tiling_enabled");
+                if new != state.common.config.cosmic_conf.tiling_enabled {
+                    state.common.config.cosmic_conf.tiling_enabled = new;
+
+                    let mut shell = state.common.shell.write();
+                    let shell_ref = &mut *shell;
+                    shell_ref.workspaces.update_tiling_enabled(
+                        new,
+                        &mut state.common.workspace_state.update(),
+                        shell_ref.seats.iter(),
+                    );
+                }
             }
             "autotile" => {
                 let new = get_config::<bool>(&config, "autotile");

@@ -55,6 +55,7 @@ pub mod stack;
 pub use self::stack::CosmicStack;
 pub mod window;
 pub use self::window::CosmicWindow;
+pub mod header_bar;
 pub mod resize_indicator;
 pub mod stack_hover;
 pub mod swap_indicator;
@@ -507,6 +508,15 @@ impl CosmicMapped {
         matches!(&self.element, CosmicMappedInternal::Stack(_))
     }
 
+    /// Set whether the pointer is currently over this mapped element.
+    /// Dispatches to the inner CosmicWindow.
+    pub fn set_pointer_over_window(&self, value: bool) {
+        match &self.element {
+            CosmicMappedInternal::Window(window) => window.set_pointer_over_window(value),
+            _ => {}
+        }
+    }
+
     pub fn stack_ref(&self) -> Option<&CosmicStack> {
         match &self.element {
             CosmicMappedInternal::Stack(stack) => Some(stack),
@@ -517,7 +527,7 @@ impl CosmicMapped {
     pub fn convert_to_stack(
         &mut self,
         (output, overlap): (&Output, Rectangle<i32, Logical>),
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) {
         if let CosmicMappedInternal::Window(window) = &self.element {
@@ -542,7 +552,7 @@ impl CosmicMapped {
         &mut self,
         surface: CosmicSurface,
         (output, overlap): (&Output, Rectangle<i32, Logical>),
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) {
         let handle = self.loop_handle();
@@ -869,7 +879,7 @@ impl CosmicMapped {
         elements.into_iter().map(C::from).collect()
     }
 
-    pub(crate) fn update_theme(&self, theme: cosmic::Theme) {
+    pub(crate) fn update_theme(&self, theme: crate::comp_theme::CompTheme) {
         match &self.element {
             CosmicMappedInternal::Window(w) => w.set_theme(theme),
             CosmicMappedInternal::Stack(s) => s.set_theme(theme),
@@ -907,9 +917,10 @@ impl CosmicMapped {
 
     pub fn ssd_height(&self, pending: bool) -> Option<i32> {
         match &self.element {
-            CosmicMappedInternal::Window(w) => (!w.surface().is_decorated(pending))
-                .then_some(crate::shell::element::window::SSD_HEIGHT),
-            CosmicMappedInternal::Stack(_) => Some(crate::shell::element::stack::TAB_HEIGHT),
+            CosmicMappedInternal::Window(w) => {
+                (!w.surface().is_decorated(pending)).then_some(w.ssd_height())
+            }
+            CosmicMappedInternal::Stack(s) => Some(s.tab_height()),
             _ => unreachable!(),
         }
     }
@@ -949,6 +960,14 @@ impl CosmicMapped {
         match &self.element {
             CosmicMappedInternal::Window(w) => w.has_blur(),
             CosmicMappedInternal::Stack(s) => s.has_blur(),
+            _ => false,
+        }
+    }
+
+    /// Check if this mapped element has server-side decorations (SSD header)
+    pub fn has_ssd(&self) -> bool {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => w.has_ssd(),
             _ => false,
         }
     }

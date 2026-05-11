@@ -109,3 +109,50 @@ run-debug:
 	| stdbuf -oL sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g' \
 	| stdbuf -oL grep -v 'smithay::backend::renderer::gles' \
 	| tee test.log
+
+# Deploy to a remote device for testing.
+# Usage: make deploy HOST=user@hostname
+REMOTE_BIN = /usr/bin/$(BINARY)
+HOST ?=
+
+deploy:
+ifndef HOST
+	$(error HOST is required. Usage: make deploy HOST=user@hostname)
+endif
+	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	cargo build && \
+	echo "Stripping debug symbols..." && \
+	strip -o "$(CARGO_TARGET_DIR)/debug/$(BINARY).stripped" "$(CARGO_TARGET_DIR)/debug/$(BINARY)" && \
+	echo "Deploying $(BINARY) to $(HOST):$(REMOTE_BIN)..." && \
+	scp -C "$(CARGO_TARGET_DIR)/debug/$(BINARY).stripped" "$(HOST):/tmp/$(BINARY)" && \
+	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	echo "Done. Compositor restarted on $(HOST)."
+
+# Deploy a profiling build (release optimizations + debug symbols).
+# Uses the "fastdebug" Cargo profile for full optimizations with debuginfo.
+# Usage: make deploy-profile HOST=user@hostname
+deploy-profile:
+ifndef HOST
+	$(error HOST is required. Usage: make deploy-profile HOST=user@hostname)
+endif
+	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	cargo build --profile fastdebug && \
+	echo "Deploying $(BINARY) (fastdebug) to $(HOST):$(REMOTE_BIN)..." && \
+	scp -C "$(CARGO_TARGET_DIR)/fastdebug/$(BINARY)" "$(HOST):/tmp/$(BINARY)" && \
+	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	echo "Done. Compositor restarted on $(HOST) (fastdebug profile)."
+
+# Deploy a release build (fully optimized, stripped).
+# Usage: make deploy-release HOST=user@hostname
+deploy-release:
+ifndef HOST
+	$(error HOST is required. Usage: make deploy-release HOST=user@hostname)
+endif
+	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	cargo build --release && \
+	echo "Stripping debug symbols..." && \
+	strip -o "$(CARGO_TARGET_DIR)/release/$(BINARY).stripped" "$(CARGO_TARGET_DIR)/release/$(BINARY)" && \
+	echo "Deploying $(BINARY) (release) to $(HOST):$(REMOTE_BIN)..." && \
+	scp -C "$(CARGO_TARGET_DIR)/release/$(BINARY).stripped" "$(HOST):/tmp/$(BINARY)" && \
+	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	echo "Done. Compositor restarted on $(HOST) (release profile)."

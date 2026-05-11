@@ -11,10 +11,7 @@ use crate::{
         element::{
             CosmicMapped, CosmicMappedRenderElement, CosmicStack, CosmicWindow,
             resize_indicator::ResizeIndicator,
-            stack::{
-                CosmicStackRenderElement, MoveResult as StackMoveResult,
-                TAB_HEIGHT as STACK_TAB_HEIGHT,
-            },
+            stack::{CosmicStackRenderElement, MoveResult as StackMoveResult},
             swap_indicator::SwapIndicator,
             window::CosmicWindowRenderElement,
         },
@@ -127,8 +124,37 @@ impl TreeQueue {
         duration: impl Into<Option<Duration>>,
         blocker: Option<TilingBlocker>,
     ) {
-        self.trees
-            .push_back((tree, duration.into().unwrap_or(Duration::ZERO), blocker))
+        self.push_tree_inner(tree, duration, blocker, "unknown")
+    }
+
+    pub fn push_tree_tagged(
+        &mut self,
+        tree: Tree<Data>,
+        duration: impl Into<Option<Duration>>,
+        blocker: Option<TilingBlocker>,
+        tag: &str,
+    ) {
+        self.push_tree_inner(tree, duration, blocker, tag)
+    }
+
+    fn push_tree_inner(
+        &mut self,
+        tree: Tree<Data>,
+        duration: impl Into<Option<Duration>>,
+        blocker: Option<TilingBlocker>,
+        tag: &str,
+    ) {
+        let dur = duration.into().unwrap_or(Duration::ZERO);
+        if self.animation_start.is_some() || self.trees.len() > 1 {
+            tracing::warn!(
+                queue_len = self.trees.len(),
+                dur_ms = dur.as_millis() as u64,
+                has_anim = self.animation_start.is_some(),
+                tag,
+                "push_tree while animating"
+            );
+        }
+        self.trees.push_back((tree, dur, blocker))
     }
 }
 
@@ -139,7 +165,7 @@ pub struct TilingLayout {
     backdrop_id: Id,
     swapping_stack_surface_id: Id,
     last_overview_hover: Option<(Option<Instant>, TargetZone)>,
-    pub theme: cosmic::Theme,
+    pub theme: crate::comp_theme::CompTheme,
     pub appearance: AppearanceConfig,
 }
 
@@ -353,7 +379,7 @@ pub struct RestoreTilingState {
 
 impl TilingLayout {
     pub fn new(
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
         output: &Output,
     ) -> TilingLayout {
@@ -2339,11 +2365,16 @@ impl TilingLayout {
     }
 
     pub fn recalculate(&mut self) {
-        let gaps = self.gaps();
+        let last_tree = &self.queue.trees.back().unwrap().0;
+        if last_tree.root_node_id().is_none() {
+            return;
+        }
 
-        let mut tree = self.queue.trees.back().unwrap().0.copy_clone();
+        let gaps = self.gaps();
+        let mut tree = last_tree.copy_clone();
         let blocker = TilingLayout::update_positions(&self.output, &mut tree, gaps);
-        self.queue.push_tree(tree, ANIMATION_DURATION, blocker);
+        self.queue
+            .push_tree_tagged(tree, ANIMATION_DURATION, blocker, "recalculate");
     }
 
     #[profiling::function]
@@ -3412,7 +3443,7 @@ impl TilingLayout {
                 Some(None),
                 None,
                 None,
-                self.theme.cosmic(),
+                &self.theme,
             )
             .0;
 
@@ -3998,7 +4029,7 @@ impl TilingLayout {
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
         resize_indicator: Option<(ResizeMode, ResizeIndicator)>,
         indicator_thickness: u8,
-        theme: &cosmic::theme::CosmicTheme,
+        theme: &crate::comp_theme::CompTheme,
     ) -> Result<Vec<CosmicMappedRenderElement<R>>, OutputNotMapped>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -4158,7 +4189,7 @@ impl TilingLayout {
         seat: Option<&Seat<State>>,
         non_exclusive_zone: Rectangle<i32, Local>,
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
-        theme: &cosmic::theme::CosmicTheme,
+        theme: &crate::comp_theme::CompTheme,
     ) -> Result<Vec<CosmicMappedRenderElement<R>>, OutputNotMapped>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -4279,7 +4310,7 @@ impl TilingLayout {
     }
 
     fn gaps(&self) -> (i32, i32) {
-        let g = self.theme.cosmic().gaps;
+        let g = self.theme.gaps;
         (g.0 as i32, g.1 as i32)
     }
 }
@@ -4329,7 +4360,7 @@ fn geometries_for_groupview<'a, R>(
     mouse_tiling: Option<Option<&TargetZone>>,
     swap_desc: Option<NodeDesc>,
     swap_tree: Option<&Tree<Data>>,
-    theme: &cosmic::theme::CosmicTheme,
+    theme: &crate::comp_theme::CompTheme,
 ) -> (
     HashMap<NodeId, Rectangle<i32, Local>>,
     Vec<CosmicMappedRenderElement<R>>,
@@ -5007,7 +5038,7 @@ fn render_old_tree_windows<R>(
     percentage: f32,
     indicator_thickness: u8,
     is_swap_mode: bool,
-    theme: &cosmic::theme::CosmicTheme,
+    theme: &crate::comp_theme::CompTheme,
 ) -> Vec<CosmicMappedRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -5016,7 +5047,7 @@ where
     CosmicWindowRenderElement<R>: RenderElement<R>,
     CosmicStackRenderElement<R>: RenderElement<R>,
 {
-    let window_hint = crate::theme::active_window_hint(theme);
+    let window_hint = theme.active_window_hint();
     let mut elements = Vec::default();
     let mut shadow_elements = Vec::default();
 
@@ -5267,7 +5298,7 @@ fn render_new_tree_windows<R>(
     swap_desc: Option<NodeDesc>,
     swapping_stack_surface_id: &Id,
     backdrop_id: &Id,
-    theme: &cosmic::theme::CosmicTheme,
+    theme: &crate::comp_theme::CompTheme,
 ) -> Vec<CosmicMappedRenderElement<R>>
 where
     R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -5324,7 +5355,7 @@ where
     let (swap_indicator, swap_tree) = overview.1.unzip();
     let swap_desc = swap_desc.filter(|_| is_active_output);
     let swap_tree = swap_tree.flatten().filter(|_| is_active_output);
-    let window_hint = crate::theme::active_window_hint(theme);
+    let window_hint = theme.active_window_hint();
     let group_color = GROUP_COLOR;
 
     // render placeholder, if we are swapping to an empty workspace
@@ -5349,9 +5380,10 @@ where
     {
         let window_geo = window.geometry();
         let origin = {
+            let tab_height = icetron::prelude::header_height(&**theme) as i32;
             let mut geo = focused_geo;
-            geo.loc.x += STACK_TAB_HEIGHT;
-            geo.size.h -= STACK_TAB_HEIGHT;
+            geo.loc.x += tab_height;
+            geo.size.h -= tab_height;
             geo
         };
         let target = swap_geometry(window_geo.size, focused_geo);

@@ -27,7 +27,7 @@ use crate::{
 use cosmic_comp_config::AppearanceConfig;
 use cosmic_comp_config::workspace::{OutputMatch, PinnedWorkspace};
 
-use cosmic::theme::CosmicTheme;
+use crate::comp_theme::CompTheme;
 use cosmic_protocols::workspace::v2::server::zcosmic_workspace_handle_v2::TilingState;
 use id_tree::Tree;
 use indexmap::IndexSet;
@@ -363,7 +363,7 @@ impl Workspace {
         handle: WorkspaceHandle,
         output: Output,
         tiling_enabled: bool,
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) -> Workspace {
         let tiling_layer = TilingLayout::new(theme.clone(), appearance, &output);
@@ -396,7 +396,7 @@ impl Workspace {
         pinned: &PinnedWorkspace,
         handle: WorkspaceHandle,
         output: Output,
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) -> Self {
         let tiling_layer = TilingLayout::new(theme.clone(), appearance, &output);
@@ -455,13 +455,17 @@ impl Workspace {
     /// Check if this workspace has any windows with blur enabled
     pub fn has_blur_windows(&self) -> bool {
         let floating_has_blur = self.floating_layer.has_blur_windows();
+        let floating_has_ssd = self.floating_layer.has_ssd_windows();
         let tiling_has_blur = self.tiling_layer.mapped().any(|(m, _)| m.has_blur());
-        let result = floating_has_blur || tiling_has_blur;
+        let tiling_has_ssd = self.tiling_layer.mapped().any(|(m, _)| m.has_ssd());
+        let result = floating_has_blur || tiling_has_blur || floating_has_ssd || tiling_has_ssd;
 
         if result {
-            tracing::debug!(
-                floating_has_blur = floating_has_blur,
-                tiling_has_blur = tiling_has_blur,
+            tracing::trace!(
+                floating_has_blur,
+                tiling_has_blur,
+                floating_has_ssd,
+                tiling_has_ssd,
                 "Workspace has blur windows"
             );
         }
@@ -482,7 +486,7 @@ impl Workspace {
 
         // Tiled windows come first (below floating windows)
         for (idx, (mapped, geo)) in self.tiling_layer.mapped().enumerate() {
-            if mapped.has_blur() {
+            if mapped.has_blur() || mapped.has_ssd() {
                 result.push((mapped.key(), geo, alpha, idx));
             }
         }
@@ -532,6 +536,13 @@ impl Workspace {
         for (mapped, geo) in self.tiling_layer.mapped() {
             if mapped.has_blur() {
                 geometries.push((geo, alpha));
+            } else if mapped.has_ssd() {
+                // Add SSD header blur for tiled windows without full-window blur
+                let header_geo = Rectangle::new(
+                    geo.loc,
+                    Size::from((geo.size.w, mapped.ssd_height(false).unwrap_or(0))),
+                );
+                geometries.push((header_geo, alpha));
             }
         }
 
@@ -592,13 +603,14 @@ impl Workspace {
     }
 
     pub fn animations_going(&self) -> bool {
-        self.tiling_layer.animations_going()
-            || self.floating_layer.animations_going()
-            || self
-                .fullscreen
-                .as_ref()
-                .is_some_and(|f| f.start_at.is_some() || f.ended_at.is_some())
-            || self.dirty.swap(false, Ordering::SeqCst)
+        let tiling = self.tiling_layer.animations_going();
+        let floating = self.floating_layer.animations_going();
+        let fullscreen = self
+            .fullscreen
+            .as_ref()
+            .is_some_and(|f| f.start_at.is_some() || f.ended_at.is_some());
+        let dirty = self.dirty.swap(false, Ordering::SeqCst);
+        tiling || floating || fullscreen || dirty
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -1604,7 +1616,7 @@ impl Workspace {
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
         resize_indicator: Option<(ResizeMode, ResizeIndicator)>,
         indicator_thickness: u8,
-        theme: &CosmicTheme,
+        theme: &CompTheme,
         element_filter: ElementFilter,
         window_alpha: f32,
         attached_orb_state: Option<&VoiceOrbState>,
@@ -1811,7 +1823,7 @@ impl Workspace {
         last_active_seat: &Seat<State>,
         render_focus: bool,
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
-        theme: &CosmicTheme,
+        theme: &CompTheme,
     ) -> Result<Vec<WorkspaceRenderElement<R>>, OutputNotMapped>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,

@@ -1,25 +1,48 @@
 use std::sync::Mutex;
 
 use crate::{
+    comp_theme::CompTheme,
     config::Config,
     fl,
     shell::grabs::ResizeEdge,
-    utils::iced::{IcedElement, Program},
+    utils::{
+        apply::Apply,
+        iced::{IcedElement, Program},
+        xdg_icon::named_icon,
+    },
 };
 
 use calloop::LoopHandle;
-use cosmic::{
-    Apply,
-    iced::{
-        Alignment,
-        widget::{column, container, horizontal_space, row, vertical_space},
-    },
-    iced_core::{Background, Border, Color, Length},
-    theme,
-    widget::{icon::from_name, text},
-};
 use cosmic_settings_config::shortcuts::action::{Action, ResizeDirection};
+use iced_core::{Alignment, Background, Border, Color, Element, Length};
+use iced_widget::container::Container;
+use iced_widget::{Space, column, container, row};
+use icetron::prelude::styled_text;
 use smithay::utils::Size;
+
+use crate::utils::iced::CompElement;
+
+/// Helper to create a container with concrete types (avoids type inference issues).
+fn comp_container<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>>,
+) -> Container<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    Container::new(content)
+}
+
+/// Helper to create a Space element with concrete types.
+fn space_element<'a>(
+    width: impl Into<Length>,
+    height: impl Into<Length>,
+) -> Element<'a, (), iced_core::Theme, iced_tiny_skia::Renderer> {
+    Space::new().width(width).height(height).into()
+}
+
+/// Helper to convert a Container into an Element with concrete types.
+fn into_element<'a>(
+    c: Container<'a, (), iced_core::Theme, iced_tiny_skia::Renderer>,
+) -> Element<'a, (), iced_core::Theme, iced_tiny_skia::Renderer> {
+    c.into()
+}
 
 pub type ResizeIndicator = IcedElement<ResizeIndicatorInternal>;
 
@@ -27,7 +50,7 @@ pub fn resize_indicator(
     direction: ResizeDirection,
     config: &Config,
     evlh: LoopHandle<'static, crate::state::State>,
-    theme: cosmic::Theme,
+    theme: CompTheme,
 ) -> ResizeIndicator {
     ResizeIndicator::new(
         ResizeIndicatorInternal {
@@ -63,123 +86,141 @@ pub struct ResizeIndicatorInternal {
     pub shortcut2: String,
 }
 
+/// Accent-colored container style for icon badges.
+fn accent_container_class(theme: &CompTheme) -> Box<dyn Fn(&iced_core::Theme) -> container::Style> {
+    let on_accent = theme.on_accent_color();
+    let accent = theme.accent_color();
+    Box::new(move |_: &iced_core::Theme| container::Style {
+        text_color: Some(on_accent),
+        background: Some(Background::Color(accent)),
+        border: Border {
+            radius: 18.0.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Default::default(),
+        snap: false,
+        border_only: false,
+    })
+}
+
 impl Program for ResizeIndicatorInternal {
     type Message = ();
 
-    fn view(&self) -> cosmic::Element<'_, Self::Message> {
+    fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         let edges = self.edges.lock().unwrap();
-        let icon_container_style = || {
-            theme::Container::custom(|theme| container::Style {
-                icon_color: Some(Color::from(theme.cosmic().accent.on)),
-                text_color: Some(Color::from(theme.cosmic().accent.on)),
-                background: Some(Background::Color(theme.cosmic().accent_color().into())),
-                border: Border {
-                    radius: 18.0.into(),
-                    width: 0.0,
-                    color: Color::TRANSPARENT,
-                },
-                shadow: Default::default(),
-            })
-        };
+        let on_accent = theme.on_accent_color();
 
-        column(vec![
+        column![
             if edges.contains(ResizeEdge::TOP) {
-                from_name(if self.direction == ResizeDirection::Outwards {
-                    "go-up-symbolic"
-                } else {
-                    "go-down-symbolic"
-                })
-                .size(20)
-                .prefer_svg(true)
-                .apply(container)
-                .padding(8)
-                .class(icon_container_style())
-                .width(Length::Shrink)
-                .apply(container)
-                .center_x(Length::Fill)
-                .into()
-            } else {
-                vertical_space().height(36).into()
-            },
-            row(vec![
-                if edges.contains(ResizeEdge::LEFT) {
-                    from_name(if self.direction == ResizeDirection::Outwards {
-                        "go-previous-symbolic"
+                named_icon(
+                    if self.direction == ResizeDirection::Outwards {
+                        "go-up-symbolic"
                     } else {
-                        "go-next-symbolic"
-                    })
-                    .size(20)
-                    .prefer_svg(true)
-                    .apply(container)
+                        "go-down-symbolic"
+                    },
+                    20.0,
+                )
+                .apply(comp_container)
+                .padding(8)
+                .class(accent_container_class(theme))
+                .width(Length::Shrink)
+                .apply(comp_container)
+                .center_x(Length::Fill)
+                .apply(into_element)
+            } else {
+                space_element(Length::Shrink, 36.0)
+            },
+            row![
+                if edges.contains(ResizeEdge::LEFT) {
+                    named_icon(
+                        if self.direction == ResizeDirection::Outwards {
+                            "go-previous-symbolic"
+                        } else {
+                            "go-next-symbolic"
+                        },
+                        20.0,
+                    )
+                    .apply(comp_container)
                     .padding(8)
-                    .class(icon_container_style())
+                    .class(accent_container_class(theme))
                     .width(Length::Shrink)
-                    .apply(container)
+                    .apply(comp_container)
                     .center_y(Length::Fill)
-                    .into()
+                    .apply(into_element)
                 } else {
-                    horizontal_space().width(36).into()
+                    space_element(36.0, Length::Shrink)
                 },
-                row(vec![
-                    text::heading(&self.shortcut1).into(),
-                    text::body(fl!("grow-window")).into(),
-                    horizontal_space().width(40).into(),
-                    text::heading(&self.shortcut2).into(),
-                    text::body(fl!("shrink-window")).into(),
-                ])
-                .apply(container)
+                row![
+                    styled_text(
+                        &self.shortcut1,
+                        theme.text_styles().label_default_strong(),
+                        on_accent,
+                    ),
+                    styled_text(fl!("grow-window"), theme.text_styles().body(), on_accent),
+                    Space::new().width(40.0).height(Length::Shrink),
+                    styled_text(
+                        &self.shortcut2,
+                        theme.text_styles().label_default_strong(),
+                        on_accent,
+                    ),
+                    styled_text(fl!("shrink-window"), theme.text_styles().body(), on_accent),
+                ]
+                .apply(comp_container)
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .padding(16)
-                .apply(container)
-                .class(icon_container_style())
+                .apply(comp_container)
+                .class(accent_container_class(theme))
                 .width(Length::Shrink)
                 .height(Length::Shrink)
-                .apply(container)
+                .apply(comp_container)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
-                .into(),
+                .apply(into_element),
                 if edges.contains(ResizeEdge::RIGHT) {
-                    from_name(if self.direction == ResizeDirection::Outwards {
-                        "go-next-symbolic"
-                    } else {
-                        "go-previous-symbolic"
-                    })
-                    .size(20)
-                    .prefer_svg(true)
-                    .apply(container)
+                    named_icon(
+                        if self.direction == ResizeDirection::Outwards {
+                            "go-next-symbolic"
+                        } else {
+                            "go-previous-symbolic"
+                        },
+                        20.0,
+                    )
+                    .apply(comp_container)
                     .padding(8)
-                    .class(icon_container_style())
+                    .class(accent_container_class(theme))
                     .height(Length::Shrink)
-                    .apply(container)
+                    .apply(comp_container)
                     .center_y(Length::Fill)
-                    .into()
+                    .apply(into_element)
                 } else {
-                    horizontal_space().width(36).into()
+                    space_element(36.0, Length::Shrink)
                 },
-            ])
+            ]
             .width(Length::Fill)
             .height(Length::Fill)
-            .into(),
+            .apply(|r| -> Element<'_, (), iced_core::Theme, iced_tiny_skia::Renderer> { r.into() }),
             if edges.contains(ResizeEdge::BOTTOM) {
-                from_name(if self.direction == ResizeDirection::Outwards {
-                    "go-down-symbolic"
-                } else {
-                    "go-up-symbolic"
-                })
-                .size(20)
-                .prefer_svg(true)
-                .apply(container)
+                named_icon(
+                    if self.direction == ResizeDirection::Outwards {
+                        "go-down-symbolic"
+                    } else {
+                        "go-up-symbolic"
+                    },
+                    20.0,
+                )
+                .apply(comp_container)
                 .padding(8)
-                .class(icon_container_style())
+                .class(accent_container_class(theme))
                 .width(Length::Shrink)
-                .apply(container)
+                .apply(comp_container)
                 .center_x(Length::Fill)
-                .into()
+                .apply(into_element)
             } else {
-                vertical_space().height(36).into()
+                space_element(Length::Shrink, 36.0)
             },
-        ])
+        ]
         .into()
     }
 }

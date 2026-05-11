@@ -1,0 +1,250 @@
+//! Compositor header bar (SSD title bar) — wraps icetron's `app_header`.
+//!
+//! Provides a thin adapter between icetron's `app_header` component and the
+//! compositor's SSD decoration system. The header uses icetron's theme tokens
+//! so SSD windows match CSD visual design.
+
+use iced_core::Alignment;
+use iced_core::{Background, Color, Element, Length};
+use iced_widget::{Svg, container, row, svg};
+use icetron::prelude::{animated_opacity, app_header, header_height, styled_text};
+
+use crate::comp_theme::CompTheme;
+
+/// SSD header bar height in logical pixels for the given theme.
+pub fn ssd_header_height(theme: &CompTheme) -> u32 {
+    header_height(&**theme) as u32
+}
+
+/// Application icon for the SSD header — leaked static SVG bytes or a raster image handle.
+///
+/// SVG bytes are leaked once per window to obtain `&'static [u8]` for icetron's
+/// `title_icon()` API. This is bounded (one allocation per window lifetime).
+#[derive(Clone, Debug)]
+pub enum AppIcon {
+    /// Leaked SVG bytes — can be passed directly to `title_icon()`.
+    Svg(&'static [u8]),
+    /// Pre-scaled RGBA raster image (not usable with title_icon, ignored for now).
+    Image(iced_core::image::Handle),
+}
+
+/// Builder for the compositor SSD header bar.
+pub struct HeaderBar<'a, Message> {
+    title: String,
+    on_drag: Option<Message>,
+    on_close: Option<Message>,
+    on_minimize: Option<Message>,
+    on_maximize: Option<Message>,
+    on_right_click: Option<Message>,
+    focused: bool,
+    hovered: bool,
+    maximized: bool,
+    theme: Option<&'a CompTheme>,
+    app_icon: Option<AppIcon>,
+}
+
+impl<'a, Message: Clone + 'static> Default for HeaderBar<'a, Message> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
+    pub fn new() -> Self {
+        Self {
+            title: String::new(),
+            on_drag: None,
+            on_close: None,
+            on_minimize: None,
+            on_maximize: None,
+            on_right_click: None,
+            focused: false,
+            hovered: false,
+            maximized: false,
+            theme: None,
+            app_icon: None,
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = title.into();
+        self
+    }
+
+    pub fn on_drag(mut self, msg: Message) -> Self {
+        self.on_drag = Some(msg);
+        self
+    }
+
+    pub fn on_close(mut self, msg: Message) -> Self {
+        self.on_close = Some(msg);
+        self
+    }
+
+    pub fn on_minimize(mut self, msg: Message) -> Self {
+        self.on_minimize = Some(msg);
+        self
+    }
+
+    pub fn on_maximize(mut self, msg: Message) -> Self {
+        self.on_maximize = Some(msg);
+        self
+    }
+
+    pub fn on_right_click(mut self, msg: Message) -> Self {
+        self.on_right_click = Some(msg);
+        self
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn hovered(mut self, hovered: bool) -> Self {
+        self.hovered = hovered;
+        self
+    }
+
+    pub fn maximized(mut self, maximized: bool) -> Self {
+        self.maximized = maximized;
+        self
+    }
+
+    pub fn app_icon(mut self, icon: AppIcon) -> Self {
+        self.app_icon = Some(icon);
+        self
+    }
+
+    pub fn theme(mut self, theme: &'a CompTheme) -> Self {
+        self.theme = Some(theme);
+        self
+    }
+
+    /// Convert to an iced Element using icetron's app_header.
+    pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+        let theme = self.theme.expect("HeaderBar requires .theme()");
+
+        let mut header = app_header(&**theme)
+            .title(Some(&self.title))
+            .focused(self.focused)
+            .hovered(self.hovered)
+            .is_windowed(!self.maximized)
+            .backdrop_blur(false)
+            .opaque(true)
+            .show_border(true);
+
+        // Pass application icon with native SVG colors via title_content.
+        // We wrap in animated_opacity to replicate app_header's title fade behavior
+        // (0.8 when unfocused, animates to 1.0 on hover/focus).
+        if let Some(ref icon) = self.app_icon {
+            let icon_size = theme.ui_size_icon_sm();
+            let title_color = theme.text_primary();
+            let mut title_style = theme.text_styles().sm();
+            title_style.font_weight = 500;
+
+            let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                match icon {
+                    AppIcon::Svg(bytes) => {
+                        let handle = iced_core::svg::Handle::from_memory(*bytes);
+                        Svg::new(handle)
+                            .width(icon_size)
+                            .height(icon_size)
+                            .style(|_theme, _status| svg::Style {
+                                color: Some(Color::TRANSPARENT),
+                            })
+                            .into()
+                    }
+                    AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
+                        .width(icon_size)
+                        .height(icon_size)
+                        .into(),
+                };
+
+            let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                styled_text(&self.title, title_style, title_color).into();
+
+            let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                row![icon_element, text_element]
+                    .spacing(theme.spacing_2_5())
+                    .align_y(Alignment::Center)
+                    .into();
+
+            // Replicate app_header's opacity animation logic
+            let target_opacity = if self.hovered || self.focused {
+                1.0
+            } else {
+                0.8
+            };
+            let title_content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                if target_opacity == 1.0 {
+                    title_row
+                } else {
+                    animated_opacity(title_row, &**theme, target_opacity).into()
+                };
+
+            header = header.title_content(title_content);
+        }
+
+        if let Some(msg) = self.on_drag {
+            header = header.on_drag(msg);
+        }
+        if let Some(msg) = self.on_close {
+            header = header.on_close(msg);
+        }
+        if let Some(msg) = self.on_minimize {
+            header = header.on_minimize(msg);
+        }
+        // app_header uses on_toggle_window for maximize/unmaximize
+        if let Some(msg) = self.on_maximize {
+            header = header.on_toggle_window(msg);
+        }
+        if let Some(msg) = self.on_right_click {
+            header = header.on_right_click(msg);
+        }
+
+        // Wrap in a container with the translucent fill_default overlay on top of the
+        // compositor-side blur (light mode: rgba(255,255,255,0.8))
+        let fill_default = theme.fill_default();
+        // Top corner radius should match the window's corner radius so the header
+        // clips correctly when composited. Bottom corners are 0 (window content below).
+        let top_radius = if self.maximized {
+            0.0
+        } else {
+            theme.radius_window()[0]
+        };
+        let header_height = header_height(&**theme);
+        let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+            header.into();
+        container(header_elem)
+            .width(Length::Fill)
+            .height(Length::Fixed(header_height))
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(fill_default)),
+                border: iced_core::Border {
+                    radius: iced_core::border::Radius {
+                        top_left: top_radius,
+                        top_right: top_radius,
+                        bottom_right: 0.0,
+                        bottom_left: 0.0,
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .into()
+    }
+}
+
+impl<'a, Message: Clone + 'static> From<HeaderBar<'a, Message>>
+    for Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>
+{
+    fn from(header: HeaderBar<'a, Message>) -> Self {
+        header.into_element()
+    }
+}
+
+/// Create a new header bar builder.
+pub fn header_bar<'a, Message: Clone + 'static>() -> HeaderBar<'a, Message> {
+    HeaderBar::new()
+}

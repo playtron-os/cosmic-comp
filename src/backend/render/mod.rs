@@ -47,7 +47,7 @@ use crate::{
     },
 };
 
-use cosmic::Theme;
+use crate::comp_theme::CompTheme;
 use element::FromGlesError;
 use smithay::{
     backend::{
@@ -793,7 +793,7 @@ pub fn cursor_elements<'a, 'frame, R>(
     renderer: &mut R,
     seats: impl Iterator<Item = &'a Seat<State>>,
     zoom_state: Option<&ZoomState>,
-    theme: &Theme,
+    theme: &CompTheme,
     now: Time<Monotonic>,
     output: &Output,
     mode: CursorMode,
@@ -870,7 +870,7 @@ where
             );
         }
 
-        let theme = theme.cosmic();
+        // theme is already CompTheme, no inner layer
         // Skip move grab render when capturing for blur - the grabbed window
         // is always on top and shouldn't be included in the blur source
         if !skip_move_grab
@@ -1372,7 +1372,7 @@ where
         .ok_or(OutputNoMode)?;
     let is_active_space = workspace.output == focused_output;
     let active_hint = if shell.active_hint {
-        theme.cosmic().active_hint as u8
+        theme.active_hint as u8
     } else {
         0
     };
@@ -1456,7 +1456,7 @@ where
                 // Render shadow behind the popup if enabled via protocol
                 let popup_surface_id = popup_wl_surface.id();
                 if surface_has_shadow(popup_wl_surface) {
-                    let is_dark = theme.cosmic().is_dark;
+                    let is_dark = theme.is_dark;
                     let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
                     let shadow_element = ShadowShader::layer_element(
@@ -1597,7 +1597,7 @@ where
                 // Render shadow behind the layer surface if enabled
                 // Alpha handles fading for home visibility surfaces
                 if surface_has_shadow(layer.wl_surface()) {
-                    let is_dark = theme.cosmic().is_dark;
+                    let is_dark = theme.is_dark;
                     let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
                     let shadow_element = ShadowShader::layer_element(
@@ -1810,7 +1810,7 @@ where
                             resize_indicator.clone(),
                             active_hint,
                             alpha,
-                            theme.cosmic(),
+                            &theme,
                             element_filter.clone(),
                             None, // No attached orb for sticky layer
                         )
@@ -1827,7 +1827,7 @@ where
                         last_active_seat,
                         !move_active && is_active_space,
                         overview.clone(),
-                        theme.cosmic(),
+                        &theme,
                     ) {
                         Ok(elements) => {
                             elements
@@ -1856,7 +1856,7 @@ where
                         overview.clone(),
                         resize_indicator.clone(),
                         active_hint,
-                        theme.cosmic(),
+                        &theme,
                         element_filter.clone(),
                         voice_mode_alpha,
                         attached_orb_state.as_ref(),
@@ -1887,7 +1887,7 @@ where
     let ws_elapsed = ws_start.elapsed();
     // Only log at debug level when workspace_elements takes a long time (>2ms)
     if ws_elapsed.as_micros() > 2000 {
-        tracing::debug!(
+        tracing::trace!(
             output = %output.name(),
             element_count = elements.len(),
             duration_us = ws_elapsed.as_micros() as u64,
@@ -2406,7 +2406,7 @@ where
 
             if can_reuse_cache {
                 let group_elapsed = group_start.elapsed();
-                tracing::debug!(
+                tracing::trace!(
                     group = group_idx,
                     capture_z_threshold = group.capture_z_threshold,
                     windows_in_group = group.windows.len(),
@@ -2418,7 +2418,7 @@ where
                 continue;
             }
 
-            tracing::debug!(
+            tracing::trace!(
                 group = group_idx,
                 capture_z_threshold = group.capture_z_threshold,
                 windows_in_group = group.windows.len(),
@@ -2527,7 +2527,7 @@ where
                                     background_state_hash: content_hash,
                                 },
                             );
-                            tracing::debug!(
+                            tracing::trace!(
                                 global_z_idx = z_idx,
                                 blur_w = blur_size.w,
                                 blur_h = blur_size.h,
@@ -2547,7 +2547,7 @@ where
             let blur_passes_elapsed = blur_passes_start.elapsed();
             let group_elapsed = group_start.elapsed();
 
-            tracing::debug!(
+            tracing::trace!(
                 group = group_idx,
                 windows = group.windows.len(),
                 capture_us = capture_elapsed.as_micros(),
@@ -2561,7 +2561,7 @@ where
 
         let window_blur_elapsed = window_blur_start.elapsed();
         if !blur_groups.is_empty() {
-            tracing::debug!(
+            tracing::trace!(
                 output = %output_name,
                 window_blur_groups = blur_groups.len(),
                 window_blur_us = window_blur_elapsed.as_micros(),
@@ -2680,7 +2680,7 @@ where
 
                 if !content_changed && all_cached {
                     let layer_group_elapsed = layer_group_start.elapsed();
-                    tracing::debug!(
+                    tracing::trace!(
                         layer = ?layer_type,
                         surfaces = surfaces.len(),
                         capture_us = capture_elapsed.as_micros(),
@@ -2703,7 +2703,7 @@ where
                     continue;
                 }
 
-                tracing::debug!(
+                tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
                     capture_elements = layer_capture_elements.len(),
@@ -2822,7 +2822,7 @@ where
                                     background_state_hash: content_hash,
                                 },
                             );
-                            tracing::debug!(
+                            tracing::trace!(
                                 ?surface_id,
                                 layer = ?layer_type,
                                 "Cached blur texture for layer surface"
@@ -2831,7 +2831,7 @@ where
                         any_blur_applied = true;
                         let blur_passes_elapsed = blur_passes_start.elapsed();
                         let layer_group_elapsed = layer_group_start.elapsed();
-                        tracing::debug!(
+                        tracing::trace!(
                             layer = ?layer_type,
                             surfaces_count = surfaces.len(),
                             capture_us = capture_start.elapsed().as_micros(),
@@ -2849,7 +2849,7 @@ where
 
             let layer_blur_elapsed = layer_blur_start.elapsed();
             if any_blur_applied {
-                tracing::debug!(
+                tracing::trace!(
                     total_us = layer_blur_elapsed.as_micros(),
                     "Layer blur processing complete"
                 );

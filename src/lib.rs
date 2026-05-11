@@ -45,6 +45,7 @@ use clap_lex::RawArgs;
 use std::error::Error;
 
 pub mod backend;
+pub mod comp_theme;
 pub mod config;
 pub mod dbus;
 #[cfg(feature = "debug")]
@@ -58,6 +59,7 @@ pub mod state;
 #[cfg(feature = "systemd")]
 pub mod systemd;
 pub mod theme;
+pub mod toolkit_config;
 pub mod utils;
 pub mod wayland;
 pub mod xwayland;

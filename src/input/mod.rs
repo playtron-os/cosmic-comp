@@ -12,6 +12,7 @@ use crate::{
     input::gestures::{GestureState, SwipeAction},
     shell::{
         LastModifierChange, SeatExt, Trigger,
+        element::window::{begin_pointer_hover_check, finalize_pointer_hover},
         focus::{
             Stage, render_input_order,
             target::{KeyboardFocusTarget, PointerFocusTarget},
@@ -371,8 +372,21 @@ impl State {
                         (output_geometry.loc.y + output_geometry.size.h - 1) as f64,
                     );
 
+                    // Begin hover check cycle — focus_under will mark if a window is hit.
+                    // Skip hover tracking when pointer is grabbed (e.g. dragging a window),
+                    // otherwise moving a dragged window over another triggers its pill.
+                    let pointer_grabbed = ptr.is_grabbed();
+                    if !pointer_grabbed {
+                        begin_pointer_hover_check();
+                    }
+
                     let new_under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
+
+                    // If no window was hit during surface_under, clear the hovered state.
+                    if !pointer_grabbed {
+                        finalize_pointer_hover();
+                    }
 
                     std::mem::drop(shell);
 
@@ -664,8 +678,24 @@ impl State {
                         .as_global();
                     let serial = SERIAL_COUNTER.next_serial();
                     let shell_guard = self.common.shell.write();
+
+                    let ptr = seat.get_pointer().unwrap();
+                    let pointer_grabbed = ptr.is_grabbed();
+
+                    // Begin hover check cycle — focus_under will mark if a window is hit.
+                    // Skip when grabbed (drag) to avoid activating windows under the dragged one.
+                    if !pointer_grabbed {
+                        begin_pointer_hover_check();
+                    }
+
                     let under = State::surface_under(position, &output, &shell_guard)
                         .map(|(target, pos)| (target, pos.as_logical()));
+
+                    // If no window was hit during surface_under, clear the hovered state.
+                    if !pointer_grabbed {
+                        finalize_pointer_hover();
+                    }
+
                     drop(shell_guard);
 
                     // Update compositor-driven auto-hide cursor tracking.

@@ -1,32 +1,35 @@
-use cosmic::{
-    iced::Element,
-    iced_core::{
-        Background, Border, Clipboard, Color, Event, Layout, Length, Rectangle,
-        Renderer as IcedRenderer, Shell, Size, event, layout, mouse, overlay,
-        renderer::{Quad, Style},
-        widget::{Id, Tree, Widget, tree},
-    },
-    widget::button::Catalog,
+use crate::comp_theme::CompTheme;
+use crate::utils::iced::CompElement;
+use iced_core::{
+    Background, Border, Color, Event, Layout, Length, Rectangle, Renderer as IcedRenderer, Shell,
+    Size, Vector, layout, mouse, overlay,
+    renderer::{Quad, Style},
+    widget::{Id, Tree, Widget, tree},
 };
 
 pub struct SubmenuItem<'a, Message> {
-    elem: cosmic::Element<'a, Message>,
+    elem: CompElement<'a, Message>,
     idx: usize,
-    styling: <cosmic::Theme as Catalog>::Class,
+    /// Pre-computed hover highlight color.
+    hover_color: Color,
+    /// Pre-computed hover border radius.
+    hover_radius: iced_core::border::Radius,
 }
 
 impl<'a, Message> SubmenuItem<'a, Message> {
-    pub fn new(elem: impl Into<cosmic::Element<'a, Message>>, idx: usize) -> Self {
+    pub fn new(elem: impl Into<CompElement<'a, Message>>, idx: usize, theme: &CompTheme) -> Self {
+        let surface = theme.surface_color();
         Self {
             elem: elem.into(),
             idx,
-            styling: Default::default(),
+            hover_color: Color::from_rgba(
+                surface.r + 0.1,
+                surface.g + 0.1,
+                surface.b + 0.1,
+                surface.a,
+            ),
+            hover_radius: crate::comp_theme::radius_from_array(theme.radius_s()),
         }
-    }
-
-    pub fn style(mut self, style: <cosmic::Theme as Catalog>::Class) -> Self {
-        self.styling = style;
-        self
     }
 }
 
@@ -39,7 +42,8 @@ struct State {
     cursor_over: bool,
 }
 
-impl<Message> Widget<Message, cosmic::Theme, cosmic::Renderer> for SubmenuItem<'_, Message>
+impl<Message> Widget<Message, iced_core::Theme, iced_tiny_skia::Renderer>
+    for SubmenuItem<'_, Message>
 where
     Message: CursorEvents,
 {
@@ -52,63 +56,50 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         state: &mut Tree,
-        renderer: &cosmic::Renderer,
+        renderer: &iced_tiny_skia::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         let state = &mut state.children[0];
-        let node = self.elem.as_widget().layout(state, renderer, limits);
+        let node = self.elem.as_widget_mut().layout(state, renderer, limits);
         layout::Node::with_children(node.size(), vec![node])
     }
 
     fn draw(
         &self,
         state: &Tree,
-        renderer: &mut cosmic::Renderer,
-        theme: &cosmic::Theme,
+        renderer: &mut iced_tiny_skia::Renderer,
+        theme: &iced_core::Theme,
         style: &Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
         let widget_state = state.state.downcast_ref::<State>();
-        let styling = if widget_state.cursor_over {
-            theme.hovered(true, false, &self.styling)
-        } else {
-            theme.active(true, false, &self.styling)
-        };
 
-        renderer.fill_quad(
-            Quad {
-                bounds: layout.bounds(),
-                border: Border {
-                    radius: styling.border_radius,
-                    width: styling.border_width,
-                    color: styling.border_color,
+        // Hover highlight
+        if widget_state.cursor_over {
+            renderer.fill_quad(
+                Quad {
+                    bounds: layout.bounds(),
+                    border: Border {
+                        radius: self.hover_radius,
+                        ..Default::default()
+                    },
+                    shadow: Default::default(),
+                    snap: true,
+                    border_only: false,
                 },
-                shadow: Default::default(),
-            },
-            styling
-                .background
-                .unwrap_or(Background::Color(Color::TRANSPARENT)),
-        );
+                Background::Color(self.hover_color),
+            );
+        }
 
         let state = &state.children[0];
         let layout = layout.children().next().unwrap();
-        self.elem.as_widget().draw(
-            state,
-            renderer,
-            theme,
-            &Style {
-                text_color: styling.text_color.unwrap_or(style.text_color),
-                icon_color: styling.icon_color.unwrap_or(style.text_color),
-                ..*style
-            },
-            layout,
-            cursor,
-            viewport,
-        )
+        self.elem
+            .as_widget()
+            .draw(state, renderer, theme, style, layout, cursor, viewport)
     }
 
     fn tag(&self) -> tree::Tag {
@@ -123,35 +114,34 @@ where
         vec![Tree::new(&self.elem)]
     }
 
-    fn diff(&mut self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_mut(&mut self.elem))
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.elem))
     }
 
     fn operate(
-        &self,
+        &mut self,
         state: &mut Tree,
         layout: Layout<'_>,
-        renderer: &cosmic::Renderer,
-        operation: &mut dyn cosmic::widget::Operation<()>,
+        renderer: &iced_tiny_skia::Renderer,
+        operation: &mut dyn iced_core::widget::Operation,
     ) {
         let state = &mut state.children[0];
         let layout = layout.children().next().unwrap();
         self.elem
-            .as_widget()
+            .as_widget_mut()
             .operate(state, layout, renderer, operation)
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         state: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        renderer: &cosmic::Renderer,
-        clipboard: &mut dyn Clipboard,
+        renderer: &iced_tiny_skia::Renderer,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
+    ) {
         let mut bounds = layout.bounds();
 
         // fix padding 1 and event... don't ask.
@@ -180,9 +170,9 @@ where
 
         let state = &mut state.children[0];
         let layout = layout.children().next().unwrap();
-        self.elem.as_widget_mut().on_event(
-            state, event, layout, cursor, renderer, clipboard, shell, viewport,
-        )
+        self.elem
+            .as_widget_mut()
+            .update(state, event, layout, cursor, renderer, shell, viewport);
     }
 
     fn mouse_interaction(
@@ -191,7 +181,7 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
-        renderer: &cosmic::Renderer,
+        renderer: &iced_tiny_skia::Renderer,
     ) -> mouse::Interaction {
         let state = &state.children[0];
         let layout = layout.children().next().unwrap();
@@ -203,23 +193,24 @@ where
     fn overlay<'b>(
         &'b mut self,
         state: &'b mut Tree,
-        layout: Layout<'_>,
-        renderer: &cosmic::Renderer,
-        translation: cosmic::iced::Vector,
-    ) -> Option<overlay::Element<'b, Message, cosmic::Theme, cosmic::Renderer>> {
+        layout: Layout<'b>,
+        renderer: &iced_tiny_skia::Renderer,
+        _viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced_core::Theme, iced_tiny_skia::Renderer>> {
         let state = &mut state.children[0];
         let layout = layout.children().next().unwrap();
         self.elem
             .as_widget_mut()
-            .overlay(state, layout, renderer, translation)
+            .overlay(state, layout, renderer, _viewport, translation)
     }
 }
 
-impl<'a, Message> From<SubmenuItem<'a, Message>> for cosmic::Element<'a, Message>
+impl<'a, Message> From<SubmenuItem<'a, Message>> for CompElement<'a, Message>
 where
     Message: CursorEvents + 'a,
 {
     fn from(val: SubmenuItem<'a, Message>) -> Self {
-        Element::new(val)
+        iced_core::Element::new(val)
     }
 }

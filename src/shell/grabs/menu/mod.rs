@@ -7,14 +7,11 @@ use std::{
 };
 
 use calloop::LoopHandle;
-use cosmic::{
-    Apply as _, Task,
-    iced::{Alignment, Background},
-    iced_core::{Border, Length, Rectangle as IcedRectangle, alignment::Horizontal},
-    iced_widget::{self, Column, Row, text::Style as TextStyle},
-    theme,
-    widget::{button, divider, horizontal_space, icon::from_name, text},
-};
+use iced_core::{Alignment, Length, Rectangle as IcedRectangle, alignment::Horizontal};
+use iced_runtime::Task;
+use iced_widget::{self, Column, Row, Space, button, container, svg::Svg};
+use icetron::icetron_assets::icons::system::{ARROW_RIGHT_S_LINE, CHECK_LINE};
+use icetron::prelude::styled_text;
 use smithay::{
     backend::{
         input::{ButtonState, TouchSlot},
@@ -43,9 +40,12 @@ use smithay::{
 };
 
 use crate::{
+    comp_theme::CompTheme,
     shell::{SeatExt, focus::target::PointerFocusTarget},
     state::State,
     utils::{
+        apply::Apply,
+        iced::CompElement,
         iced::{IcedElement, Program},
         prelude::*,
     },
@@ -94,7 +94,7 @@ impl MenuGrabState {
         self.screen_space_relative.is_some()
     }
 
-    pub fn set_theme(&self, theme: cosmic::Theme) {
+    pub fn set_theme(&self, theme: CompTheme) {
         for element in &*self.elements.lock().unwrap() {
             element.iced.set_theme(theme.clone())
         }
@@ -287,6 +287,7 @@ impl Program for ContextMenu {
                             element.with_program(|p| {
                                 *p.row_width.lock().unwrap() = Some(min_size.w as f32);
                             });
+                            let min_size = element.minimum_size();
                             element.resize(min_size);
 
                             let output = seat.active_output();
@@ -373,7 +374,7 @@ impl Program for ContextMenu {
         Task::none()
     }
 
-    fn view(&self) -> cosmic::Element<'_, Self::Message> {
+    fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         let width = self
             .row_width
             .lock()
@@ -385,24 +386,77 @@ impl Program for ContextMenu {
             _ => Length::Fill,
         };
 
+        // Theme tokens matching icetron dropdown styling
+        let text_style = theme.text_styles().body();
+        let text_primary = theme.text_primary();
+        let text_secondary = theme.text_secondary();
+        let text_tertiary = theme.text_tertiary();
+        let text_quaternary = theme.text_quaternary();
+        let state_hovered_neutral = theme.state_hovered_neutral();
+        let state_pressed_neutral = theme.state_pressed_neutral();
+        let divider_color = theme.dropdown_divider();
+        let border_width = theme.border_width1();
+        let border_color = theme.stroke_subtler();
+        let fill_default = {
+            let mut c = theme.fill_default();
+            c.a = 1.0; // Force opaque — no blur behind compositor menus
+            c
+        };
+        let border_radius = theme.radii_md();
+        let padding_item_v = theme.spacing_1_5();
+        let padding_item_h = theme.spacing_3();
+        let divider_padding_h = theme.spacing_2();
+        let divider_padding_v = theme.spacing_1();
+        let padding_outer_v = theme.spacing_1();
+        let gap_between_items = theme.ui_gap_3xs();
+
         Column::with_children(self.items.iter().enumerate().map(|(idx, item)| {
             match item {
-                Item::Separator => divider::horizontal::light().into(),
+                Item::Separator => {
+                    // Divider matching icetron dropdown style
+                    container(
+                        container(Space::new())
+                            .width(Length::Fill)
+                            .height(iced_core::Length::Fixed(border_width))
+                            .class(Box::new(move |_: &iced_core::Theme| container::Style {
+                                text_color: None,
+                                background: Some(iced_core::Background::Color(divider_color)),
+                                ..Default::default()
+                            })
+                                as Box<dyn Fn(&iced_core::Theme) -> container::Style>),
+                    )
+                    .width(Length::Fill)
+                    .padding(iced_core::Padding {
+                        top: divider_padding_v,
+                        bottom: divider_padding_v,
+                        left: divider_padding_h,
+                        right: divider_padding_h,
+                    })
+                    .into()
+                }
                 Item::Submenu { title, .. } => Row::with_children(vec![
-                    horizontal_space().width(16).into(),
-                    text::body(title).width(mode).into(),
-                    from_name("go-next-symbolic")
-                        .size(16)
-                        .prefer_svg(true)
-                        .icon()
+                    Space::new().width(16.0).height(Length::Shrink).into(),
+                    styled_text(title.as_str(), text_style, text_secondary)
+                        .width(mode)
+                        .into(),
+                    Svg::new(iced_core::svg::Handle::from_memory(ARROW_RIGHT_S_LINE))
+                        .width(16.0)
+                        .height(16.0)
+                        .style(move |_theme, _status| iced_widget::svg::Style {
+                            color: Some(text_tertiary),
+                        })
                         .into(),
                 ])
                 .spacing(8)
                 .width(width)
-                .padding([8, 16])
+                .padding(iced_core::Padding {
+                    top: padding_item_v,
+                    bottom: padding_item_v,
+                    left: padding_item_h,
+                    right: padding_item_h,
+                })
                 .align_y(Alignment::Center)
-                .apply(|row| item::SubmenuItem::new(row, idx))
-                .style(theme::Button::MenuItem)
+                .apply(|row| item::SubmenuItem::new(row, idx, theme))
                 .into(),
                 Item::Entry {
                     title,
@@ -411,82 +465,91 @@ impl Program for ContextMenu {
                     disabled,
                     ..
                 } => {
-                    let mut components = vec![
-                        if *toggled {
-                            from_name("object-select-symbolic")
-                                .size(16)
-                                .prefer_svg(true)
-                                .icon()
-                                .class(theme::Svg::custom(|theme| iced_widget::svg::Style {
-                                    color: Some(theme.cosmic().accent.base.into()),
-                                }))
+                    let is_disabled = *disabled;
+                    let is_toggled = *toggled;
+                    let content_color = if is_disabled {
+                        text_quaternary
+                    } else {
+                        text_secondary
+                    };
+
+                    let mut components: Vec<CompElement<'_, Message>> = vec![
+                        if is_toggled {
+                            Svg::new(iced_core::svg::Handle::from_memory(CHECK_LINE))
+                                .width(16.0)
+                                .height(16.0)
+                                .style(move |_theme, _status| iced_widget::svg::Style {
+                                    color: Some(content_color),
+                                })
                                 .into()
                         } else {
-                            horizontal_space().width(16).into()
+                            Space::new().width(16.0).height(Length::Shrink).into()
                         },
-                        text::body(title)
+                        styled_text(title.as_str(), text_style, content_color)
                             .width(mode)
-                            .class(if *disabled {
-                                theme::Text::Custom(|theme| {
-                                    let mut color = theme.cosmic().background.component.on;
-                                    color.alpha *= 0.5;
-                                    TextStyle {
-                                        color: Some(color.into()),
-                                    }
-                                })
-                            } else {
-                                theme::Text::Default
-                            })
                             .into(),
-                        horizontal_space().width(16).into(),
+                        Space::new().width(16.0).height(Length::Shrink).into(),
                     ];
                     if let Some(shortcut) = shortcut.as_ref() {
                         components.push(
-                            text::body(shortcut)
+                            styled_text(shortcut.as_str(), text_style, text_tertiary)
                                 .align_x(Horizontal::Right)
                                 .width(Length::Shrink)
-                                .class(theme::Text::Custom(|theme| {
-                                    let mut color = theme.cosmic().background.component.on;
-                                    color.alpha *= 0.75;
-                                    TextStyle {
-                                        color: Some(color.into()),
-                                    }
-                                }))
                                 .into(),
                         );
                     }
 
-                    Row::with_children(components)
-                        .spacing(8)
-                        .width(mode)
-                        .align_y(Alignment::Center)
-                        .apply(button::custom)
-                        .width(width)
-                        .padding([8, 16])
-                        .on_press_maybe((!disabled).then_some(Message::ItemPressed(idx)))
-                        .class(theme::Button::MenuItem)
-                        .into()
+                    button(
+                        Row::with_children(components)
+                            .spacing(8)
+                            .width(mode)
+                            .align_y(Alignment::Center),
+                    )
+                    .width(width)
+                    .padding(iced_core::Padding {
+                        top: padding_item_v,
+                        bottom: padding_item_v,
+                        left: padding_item_h,
+                        right: padding_item_h,
+                    })
+                    .style(move |_theme, status| {
+                        let (bg_color, txt_color) = match status {
+                            button::Status::Hovered => (state_hovered_neutral, text_primary),
+                            button::Status::Pressed => (state_pressed_neutral, content_color),
+                            _ => (iced_core::Color::TRANSPARENT, content_color),
+                        };
+                        button::Style {
+                            background: Some(iced_core::Background::Color(bg_color)),
+                            border: iced_core::Border::default(),
+                            text_color: txt_color,
+                            ..Default::default()
+                        }
+                    })
+                    .on_press_maybe((!disabled).then_some(Message::ItemPressed(idx)))
+                    .into()
                 }
             }
         }))
+        .spacing(gap_between_items)
         .width(Length::Shrink)
-        .apply(iced_widget::container)
-        .padding(1)
-        .class(theme::Container::custom(|theme| {
-            let cosmic = theme.cosmic();
-            let component = &cosmic.background.component;
-            iced_widget::container::Style {
-                icon_color: Some(cosmic.accent.base.into()),
-                text_color: Some(component.on.into()),
-                background: Some(Background::Color(component.base.into())),
-                border: Border {
-                    radius: cosmic.radius_s().into(),
-                    width: 1.0,
-                    color: component.divider.into(),
-                },
-                shadow: Default::default(),
-            }
-        }))
+        .apply(container)
+        .padding(iced_core::Padding {
+            top: padding_outer_v,
+            bottom: padding_outer_v,
+            left: 0.0,
+            right: 0.0,
+        })
+        .class(Box::new(move |_: &iced_core::Theme| container::Style {
+            text_color: None,
+            background: Some(iced_core::Background::Color(fill_default)),
+            border: iced_core::Border {
+                radius: border_radius.into(),
+                width: border_width,
+                color: border_color,
+            },
+            ..Default::default()
+        })
+            as Box<dyn Fn(&iced_core::Theme) -> container::Style>)
         .width(Length::Shrink)
         .into()
     }
@@ -505,6 +568,7 @@ pub struct MenuGrab {
     seat: Seat<State>,
     screen_space_relative: Option<Output>,
     scale: Arc<Mutex<f64>>,
+    on_close: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl PointerGrab<State> for MenuGrab {
@@ -1006,14 +1070,17 @@ impl MenuGrab {
         alignment: MenuAlignment,
         screen_space_relative: Option<f64>,
         handle: LoopHandle<'static, crate::state::State>,
-        theme: cosmic::Theme,
+        theme: CompTheme,
     ) -> MenuGrab {
         let items = items.collect::<Vec<_>>();
         let element = IcedElement::new(ContextMenu::new(items), Size::default(), handle, theme);
-        let min_size = element.minimum_size();
+        // Two-pass sizing: first pass measures natural width, second pass measures
+        // final height with that width locked (mode switches from Shrink to Fill).
+        let natural_size = element.minimum_size();
         element.with_program(|p| {
-            *p.row_width.lock().unwrap() = Some(min_size.w as f32);
+            *p.row_width.lock().unwrap() = Some(natural_size.w as f32);
         });
+        let min_size = element.minimum_size();
         element.resize(min_size);
 
         let output = seat.active_output();
@@ -1072,6 +1139,7 @@ impl MenuGrab {
             seat: seat.clone(),
             screen_space_relative,
             scale,
+            on_close: None,
         }
     }
 
@@ -1080,6 +1148,12 @@ impl MenuGrab {
         for element in &*self.elements.lock().unwrap() {
             element.iced.set_additional_scale(scale);
         }
+    }
+
+    /// Set a callback to be invoked when the menu is dismissed.
+    pub fn on_close(mut self, callback: impl FnOnce() + Send + 'static) -> Self {
+        self.on_close = Some(Box::new(callback));
+        self
     }
 
     pub fn is_touch_grab(&self) -> bool {
@@ -1099,5 +1173,8 @@ impl Drop for MenuGrab {
             .lock()
             .unwrap()
             .take();
+        if let Some(on_close) = self.on_close.take() {
+            on_close();
+        }
     }
 }

@@ -31,8 +31,8 @@ use crate::{
     },
 };
 
+use crate::comp_theme::CompTheme;
 use calloop::LoopHandle;
-use cosmic::theme::CosmicTheme;
 use smithay::{
     backend::{
         input::ButtonState,
@@ -93,7 +93,7 @@ impl MoveGrabState {
         &self,
         renderer: &mut R,
         output: &Output,
-        theme: &CosmicTheme,
+        theme: &CompTheme,
         embedded_children: &[(CosmicMapped, EmbedRenderInfo)],
         attached_orb_state: Option<&VoiceOrbState>,
     ) -> Vec<I>
@@ -136,7 +136,7 @@ impl MoveGrabState {
             + self.window_offset
             - scaling_offset;
 
-        let active_window_hint = crate::theme::active_window_hint(theme);
+        let active_window_hint = theme.active_window_hint();
         let radius = self
             .element()
             .corner_radius(window_geo.size, self.indicator_thickness);
@@ -181,7 +181,7 @@ impl MoveGrabState {
 
         let snapping_indicator = match &self.snapping_zone {
             Some(t) if &self.cursor_output == output => {
-                let base_color = theme.palette.neutral_9;
+                let base_color = theme.neutral_color();
                 let overlay_geometry = t.overlay_geometry(non_exclusive_geometry, gaps);
                 vec![
                     CosmicMappedRenderElement::from(IndicatorShader::element(

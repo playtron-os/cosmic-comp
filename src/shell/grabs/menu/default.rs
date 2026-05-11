@@ -13,12 +13,13 @@ use crate::{
         grabs::ReleaseMode,
     },
     state::State,
-    utils::{prelude::SeatExt, screenshot::screenshot_window},
+    utils::{prelude::SeatExt, process::workspaces_enabled, screenshot::screenshot_window},
     wayland::protocols::workspace::WorkspaceHandle,
 };
 
 use super::{Item, ResizeEdge};
 
+#[cfg(feature = "stacking")]
 fn toggle_stacking(state: &mut State, mapped: &CosmicMapped) {
     let mut shell = state.common.shell.write();
     let seat = shell.seats.last_active().clone();
@@ -242,13 +243,16 @@ pub fn window_items(
     let resize_left_clone = window.clone();
     let resize_right_clone = window.clone();
     let resize_bottom_clone = window.clone();
+    #[cfg(feature = "stacking")]
     let unstack_clone = window.clone();
     let screenshot_clone = window.clone();
+    #[cfg(feature = "stacking")]
     let stack_clone = window.clone();
     let sticky_clone = window.clone();
     let close_clone = window.clone();
 
     vec![
+        #[cfg(feature = "stacking")]
         (!is_stacked).then_some(
             Item::new(fl!("window-menu-stack"), move |handle| {
                 let mapped = stack_clone.clone();
@@ -256,6 +260,7 @@ pub fn window_items(
             })
             .shortcut(config.shortcut_for_action(&Action::ToggleStacking)),
         ),
+        #[cfg(feature = "stacking")]
         is_stacked.then_some(
             Item::new(fl!("window-menu-unstack-all"), move |handle| {
                 let mapped = unstack_clone.clone();
@@ -265,6 +270,7 @@ pub fn window_items(
             })
             .shortcut(config.shortcut_for_action(&Action::ToggleStacking)),
         ),
+        #[cfg(feature = "stacking")]
         Some(Item::Separator),
         Some(
             Item::new(fl!("window-menu-minimize"), move |handle| {
@@ -515,24 +521,32 @@ pub fn window_items(
                 .disabled(!possible_resizes.contains(ResizeEdge::BOTTOM)),
             ],
         )),
-        Some(
-            Item::new(fl!("window-menu-move-prev-workspace"), move |handle| {
-                let mapped = move_prev_clone.clone();
-                let _ =
-                    handle.insert_idle(move |state| move_element_prev_workspace(state, &mapped));
-            })
-            .shortcut(config.shortcut_for_action(&Action::MoveToPreviousWorkspace))
-            .disabled(is_sticky),
-        ),
-        Some(
-            Item::new(fl!("window-menu-move-next-workspace"), move |handle| {
-                let mapped = move_next_clone.clone();
-                let _ =
-                    handle.insert_idle(move |state| move_element_next_workspace(state, &mapped));
-            })
-            .shortcut(config.shortcut_for_action(&Action::MoveToNextWorkspace))
-            .disabled(is_sticky),
-        ),
+        if workspaces_enabled() {
+            Some(
+                Item::new(fl!("window-menu-move-prev-workspace"), move |handle| {
+                    let mapped = move_prev_clone.clone();
+                    let _ = handle
+                        .insert_idle(move |state| move_element_prev_workspace(state, &mapped));
+                })
+                .shortcut(config.shortcut_for_action(&Action::MoveToPreviousWorkspace))
+                .disabled(is_sticky),
+            )
+        } else {
+            None
+        },
+        if workspaces_enabled() {
+            Some(
+                Item::new(fl!("window-menu-move-next-workspace"), move |handle| {
+                    let mapped = move_next_clone.clone();
+                    let _ = handle
+                        .insert_idle(move |state| move_element_next_workspace(state, &mapped));
+                })
+                .shortcut(config.shortcut_for_action(&Action::MoveToNextWorkspace))
+                .disabled(is_sticky),
+            )
+        } else {
+            None
+        },
         Some(Item::Separator),
         Some(
             Item::new(fl!("window-menu-sticky"), move |handle| {
@@ -645,22 +659,30 @@ pub fn fullscreen_items(window: &CosmicSurface, config: &Config) -> impl Iterato
                 }
             });
         })),
-        Some(
-            Item::new(fl!("window-menu-move-prev-workspace"), move |handle| {
-                let window = move_prev_clone.clone();
-                let _ =
-                    handle.insert_idle(move |state| move_fullscreen_prev_workspace(state, &window));
-            })
-            .shortcut(config.shortcut_for_action(&Action::MoveToPreviousWorkspace)),
-        ),
-        Some(
-            Item::new(fl!("window-menu-move-next-workspace"), move |handle| {
-                let window = move_next_clone.clone();
-                let _ =
-                    handle.insert_idle(move |state| move_fullscreen_next_workspace(state, &window));
-            })
-            .shortcut(config.shortcut_for_action(&Action::MoveToNextWorkspace)),
-        ),
+        if workspaces_enabled() {
+            Some(
+                Item::new(fl!("window-menu-move-prev-workspace"), move |handle| {
+                    let window = move_prev_clone.clone();
+                    let _ = handle
+                        .insert_idle(move |state| move_fullscreen_prev_workspace(state, &window));
+                })
+                .shortcut(config.shortcut_for_action(&Action::MoveToPreviousWorkspace)),
+            )
+        } else {
+            None
+        },
+        if workspaces_enabled() {
+            Some(
+                Item::new(fl!("window-menu-move-next-workspace"), move |handle| {
+                    let window = move_next_clone.clone();
+                    let _ = handle
+                        .insert_idle(move |state| move_fullscreen_next_workspace(state, &window));
+                })
+                .shortcut(config.shortcut_for_action(&Action::MoveToNextWorkspace)),
+            )
+        } else {
+            None
+        },
         Some(Item::Separator),
         Some(
             Item::new(fl!("window-menu-close"), move |_handle| {

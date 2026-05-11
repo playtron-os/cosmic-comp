@@ -38,7 +38,7 @@ use crate::{
         element::{
             CosmicMapped, CosmicMappedKey, CosmicMappedRenderElement, CosmicWindow, MaximizedState,
             resize_indicator::ResizeIndicator,
-            stack::{CosmicStackRenderElement, MoveResult as StackMoveResult, TAB_HEIGHT},
+            stack::{CosmicStackRenderElement, MoveResult as StackMoveResult},
             window::CosmicWindowRenderElement,
         },
         focus::{
@@ -67,7 +67,7 @@ pub struct FloatingLayout {
     animations: HashMap<CosmicMapped, Animation>,
     hovered_stack: Option<(CosmicMapped, Rectangle<i32, Local>)>,
     dirty: AtomicBool,
-    pub theme: cosmic::Theme,
+    pub theme: crate::comp_theme::CompTheme,
     pub appearance: AppearanceConfig,
 }
 
@@ -328,7 +328,7 @@ pub struct BlurWindowGroup {
 
 impl FloatingLayout {
     pub fn new(
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
         output: &Output,
     ) -> FloatingLayout {
@@ -1694,7 +1694,10 @@ impl FloatingLayout {
         if let Some((mapped, _)) = res.as_ref() {
             let geometry = self.space.element_geometry(mapped).unwrap();
             let offset = location.y.round() as i32 - geometry.loc.y;
-            if mapped.is_stack() && offset.is_positive() && offset <= TAB_HEIGHT {
+            if mapped.is_stack()
+                && offset.is_positive()
+                && offset <= mapped.ssd_height(false).unwrap_or(0)
+            {
                 self.hovered_stack = Some((mapped.clone(), geometry.as_local()));
             } else {
                 self.hovered_stack.take();
@@ -1926,7 +1929,7 @@ impl FloatingLayout {
         direction: Direction,
         seat: &Seat<State>,
         layer: ManagedLayer,
-        theme: &cosmic::Theme,
+        theme: &crate::comp_theme::CompTheme,
         element: &CosmicMapped,
     ) -> MoveResult {
         match element.handle_move(direction) {
@@ -2093,7 +2096,7 @@ impl FloatingLayout {
         direction: Direction,
         seat: &Seat<State>,
         layer: ManagedLayer,
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
     ) -> MoveResult {
         let Some(target) = seat.get_keyboard().unwrap().current_focus() else {
             return MoveResult::None;
@@ -2484,6 +2487,12 @@ impl FloatingLayout {
         self.space.elements().any(|elem| elem.has_blur())
     }
 
+    pub fn has_ssd_windows(&self) -> bool {
+        self.space
+            .elements()
+            .any(|elem| elem.has_ssd() && !elem.has_blur())
+    }
+
     /// Get blur windows in Z-order (bottom to top) with their keys
     /// Returns (window_key, geometry, alpha, global_z_index) tuples
     /// global_z_index is the position among ALL windows where 0 = bottom and N-1 = top
@@ -2513,7 +2522,7 @@ impl FloatingLayout {
             .map(|(elem, _)| elem)
             .chain(self.space.elements().rev())
             .enumerate()
-            .filter(|(_, elem)| elem.has_blur())
+            .filter(|(_, elem)| elem.has_blur() || elem.has_ssd())
             .filter_map(|(front_to_back_idx, elem)| {
                 // Convert front-to-back index to back-to-front z-index
                 // Index 0 in iteration = topmost window = z-index (total-1)
@@ -2584,9 +2593,9 @@ impl FloatingLayout {
             .enumerate()
             .filter_map(|(front_to_back_idx, elem)| {
                 let global_z_idx = total_count - 1 - front_to_back_idx;
-                let has_blur = elem.has_blur();
+                let needs_blur = elem.has_blur() || (elem.has_ssd() && !elem.has_blur());
 
-                if has_blur {
+                if needs_blur {
                     let anim_opt = self.animations.get(elem);
                     let (geometry, elem_alpha) = if let Some(anim) = anim_opt {
                         (*anim.previous_geometry(), alpha * anim.alpha())
@@ -2674,7 +2683,8 @@ impl FloatingLayout {
             return Vec::new();
         }
 
-        self.animations
+        let mut geometries: Vec<(Rectangle<i32, Local>, f32)> = self
+            .animations
             .iter()
             .filter(|(_, anim)| matches!(anim, Animation::Minimize { .. }))
             .map(|(elem, _)| elem)
@@ -2690,7 +2700,24 @@ impl FloatingLayout {
                 };
                 Some((geometry, elem_alpha))
             })
-            .collect()
+            .collect();
+
+        // Add SSD header blur regions for windows with server-side decorations
+        // that don't already have full-window blur
+        for elem in self.space.elements().rev() {
+            if elem.has_ssd()
+                && !elem.has_blur()
+                && let Some(geo) = self.space.element_geometry(elem)
+            {
+                let header_geo = Rectangle::new(
+                    geo.loc.as_local(),
+                    Size::from((geo.size.w, elem.ssd_height(false).unwrap_or(0))),
+                );
+                geometries.push((header_geo, alpha));
+            }
+        }
+
+        geometries
     }
 
     #[profiling::function]
@@ -2764,7 +2791,7 @@ impl FloatingLayout {
         mut resize_indicator: Option<(ResizeMode, ResizeIndicator)>,
         indicator_thickness: u8,
         alpha: f32,
-        theme: &cosmic::theme::CosmicTheme,
+        theme: &crate::comp_theme::CompTheme,
         element_filter: ElementFilter,
         attached_orb_state: Option<&VoiceOrbState>,
     ) -> Vec<CosmicMappedRenderElement<R>>
@@ -2857,7 +2884,7 @@ impl FloatingLayout {
             if let Some(ctx) = blur_ctx {
                 // Skip grabbed/dragged window - it's always on top
                 if ctx.is_window_grabbed(elem) {
-                    tracing::debug!(
+                    tracing::trace!(
                         window_class = %elem.active_window().app_id(),
                         z_idx = z_idx,
                         "Skipping grabbed window during blur capture"
@@ -2867,7 +2894,7 @@ impl FloatingLayout {
 
                 // Check if this window is at or above the z-index threshold
                 if ctx.is_z_index_excluded(z_idx) {
-                    tracing::debug!(
+                    tracing::trace!(
                         window_class = %elem.active_window().app_id(),
                         z_idx = z_idx,
                         "Excluding window during blur capture (z-index threshold)"
@@ -2876,7 +2903,7 @@ impl FloatingLayout {
                 }
 
                 // This window WILL be rendered in blur capture
-                tracing::debug!(
+                tracing::trace!(
                     window_class = %elem.active_window().app_id(),
                     z_idx = z_idx,
                     "Including window in blur capture"
@@ -3198,6 +3225,49 @@ impl FloatingLayout {
                 }
             }
 
+            // Add blur backdrop for SSD header on windows without full-window blur
+            if !elem.has_blur() && elem.has_ssd() && blur_ctx.is_none() {
+                let header_geo = Rectangle::new(
+                    geometry.loc,
+                    Size::from((geometry.size.w, elem.ssd_height(false).unwrap_or(0))),
+                );
+                let ssd_corner_radius = [0.0f32; 4];
+
+                let output_name = output.name();
+                let window_key = elem.key();
+                let output_transform = output.current_transform();
+                let output_scale = output.current_scale().fractional_scale();
+
+                let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
+                if let Some(blur_info) = blur_info {
+                    let blur_backdrop = BlurredBackdropShader::element(
+                        renderer,
+                        &blur_info.texture,
+                        header_geo,
+                        blur_info.size,
+                        blur_info.screen_size,
+                        output_scale,
+                        output_transform,
+                        ssd_corner_radius,
+                        alpha,
+                        BLUR_TINT_COLOR,
+                        BLUR_TINT_STRENGTH,
+                        false,
+                    );
+                    window_elements.push(blur_backdrop.into());
+                } else {
+                    let blur_backdrop = BackdropShader::element(
+                        renderer,
+                        Key::Window(Usage::Overlay, elem.key()),
+                        header_geo,
+                        ssd_corner_radius,
+                        alpha * BLUR_FALLBACK_ALPHA,
+                        BLUR_FALLBACK_COLOR,
+                    );
+                    window_elements.push(blur_backdrop.into());
+                }
+            }
+
             // Render backdrop color for windows that set the backdrop_color protocol
             // (only when blur is not already providing a backdrop)
             if (!elem.has_blur() || blur_ctx.is_some())
@@ -3362,7 +3432,7 @@ impl FloatingLayout {
                         .collect();
                 }
 
-                let active_window_hint = crate::theme::active_window_hint(theme);
+                let active_window_hint = theme.active_window_hint();
                 let radius = elem.corner_radius(geometry.size.as_logical(), indicator_thickness);
                 if indicator_thickness > 0 {
                     let element = IndicatorShader::focus_element(
@@ -3406,7 +3476,7 @@ impl FloatingLayout {
     }
 
     fn gaps(&self) -> (i32, i32) {
-        let g = self.theme.cosmic().gaps;
+        let g = self.theme.gaps;
         (g.0 as i32, g.1 as i32)
     }
 }

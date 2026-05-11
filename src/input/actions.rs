@@ -7,7 +7,7 @@ use crate::{
         focus::{FocusTarget, target::KeyboardFocusTarget},
         layout::tiling::SwapWindowGrab,
     },
-    utils::prelude::*,
+    utils::{prelude::*, process::workspaces_enabled},
     wayland::{
         handlers::xdg_activation::ActivationContext, protocols::workspace::WorkspaceUpdateGuard,
     },
@@ -162,6 +162,9 @@ impl State {
             }
 
             Action::Workspace(key_num) => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 let current_output = seat.active_output();
                 let workspace = match key_num {
                     0 => 9,
@@ -176,6 +179,9 @@ impl State {
             }
 
             Action::LastWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 let current_output = seat.active_output();
                 let mut shell = self.common.shell.write();
                 let workspace = shell.workspaces.len(&current_output).saturating_sub(1);
@@ -188,6 +194,9 @@ impl State {
             }
 
             Action::NextWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 if let Some(direction) = pattern.inferred_direction()
                     && (((direction == Direction::Left || direction == Direction::Right)
                         && self.common.config.cosmic_conf.workspaces.workspace_layout
@@ -233,6 +242,9 @@ impl State {
             }
 
             Action::PreviousWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 if let Some(direction) = pattern.inferred_direction()
                     && (((direction == Direction::Left || direction == Direction::Right)
                         && self.common.config.cosmic_conf.workspaces.workspace_layout
@@ -278,6 +290,9 @@ impl State {
             }
 
             x @ Action::MoveToWorkspace(_) | x @ Action::SendToWorkspace(_) => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 let Some(focused_output) = seat.focused_output() else {
                     return;
                 };
@@ -307,6 +322,9 @@ impl State {
             }
 
             x @ Action::MoveToLastWorkspace | x @ Action::SendToLastWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 let Some(focused_output) = seat.focused_output() else {
                     return;
                 };
@@ -334,6 +352,9 @@ impl State {
             }
 
             x @ Action::MoveToNextWorkspace | x @ Action::SendToNextWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 if let Some(direction) = pattern.inferred_direction()
                     && (((direction == Direction::Left || direction == Direction::Right)
                         && self.common.config.cosmic_conf.workspaces.workspace_layout
@@ -417,6 +438,9 @@ impl State {
             }
 
             x @ Action::MoveToPreviousWorkspace | x @ Action::SendToPreviousWorkspace => {
+                if !workspaces_enabled() {
+                    return;
+                }
                 if let Some(direction) = pattern.inferred_direction()
                     && (((direction == Direction::Left || direction == Direction::Right)
                         && self.common.config.cosmic_conf.workspaces.workspace_layout
@@ -841,25 +865,27 @@ impl State {
             }
 
             Action::SwapWindow => {
-                let Some(focused_output) = seat.focused_output() else {
-                    return;
-                };
-                let mut shell = self.common.shell.write();
-
-                let workspace = shell.active_space_mut(&focused_output).unwrap();
-                let keyboard_handle = seat.get_keyboard().unwrap();
-
-                if let Some(focus) = keyboard_handle.current_focus()
-                    && let Some(descriptor) = workspace.node_desc(focus)
-                {
-                    let grab = SwapWindowGrab::new(seat.clone(), descriptor.clone());
-                    drop(shell);
-                    keyboard_handle.set_grab(self, grab, serial);
+                if self.common.config.cosmic_conf.tiling_enabled {
+                    let Some(focused_output) = seat.focused_output() else {
+                        return;
+                    };
                     let mut shell = self.common.shell.write();
-                    shell.set_overview_mode(
-                        Some(Trigger::KeyboardSwap(pattern, descriptor)),
-                        self.common.event_loop_handle.clone(),
-                    );
+
+                    let workspace = shell.active_space_mut(&focused_output).unwrap();
+                    let keyboard_handle = seat.get_keyboard().unwrap();
+
+                    if let Some(focus) = keyboard_handle.current_focus()
+                        && let Some(descriptor) = workspace.node_desc(focus)
+                    {
+                        let grab = SwapWindowGrab::new(seat.clone(), descriptor.clone());
+                        drop(shell);
+                        keyboard_handle.set_grab(self, grab, serial);
+                        let mut shell = self.common.shell.write();
+                        shell.set_overview_mode(
+                            Some(Trigger::KeyboardSwap(pattern, descriptor)),
+                            self.common.event_loop_handle.clone(),
+                        );
+                    }
                 }
             }
 
@@ -1003,71 +1029,82 @@ impl State {
             // NOTE: implementation currently assumes actions that apply to outputs should apply to the active output
             // rather than the output that has keyboard focus
             Action::ToggleOrientation => {
-                let output = seat.active_output();
-                let mut shell = self.common.shell.write();
-                let workspace = shell.active_space_mut(&output).unwrap();
-                workspace.tiling_layer.update_orientation(None, seat);
+                if self.common.config.cosmic_conf.tiling_enabled {
+                    let output = seat.active_output();
+                    let mut shell = self.common.shell.write();
+                    let workspace = shell.active_space_mut(&output).unwrap();
+                    workspace.tiling_layer.update_orientation(None, seat);
+                }
             }
 
             Action::Orientation(orientation) => {
-                let output = seat.active_output();
-                let mut shell = self.common.shell.write();
-                let workspace = shell.active_space_mut(&output).unwrap();
-                workspace
-                    .tiling_layer
-                    .update_orientation(Some(orientation), seat);
+                if self.common.config.cosmic_conf.tiling_enabled {
+                    let output = seat.active_output();
+                    let mut shell = self.common.shell.write();
+                    let workspace = shell.active_space_mut(&output).unwrap();
+                    workspace
+                        .tiling_layer
+                        .update_orientation(Some(orientation), seat);
+                }
             }
 
             Action::ToggleStacking => {
-                let res = self
-                    .common
-                    .shell
-                    .write()
-                    .toggle_stacking_focused(seat, &self.common.event_loop_handle);
-                if let Some(new_focus) = res {
-                    Shell::set_focus(self, Some(&new_focus), seat, Some(serial), false);
+                #[cfg(feature = "stacking")]
+                {
+                    let res = self
+                        .common
+                        .shell
+                        .write()
+                        .toggle_stacking_focused(seat, &self.common.event_loop_handle);
+                    if let Some(new_focus) = res {
+                        Shell::set_focus(self, Some(&new_focus), seat, Some(serial), false);
+                    }
                 }
             }
 
             Action::ToggleTiling => {
-                if matches!(
-                    self.common.config.cosmic_conf.autotile_behavior,
-                    TileBehavior::Global
-                ) {
-                    let autotile = !self.common.config.cosmic_conf.autotile;
-                    self.common.config.cosmic_conf.autotile = autotile;
+                if self.common.config.cosmic_conf.tiling_enabled {
+                    if matches!(
+                        self.common.config.cosmic_conf.autotile_behavior,
+                        TileBehavior::Global
+                    ) {
+                        let autotile = !self.common.config.cosmic_conf.autotile;
+                        self.common.config.cosmic_conf.autotile = autotile;
 
-                    {
-                        let mut shell = self.common.shell.write();
-                        let shell_ref = &mut *shell;
-                        shell_ref.workspaces.update_autotile(
-                            self.common.config.cosmic_conf.autotile,
-                            &mut self.common.workspace_state.update(),
-                            shell_ref.seats.iter(),
-                        );
-                    }
-                    let config = self.common.config.cosmic_helper.clone();
-                    thread::spawn(move || {
-                        if let Err(err) = config.set("autotile", autotile) {
-                            error!(?err, "Failed to update autotile key");
+                        {
+                            let mut shell = self.common.shell.write();
+                            let shell_ref = &mut *shell;
+                            shell_ref.workspaces.update_autotile(
+                                self.common.config.cosmic_conf.autotile,
+                                &mut self.common.workspace_state.update(),
+                                shell_ref.seats.iter(),
+                            );
                         }
-                    });
-                } else {
-                    let output = seat.active_output();
-                    let mut shell = self.common.shell.write();
-                    let workspace = shell.workspaces.active_mut(&output).unwrap();
-                    let mut guard = self.common.workspace_state.update();
-                    workspace.toggle_tiling(seat, &mut guard);
+                        let config = self.common.config.cosmic_helper.clone();
+                        thread::spawn(move || {
+                            if let Err(err) = config.set("autotile", autotile) {
+                                error!(?err, "Failed to update autotile key");
+                            }
+                        });
+                    } else {
+                        let output = seat.active_output();
+                        let mut shell = self.common.shell.write();
+                        let workspace = shell.workspaces.active_mut(&output).unwrap();
+                        let mut guard = self.common.workspace_state.update();
+                        workspace.toggle_tiling(seat, &mut guard);
+                    }
                 }
             }
 
             Action::ToggleWindowFloating => {
-                let Some(output) = seat.focused_output() else {
-                    return;
-                };
-                let mut shell = self.common.shell.write();
-                let workspace = shell.active_space_mut(&output).unwrap();
-                workspace.toggle_floating_window_focused(seat);
+                if self.common.config.cosmic_conf.tiling_enabled {
+                    let Some(output) = seat.focused_output() else {
+                        return;
+                    };
+                    let mut shell = self.common.shell.write();
+                    let workspace = shell.active_space_mut(&output).unwrap();
+                    workspace.toggle_floating_window_focused(seat);
+                }
             }
 
             Action::ToggleSticky => {

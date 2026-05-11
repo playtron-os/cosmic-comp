@@ -1,99 +1,16 @@
-use cosmic::{
-    Apply,
-    font::Font,
-    iced::{
-        Background,
-        widget::{self, container::draw_background, rule::FillMode},
-    },
-    iced_core::{
-        Border, Clipboard, Color, Length, Rectangle, Shell, Size, alignment, event,
-        layout::{Layout, Limits, Node},
-        mouse, overlay, renderer,
-        widget::{Id, Widget, operation::Operation, tree::Tree},
-    },
-    iced_widget::scrollable::AbsoluteOffset,
-    theme,
-    widget::{Icon, icon::from_name},
+use iced_core::{
+    Background, Border, Color, Font, Length, Point, Rectangle, Renderer as _, Shell, Size, Vector,
+    event,
+    layout::{Layout, Limits, Node},
+    mouse, overlay, renderer,
+    svg::{self, Renderer as SvgRenderer},
+    text::{LineHeight, Paragraph, Renderer as TextRenderer, Shaping},
+    widget::{Id, Operation, Widget, tree::Tree},
 };
+use iced_widget::scrollable::AbsoluteOffset;
 
-use super::tab_text::tab_text;
-
-#[derive(Clone, Copy)]
-pub(super) enum TabRuleTheme {
-    ActiveActivated,
-    ActiveDeactivated,
-    Default,
-}
-
-impl From<TabRuleTheme> for theme::Rule {
-    fn from(theme: TabRuleTheme) -> Self {
-        match theme {
-            TabRuleTheme::ActiveActivated => Self::custom(|theme| widget::rule::Style {
-                color: theme.cosmic().accent_color().into(),
-                width: 4,
-                radius: 0.0.into(),
-                fill_mode: FillMode::Full,
-            }),
-            TabRuleTheme::ActiveDeactivated => Self::custom(|theme| widget::rule::Style {
-                color: theme.cosmic().palette.neutral_5.into(),
-                width: 4,
-                radius: 0.0.into(),
-                fill_mode: FillMode::Full,
-            }),
-            TabRuleTheme::Default => Self::custom(|theme| widget::rule::Style {
-                color: theme.cosmic().palette.neutral_5.into(),
-                width: 4,
-                radius: 8.0.into(),
-                fill_mode: FillMode::Padded(4),
-            }),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum TabBackgroundTheme {
-    ActiveActivated,
-    ActiveDeactivated,
-    Default,
-}
-
-impl From<TabBackgroundTheme> for theme::Container<'_> {
-    fn from(background_theme: TabBackgroundTheme) -> Self {
-        match background_theme {
-            TabBackgroundTheme::ActiveActivated => {
-                Self::custom(move |theme| widget::container::Style {
-                    icon_color: Some(Color::from(theme.cosmic().accent_text_color())),
-                    text_color: Some(Color::from(theme.cosmic().accent_text_color())),
-                    background: Some(Background::Color(
-                        theme.cosmic().primary.component.selected.into(),
-                    )),
-                    border: Border {
-                        radius: 0.0.into(),
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
-                    },
-                    shadow: Default::default(),
-                })
-            }
-            TabBackgroundTheme::ActiveDeactivated => {
-                Self::custom(move |theme| widget::container::Style {
-                    icon_color: None,
-                    text_color: None,
-                    background: Some(Background::Color(
-                        theme.cosmic().primary.component.base.into(),
-                    )),
-                    border: Border {
-                        radius: 0.0.into(),
-                        width: 0.0,
-                        color: Color::TRANSPARENT,
-                    },
-                    shadow: Default::default(),
-                })
-            }
-            TabBackgroundTheme::Default => Self::Transparent,
-        }
-    }
-}
+use crate::comp_theme::CompTheme;
+use crate::utils::iced::CompElement;
 
 pub trait TabMessage: Clone {
     fn activate(idx: usize) -> Self;
@@ -104,16 +21,52 @@ pub trait TabMessage: Clone {
     fn scrolled() -> Self;
 }
 
+/// Internal height of the tab content area (text + icon).
+/// This is used for min-height calculations of individual tabs.
+const TAB_CONTENT_HEIGHT: f32 = 28.0;
+
+pub const MIN_ACTIVE_TAB_WIDTH: i32 = 140;
+const MIN_TAB_WIDTH: i32 = 38;
+const ICON_SIZE: f32 = 16.0;
+const CLOSE_ICON_SIZE: f32 = 12.0;
+const H_PADDING: f32 = 8.0;
+const ICON_GAP: f32 = 6.0;
+const CLOSE_BREAKPOINT: f32 = 125.0;
+const TEXT_BREAKPOINT: f32 = 44.0;
+
+/// Style configuration for a tab, pre-computed from theme tokens.
+#[derive(Clone, Copy)]
+pub(super) struct TabStyle {
+    pub background: Option<Color>,
+    pub text_color: Color,
+    pub radius: f32,
+}
+
+impl TabStyle {
+    pub fn active(theme: &CompTheme) -> Self {
+        TabStyle {
+            background: Some(theme.surface_color()),
+            text_color: theme.on_bg_color(),
+            radius: theme.radius_s()[0],
+        }
+    }
+
+    pub fn inactive(theme: &CompTheme) -> Self {
+        TabStyle {
+            background: None,
+            text_color: theme.on_surface_color(),
+            radius: theme.radius_s()[0],
+        }
+    }
+}
+
 pub struct Tab<Message: TabMessage> {
     id: Id,
-    app_icon: Icon,
+    app_id: String,
     title: String,
-    font: Font,
     close_message: Option<Message>,
     press_message: Option<Message>,
     right_click_message: Option<Message>,
-    rule_theme: TabRuleTheme,
-    background_theme: TabBackgroundTheme,
     active: bool,
 }
 
@@ -121,14 +74,11 @@ impl<Message: TabMessage + 'static> Tab<Message> {
     pub fn new(title: impl Into<String>, app_id: impl Into<String>, id: Id) -> Self {
         Tab {
             id,
-            app_icon: from_name(app_id.into()).size(16).icon(),
+            app_id: app_id.into(),
             title: title.into(),
-            font: cosmic::font::default(),
             close_message: None,
             press_message: None,
             right_click_message: None,
-            rule_theme: TabRuleTheme::Default,
-            background_theme: TabBackgroundTheme::Default,
             active: false,
         }
     }
@@ -148,18 +98,8 @@ impl<Message: TabMessage + 'static> Tab<Message> {
         self
     }
 
-    pub(super) fn font(mut self, font: Font) -> Self {
-        self.font = font;
-        self
-    }
-
-    pub(super) fn rule_style(mut self, theme: TabRuleTheme) -> Self {
-        self.rule_theme = theme;
-        self
-    }
-
-    pub(super) fn background_style(mut self, theme: TabBackgroundTheme) -> Self {
-        self.background_theme = theme;
+    pub(super) fn active(mut self) -> Self {
+        self.active = true;
         self
     }
 
@@ -168,77 +108,106 @@ impl<Message: TabMessage + 'static> Tab<Message> {
         self
     }
 
-    pub(super) fn active(mut self) -> Self {
-        self.active = true;
-        self
-    }
-
-    pub(super) fn internal<'a>(self, idx: usize) -> TabInternal<'a, Message> {
-        let mut close_button = from_name("window-close-symbolic")
-            .size(16)
-            .prefer_svg(true)
-            .icon()
-            .apply(widget::button)
-            .padding(0)
-            .class(theme::iced::Button::Text);
-        if let Some(close_message) = self.close_message {
-            close_button = close_button.on_press(close_message);
-        }
-
-        let items = vec![
-            widget::vertical_rule(4).class(self.rule_theme).into(),
-            self.app_icon
-                .clone()
-                .apply(widget::container)
-                .width(Length::Shrink)
-                .padding([2, 4])
-                .center_y(Length::Fill)
-                .into(),
-            tab_text(self.title, self.active)
-                .font(self.font)
-                .font_size(14.0)
-                .height(Length::Fill)
-                .width(Length::Fill)
-                .into(),
-            close_button
-                .apply(widget::container)
-                .width(Length::Shrink)
-                .padding([2, 4])
-                .center_y(Length::Fill)
-                .align_x(alignment::Horizontal::Right)
-                .into(),
-        ];
+    /// Convert into the internal widget with pre-computed style.
+    pub(super) fn internal(self, idx: usize, theme: &CompTheme) -> TabInternal<Message> {
+        let style = if self.active {
+            TabStyle::active(theme)
+        } else {
+            TabStyle::inactive(theme)
+        };
 
         TabInternal {
             id: self.id,
+            app_id: self.app_id,
+            title: self.title,
             idx,
             active: self.active,
-            background: self.background_theme.into(),
-            elements: items,
+            style,
             press_message: self.press_message,
             right_click_message: self.right_click_message,
+            close_message: self.close_message,
         }
     }
 }
 
-const TAB_HEIGHT: i32 = 24;
-pub const MIN_ACTIVE_TAB_WIDTH: i32 = 140;
-const MIN_TAB_WIDTH: i32 = 38;
-
-const TEXT_BREAKPOINT: i32 = 44;
-const CLOSE_BREAKPOINT: i32 = 125;
-
-pub(super) struct TabInternal<'a, Message: TabMessage> {
-    id: Id,
-    idx: usize,
-    active: bool,
-    background: theme::Container<'a>,
-    elements: Vec<cosmic::Element<'a, Message>>,
-    press_message: Option<Message>,
-    right_click_message: Option<Message>,
+/// Local widget state stored in the tree.
+struct TabState {
+    /// Pre-measured title paragraph.
+    paragraph: <iced_tiny_skia::Renderer as TextRenderer>::Paragraph,
+    /// Hash of title+active to detect changes.
+    content_hash: u64,
+    /// App icon SVG handle (resolved from XDG).
+    icon_handle: Option<iced_core::svg::Handle>,
+    /// Close icon SVG handle.
+    close_handle: iced_core::svg::Handle,
 }
 
-impl<Message> Widget<Message, cosmic::Theme, cosmic::Renderer> for TabInternal<'_, Message>
+impl TabState {
+    fn new(title: &str, active: bool, app_id: &str) -> Self {
+        let font = if active {
+            Font {
+                weight: iced_core::font::Weight::Semibold,
+                ..Font::DEFAULT
+            }
+        } else {
+            Font::DEFAULT
+        };
+
+        let paragraph =
+            <iced_tiny_skia::Renderer as TextRenderer>::Paragraph::with_text(iced_core::Text {
+                content: title,
+                size: iced_core::Pixels(13.0),
+                bounds: Size::INFINITE,
+                font,
+                align_x: iced_core::text::Alignment::Left,
+                align_y: iced_core::alignment::Vertical::Center,
+                shaping: Shaping::Advanced,
+                line_height: LineHeight::default(),
+                wrapping: iced_core::text::Wrapping::None,
+                letter_spacing: None,
+                ellipsis: iced_core::text::Ellipsis::default(),
+                hint_factor: None,
+            });
+
+        let icon_handle = crate::utils::xdg_icon::icon_handle(app_id);
+
+        let close_handle =
+            iced_core::svg::Handle::from_memory(icetron::icetron_assets::icons::system::CLOSE_LINE);
+
+        let content_hash = Self::compute_hash(title, active);
+
+        TabState {
+            paragraph,
+            content_hash,
+            icon_handle,
+            close_handle,
+        }
+    }
+
+    fn compute_hash(title: &str, active: bool) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        title.hash(&mut hasher);
+        active.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+/// A single tab rendered as a manual-draw widget (like icetron's chip).
+/// No child elements - draws background, icon, text, and close button directly.
+pub(super) struct TabInternal<Message: TabMessage> {
+    id: Id,
+    app_id: String,
+    title: String,
+    idx: usize,
+    active: bool,
+    style: TabStyle,
+    press_message: Option<Message>,
+    right_click_message: Option<Message>,
+    close_message: Option<Message>,
+}
+
+impl<Message> Widget<Message, iced_core::Theme, iced_tiny_skia::Renderer> for TabInternal<Message>
 where
     Message: TabMessage,
 {
@@ -246,209 +215,256 @@ where
         Some(self.id.clone())
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.elements.iter().map(Tree::new).collect()
-    }
-
     fn set_id(&mut self, id: Id) {
         self.id = id;
     }
 
-    fn diff(&mut self, tree: &mut Tree) {
-        tree.diff_children(&mut self.elements);
+    fn tag(&self) -> iced_core::widget::tree::Tag {
+        iced_core::widget::tree::Tag::of::<TabState>()
+    }
+
+    fn state(&self) -> iced_core::widget::tree::State {
+        iced_core::widget::tree::State::new(TabState::new(&self.title, self.active, &self.app_id))
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        let state = tree.state.downcast_mut::<TabState>();
+        let hash = TabState::compute_hash(&self.title, self.active);
+        if state.content_hash != hash {
+            *state = TabState::new(&self.title, self.active, &self.app_id);
+        }
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        Vec::new()
     }
 
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
 
-    fn layout(&self, tree: &mut Tree, renderer: &cosmic::Renderer, limits: &Limits) -> Node {
-        let min_size = Size {
-            height: TAB_HEIGHT as f32,
-            width: if self.active {
-                MIN_ACTIVE_TAB_WIDTH as f32
-            } else {
-                MIN_TAB_WIDTH as f32
-            },
-        };
-        let limits = limits
-            .min_width(min_size.width)
-            .min_height(min_size.height)
-            .width(Length::Fill)
-            .height(Length::Fill);
-        let size = limits
-            .resolve(Length::Shrink, Length::Shrink, min_size)
-            .max(min_size);
-
-        let limits = Limits::new(size, size)
-            .min_width(size.width)
-            .min_height(size.height)
-            .width(size.width)
-            .height(size.height);
-        cosmic::iced_core::layout::flex::resolve(
-            cosmic::iced_core::layout::flex::Axis::Horizontal,
-            renderer,
-            &limits,
-            Length::Fill,
-            Length::Fill,
-            0.into(),
-            8.,
-            cosmic::iced::Alignment::Center,
-            if size.width >= CLOSE_BREAKPOINT as f32 {
-                &self.elements
-            } else if size.width >= TEXT_BREAKPOINT as f32 {
-                &self.elements[0..3]
-            } else {
-                &self.elements[0..2]
-            },
-            &mut tree.children,
-        )
-    }
-
-    fn operate(
-        &self,
-        tree: &mut Tree,
-        layout: Layout<'_>,
-        renderer: &cosmic::Renderer,
-        operation: &mut dyn Operation<()>,
-    ) {
-        operation.container(None, layout.bounds(), &mut |operation| {
-            self.elements
-                .iter()
-                .zip(&mut tree.children)
-                .zip(layout.children())
-                .for_each(|((child, state), layout)| {
-                    child
-                        .as_widget()
-                        .operate(state, layout, renderer, operation);
-                });
-        });
-    }
-
-    fn on_event(
+    fn layout(
         &mut self,
-        tree: &mut Tree,
-        event: event::Event,
+        _tree: &mut Tree,
+        _renderer: &iced_tiny_skia::Renderer,
+        limits: &Limits,
+    ) -> Node {
+        let min_width = if self.active {
+            MIN_ACTIVE_TAB_WIDTH as f32
+        } else {
+            MIN_TAB_WIDTH as f32
+        };
+
+        let size = limits.resolve(
+            Length::Fill,
+            Length::Fill,
+            Size::new(min_width, TAB_CONTENT_HEIGHT),
+        );
+
+        Node::new(Size::new(
+            size.width.max(min_width),
+            size.height.max(TAB_CONTENT_HEIGHT),
+        ))
+    }
+
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &event::Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        renderer: &cosmic::Renderer,
-        clipboard: &mut dyn Clipboard,
+        _renderer: &iced_tiny_skia::Renderer,
         shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
-    ) -> event::Status {
-        let status = self
-            .elements
-            .iter_mut()
-            .zip(&mut tree.children)
-            .zip(layout.children())
-            .map(|((child, state), layout)| {
-                child.as_widget_mut().on_event(
-                    state,
-                    event.clone(),
-                    layout,
-                    cursor,
-                    renderer,
-                    clipboard,
-                    shell,
-                    viewport,
-                )
-            })
-            .fold(event::Status::Ignored, event::Status::merge);
-
-        if status == event::Status::Ignored && cursor.is_over(layout.bounds()) {
-            if matches!(
-                event,
-                event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-            ) && let Some(message) = self.press_message.clone()
-            {
-                shell.publish(message);
-                return event::Status::Captured;
-            }
-            if matches!(
-                event,
-                event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
-            ) && let Some(message) = self.right_click_message.clone()
-            {
-                shell.publish(message);
-                return event::Status::Captured;
-            }
-            if matches!(
-                event,
-                event::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-            ) {
-                shell.publish(Message::activate(self.idx));
-                return event::Status::Captured;
-            }
+        _viewport: &Rectangle,
+    ) {
+        if !cursor.is_over(layout.bounds()) {
+            return;
         }
 
-        status
+        match event {
+            event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if let Some(message) = self.press_message.clone() {
+                    shell.publish(message);
+                    shell.capture_event();
+                }
+            }
+            event::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)) => {
+                if let Some(message) = self.right_click_message.clone() {
+                    shell.publish(message);
+                    shell.capture_event();
+                }
+            }
+            event::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                // Check if the click is on the close button area
+                let bounds = layout.bounds();
+                if bounds.width >= CLOSE_BREAKPOINT
+                    && let Some(pos) = cursor.position()
+                {
+                    let close_x = bounds.x + bounds.width - H_PADDING - CLOSE_ICON_SIZE;
+                    if pos.x >= close_x
+                        && let Some(message) = self.close_message.clone()
+                    {
+                        shell.publish(message);
+                        shell.capture_event();
+                        return;
+                    }
+                }
+                shell.publish(Message::activate(self.idx));
+                shell.capture_event();
+            }
+            _ => {}
+        }
     }
 
     fn mouse_interaction(
         &self,
-        tree: &Tree,
+        _tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        viewport: &Rectangle,
-        renderer: &cosmic::Renderer,
+        _viewport: &Rectangle,
+        _renderer: &iced_tiny_skia::Renderer,
     ) -> mouse::Interaction {
-        self.elements
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-            .map(|((child, state), layout)| {
-                child
-                    .as_widget()
-                    .mouse_interaction(state, layout, cursor, viewport, renderer)
-            })
-            .max()
-            .unwrap_or_default()
+        if cursor.is_over(layout.bounds()) {
+            mouse::Interaction::Pointer
+        } else {
+            mouse::Interaction::default()
+        }
     }
 
     fn draw(
         &self,
         tree: &Tree,
-        renderer: &mut cosmic::Renderer,
-        theme: &cosmic::Theme,
-        renderer_style: &renderer::Style,
+        renderer: &mut iced_tiny_skia::Renderer,
+        _theme: &iced_core::Theme,
+        _style: &renderer::Style,
         layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
+        _cursor: mouse::Cursor,
+        _viewport: &Rectangle,
     ) {
-        use cosmic::widget::container::Catalog;
-        let style = theme.style(&self.background);
+        let bounds = layout.bounds();
+        let state = tree.state.downcast_ref::<TabState>();
 
-        draw_background(renderer, &style, layout.bounds());
-
-        for ((child, state), layout) in self
-            .elements
-            .iter()
-            .zip(&tree.children)
-            .zip(layout.children())
-        {
-            child.as_widget().draw(
-                state,
-                renderer,
-                theme,
-                &renderer::Style {
-                    icon_color: style.text_color.unwrap_or(renderer_style.text_color),
-                    text_color: style.text_color.unwrap_or(renderer_style.text_color),
-                    scale_factor: renderer_style.scale_factor,
+        // 1. Draw background (only for active tab)
+        if let Some(bg_color) = self.style.background {
+            // Inset the background slightly for visual breathing room
+            let bg_bounds = Rectangle {
+                x: bounds.x + 2.0,
+                y: bounds.y + 4.0,
+                width: bounds.width - 4.0,
+                height: bounds.height - 8.0,
+            };
+            renderer.fill_quad(
+                renderer::Quad {
+                    bounds: bg_bounds,
+                    border: Border {
+                        radius: self.style.radius.into(),
+                        width: 0.0,
+                        color: Color::TRANSPARENT,
+                    },
+                    shadow: Default::default(),
+                    snap: true,
+                    border_only: false,
                 },
-                layout,
-                cursor,
-                viewport,
+                Background::Color(bg_color),
             );
         }
+
+        // Calculate content area (inset by padding)
+        let content_x = bounds.x + H_PADDING;
+        let content_width = bounds.width - H_PADDING * 2.0;
+        let center_y = bounds.y + bounds.height / 2.0;
+
+        // 2. Draw app icon (if wide enough and handle exists)
+        let mut text_x = content_x;
+        if bounds.width >= TEXT_BREAKPOINT && state.icon_handle.is_some() {
+            let icon_y = center_y - ICON_SIZE / 2.0;
+            if let Some(ref handle) = state.icon_handle {
+                let icon_bounds = Rectangle {
+                    x: content_x,
+                    y: icon_y,
+                    width: ICON_SIZE,
+                    height: ICON_SIZE,
+                };
+                SvgRenderer::draw_svg(renderer, svg::Svg::new(handle.clone()), icon_bounds, bounds);
+            }
+            text_x = content_x + ICON_SIZE + ICON_GAP;
+        }
+
+        // 3. Draw title text (if wide enough)
+        if bounds.width >= TEXT_BREAKPOINT {
+            let show_close = bounds.width >= CLOSE_BREAKPOINT && self.close_message.is_some();
+            let text_max_width = if show_close {
+                content_width - (text_x - content_x) - CLOSE_ICON_SIZE - ICON_GAP
+            } else {
+                content_width - (text_x - content_x)
+            };
+
+            if text_max_width > 0.0 {
+                let text_bounds = state.paragraph.min_bounds();
+                let text_y = center_y - text_bounds.height / 2.0;
+
+                // Clip to available width
+                let clip_rect = Rectangle {
+                    x: text_x,
+                    y: bounds.y,
+                    width: text_max_width,
+                    height: bounds.height,
+                };
+
+                renderer.with_layer(clip_rect, |renderer| {
+                    renderer.fill_paragraph(
+                        &state.paragraph,
+                        Point::new(text_x, text_y),
+                        self.style.text_color,
+                        clip_rect,
+                    );
+                });
+            }
+        }
+
+        // 4. Draw close button icon (if wide enough)
+        if bounds.width >= CLOSE_BREAKPOINT && self.close_message.is_some() {
+            let close_x = bounds.x + bounds.width - H_PADDING - CLOSE_ICON_SIZE;
+            let close_y = center_y - CLOSE_ICON_SIZE / 2.0;
+            let close_color = Color {
+                a: 0.6,
+                ..self.style.text_color
+            };
+            let close_bounds = Rectangle {
+                x: close_x,
+                y: close_y,
+                width: CLOSE_ICON_SIZE,
+                height: CLOSE_ICON_SIZE,
+            };
+            let mut close_svg = svg::Svg::new(state.close_handle.clone());
+            close_svg.color = Some(close_color);
+            SvgRenderer::draw_svg(renderer, close_svg, close_bounds, bounds);
+        }
+    }
+
+    fn operate(
+        &mut self,
+        _tree: &mut Tree,
+        _layout: Layout<'_>,
+        _renderer: &iced_tiny_skia::Renderer,
+        _operation: &mut dyn Operation,
+    ) {
     }
 
     fn overlay<'b>(
         &'b mut self,
-        tree: &'b mut Tree,
-        layout: Layout<'_>,
-        renderer: &cosmic::Renderer,
-        translation: cosmic::iced::Vector,
-    ) -> Option<overlay::Element<'b, Message, cosmic::Theme, cosmic::Renderer>> {
-        overlay::from_children(&mut self.elements, tree, layout, renderer, translation)
+        _tree: &'b mut Tree,
+        _layout: Layout<'b>,
+        _renderer: &iced_tiny_skia::Renderer,
+        _viewport: &Rectangle,
+        _translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, iced_core::Theme, iced_tiny_skia::Renderer>> {
+        None
+    }
+}
+
+impl<Message: TabMessage + 'static> From<TabInternal<Message>> for CompElement<'_, Message> {
+    fn from(tab: TabInternal<Message>) -> Self {
+        Self::new(tab)
     }
 }

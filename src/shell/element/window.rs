@@ -20,8 +20,9 @@ use crate::{
     wayland::handlers::surface_embed::{get_embed_render_info, is_surface_embedded},
 };
 use calloop::LoopHandle;
-use cosmic::iced::{Color, Task, mouse::Interaction as MouseInteraction};
 use cosmic_comp_config::AppearanceConfig;
+use iced_core::{Color, mouse::Interaction as MouseInteraction};
+use iced_runtime::Task;
 use smithay::{
     backend::{
         input::KeyState,
@@ -70,8 +71,44 @@ use wayland_backend::server::ObjectId;
 
 use super::CosmicSurface;
 
-pub const SSD_HEIGHT: i32 = 47;
 pub const RESIZE_BORDER: i32 = 10;
+
+/// Tracks which CosmicWindow currently has pointer_over_window=true.
+/// Updated by focus_under() on each pointer motion event.
+/// This provides geometry-based hover detection that cannot be fooled by fast pointer movement.
+static POINTER_HOVERED_WINDOW: std::sync::LazyLock<Mutex<Option<CosmicWindow>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
+/// Flag indicating whether focus_under() was called and hit a window during this motion cycle.
+static POINTER_HOVER_UPDATED: std::sync::LazyLock<AtomicBool> =
+    std::sync::LazyLock::new(|| AtomicBool::new(false));
+
+/// Whether hover tracking is active for the current motion cycle.
+/// When false, focus_under() skips all hover state updates.
+static HOVER_TRACKING_ACTIVE: std::sync::LazyLock<AtomicBool> =
+    std::sync::LazyLock::new(|| AtomicBool::new(false));
+
+/// Called from input handlers BEFORE surface_under() to start the hover cycle.
+/// Resets the "updated" flag. After surface_under completes, call finalize_pointer_hover().
+pub fn begin_pointer_hover_check() {
+    POINTER_HOVER_UPDATED.store(false, Ordering::SeqCst);
+    HOVER_TRACKING_ACTIVE.store(true, Ordering::SeqCst);
+}
+
+/// Called from input handlers AFTER surface_under() completes.
+/// If no window's focus_under() was triggered (pointer is not over any window),
+/// clears the previously-tracked hovered window.
+pub fn finalize_pointer_hover() {
+    HOVER_TRACKING_ACTIVE.store(false, Ordering::SeqCst);
+    if !POINTER_HOVER_UPDATED.load(Ordering::SeqCst) {
+        // No window was hit this cycle — clear the old one
+        let mut guard = POINTER_HOVERED_WINDOW.lock().unwrap();
+        if let Some(old) = guard.take() {
+            old.set_pointer_over_window(false);
+            old.0.force_update();
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CosmicWindow(pub(super) IcedElement<CosmicWindowInternal>);
@@ -90,14 +127,16 @@ pub struct CosmicWindowInternal {
     activated: AtomicBool,
     /// TODO: This needs to be per seat
     pointer_entered: AtomicU8,
+    /// Whether any pointer is currently over the window (header, content, or resize borders).
+    pointer_over_window: AtomicBool,
     last_title: Mutex<String>,
     /// Cached app icon handle, resolved once and refreshed when app_id changes.
-    cached_icon: Mutex<(String, Option<cosmic::widget::icon::Handle>)>,
+    cached_icon: Mutex<(String, Option<super::header_bar::AppIcon>)>,
     /// Desktop override from .desktop file with X-Cosmic-AppIdMatch.
     /// Tuple: (app_id used for lookup, optional override).
     desktop_override: Mutex<(String, Option<DesktopOverride>)>,
     tiled: AtomicBool,
-    theme: Mutex<cosmic::Theme>,
+    theme: Mutex<crate::comp_theme::CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
 
@@ -170,7 +209,7 @@ impl Focus {
 
 /// Maps an iced `mouse::Interaction` to a smithay `CursorIcon` so the
 /// compositor can display the correct cursor for SSD header bar widgets.
-fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon {
+pub(crate) fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon {
     match interaction {
         MouseInteraction::Pointer => CursorIcon::Pointer,
         MouseInteraction::Grab => CursorIcon::Grab,
@@ -184,7 +223,7 @@ fn mouse_interaction_to_cursor_icon(interaction: MouseInteraction) -> CursorIcon
         MouseInteraction::Copy => CursorIcon::Copy,
         MouseInteraction::Help => CursorIcon::Help,
         MouseInteraction::Cell => CursorIcon::Cell,
-        MouseInteraction::Working => CursorIcon::Progress,
+        MouseInteraction::Progress => CursorIcon::Progress,
         MouseInteraction::ZoomIn => CursorIcon::ZoomIn,
         MouseInteraction::ZoomOut => CursorIcon::ZoomOut,
         _ => CursorIcon::Default,
@@ -200,31 +239,29 @@ const ICON_PRESCALE_SIZE: u32 = 36;
 /// Resolve an application icon for the SSD header bar.
 ///
 /// Lookup order:
-///   1. XDG icon theme via `from_name(app_id)` (exact match)
-///   2. XDG icon theme via `from_name(app_id.to_lowercase())` (case-insensitive)
-///   3. `/usr/share/pixmaps/{name}.{ext}` for common extensions (covers apps
-///      like Slack whose `.desktop` files point to an absolute pixmap path)
+///   1. XDG icon theme via resolved path (exact match)
+///   2. XDG icon theme via resolved path (case-insensitive)
+///   3. `/usr/share/pixmaps/{name}.{ext}` for common extensions
 ///
 /// For ALL raster icons (PNG from theme or pixmaps), the image is pre-scaled
-/// to ICON_PRESCALE_SIZE using Lanczos3 filtering. This avoids relying on
-/// tiny_skia's bilinear downscale, which produces poor results for large
-/// downscale ratios (e.g. 512→24).
-fn resolve_app_icon(app_id: &str) -> Option<cosmic::widget::icon::Handle> {
+/// to ICON_PRESCALE_SIZE using Lanczos3 filtering.
+fn resolve_app_icon(app_id: &str) -> Option<super::header_bar::AppIcon> {
+    use crate::utils::xdg_icon::resolve_icon_path;
     use std::path::Path;
 
+    let size = ICON_PRESCALE_SIZE as f32;
+
     // 1. Exact name in icon theme
-    let named = cosmic::widget::icon::from_name(app_id).size(128);
-    if let Some(path) = named.clone().path() {
+    if let Some(path) = resolve_icon_path(app_id, size) {
         return Some(prescale_icon_from_path(&path.to_string_lossy()));
     }
 
-    // 2. Lower-case fallback (e.g. app_id "Slack" → icon name "slack")
+    // 2. Lower-case fallback
     let lower = app_id.to_lowercase();
-    if lower != app_id {
-        let named_lower = cosmic::widget::icon::from_name(&*lower).size(128);
-        if let Some(path) = named_lower.clone().path() {
-            return Some(prescale_icon_from_path(&path.to_string_lossy()));
-        }
+    if lower != app_id
+        && let Some(path) = resolve_icon_path(&lower, size)
+    {
+        return Some(prescale_icon_from_path(&path.to_string_lossy()));
     }
 
     // 3. Direct pixmap lookup
@@ -239,32 +276,27 @@ fn resolve_app_icon(app_id: &str) -> Option<cosmic::widget::icon::Handle> {
 }
 
 /// Load an icon from a file path, applying Lanczos3 pre-scaling for raster
-/// images (PNG) and passing SVGs through directly.
-fn prescale_icon_from_path(path: &str) -> cosmic::widget::icon::Handle {
-    // SVGs are rasterized by iced's vector pipeline at exact size — no
-    // prescaling needed, and the vector renderer uses Bicubic quality.
+/// images (PNG) and leaking SVG bytes for static lifetime.
+fn prescale_icon_from_path(path: &str) -> super::header_bar::AppIcon {
     if path.ends_with(".svg") || path.ends_with(".svgz") {
-        return cosmic::widget::icon::Handle {
-            symbolic: false,
-            data: cosmic::widget::icon::Data::Svg(cosmic::iced_core::svg::Handle::from_path(path)),
-        };
+        // Read and leak SVG bytes to get &'static [u8] for icetron's title_icon API.
+        // Bounded leak: one per window, freed when process exits.
+        if let Ok(bytes) = std::fs::read(path) {
+            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+            return super::header_bar::AppIcon::Svg(leaked);
+        }
+        return super::header_bar::AppIcon::Svg(&[]);
     }
 
     // Raster image: pre-scale with Lanczos3 for crisp rendering
     prescale_raster_icon(path).unwrap_or_else(|| {
-        // Fallback: let iced load from disk (bilinear, but at least something)
-        cosmic::widget::icon::Handle {
-            symbolic: false,
-            data: cosmic::widget::icon::Data::Image(cosmic::iced_core::image::Handle::from_path(
-                path,
-            )),
-        }
+        super::header_bar::AppIcon::Image(iced_core::image::Handle::from_path(path))
     })
 }
 
 /// Load a raster image and pre-scale it to ICON_PRESCALE_SIZE using
 /// Lanczos3 filtering. Returns RGBA pixels wrapped in an iced Handle.
-fn prescale_raster_icon(path: &str) -> Option<cosmic::widget::icon::Handle> {
+fn prescale_raster_icon(path: &str) -> Option<super::header_bar::AppIcon> {
     use image::imageops::FilterType;
 
     let img = image::open(path).ok()?;
@@ -273,12 +305,9 @@ fn prescale_raster_icon(path: &str) -> Option<cosmic::widget::icon::Handle> {
     let (w, h) = rgba.dimensions();
     let pixels = rgba.into_raw();
 
-    Some(cosmic::widget::icon::Handle {
-        symbolic: false,
-        data: cosmic::widget::icon::Data::Image(cosmic::iced_core::image::Handle::from_rgba(
-            w, h, pixels,
-        )),
-    })
+    Some(super::header_bar::AppIcon::Image(
+        iced_core::image::Handle::from_rgba(w, h, pixels),
+    ))
 }
 
 /// Override properties parsed from a .desktop file with `X-Cosmic-AppIdMatch`.
@@ -397,6 +426,11 @@ fn parse_desktop_override(path: &std::path::Path, app_id: &str) -> Option<Deskto
 }
 
 impl CosmicWindowInternal {
+    /// SSD header height derived from the current theme's window control style.
+    fn ssd_height(&self) -> i32 {
+        icetron::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+    }
+
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
         let value = focus.map_or(0, |x| x as u8);
         unsafe { Focus::from_u8(self.pointer_entered.swap(value, Ordering::SeqCst)) }
@@ -459,7 +493,6 @@ impl CosmicWindowInternal {
                 self.theme
                     .lock()
                     .unwrap()
-                    .cosmic()
                     .radius_window()
                     .map(|x| x.round() as u8)
             }
@@ -482,10 +515,15 @@ impl CosmicWindowInternal {
 }
 
 impl CosmicWindow {
+    /// SSD header height for this window, derived from its theme.
+    pub fn ssd_height(&self) -> i32 {
+        self.0.with_program(|p| p.ssd_height())
+    }
+
     pub fn new(
         window: impl Into<CosmicSurface>,
         handle: LoopHandle<'static, crate::state::State>,
-        theme: cosmic::Theme,
+        theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) -> CosmicWindow {
         let window = window.into();
@@ -508,6 +546,7 @@ impl CosmicWindow {
                 window,
                 activated: AtomicBool::new(false),
                 pointer_entered: AtomicU8::new(0),
+                pointer_over_window: AtomicBool::new(false),
                 last_title: Mutex::new(last_title),
                 cached_icon: Mutex::new((app_id.clone(), icon)),
                 desktop_override: Mutex::new((app_id, desktop_ovr)),
@@ -515,7 +554,7 @@ impl CosmicWindow {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, SSD_HEIGHT),
+            (width, icetron::prelude::header_height(&*theme) as i32),
             handle,
             theme,
         ))
@@ -525,7 +564,7 @@ impl CosmicWindow {
         self.0.with_program(|p| {
             let mut size = p.window.pending_size()?;
             if p.has_ssd(true) {
-                size.h += SSD_HEIGHT;
+                size.h += p.ssd_height();
             }
             Some(size)
         })
@@ -533,7 +572,7 @@ impl CosmicWindow {
 
     pub fn set_geometry(&self, geo: Rectangle<i32, Global>) {
         self.0.with_program(|p| {
-            let ssd_height = if p.has_ssd(true) { SSD_HEIGHT } else { 0 };
+            let ssd_height = if p.has_ssd(true) { p.ssd_height() } else { 0 };
             let loc = (geo.loc.x, geo.loc.y + ssd_height);
             let size = (geo.size.w, std::cmp::max(geo.size.h - ssd_height, 0));
             p.window
@@ -550,7 +589,7 @@ impl CosmicWindow {
             }
         });
         if let Some(geo) = geo {
-            self.0.resize(Size::from((geo.size.w, SSD_HEIGHT)));
+            self.0.resize(Size::from((geo.size.w, self.ssd_height())));
         }
     }
 
@@ -563,7 +602,7 @@ impl CosmicWindow {
         mut relative_pos: Point<f64, Logical>,
         surface_type: WindowSurfaceType,
     ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
-        self.0.with_program(|p| {
+        let result = self.0.with_program(|p| {
             let mut offset = Point::from((0., 0.));
             let mut window_ui = None;
             let has_ssd = p.has_ssd(false);
@@ -577,7 +616,7 @@ impl CosmicWindow {
                 let geo = p.window.geometry();
 
                 let point_i32 = relative_pos.to_i32_round::<i32>();
-                let ssd_height = if has_ssd { SSD_HEIGHT } else { 0 };
+                let ssd_height = if has_ssd { p.ssd_height() } else { 0 };
 
                 if (point_i32.x - geo.loc.x >= -RESIZE_BORDER && point_i32.x - geo.loc.x < 0)
                     || (point_i32.y - geo.loc.y >= -RESIZE_BORDER && point_i32.y - geo.loc.y < 0)
@@ -592,7 +631,7 @@ impl CosmicWindow {
                     ));
                 }
 
-                if has_ssd && (point_i32.y - geo.loc.y < SSD_HEIGHT) {
+                if has_ssd && (point_i32.y - geo.loc.y < p.ssd_height()) {
                     window_ui = Some((
                         PointerFocusTarget::WindowUI(self.clone()),
                         Point::from((0., 0.)),
@@ -601,8 +640,8 @@ impl CosmicWindow {
             }
 
             if has_ssd {
-                relative_pos.y -= SSD_HEIGHT as f64;
-                offset.y += SSD_HEIGHT as f64;
+                relative_pos.y -= p.ssd_height() as f64;
+                offset.y += p.ssd_height() as f64;
             }
 
             window_ui.or_else(|| {
@@ -610,7 +649,38 @@ impl CosmicWindow {
                     .focus_under(relative_pos, surface_type)
                     .map(|(target, surface_offset)| (target, offset + surface_offset))
             })
-        })
+        });
+
+        // Whenever focus_under returns Some, the pointer is geometrically within this window.
+        // Only update hover state if hover tracking is active (not during grabs).
+        if result.is_some() && HOVER_TRACKING_ACTIVE.load(Ordering::SeqCst) {
+            POINTER_HOVER_UPDATED.store(true, Ordering::SeqCst);
+            let mut guard = POINTER_HOVERED_WINDOW.lock().unwrap();
+            let is_same = guard.as_ref() == Some(self);
+            if !is_same {
+                // Clear old window if different
+                if let Some(old) = guard.take() {
+                    old.set_pointer_over_window(false);
+                    old.0.force_update();
+                }
+                // Set new window
+                self.0.with_program(|p| {
+                    p.pointer_over_window.store(true, Ordering::SeqCst);
+                });
+                self.0.force_update();
+                *guard = Some(self.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Set whether the pointer is currently over this window.
+    /// Called from PointerFocusTarget enter/leave to track hover state.
+    pub fn set_pointer_over_window(&self, value: bool) {
+        self.0.with_program(|p| {
+            p.pointer_over_window.store(value, Ordering::SeqCst);
+        });
     }
 
     pub fn contains_surface(&self, window: &CosmicSurface) -> bool {
@@ -620,7 +690,7 @@ impl CosmicWindow {
     pub fn offset(&self) -> Point<i32, Logical> {
         let has_ssd = self.0.with_program(|p| p.has_ssd(false));
         if has_ssd {
-            Point::from((0, SSD_HEIGHT))
+            Point::from((0, self.ssd_height()))
         } else {
             Point::from((0, 0))
         }
@@ -645,7 +715,7 @@ impl CosmicWindow {
         let has_ssd = self.0.with_program(|p| p.has_ssd(false));
 
         let window_loc = if has_ssd {
-            location + Point::from((0, (SSD_HEIGHT as f64 * scale.y) as i32))
+            location + Point::from((0, (self.ssd_height() as f64 * scale.y) as i32))
         } else {
             location
         };
@@ -721,11 +791,11 @@ impl CosmicWindow {
             let radii = p.compute_corner_radius(geo_size, 0);
 
             // Extract is_dark
-            let is_dark = p.theme.lock().unwrap().cosmic().is_dark;
+            let is_dark = p.theme.lock().unwrap().is_dark;
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
-                geo.size.h += SSD_HEIGHT as f64;
+                geo.size.h += p.ssd_height() as f64;
             }
             geo = geo.upscale(scale);
             geo.loc += location.to_f64().to_logical(output_scale);
@@ -797,7 +867,7 @@ impl CosmicWindow {
         }
 
         let window_loc = if has_ssd && !is_embedded {
-            location + Point::from((0, (SSD_HEIGHT as f64 * scale.y) as i32))
+            location + Point::from((0, (self.ssd_height() as f64 * scale.y) as i32))
         } else {
             location
         };
@@ -809,7 +879,7 @@ impl CosmicWindow {
             .with_program(|p| SpaceElement::geometry(&p.window).to_f64());
         geo.loc += location.to_f64().to_logical(scale);
         if has_ssd && !is_embedded {
-            geo.size.h += SSD_HEIGHT as f64;
+            geo.size.h += self.ssd_height() as f64;
         }
         if let Some(max_size) = max_size {
             geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
@@ -883,11 +953,15 @@ impl CosmicWindow {
         elements.into_iter().map(C::from).collect()
     }
 
-    pub(crate) fn set_theme(&self, theme: cosmic::Theme) {
+    pub(crate) fn set_theme(&self, theme: crate::comp_theme::CompTheme) {
         self.0.with_program(|p| {
             *p.theme.lock().unwrap() = theme.clone();
         });
         self.0.set_theme(theme);
+        // Resize the IcedElement to the new SSD height so there's no gap
+        // between header and window content after a theme change.
+        let geo = self.0.with_program(|p| p.window.geometry());
+        self.0.resize(Size::from((geo.size.w, self.ssd_height())));
     }
 
     pub fn update_appearance_conf(&self, appearance: &AppearanceConfig) {
@@ -911,7 +985,7 @@ impl CosmicWindow {
             .with_program(|p| p.window.min_size_without_ssd())
             .map(|size| {
                 if self.0.with_program(|p| !p.window.is_decorated(false)) {
-                    size + (0, SSD_HEIGHT).into()
+                    size + (0, self.ssd_height()).into()
                 } else {
                     size
                 }
@@ -922,7 +996,7 @@ impl CosmicWindow {
             .with_program(|p| p.window.max_size_without_ssd())
             .map(|size| {
                 if self.0.with_program(|p| !p.window.is_decorated(false)) {
-                    size + (0, SSD_HEIGHT).into()
+                    size + (0, self.ssd_height()).into()
                 } else {
                     size
                 }
@@ -945,6 +1019,11 @@ impl CosmicWindow {
     /// Check if this window has KDE blur effect enabled
     pub fn has_blur(&self) -> bool {
         self.0.with_program(|p| p.window.has_blur())
+    }
+
+    /// Check if this window has server-side decorations (SSD header)
+    pub fn has_ssd(&self) -> bool {
+        self.0.with_program(|p| p.has_ssd(false))
     }
 }
 
@@ -1023,6 +1102,7 @@ impl Program for CosmicWindowInternal {
                 if let Some((seat, serial)) = last_seat.cloned()
                     && let Some(surface) = self.window.wl_surface().map(Cow::into_owned)
                 {
+                    let ssd_h = self.ssd_height();
                     loop_handle.insert_idle(move |state| {
                         let shell = state.common.shell.read();
                         if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
@@ -1046,7 +1126,7 @@ impl Program for CosmicWindowInternal {
 
                             let pointer = seat.get_pointer().unwrap();
                             let mut cursor = pointer.current_location().to_i32_round();
-                            cursor.y -= SSD_HEIGHT;
+                            cursor.y -= ssd_h;
 
                             let res = shell.menu_request(
                                 &surface,
@@ -1070,12 +1150,73 @@ impl Program for CosmicWindowInternal {
         Task::none()
     }
 
-    fn background_color(&self, _theme: &cosmic::Theme) -> Color {
+    fn background_color(&self, _theme: &crate::comp_theme::CompTheme) -> Color {
         Color::TRANSPARENT
     }
 
-    fn view(&self) -> cosmic::Element<'_, Self::Message> {
-        HOOKS.get().unwrap().window_decorations.view(self)
+    fn foreground(
+        &self,
+        pixels: &mut tiny_skia::PixmapMut<'_>,
+        _damage: &[Rectangle<i32, Buffer>],
+        scale: f32,
+        theme: &crate::comp_theme::CompTheme,
+    ) {
+        // Clear top corners to transparent so the SSD header doesn't bleed
+        // past the window's rounded border. We use a slightly larger radius
+        // (+2 scaled px) than the window border so the header is fully
+        // hidden behind the border's anti-aliased outer edge.
+        let maximized = self.window.is_maximized(false);
+        let radius_raw = theme.radius_window()[0];
+        let radius = (radius_raw * scale).round() as u32 + (2.0 * scale).round() as u32;
+        let w = pixels.width();
+        let h = pixels.height();
+
+        if maximized {
+            return;
+        }
+        if radius == 0 {
+            return;
+        }
+        let r = radius.min(w / 2).min(h);
+        let r_f = r as f64;
+        for py in 0..r {
+            let dy = r_f - py as f64 - 0.5;
+            for px in 0..r {
+                let dx = r_f - px as f64 - 0.5;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist > r_f - 1.0 {
+                    let alpha = (r_f - dist).clamp(0.0, 1.0);
+                    let apply = |pixel: &mut tiny_skia::PremultipliedColorU8| {
+                        if alpha <= 0.0 {
+                            *pixel = tiny_skia::PremultipliedColorU8::TRANSPARENT;
+                        } else {
+                            let a = (pixel.alpha() as f64 * alpha).round() as u8;
+                            let r = (pixel.red() as f64 * alpha).round() as u8;
+                            let g = (pixel.green() as f64 * alpha).round() as u8;
+                            let b = (pixel.blue() as f64 * alpha).round() as u8;
+                            *pixel =
+                                tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, a).unwrap();
+                        }
+                    };
+                    // Top-left corner
+                    if let Some(pixel) = pixels.pixels_mut().get_mut((py * w + px) as usize) {
+                        apply(pixel);
+                    }
+                    // Top-right corner
+                    let rx = w - 1 - px;
+                    if let Some(pixel) = pixels.pixels_mut().get_mut((py * w + rx) as usize) {
+                        apply(pixel);
+                    }
+                }
+            }
+        }
+    }
+
+    fn view<'a>(
+        &'a self,
+        theme: &'a crate::comp_theme::CompTheme,
+    ) -> crate::utils::iced::CompElement<'a, Self::Message> {
+        HOOKS.get().unwrap().window_decorations.view(self, theme)
     }
 }
 
@@ -1083,16 +1224,11 @@ impl Program for CosmicWindowInternal {
 pub struct DefaultDecorations;
 
 impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
-    fn view(&self, win: &CosmicWindowInternal) -> cosmic::Element<'_, Message> {
-        let sharp_corners = win.window.is_maximized(false)
-            || (win.is_tiled() && !win.appearance_conf.lock().unwrap().clip_tiled_windows);
-
-        // Compute the actual corner radius the compositor will apply to this window,
-        // and pass it to the header bar so its background clips to the same radii.
-        let geo_size = SpaceElement::geometry(&win.window).size;
-        let radii = win.compute_corner_radius(geo_size, 0);
-        let corner_radius_f32 = radii.map(|r| r as f32);
-
+    fn view<'a>(
+        &'a self,
+        win: &'a CosmicWindowInternal,
+        theme: &'a crate::comp_theme::CompTheme,
+    ) -> crate::utils::iced::CompElement<'a, Message> {
         // Use forced title from .desktop override if available
         let title = {
             let ovr = win.desktop_override.lock().unwrap();
@@ -1102,31 +1238,24 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
                 .unwrap_or_else(|| win.last_title.lock().unwrap().clone())
         };
 
-        let mut header = cosmic::widget::header_bar()
+        let hovered = win.pointer_over_window.load(Ordering::SeqCst);
+        let focused = win.activated.load(Ordering::SeqCst);
+
+        let mut header = super::header_bar::header_bar()
             .title(title)
             .on_drag(Message::DragStart)
             .on_close(Message::Close)
-            .focused(win.window.is_activated(false))
-            .hovered(win.current_focus() == Some(Focus::Header))
-            .maximized(win.window.is_maximized(false))
-            .on_double_click(Message::Maximize)
+            .on_minimize(Message::Minimize)
+            .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
-            .is_ssd(true)
-            .sharp_corners(sharp_corners)
-            .corner_radius(corner_radius_f32);
+            .focused(focused)
+            .hovered(hovered)
+            .maximized(win.window.is_maximized(false))
+            .theme(theme);
 
-        // Use cached app icon (resolved once, refreshed in refresh() when app_id changes).
-        let cached = win.cached_icon.lock().unwrap();
-        if let Some(ref icon_handle) = cached.1 {
-            header = header.app_icon(icon_handle.clone());
-        }
-        drop(cached);
-
-        if cosmic::config::show_minimize() {
-            header = header.on_minimize(Message::Minimize)
-        }
-        if cosmic::config::show_maximize() {
-            header = header.on_maximize(Message::Maximize)
+        // Pass the application icon if resolved
+        if let Some(icon) = win.cached_icon.lock().unwrap().1.clone() {
+            header = header.app_icon(icon);
         }
 
         header.into()
@@ -1152,7 +1281,7 @@ impl SpaceElement for CosmicWindow {
                 bbox.size += Size::from((RESIZE_BORDER * 2, RESIZE_BORDER * 2));
             }
             if has_ssd {
-                bbox.size.h += SSD_HEIGHT;
+                bbox.size.h += p.ssd_height();
             }
 
             bbox
@@ -1167,11 +1296,11 @@ impl SpaceElement for CosmicWindow {
             .with_program(|p| p.activated.load(Ordering::SeqCst) != activated)
         {
             SpaceElement::set_activate(&self.0, activated);
-            self.0.force_redraw();
             self.0.with_program(|p| {
                 p.activated.store(activated, Ordering::SeqCst);
                 SpaceElement::set_activate(&p.window, activated);
             });
+            self.0.force_update();
         }
     }
     #[profiling::function]
@@ -1190,7 +1319,7 @@ impl SpaceElement for CosmicWindow {
         self.0.with_program(|p| {
             let mut geo = SpaceElement::geometry(&p.window);
             if p.has_ssd(false) {
-                geo.size.h += SSD_HEIGHT;
+                geo.size.h += p.ssd_height();
             }
             geo
         })
@@ -1293,7 +1422,7 @@ impl PointerTarget<State> for CosmicWindow {
             if has_ssd || p.has_tiled_state() || has_blur {
                 let Some(next) = Focus::under(
                     &p.window,
-                    if has_ssd { SSD_HEIGHT } else { 0 },
+                    if has_ssd { p.ssd_height() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -1340,7 +1469,7 @@ impl PointerTarget<State> for CosmicWindow {
             if has_ssd || p.has_tiled_state() || has_blur {
                 let Some(next) = Focus::under(
                     &p.window,
-                    if has_ssd { SSD_HEIGHT } else { 0 },
+                    if has_ssd { p.ssd_height() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -1447,7 +1576,19 @@ impl PointerTarget<State> for CosmicWindow {
             cursor_state.lock().unwrap().unset_shape();
             let _previous = p.swap_focus(None);
         });
-        PointerTarget::leave(&self.0, seat, data, serial, time)
+        PointerTarget::leave(&self.0, seat, data, serial, time);
+
+        // If focus_under() was NOT triggered for this window in the current motion cycle,
+        // the pointer has truly left (jumped off-window). Clear hover immediately.
+        // If focus_under() WAS triggered, the pointer moved from header→content (same window).
+        let guard = POINTER_HOVERED_WINDOW.lock().unwrap();
+        let still_tracked = guard.as_ref() == Some(self);
+        let was_updated = POINTER_HOVER_UPDATED.load(Ordering::SeqCst);
+        if !still_tracked || !was_updated {
+            drop(guard);
+            self.set_pointer_over_window(false);
+            self.0.force_update();
+        }
     }
 
     fn gesture_swipe_begin(

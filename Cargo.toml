@@ -31,6 +31,7 @@ cosmic-settings-daemon-config = { git = "https://github.com/pop-os/cosmic-settin
 cosmic-text = { git = "https://github.com/pop-os/cosmic-text.git", features = [
     "shape-run-cache",
 ] }
+dirs = "6"
 libdisplay-info = "0.3.0"
 egui = { version = "0.31.1", optional = true }
 egui_plot = { version = "0.31.0", optional = true }
@@ -39,14 +40,20 @@ i18n-embed = { version = "0.16", features = [
     "desktop-requester",
 ] }
 i18n-embed-fl = "0.10"
-iced_tiny_skia = { git = "https://github.com/playtron-os/libcosmic.git" }
+iced_core = { git = "https://github.com/playtron-os/iced.git", features = ["advanced"] }
+iced_graphics = { git = "https://github.com/playtron-os/iced.git" }
+iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
+iced_tiny_skia = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image"] }
+iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image", "advanced"] }
+icetron = { git = "ssh://git@github.com/playtron-os/icetron.git", default-features = false, features = ["images", "icons", "buttons", "dividers", "desktop-utils", "menus"] }
+icetron-themes = { git = "ssh://git@github.com/playtron-os/icetron-themes.git", features = ["dynamic", "color-mode"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.11"
 keyframe = "1.1.1"
 libc = "0.2.177"
-libcosmic = { git = "https://github.com/playtron-os/libcosmic.git", default-features = false }
 libsystemd = { version = "0.7", optional = true }
 log-panics = { version = "2", features = ["with-backtrace"] }
+notify = "8"
 ordered-float = "5.1"
 png = "0.18"
 regex = "1"
@@ -126,6 +133,7 @@ optional = true
 [features]
 debug = ["egui", "egui_plot", "smithay-egui", "anyhow/backtrace"]
 default = ["systemd"]
+stacking = []
 systemd = ["libsystemd", "logind-zbus"]
 profile-with-tracy = ["profiling/profile-with-tracy", "tracy-client/default"]
 
@@ -147,15 +155,39 @@ lto = "fat"
 
 [patch."https://github.com/pop-os/cosmic-protocols"]
 cosmic-protocols = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
-cosmic-client-toolkit = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
-
 [patch."https://github.com/pop-os/libcosmic/"]
 cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git" }
 cosmic-config-derive = { git = "https://github.com/playtron-os/libcosmic.git" }
 cosmic-theme = { git = "https://github.com/playtron-os/libcosmic.git" }
-iced_core = { git = "https://github.com/playtron-os/libcosmic.git" }
-iced_futures = { git = "https://github.com/playtron-os/libcosmic.git" }
-
+iced_core = { git = "https://github.com/playtron-os/iced.git" }
+iced_futures = { git = "https://github.com/playtron-os/iced.git" }
+iced_graphics = { git = "https://github.com/playtron-os/iced.git" }
+iced_renderer = { git = "https://github.com/playtron-os/iced.git" }
+iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
+iced_widget = { git = "https://github.com/playtron-os/iced.git" }
 [patch.crates-io]
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
 smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "d932671be" }
+
+#[patch."https://github.com/playtron-os/iced.git"]
+#iced = { path = "../iced" }
+#iced_core = { path = "../iced/core" }
+#iced_debug = { path = "../iced/debug" }
+#iced_futures = { path = "../iced/futures" }
+#iced_graphics = { path = "../iced/graphics" }
+#iced_highlighter = { path = "../iced/highlighter" }
+#iced_program = { path = "../iced/program" }
+#iced_renderer = { path = "../iced/renderer" }
+#iced_runtime = { path = "../iced/runtime" }
+#iced_tiny_skia = { path = "../iced/tiny_skia" }
+#iced_wgpu = { path = "../iced/wgpu" }
+#iced_widget = { path = "../iced/widget" }
+#iced_winit = { path = "../iced/winit" }
+
+#[patch."ssh://git@github.com/playtron-os/icetron.git"]
+#icetron = { path = "../icetron-storybook/vendor/icetron/crates/icetron" }
+#icetron_assets = { path = "../icetron-storybook/vendor/icetron/crates/icetron-assets" }
+#icetron_utils = { path = "../icetron-storybook/vendor/icetron/crates/icetron-utils" }
+
+#[patch."ssh://git@github.com/playtron-os/icetron-themes.git"]
+#icetron-themes = { path = "../icetron-themes/crates/icetron-themes" }
