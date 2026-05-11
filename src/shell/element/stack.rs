@@ -806,7 +806,7 @@ impl CosmicStack {
             let border = (!maximized && !is_embedded && !windows[active].has_blur()).then(|| {
                 // TODO: Update this
                 let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
-                CosmicStackRenderElement::Border(IndicatorShader::element(
+                CosmicStackRenderElement::Border(IndicatorShader::focus_element(
                     renderer,
                     Key::Window(Usage::Border, window_key.clone()),
                     geo.to_i32_round().as_local(),

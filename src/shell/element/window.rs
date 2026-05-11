@@ -891,16 +891,33 @@ impl CosmicWindow {
 
             // TODO: Update this
             let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
-            let elem = CosmicWindowRenderElement::Border(IndicatorShader::element(
-                renderer,
-                Key::Window(Usage::Border, window_key.clone()),
-                geo.to_i32_round().as_local(),
-                1,
-                radii,
-                1.0 * alpha,
-                scale.x,
-                border_color,
-            ));
+            // SSD windows: draw the border 1px outside the geo so the border's
+            // opaque inner edge covers the SSD header corners (prevents dark bleed).
+            // CSD windows: draw the border inside the geo so there's no gap between
+            // the client-drawn decorations and the border.
+            let elem = if has_ssd && !is_embedded {
+                CosmicWindowRenderElement::Border(IndicatorShader::focus_element(
+                    renderer,
+                    Key::Window(Usage::Border, window_key.clone()),
+                    geo.to_i32_round().as_local(),
+                    1,
+                    radii,
+                    1.0 * alpha,
+                    scale.x,
+                    border_color,
+                ))
+            } else {
+                CosmicWindowRenderElement::Border(IndicatorShader::element(
+                    renderer,
+                    Key::Window(Usage::Border, window_key.clone()),
+                    geo.to_i32_round().as_local(),
+                    1,
+                    radii,
+                    1.0 * alpha,
+                    scale.x,
+                    border_color,
+                ))
+            };
             elements.push(elem);
         }
 
@@ -1162,12 +1179,12 @@ impl Program for CosmicWindowInternal {
         theme: &crate::comp_theme::CompTheme,
     ) {
         // Clear top corners to transparent so the SSD header doesn't bleed
-        // past the window's rounded border. We use a slightly larger radius
-        // (+2 scaled px) than the window border so the header is fully
-        // hidden behind the border's anti-aliased outer edge.
+        // past the window's rounded border. The border shader handles the
+        // outer anti-aliased edge; this mask just ensures the dark header
+        // pixels are fully transparent in the border zone.
         let maximized = self.window.is_maximized(false);
         let radius_raw = theme.radius_window()[0];
-        let radius = (radius_raw * scale).round() as u32 + (2.0 * scale).round() as u32;
+        let radius = (radius_raw * scale).round() as u32;
         let w = pixels.width();
         let h = pixels.height();
 
