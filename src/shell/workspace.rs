@@ -453,11 +453,11 @@ impl Workspace {
     }
 
     /// Check if this workspace has any windows with blur enabled
-    pub fn has_blur_windows(&self) -> bool {
+    pub fn has_blur_windows(&self, ssd_blur: bool) -> bool {
         let floating_has_blur = self.floating_layer.has_blur_windows();
-        let floating_has_ssd = self.floating_layer.has_ssd_windows();
+        let floating_has_ssd = ssd_blur && self.floating_layer.has_ssd_windows();
         let tiling_has_blur = self.tiling_layer.mapped().any(|(m, _)| m.has_blur());
-        let tiling_has_ssd = self.tiling_layer.mapped().any(|(m, _)| m.has_ssd());
+        let tiling_has_ssd = ssd_blur && self.tiling_layer.mapped().any(|(m, _)| m.has_ssd());
         let result = floating_has_blur || tiling_has_blur || floating_has_ssd || tiling_has_ssd;
 
         if result {
@@ -529,14 +529,18 @@ impl Workspace {
 
     /// Get blur window geometries from this workspace
     /// Returns (geometry, alpha) tuples for all blur windows
-    pub fn blur_window_geometries(&self, alpha: f32) -> Vec<(Rectangle<i32, Local>, f32)> {
-        let mut geometries = self.floating_layer.blur_window_geometries(alpha);
+    pub fn blur_window_geometries(
+        &self,
+        alpha: f32,
+        ssd_blur: bool,
+    ) -> Vec<(Rectangle<i32, Local>, f32)> {
+        let mut geometries = self.floating_layer.blur_window_geometries(alpha, ssd_blur);
 
         // Add tiling layer blur windows
         for (mapped, geo) in self.tiling_layer.mapped() {
             if mapped.has_blur() {
                 geometries.push((geo, alpha));
-            } else if mapped.has_ssd() {
+            } else if ssd_blur && mapped.has_ssd() {
                 // Add SSD header blur for tiled windows without full-window blur
                 let header_geo = Rectangle::new(
                     geo.loc,

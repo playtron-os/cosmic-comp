@@ -781,7 +781,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
@@ -2773,7 +2773,7 @@ dependencies = [
 [[package]]
 name = "icetron"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9e76d82d292a80c03bb4b896be05edce581a0e14"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2799,8 +2799,8 @@ dependencies = [
 
 [[package]]
 name = "icetron-themes"
-version = "1.8.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#55086d4cff7c41fd4d3f7bcd6e6f3df4ef57cd97"
+version = "1.9.0"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#fd0db75fde854a14a4b298aeee919b666956d806"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -2811,12 +2811,12 @@ dependencies = [
 [[package]]
 name = "icetron_assets"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9e76d82d292a80c03bb4b896be05edce581a0e14"
 
 [[package]]
 name = "icetron_utils"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9d4fe47cd555fc6a538b7febc5a05e69216c891a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#9e76d82d292a80c03bb4b896be05edce581a0e14"
 dependencies = [
  "freedesktop-icons",
  "tracing",
@@ -5536,7 +5536,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7623,6 +7623,15 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+dependencies = [
+ "windows-targets 0.52.6",
+]
+
+[[package]]
+name = "windows-sys"
+version = "0.59.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]

@@ -1,12 +1,10 @@
 use cosmic_comp::comp_theme::CompTheme;
 use cosmic_comp::hooks::{Decorations, Hooks};
 use cosmic_comp::shell::element::stack::{
-    CosmicStackInternal, DefaultDecorations as DefaultStackDecorations,
-    Message as StackMessage,
+    CosmicStackInternal, DefaultDecorations as DefaultStackDecorations, Message as StackMessage,
 };
 use cosmic_comp::shell::element::window::{
-    CosmicWindowInternal, DefaultDecorations as DefaultWindowDecorations,
-    Message as WindowMessage,
+    CosmicWindowInternal, DefaultDecorations as DefaultWindowDecorations, Message as WindowMessage,
 };
 use cosmic_comp::utils::iced::CompElement;
 use iced_core::{Color, Length};

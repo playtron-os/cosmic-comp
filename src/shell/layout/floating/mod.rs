@@ -2678,7 +2678,11 @@ impl FloatingLayout {
 
     /// Get the geometries of all windows that have blur enabled
     /// Returns (geometry, alpha) tuples
-    pub fn blur_window_geometries(&self, alpha: f32) -> Vec<(Rectangle<i32, Local>, f32)> {
+    pub fn blur_window_geometries(
+        &self,
+        alpha: f32,
+        ssd_blur: bool,
+    ) -> Vec<(Rectangle<i32, Local>, f32)> {
         if self.space.outputs().next().is_none() {
             return Vec::new();
         }
@@ -2704,16 +2708,18 @@ impl FloatingLayout {
 
         // Add SSD header blur regions for windows with server-side decorations
         // that don't already have full-window blur
-        for elem in self.space.elements().rev() {
-            if elem.has_ssd()
-                && !elem.has_blur()
-                && let Some(geo) = self.space.element_geometry(elem)
-            {
-                let header_geo = Rectangle::new(
-                    geo.loc.as_local(),
-                    Size::from((geo.size.w, elem.ssd_height(false).unwrap_or(0))),
-                );
-                geometries.push((header_geo, alpha));
+        if ssd_blur {
+            for elem in self.space.elements().rev() {
+                if elem.has_ssd()
+                    && !elem.has_blur()
+                    && let Some(geo) = self.space.element_geometry(elem)
+                {
+                    let header_geo = Rectangle::new(
+                        geo.loc.as_local(),
+                        Size::from((geo.size.w, elem.ssd_height(false).unwrap_or(0))),
+                    );
+                    geometries.push((header_geo, alpha));
+                }
             }
         }
 
@@ -3226,7 +3232,11 @@ impl FloatingLayout {
             }
 
             // Add blur backdrop for SSD header on windows without full-window blur
-            if !elem.has_blur() && elem.has_ssd() && blur_ctx.is_none() {
+            if !elem.has_blur()
+                && elem.has_ssd()
+                && blur_ctx.is_none()
+                && theme.header_backdrop_blur()
+            {
                 let header_geo = Rectangle::new(
                     geometry.loc,
                     Size::from((geometry.size.w, elem.ssd_height(false).unwrap_or(0))),

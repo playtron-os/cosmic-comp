@@ -705,10 +705,11 @@ fn process_blur(
     // Check workspace windows for blur
     let has_workspace_blur = {
         let shell_ref = shell.read();
+        let ssd_blur = shell_ref.theme().header_backdrop_blur();
         shell_ref
             .workspaces
             .active(output_ref)
-            .is_some_and(|(_, workspace)| workspace.has_blur_windows())
+            .is_some_and(|(_, workspace)| workspace.has_blur_windows(ssd_blur))
     };
 
     // Check layer surfaces for blur using non-blocking cache

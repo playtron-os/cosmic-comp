@@ -5,7 +5,7 @@
 //! so SSD windows match CSD visual design.
 
 use iced_core::Alignment;
-use iced_core::{Background, Color, Element, Length};
+use iced_core::{Color, Element, Length};
 use iced_widget::{Svg, container, row, svg};
 use icetron::prelude::{animated_opacity, app_header, header_height, styled_text};
 
@@ -131,7 +131,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .hovered(self.hovered)
             .is_windowed(!self.maximized)
             .backdrop_blur(false)
-            .opaque(true)
             .show_border(true);
 
         // Pass application icon with native SVG colors via title_content.
@@ -203,9 +202,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.on_right_click(msg);
         }
 
-        // Wrap in a container with the translucent fill_default overlay on top of the
-        // compositor-side blur (light mode: rgba(255,255,255,0.8))
-        let fill_default = theme.fill_default();
         // Top corner radius should match the window's corner radius so the header
         // clips correctly when composited. Bottom corners are 0 (window content below).
         let top_radius = if self.maximized {
@@ -220,7 +216,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .width(Length::Fill)
             .height(Length::Fixed(header_height))
             .style(move |_theme| container::Style {
-                background: Some(Background::Color(fill_default)),
                 border: iced_core::Border {
                     radius: iced_core::border::Radius {
                         top_left: top_radius,

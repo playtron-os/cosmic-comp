@@ -2100,9 +2100,10 @@ where
     let zoom_state = shell_ref.zoom_state().cloned();
 
     // Check if there are blur windows and get their geometries
-    let has_workspace_blur = workspace_ref.has_blur_windows();
+    let ssd_blur = shell_ref.theme().header_backdrop_blur();
+    let has_workspace_blur = workspace_ref.has_blur_windows(ssd_blur);
     let mut blur_geometries = if has_workspace_blur {
-        workspace_ref.blur_window_geometries(1.0)
+        workspace_ref.blur_window_geometries(1.0, ssd_blur)
     } else {
         Vec::new()
     };
