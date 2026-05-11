@@ -1,6 +1,6 @@
 Name:           cosmic-comp
 Epoch:          1
-Version: 1.18.1
+Version: 1.19.0
 Release:        1%{?dist}
 Summary:        COSMIC Wayland Compositor (Playtron fork)
 

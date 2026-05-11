@@ -1,3 +1,21 @@
+# [1.19.0](https://github.com/playtron-os/cosmic-comp/compare/v1.18.1...v1.19.0) (2026-05-11)
+
+
+### Bug Fixes
+
+* propagate fractional scale to CSD subsurfaces on HiDPI ([cdb261d](https://github.com/playtron-os/cosmic-comp/commit/cdb261d22c7fb0dac49b906d8237f52e017d4057))
+* update customized-window-decorations example for current API ([57b71ce](https://github.com/playtron-os/cosmic-comp/commit/57b71cead6a009f138a3122c4bedb7ca34d131e7))
+* update icetron and update dockerfile rust version ([ee17af2](https://github.com/playtron-os/cosmic-comp/commit/ee17af29d418df71923a5c1a8ac4ee41129f88c4))
+* use client specified corner radius for windows correctly ([12f5325](https://github.com/playtron-os/cosmic-comp/commit/12f53253ee5bb0a885f9683fb288f22491524ec3))
+* use conditional border rendering for SSD vs CSD windows ([5a2464f](https://github.com/playtron-os/cosmic-comp/commit/5a2464fd7648e806816946229d13be611feb2d8a))
+
+
+### Features
+
+* icetron theme system, tiling runtime config, SSD corner AA ([d85b1ae](https://github.com/playtron-os/cosmic-comp/commit/d85b1aef7763bccb7181a3ab377028a88badb8a5))
+* theme-configurable SSD header background and blur ([ad8dd22](https://github.com/playtron-os/cosmic-comp/commit/ad8dd2228b2e3f4da11591bd43028fde807e836c))
+* update to latest smithay ([1184174](https://github.com/playtron-os/cosmic-comp/commit/11841744fafe88fa33da7ce89a9441baca5beff0))
+
 ## [1.18.1](https://github.com/playtron-os/cosmic-comp/compare/v1.18.0...v1.18.1) (2026-04-24)
 
 
