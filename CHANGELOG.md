@@ -1,3 +1,10 @@
+## [1.20.1](https://github.com/playtron-os/cosmic-comp/compare/v1.20.0...v1.20.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* add missing bg to SSD header ([8c534d0](https://github.com/playtron-os/cosmic-comp/commit/8c534d0eb2216f094f38321480bd1242f075a56f))
+
 # [1.20.0](https://github.com/playtron-os/cosmic-comp/compare/v1.19.1...v1.20.0) (2026-05-12)
 
 
