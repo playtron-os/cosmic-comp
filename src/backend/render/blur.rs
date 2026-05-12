@@ -42,6 +42,7 @@ use smithay::{
     utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform},
 };
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::{Duration, Instant};
 use wayland_backend::server::ObjectId;
@@ -53,15 +54,12 @@ use crate::shell::element::{CosmicMapped, CosmicMappedKey};
 // Constants
 // =============================================================================
 
-/// Default blur radius in pixels
-pub const DEFAULT_BLUR_RADIUS: f32 = 60.0;
-
-/// Number of blur iterations.
-pub const BLUR_ITERATIONS: u32 = 12;
-
 /// Downsample factor for blur textures.
-/// This massively increases perceived blur and is very GPU-efficient.
-pub const BLUR_DOWNSAMPLE_FACTOR: i32 = 8;
+/// Factor 2 gives 720×450 from 1440×900. A 2× bilinear downsample is nearly
+/// lossless (no aliasing). The Dual Kawase algorithm then progressively halves
+/// from there, blurring at each step to avoid the artifacts of a large single-step
+/// downsample.
+pub const BLUR_DOWNSAMPLE_FACTOR: i32 = 2;
 
 // Blur backdrop styling constants
 pub const BLUR_TINT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
@@ -75,8 +73,58 @@ pub const BLUR_FALLBACK_COLOR: [f32; 3] = [0.9, 0.9, 0.95];
 /// Minimum interval between blur updates when only content changes (e.g., cursor blink).
 /// This throttles blur re-computation to reduce GPU load from high-frequency updates.
 pub fn blur_throttle_interval() -> Duration {
-    use super::gpu_profiler::get_tiler_opts;
-    get_tiler_opts().blur_throttle_interval
+    Duration::from_millis(100)
+}
+
+// =============================================================================
+// Runtime Blur Configuration (updated from cosmic-config)
+// =============================================================================
+
+/// Global blur enabled flag, updated from config.
+static BLUR_ENABLED: AtomicBool = AtomicBool::new(true);
+/// Global blur intensity as f32 bits, updated from config. Range 0.0-1.0.
+static BLUR_INTENSITY_BITS: AtomicU32 = AtomicU32::new(0); // initialized in init_blur_config
+
+/// Initialize blur config globals from CosmicCompConfig values.
+pub fn init_blur_config(enabled: bool, intensity: f32) {
+    set_blur_enabled(enabled);
+    set_blur_intensity(intensity);
+}
+
+/// Update blur enabled state from config.
+pub fn set_blur_enabled(enabled: bool) {
+    BLUR_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Update blur intensity from config (0.0 = disabled, 1.0 = maximum).
+pub fn set_blur_intensity(intensity: f32) {
+    let clamped = intensity.clamp(0.0, 1.0);
+    BLUR_INTENSITY_BITS.store(clamped.to_bits(), Ordering::Relaxed);
+}
+
+/// Check if blur is enabled via config.
+pub fn blur_config_enabled() -> bool {
+    BLUR_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Get the configured blur intensity (0.0-1.0).
+pub fn blur_config_intensity() -> f32 {
+    f32::from_bits(BLUR_INTENSITY_BITS.load(Ordering::Relaxed))
+}
+
+/// Map blur intensity (0.0-1.0) to Dual Kawase levels (1-6).
+pub fn effective_blur_levels() -> u32 {
+    let intensity = blur_config_intensity();
+    // Linear map: 0.0 → 1 level, 1.0 → 6 levels
+    let levels = 1.0 + intensity * 5.0;
+    (levels.round() as u32).clamp(1, 6)
+}
+
+/// Map blur intensity (0.0-1.0) to Dual Kawase offset (0.5-5.0).
+pub fn effective_blur_offset() -> f32 {
+    let intensity = blur_config_intensity();
+    // Linear map: 0.0 → 0.5, 1.0 → 5.0
+    0.5 + intensity * 4.5
 }
 
 // =============================================================================
@@ -520,6 +568,20 @@ pub fn get_cached_blur_texture_for_layer(
 pub fn clear_layer_blur_textures_for_output(output_name: &str) {
     if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.try_write() {
         cache.retain(|(out, _), _| out != output_name);
+    }
+}
+
+/// Invalidate all blur caches (window + layer + content state).
+/// Called when blur intensity changes to force re-computation.
+pub fn invalidate_all_blur_caches() {
+    if let Ok(mut cache) = BLUR_TEXTURE_CACHE.write() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = LAYER_BLUR_TEXTURE_CACHE.write() {
+        cache.clear();
+    }
+    if let Ok(mut cache) = BLUR_GROUP_CONTENT_STATE.write() {
+        cache.clear();
     }
 }
 
@@ -1025,144 +1087,227 @@ where
     Ok(())
 }
 
-/// Apply Kawase blur passes using ping-pong rendering.
+// =============================================================================
+// Dual Kawase Blur (Progressive Downsample/Upsample)
+// =============================================================================
+
+/// Apply Dual Kawase blur using progressive downsample + upsample.
 ///
-/// - `renderer`: The renderer to use
-/// - `src_texture`: Source texture to blur (will not be modified)
-/// - `ping_texture`: First intermediate texture
-/// - `pong_texture`: Second intermediate texture (will contain final result)
-/// - `tex_size`: Size of all textures
-/// - `scale`: Scale factor for damage tracking
-/// - `iterations`: Number of blur iterations
-/// - `custom_radius`: Optional per-surface blur radius; uses `DEFAULT_BLUR_RADIUS` if `None`.
+/// This is significantly faster than the old Kawase ping-pong approach:
+/// - Old: 12 iterations × 2 passes = 24 shader passes at fixed resolution
+/// - New: N downsample + N upsample = 2N passes (typically N=4 → 8 passes)
+///   Each downsample level halves resolution, so later passes are very cheap.
 ///
-/// After this function, `pong_texture` contains the blurred result.
-pub fn apply_blur_passes<R>(
+/// The algorithm:
+/// 1. Start with `src_texture` at `src_size`
+/// 2. Downsample N times: apply blur kernel while halving resolution each step
+/// 3. Upsample N times: apply blur kernel while doubling resolution each step
+/// 4. Final result is in `pong_texture` at `src_size`
+///
+/// Parameters:
+/// - `renderer`: The GPU renderer
+/// - `src_texture`: Input texture (downsampled background capture)
+/// - `ping_texture`/`pong_texture`: Working textures at src_size (reused for final output)
+/// - `src_size`: Size of the input/output textures
+/// - `levels`: Number of downsample/upsample iterations (2-5, typically 4)
+/// - `offset`: Blur spread per level (1.0-3.0, higher = stronger)
+pub fn apply_dual_kawase_blur<R>(
     renderer: &mut R,
     src_texture: &TextureRenderBuffer<GlesTexture>,
-    ping_texture: &mut TextureRenderBuffer<GlesTexture>,
+    _ping_texture: &mut TextureRenderBuffer<GlesTexture>,
     pong_texture: &mut TextureRenderBuffer<GlesTexture>,
-    tex_size: Size<i32, Physical>,
-    scale: Scale<f64>,
-    iterations: u32,
-    custom_radius: Option<f32>,
+    src_size: Size<i32, Physical>,
+    levels: u32,
+    offset: f32,
 ) -> Result<(), GlesError>
 where
     R: Renderer + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
 {
     let _span = tracing::info_span!(
-        "blur_passes",
-        iterations = iterations,
-        tex_w = tex_size.w,
-        tex_h = tex_size.h,
+        "dual_kawase_blur",
+        levels = levels,
+        offset = offset,
+        src_w = src_size.w,
+        src_h = src_size.h,
     )
     .entered();
 
-    let blur_shader = super::BlurShader::get(renderer);
-    let blur_radius = custom_radius.unwrap_or(DEFAULT_BLUR_RADIUS);
+    let levels = levels.clamp(1, 8);
 
-    // First pass: src -> ping (horizontal blur)
-    apply_single_blur_pass(
-        renderer,
-        src_texture,
-        ping_texture,
-        &blur_shader,
-        blur_radius,
-        tex_size,
-        scale,
-        true,
-    )?;
+    // Build mip chain sizes: each level halves the resolution
+    let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+    mip_sizes.push(src_size); // Level 0 = full resolution
+    for i in 1..=levels {
+        let prev = mip_sizes[i as usize - 1];
+        mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+    }
 
-    // Second pass: ping -> pong (vertical blur)
-    apply_single_blur_pass(
-        renderer,
-        ping_texture,
-        pong_texture,
-        &blur_shader,
-        blur_radius,
-        tex_size,
-        scale,
-        false,
-    )?;
+    // Allocate temporary textures for intermediate mip levels
+    // We need one texture per intermediate level (levels 1..levels-1)
+    // Level 0 = src_texture (input), level N (smallest) stored in ping
+    // Upsample chain reuses these textures
+    let mut mip_textures: Vec<TextureRenderBuffer<GlesTexture>> =
+        Vec::with_capacity(levels as usize);
+    for i in 1..=levels {
+        let mip_size = mip_sizes[i as usize];
+        let buffer_size = mip_size.to_logical(1).to_buffer(1, Transform::Normal);
+        let tex = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buffer_size)
+            .map_err(|_| GlesError::UnknownSize)?;
+        let buffer = TextureRenderBuffer::from_texture(
+            renderer.glow_renderer(),
+            tex,
+            1,
+            Transform::Normal,
+            None,
+        );
+        mip_textures.push(buffer);
+    }
 
-    // Additional iterations for smoother blur
-    for _ in 1..iterations {
-        // Horizontal: pong -> ping
-        apply_single_blur_pass(
-            renderer,
-            pong_texture,
-            ping_texture,
-            &blur_shader,
-            blur_radius,
-            tex_size,
-            scale,
-            true,
-        )?;
+    let downsample_shader = super::DualKawaseDownsampleShader::get(renderer);
+    let upsample_shader = super::DualKawaseUpsampleShader::get(renderer);
 
-        // Vertical: ping -> pong
-        apply_single_blur_pass(
-            renderer,
-            ping_texture,
-            pong_texture,
-            &blur_shader,
-            blur_radius,
-            tex_size,
-            scale,
-            false,
-        )?;
+    // === DOWNSAMPLE CHAIN ===
+    // Level 0→1: src_texture → mip_textures[0]
+    // Level 1→2: mip_textures[0] → mip_textures[1]
+    // ...
+    // Level N-1→N: mip_textures[N-2] → mip_textures[N-1]
+    for i in 0..levels as usize {
+        let input_size = mip_sizes[i];
+        let output_size = mip_sizes[i + 1];
+        let half_texel = [0.5 / input_size.w as f32, 0.5 / input_size.h as f32];
+
+        if i == 0 {
+            // First pass: read from src_texture, write to mip_textures[0]
+            apply_dual_kawase_pass(
+                renderer,
+                src_texture,
+                &mut mip_textures[0],
+                &downsample_shader,
+                half_texel,
+                offset,
+                input_size,
+                output_size,
+            )?;
+        } else {
+            // Split to get immutable ref to [i-1] and mutable ref to [i]
+            let (left, right) = mip_textures.split_at_mut(i);
+            let input = &left[i - 1];
+            let output = &mut right[0];
+            apply_dual_kawase_pass(
+                renderer,
+                input,
+                output,
+                &downsample_shader,
+                half_texel,
+                offset,
+                input_size,
+                output_size,
+            )?;
+        }
+    }
+
+    // === UPSAMPLE CHAIN ===
+    // Level N→N-1: mip_textures[N-1] → mip_textures[N-2]  (if N >= 2)
+    // ...
+    // Level 2→1: mip_textures[1] → mip_textures[0]
+    // Level 1→0: mip_textures[0] → pong_texture
+    for i in (0..levels as usize).rev() {
+        let output_size = mip_sizes[i];
+        let input_size = mip_sizes[i + 1];
+        let half_texel = [0.5 / input_size.w as f32, 0.5 / input_size.h as f32];
+
+        if i == 0 {
+            // Final upsample: read from mip_textures[0], write to pong_texture
+            apply_dual_kawase_pass(
+                renderer,
+                &mip_textures[0],
+                pong_texture,
+                &upsample_shader,
+                half_texel,
+                offset,
+                input_size,
+                output_size,
+            )?;
+        } else if i == levels as usize - 1 {
+            // First upsample: read from mip_textures[N-1], write to mip_textures[N-2]
+            // Split at i to get mutable ref to [i-1] and immutable ref to [i]
+            let (left, right) = mip_textures.split_at_mut(i);
+            let input = &right[0];
+            let output = &mut left[i - 1];
+            apply_dual_kawase_pass(
+                renderer,
+                input,
+                output,
+                &upsample_shader,
+                half_texel,
+                offset,
+                input_size,
+                output_size,
+            )?;
+        } else {
+            // Middle upsample: read from mip_textures[i] (previous upsample output), write to mip_textures[i-1]
+            // Previous step (i+1) wrote its result to mip_textures[i], so we read from right[0]
+            let (left, right) = mip_textures.split_at_mut(i);
+            let input = &right[0]; // index i (result of previous upsample step)
+            let output = &mut left[i - 1];
+            apply_dual_kawase_pass(
+                renderer,
+                input,
+                output,
+                &upsample_shader,
+                half_texel,
+                offset,
+                input_size,
+                output_size,
+            )?;
+        }
     }
 
     tracing::trace!(
-        iterations = iterations,
-        tex_w = tex_size.w,
-        tex_h = tex_size.h,
-        blur_radius = blur_radius,
-        "Blur passes complete"
+        levels = levels,
+        offset = offset,
+        total_passes = levels * 2,
+        "Dual Kawase blur complete"
     );
 
     Ok(())
 }
 
-/// Apply a single blur pass from src to dst
-fn apply_single_blur_pass<R>(
+/// Apply a single Dual Kawase pass (either downsample or upsample)
+///
+/// `src_size` is the actual pixel dimensions of the source texture buffer.
+/// `dst_size` is the pixel dimensions of the destination framebuffer.
+/// These differ because each downsample halves and each upsample doubles.
+fn apply_dual_kawase_pass<R>(
     renderer: &mut R,
     src_texture: &TextureRenderBuffer<GlesTexture>,
     dst_texture: &mut TextureRenderBuffer<GlesTexture>,
-    blur_shader: &GlesTexProgram,
-    blur_radius: f32,
-    tex_size: Size<i32, Physical>,
-    _scale: Scale<f64>,
-    horizontal: bool,
+    shader: &GlesTexProgram,
+    half_texel: [f32; 2],
+    offset: f32,
+    src_size: Size<i32, Physical>,
+    dst_size: Size<i32, Physical>,
 ) -> Result<(), GlesError>
 where
     R: Renderer + Bind<Dmabuf> + Offscreen<GlesTexture> + AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
 {
-    tracing::trace!(
-        horizontal = horizontal,
-        blur_radius = blur_radius,
-        tex_size_w = tex_size.w,
-        tex_size_h = tex_size.h,
-        "Applying single blur pass"
-    );
-
     let src_elem = TextureRenderElement::from_texture_render_buffer(
         Point::<f64, Physical>::from((0.0, 0.0)),
         src_texture,
         Some(1.0),
         None,
-        None,
+        Some(Size::<i32, Logical>::from((dst_size.w, dst_size.h))),
         Kind::Unspecified,
     );
 
-    let blur_elem = TextureShaderElement::new(
+    let shader_elem = TextureShaderElement::new(
         src_elem,
-        blur_shader.clone(),
+        shader.clone(),
         vec![
-            Uniform::new("tex_size", [tex_size.w as f32, tex_size.h as f32]),
-            Uniform::new("blur_radius", blur_radius),
-            Uniform::new("direction", if horizontal { 0.0 } else { 1.0 }),
+            Uniform::new("half_texel", half_texel),
+            Uniform::new("offset", offset),
         ],
     );
 
@@ -1170,30 +1315,28 @@ where
         let glow = renderer.glow_renderer_mut();
         let mut target = glow.bind(tex)?;
 
-        // Get a frame to render with
         use smithay::backend::renderer::Renderer as RendererTrait;
-        let mut frame = glow.render(&mut target, tex_size, Transform::Normal)?;
+        let mut frame = glow.render(&mut target, dst_size, Transform::Normal)?;
 
-        // Clear the framebuffer first
         use smithay::backend::renderer::Color32F;
         use smithay::backend::renderer::Frame as FrameTrait;
-        let clear_damage = [Rectangle::from_size(tex_size)];
+        let clear_damage = [Rectangle::from_size(dst_size)];
         frame.clear(Color32F::from([0.0, 0.0, 0.0, 0.0]), &clear_damage)?;
 
-        // Render the blur element using the RenderElement trait
         use smithay::backend::renderer::element::RenderElement;
         use smithay::backend::renderer::glow::GlowRenderer;
         use smithay::utils::Buffer as BufferCoords;
 
-        // Source: full texture in buffer coordinates
+        // src rectangle must match the actual source buffer dimensions,
+        // NOT the destination size. Otherwise UVs exceed 0-1 range when
+        // upsampling (src smaller than dst) causing edge-clamped flat color.
         let src: Rectangle<f64, BufferCoords> =
-            Rectangle::from_size((tex_size.w as f64, tex_size.h as f64).into());
-        // Destination: full output in physical coordinates
-        let dst: Rectangle<i32, Physical> = Rectangle::from_size(tex_size);
+            Rectangle::from_size((src_size.w as f64, src_size.h as f64).into());
+        let dst: Rectangle<i32, Physical> = Rectangle::from_size(dst_size);
         let damage = [dst];
 
         <TextureShaderElement as RenderElement<GlowRenderer>>::draw(
-            &blur_elem,
+            &shader_elem,
             &mut frame,
             src,
             dst,
@@ -1202,14 +1345,10 @@ where
             None,
         )?;
 
-        // Finish the frame
         drop(frame);
 
-        tracing::trace!(horizontal = horizontal, "Blur pass render completed");
-
-        // Return damage in buffer coordinates
-        let buffer_size: Size<i32, Logical> = tex_size.to_logical(1);
-        let damage_rect = Rectangle::from_size(tex_size);
+        let buffer_size: Size<i32, Logical> = dst_size.to_logical(1);
+        let damage_rect = Rectangle::from_size(dst_size);
         Ok(vec![damage_rect.to_logical(1).to_buffer(
             1,
             Transform::Normal,
@@ -1221,6 +1360,10 @@ where
 }
 
 // =============================================================================
+// Runtime Blur Diagnostics
+// =============================================================================
+
+// =============================================================================
 // HasBlur Trait
 // =============================================================================
 
@@ -1228,4 +1371,358 @@ where
 pub trait HasBlur {
     /// Check if this element has blur enabled
     fn has_blur(&self) -> bool;
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mip_size_chain_calculation() {
+        // Test: mip chain sizes are computed correctly with progressive halving
+        let src_size = Size::<i32, Physical>::from((720, 450));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        assert_eq!(mip_sizes.len(), 6);
+        assert_eq!(mip_sizes[0], Size::from((720, 450)));
+        assert_eq!(mip_sizes[1], Size::from((360, 225)));
+        assert_eq!(mip_sizes[2], Size::from((180, 112)));
+        assert_eq!(mip_sizes[3], Size::from((90, 56)));
+        assert_eq!(mip_sizes[4], Size::from((45, 28)));
+        assert_eq!(mip_sizes[5], Size::from((22, 14)));
+    }
+
+    #[test]
+    fn test_mip_size_chain_1080p() {
+        // Test with common 1080p resolution (after 2x downsample: 960×540)
+        let src_size = Size::<i32, Physical>::from((960, 540));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        assert_eq!(mip_sizes[0], Size::from((960, 540)));
+        assert_eq!(mip_sizes[1], Size::from((480, 270)));
+        assert_eq!(mip_sizes[2], Size::from((240, 135)));
+        assert_eq!(mip_sizes[3], Size::from((120, 67)));
+        assert_eq!(mip_sizes[4], Size::from((60, 33)));
+        assert_eq!(mip_sizes[5], Size::from((30, 16)));
+    }
+
+    #[test]
+    fn test_mip_sizes_never_zero() {
+        // Test: mip sizes never reach 0 due to .max(1)
+        let src_size = Size::<i32, Physical>::from((16, 9));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        for size in &mip_sizes {
+            assert!(size.w >= 1, "Width must be >= 1, got {}", size.w);
+            assert!(size.h >= 1, "Height must be >= 1, got {}", size.h);
+        }
+    }
+
+    #[test]
+    fn test_downsample_indices_match_sizes() {
+        // Test: downsample loop correctly pairs input_size and output_size
+        let src_size = Size::<i32, Physical>::from((720, 450));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        // Simulate the downsample loop
+        for i in 0..levels as usize {
+            let input_size = mip_sizes[i];
+            let output_size = mip_sizes[i + 1];
+
+            // Input should always be larger than output (downsampling)
+            assert!(
+                input_size.w >= output_size.w,
+                "Downsample step {}: input_w {} < output_w {}",
+                i,
+                input_size.w,
+                output_size.w
+            );
+            assert!(
+                input_size.h >= output_size.h,
+                "Downsample step {}: input_h {} < output_h {}",
+                i,
+                input_size.h,
+                output_size.h
+            );
+
+            // Output should be approximately half of input
+            assert!(
+                output_size.w == (input_size.w / 2).max(1),
+                "Step {}: output_w {} != input_w/2 {}",
+                i,
+                output_size.w,
+                (input_size.w / 2).max(1)
+            );
+        }
+    }
+
+    #[test]
+    fn test_upsample_indices_match_sizes() {
+        // Test: upsample loop correctly pairs input_size and output_size
+        let src_size = Size::<i32, Physical>::from((720, 450));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        // Simulate the upsample loop (reverse)
+        for i in (0..levels as usize).rev() {
+            let output_size = mip_sizes[i];
+            let input_size = mip_sizes[i + 1];
+
+            // Input should always be smaller than output (upsampling)
+            assert!(
+                input_size.w <= output_size.w,
+                "Upsample step {}: input_w {} > output_w {}",
+                i,
+                input_size.w,
+                output_size.w
+            );
+            assert!(
+                input_size.h <= output_size.h,
+                "Upsample step {}: input_h {} > output_h {}",
+                i,
+                input_size.h,
+                output_size.h
+            );
+        }
+
+        // Final upsample output should be src_size
+        let final_output = mip_sizes[0];
+        assert_eq!(
+            final_output, src_size,
+            "Final upsample should return to src_size"
+        );
+    }
+
+    #[test]
+    fn test_half_texel_calculation() {
+        // Test: half_texel is correctly computed for each level
+        let sizes = vec![
+            Size::<i32, Physical>::from((720, 450)),
+            Size::<i32, Physical>::from((360, 225)),
+            Size::<i32, Physical>::from((180, 112)),
+        ];
+
+        for size in &sizes {
+            let half_texel = [0.5 / size.w as f32, 0.5 / size.h as f32];
+            assert!(half_texel[0] > 0.0, "half_texel.x must be positive");
+            assert!(half_texel[1] > 0.0, "half_texel.y must be positive");
+            assert!(half_texel[0] < 1.0, "half_texel.x must be < 1.0");
+            assert!(half_texel[1] < 1.0, "half_texel.y must be < 1.0");
+        }
+
+        // For 720x450: half_texel = (0.000694, 0.00111)
+        let ht = [0.5 / 720.0f32, 0.5 / 450.0f32];
+        assert!((ht[0] - 0.000694).abs() < 0.0001);
+        assert!((ht[1] - 0.001111).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_src_dst_size_consistency_downsample() {
+        // Test: in downsample pass, src_size is the SOURCE texture dimension
+        // and dst_size is the DESTINATION texture dimension
+        let src_size = Size::<i32, Physical>::from((720, 450));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        // Downsample: reading from mip[i] (input_size), writing to mip[i+1] (output_size)
+        for i in 0..levels as usize {
+            let input_size = mip_sizes[i]; // src_size param = source buffer dims
+            let output_size = mip_sizes[i + 1]; // dst_size param = destination framebuffer dims
+
+            // The src rectangle should match the source buffer
+            let src_rect_w = input_size.w as f64;
+            let src_rect_h = input_size.h as f64;
+
+            // UV calculation: src_rect / texture_size should be <= 1.0
+            // (texture_size == input_size for the source texture)
+            let u_max = src_rect_w / input_size.w as f64;
+            let v_max = src_rect_h / input_size.h as f64;
+            assert!(
+                u_max <= 1.0,
+                "Step {}: U max {} > 1.0 (would sample out of bounds!)",
+                i,
+                u_max
+            );
+            assert!(
+                v_max <= 1.0,
+                "Step {}: V max {} > 1.0 (would sample out of bounds!)",
+                i,
+                v_max
+            );
+
+            // If we had used dst_size as src (the old bug), UVs would exceed 1.0 during upsampling
+            // For downsample it happens to work since dst < src, but it's still wrong
+            let wrong_u = output_size.w as f64 / input_size.w as f64;
+            let wrong_v = output_size.h as f64 / input_size.h as f64;
+            assert!(
+                wrong_u <= 1.0,
+                "Downsample step {}: even wrong UVs stay in bounds (dst < src)",
+                i
+            );
+            assert!(wrong_v <= 1.0);
+        }
+    }
+
+    #[test]
+    fn test_src_dst_size_consistency_upsample() {
+        // Test: in upsample pass, src_size is the SOURCE (smaller) texture dimension
+        // and dst_size is the DESTINATION (larger) framebuffer dimension
+        // The OLD BUG: using dst_size as src_rect caused UV > 1.0 during upsampling
+        let src_size = Size::<i32, Physical>::from((720, 450));
+        let levels: u32 = 5;
+
+        let mut mip_sizes: Vec<Size<i32, Physical>> = Vec::with_capacity(levels as usize + 1);
+        mip_sizes.push(src_size);
+        for i in 1..=levels {
+            let prev = mip_sizes[i as usize - 1];
+            mip_sizes.push(Size::from(((prev.w / 2).max(1), (prev.h / 2).max(1))));
+        }
+
+        // Upsample: reading from mip[i+1] (input_size), writing to mip[i] (output_size)
+        for i in (0..levels as usize).rev() {
+            let output_size = mip_sizes[i];
+            let input_size = mip_sizes[i + 1];
+
+            // CORRECT: src_rect = input_size (source texture dimensions)
+            let correct_u = input_size.w as f64 / input_size.w as f64;
+            let correct_v = input_size.h as f64 / input_size.h as f64;
+            assert_eq!(correct_u, 1.0, "Correct UV should be exactly 1.0");
+            assert_eq!(correct_v, 1.0, "Correct UV should be exactly 1.0");
+
+            // BUG: if we used output_size (dst) as src_rect, UVs would exceed 1.0
+            // because output_size > input_size during upsampling
+            let wrong_u = output_size.w as f64 / input_size.w as f64;
+            let wrong_v = output_size.h as f64 / input_size.h as f64;
+            assert!(
+                wrong_u > 1.0,
+                "Step {}: OLD BUG would cause UV {} > 1.0 (reading past texture!)",
+                i,
+                wrong_u
+            );
+            assert!(
+                wrong_v > 1.0,
+                "Step {}: OLD BUG would cause UV {} > 1.0 (reading past texture!)",
+                i,
+                wrong_v
+            );
+        }
+    }
+
+    #[test]
+    fn test_blur_downsample_factor() {
+        // Test: blur_size calculation with downsample factor
+        let screen_size = Size::<i32, Physical>::from((1440, 900));
+        let downsample_factor = BLUR_DOWNSAMPLE_FACTOR;
+
+        let blur_size: Size<i32, Physical> = Size::from((
+            (screen_size.w / downsample_factor).max(1),
+            (screen_size.h / downsample_factor).max(1),
+        ));
+
+        assert_eq!(blur_size, Size::from((720, 450)));
+    }
+
+    #[test]
+    fn test_total_reduction_factor() {
+        // Test: total reduction from screen to smallest mip at max intensity
+        let screen_size = Size::<i32, Physical>::from((1440, 900));
+        let blur_size: Size<i32, Physical> = Size::from((720i32, 450i32)); // after 2x downsample
+
+        // At max intensity (1.0), effective_blur_levels() returns 6
+        set_blur_intensity(1.0);
+        let levels = effective_blur_levels();
+
+        let mut size = blur_size;
+        for _ in 0..levels {
+            size = Size::from(((size.w / 2).max(1), (size.h / 2).max(1)));
+        }
+
+        // Smallest mip should be very small at max intensity
+        let total_reduction_w = screen_size.w as f32 / size.w as f32;
+        assert!(
+            total_reduction_w > 30.0,
+            "Total reduction should be >30x at max intensity, got {}x",
+            total_reduction_w
+        );
+    }
+
+    #[test]
+    fn test_offset_within_safe_range() {
+        // Test: effective_blur_offset is always in a safe range
+        for i in 0..=10 {
+            let intensity = i as f32 / 10.0;
+            set_blur_intensity(intensity);
+            let offset = effective_blur_offset();
+            assert!(
+                offset >= 0.5,
+                "Offset too low at intensity {intensity}: {offset}"
+            );
+            assert!(
+                offset <= 5.0,
+                "Offset too high at intensity {intensity}: {offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_levels_within_bounds() {
+        // Test: effective_blur_levels is always reasonable
+        for i in 0..=10 {
+            let intensity = i as f32 / 10.0;
+            set_blur_intensity(intensity);
+            let levels = effective_blur_levels();
+            assert!(
+                levels >= 1,
+                "Need at least 1 level at intensity {intensity}"
+            );
+            assert!(
+                levels <= 6,
+                "More than 6 levels is wasteful at intensity {intensity}, got {levels}"
+            );
+        }
+    }
 }

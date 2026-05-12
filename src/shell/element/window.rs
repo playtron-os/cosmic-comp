@@ -534,30 +534,47 @@ impl CosmicWindow {
         let icon_name = desktop_ovr
             .as_ref()
             .and_then(|o| o.forced_icon.as_deref())
-            .unwrap_or(&app_id);
-        let icon = resolve_app_icon(icon_name);
+            .unwrap_or(&app_id)
+            .to_string();
 
         // Note: We intentionally do NOT set_tiled based on clip_floating_windows.
         // The tiled protocol state should only reflect actual tiling status,
         // not visual clipping preferences. Clipping is handled compositor-side.
 
-        CosmicWindow(IcedElement::new(
+        // Create the window with no icon — resolve asynchronously to avoid
+        // blocking the compositor loop with XDG icon lookup + image I/O.
+        let cosmic_window = CosmicWindow(IcedElement::new(
             CosmicWindowInternal {
                 window,
                 activated: AtomicBool::new(false),
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
                 last_title: Mutex::new(last_title),
-                cached_icon: Mutex::new((app_id.clone(), icon)),
-                desktop_override: Mutex::new((app_id, desktop_ovr)),
+                cached_icon: Mutex::new((app_id.clone(), None)),
+                desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
                 tiled: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
             (width, icetron::prelude::header_height(&*theme) as i32),
-            handle,
+            handle.clone(),
             theme,
-        ))
+        ));
+
+        // Resolve the app icon on a background thread so the expensive XDG
+        // lookup + Lanczos3 rescaling doesn't block the compositor event loop.
+        // The header bar gracefully shows just the title while icon is None.
+        let element = cosmic_window.0.clone();
+        let app_id_clone = app_id;
+        std::thread::spawn(move || {
+            let icon = resolve_app_icon(&icon_name);
+            element.with_program(|p| {
+                *p.cached_icon.lock().unwrap() = (app_id_clone, icon);
+            });
+            element.force_update();
+        });
+
+        cosmic_window
     }
 
     pub fn pending_size(&self) -> Option<Size<i32, Logical>> {
@@ -962,9 +979,10 @@ impl CosmicWindow {
                     .0
                     .with_program(|p| p.window.geometry().loc)
                     .to_physical_precise_round(scale);
-            elements.extend(AsRenderElements::<R>::render_elements::<
-                CosmicWindowRenderElement<R>,
-            >(&self.0, renderer, ssd_loc, scale, alpha))
+            let ssd_elements = AsRenderElements::<R>::render_elements::<CosmicWindowRenderElement<R>>(
+                &self.0, renderer, ssd_loc, scale, alpha,
+            );
+            elements.extend(ssd_elements);
         }
 
         elements.into_iter().map(C::from).collect()
@@ -1055,6 +1073,10 @@ pub enum Message {
 
 impl Program for CosmicWindowInternal {
     type Message = Message;
+
+    fn program_name() -> &'static str {
+        "CosmicWindow"
+    }
 
     fn update(
         &mut self,

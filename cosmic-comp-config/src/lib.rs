@@ -103,6 +103,10 @@ pub struct CosmicCompConfig {
     pub appearance_settings: AppearanceConfig,
     /// Night shift color temperature in Kelvin (0 = disabled, e.g. 3500 = warm)
     pub night_shift: u16,
+    /// Whether backdrop blur is enabled
+    pub blur_enabled: bool,
+    /// Blur intensity (0.0 = no blur, 1.0 = maximum blur)
+    pub blur_intensity: f32,
 }
 
 impl Default for CosmicCompConfig {
@@ -141,6 +145,8 @@ impl Default for CosmicCompConfig {
             accessibility_zoom: ZoomConfig::default(),
             appearance_settings: AppearanceConfig::default(),
             night_shift: 0,
+            blur_enabled: true,
+            blur_intensity: 0.55,
         }
     }
 }

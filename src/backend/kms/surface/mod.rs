@@ -4,9 +4,9 @@ use crate::{
     backend::render::{
         BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR, CursorMode,
         ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig, PostprocessShader,
-        PostprocessState, apply_blur_passes, blur_downsample_enabled, cache_blur_texture_for_layer,
-        cache_blur_texture_for_window, compute_element_content_hash, copy_blur_texture_for_cache,
-        downsample_texture,
+        PostprocessState, apply_dual_kawase_blur, blur_downsample_enabled,
+        cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
+        copy_blur_texture_for_cache, downsample_texture,
         element::{CosmicElement, DamageElement},
         get_blur_group_content_hash, get_cached_blur_texture_for_layer,
         get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
@@ -702,6 +702,11 @@ fn process_blur(
 
     let output_name = output_ref.name();
 
+    // Skip all blur processing if disabled in config
+    if !crate::backend::render::blur::blur_config_enabled() {
+        return;
+    }
+
     // Check workspace windows for blur
     let has_workspace_blur = {
         let shell_ref = shell.read();
@@ -993,17 +998,14 @@ fn process_blur(
                 blur_state.texture_a.as_mut(),
                 blur_state.texture_b.as_mut(),
             ) {
-                let blur_iterations =
-                    crate::backend::render::gpu_profiler::effective_blur_iterations();
-                let blur_result = apply_blur_passes(
+                let blur_result = apply_dual_kawase_blur(
                     renderer,
                     &src,
                     ping,
                     pong,
                     blur_size,
-                    scale,
-                    blur_iterations,
-                    None,
+                    crate::backend::render::blur::effective_blur_levels(),
+                    crate::backend::render::blur::effective_blur_offset(),
                 );
 
                 if blur_result.is_ok() {
@@ -1104,28 +1106,14 @@ fn process_blur(
             }
         };
 
-        fn radius_key(r: Option<f32>) -> i32 {
-            match r {
-                Some(v) => (v * 1000.0) as i32,
-                None => -1,
-            }
-        }
-
-        let mut surfaces_by_group: StdHashMap<(u8, i32), Vec<(ObjectId, Rectangle<i32, Logical>)>> =
+        let mut surfaces_by_group: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Logical>)>> =
             StdHashMap::new();
-        let mut group_radius_map: StdHashMap<(u8, i32), Option<f32>> = StdHashMap::new();
         for layer_info in &layer_blur_surfaces {
-            let key = (
-                layer_to_key(layer_info.layer),
-                radius_key(layer_info.blur_radius),
-            );
+            let key = layer_to_key(layer_info.layer);
             surfaces_by_group
                 .entry(key)
                 .or_default()
                 .push((layer_info.surface_id.clone(), layer_info.geometry));
-            group_radius_map
-                .entry(key)
-                .or_insert(layer_info.blur_radius);
         }
 
         tracing::trace!(
@@ -1135,10 +1123,9 @@ fn process_blur(
             "[BLUR-TIMING] KMS layer blur processing starting"
         );
 
-        // Process each group (layer + radius) that has blur surfaces
+        // Process each group (by layer) that has blur surfaces
         for (group_key, surfaces) in surfaces_by_group {
-            let layer_type = key_to_layer(group_key.0);
-            let group_blur_radius = group_radius_map.get(&group_key).copied().flatten();
+            let layer_type = key_to_layer(group_key);
             let layer_group_start = std::time::Instant::now();
 
             let _layer_span = tracing::debug_span!(
@@ -1204,7 +1191,7 @@ fn process_blur(
             };
 
             // Compute content hash for cache invalidation
-            let layer_z = group_key.0 as usize;
+            let layer_z = group_key as usize;
             let content_hash =
                 compute_element_content_hash(layer_z + 1000, &capture_elements, scale);
 
@@ -1324,17 +1311,14 @@ fn process_blur(
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
-                    let blur_iterations =
-                        crate::backend::render::gpu_profiler::effective_blur_iterations();
-                    let blur_result = apply_blur_passes(
+                    let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
                         ping,
                         pong,
                         blur_size,
-                        scale,
-                        blur_iterations,
-                        group_blur_radius,
+                        crate::backend::render::blur::effective_blur_levels(),
+                        crate::backend::render::blur::effective_blur_offset(),
                     );
 
                     if blur_result.is_ok() {
@@ -1883,6 +1867,10 @@ impl SurfaceThreadState {
                     .map(|g| g.windows.len())
                     .sum();
             }
+            // Count layer blur surfaces separately
+            let output_name = output_ref.name();
+            let layer_surfaces = crate::backend::render::get_layer_blur_surfaces(&output_name);
+            profile.blur_layer_count = layer_surfaces.len();
         }
 
         let elements_phase_start = std::time::Instant::now();
@@ -2267,8 +2255,10 @@ impl SurfaceThreadState {
         // Record frame profile for performance analysis
         profile.submit_duration = submit_phase_start.elapsed();
         profile.total_duration = frame_start.elapsed();
-        self.frame_profiler.record(profile);
-        self.frame_profiler.maybe_report();
+        if crate::backend::render::gpu_profiler::perf_logging_enabled() {
+            self.frame_profiler.record(profile);
+            self.frame_profiler.maybe_report();
+        }
 
         Ok(())
     }

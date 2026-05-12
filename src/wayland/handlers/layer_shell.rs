@@ -63,6 +63,19 @@ pub fn update_layer_blur_state(
             let surface_id = surface.id();
             let blur_radius = get_blur_radius(surface);
 
+            // Skip surfaces with trivially small geometry (e.g., 0x0 or 1x1 placeholder
+            // surfaces that request blur but are not visually meaningful)
+            let area = geometry.size.w.max(0) as i64 * geometry.size.h.max(0) as i64;
+            if area < 4 {
+                tracing::trace!(
+                    ns = %layer.namespace(),
+                    w = geometry.size.w,
+                    h = geometry.size.h,
+                    "Skipping layer blur for trivially small surface"
+                );
+                return None;
+            }
+
             Some(LayerBlurSurfaceInfo {
                 surface_id,
                 geometry,

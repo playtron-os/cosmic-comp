@@ -1068,6 +1068,10 @@ impl TabMessage for Message {
 impl Program for CosmicStackInternal {
     type Message = Message;
 
+    fn program_name() -> &'static str {
+        "CosmicStack"
+    }
+
     fn update(
         &mut self,
         message: Self::Message,

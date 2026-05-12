@@ -244,6 +244,10 @@ impl item::CursorEvents for Message {
 impl Program for ContextMenu {
     type Message = Message;
 
+    fn program_name() -> &'static str {
+        "ContextMenu"
+    }
+
     fn update(
         &mut self,
         message: Self::Message,

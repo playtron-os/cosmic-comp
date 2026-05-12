@@ -30,6 +30,10 @@ pub struct SwapIndicatorInternal;
 impl Program for SwapIndicatorInternal {
     type Message = ();
 
+    fn program_name() -> &'static str {
+        "SwapIndicator"
+    }
+
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         let on_accent = theme.on_accent_color();
         let accent = theme.accent_color();

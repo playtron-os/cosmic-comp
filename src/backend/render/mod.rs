@@ -134,16 +134,18 @@ pub static CLEAR_COLOR: Color32F = Color32F::new(0.153, 0.161, 0.165, 1.0);
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
-pub static BLUR_SHADER: &str = include_str!("./shaders/blur.frag");
+pub static DUAL_KAWASE_DOWNSAMPLE_SHADER: &str =
+    include_str!("./shaders/dual_kawase_downsample.frag");
+pub static DUAL_KAWASE_UPSAMPLE_SHADER: &str = include_str!("./shaders/dual_kawase_upsample.frag");
 pub static BLURRED_BACKDROP_SHADER: &str = include_str!("./shaders/blurred_backdrop.frag");
 pub static GROUP_COLOR: [f32; 3] = [0.788, 0.788, 0.788];
 pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 
 // Blur module re-exports
 pub use blur::{
-    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_ITERATIONS,
-    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
-    CachedLayerSurface, DEFAULT_BLUR_RADIUS, HasBlur, LayerBlurSurfaceInfo, apply_blur_passes,
+    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR,
+    BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+    CachedLayerSurface, HasBlur, LayerBlurSurfaceInfo, apply_dual_kawase_blur,
     blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
     clear_blur_textures_for_output, clear_cached_layer_surfaces,
     clear_layer_blur_textures_for_output, compute_element_content_hash,
@@ -155,8 +157,11 @@ pub use blur::{
     store_blur_group_last_update, store_layer_blur_content_hash, store_layer_blur_last_update,
 };
 
-/// Shader for applying blur effects to surfaces
-pub struct BlurShader(pub GlesTexProgram);
+/// Dual Kawase downsample shader (blur + halve resolution)
+pub struct DualKawaseDownsampleShader(pub GlesTexProgram);
+
+/// Dual Kawase upsample shader (blur + double resolution)
+pub struct DualKawaseUpsampleShader(pub GlesTexProgram);
 
 /// Shader for rendering blurred backdrop (samples from pre-blurred texture)
 pub struct BlurredBackdropShader(pub GlesTexProgram);
@@ -428,88 +433,27 @@ impl BackdropShader {
 
 pub struct PostprocessShader(pub GlesTexProgram);
 
-impl BlurShader {
-    /// Get the blur shader program
+impl DualKawaseDownsampleShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
         Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
             .egl_context()
             .user_data()
-            .get::<BlurShader>()
+            .get::<DualKawaseDownsampleShader>()
             .expect("Custom Shaders not initialized")
             .0
             .clone()
     }
+}
 
-    /// Create a horizontal blur pass element from a texture
-    ///
-    /// The blur shader requires two passes (horizontal + vertical) for proper gaussian blur.
-    /// This creates the horizontal pass. The output should be rendered to an intermediate
-    /// texture, then `element_vertical` should be called on that result.
-    pub fn element_horizontal<R: AsGlowRenderer>(
-        renderer: &R,
-        texture_elem: TextureRenderElement<GlesTexture>,
-        blur_radius: f32,
-    ) -> TextureShaderElement {
-        let shader = Self::get(renderer);
-        let geo = texture_elem.geometry(1.0.into());
-
-        TextureShaderElement::new(
-            texture_elem,
-            shader,
-            vec![
-                Uniform::new("tex_size", [geo.size.w as f32, geo.size.h as f32]),
-                Uniform::new("blur_radius", blur_radius),
-                Uniform::new("direction", 0.0), // 0.0 = horizontal
-            ],
-        )
-    }
-
-    /// Create a vertical blur pass element from a texture
-    ///
-    /// This should be called on the output of `element_horizontal` for proper
-    /// two-pass gaussian blur.
-    pub fn element_vertical<R: AsGlowRenderer>(
-        renderer: &R,
-        texture_elem: TextureRenderElement<GlesTexture>,
-        blur_radius: f32,
-    ) -> TextureShaderElement {
-        let shader = Self::get(renderer);
-        let geo = texture_elem.geometry(1.0.into());
-
-        TextureShaderElement::new(
-            texture_elem,
-            shader,
-            vec![
-                Uniform::new("tex_size", [geo.size.w as f32, geo.size.h as f32]),
-                Uniform::new("blur_radius", blur_radius),
-                Uniform::new("direction", 1.0), // 1.0 = vertical
-            ],
-        )
-    }
-
-    /// Create a single-pass blur element (simplified blur for performance)
-    ///
-    /// For a proper gaussian blur, two passes (horizontal + vertical) are needed.
-    /// This creates a single-pass blur which is faster but lower quality.
-    /// Use `element_horizontal` followed by `element_vertical` for better quality.
-    pub fn element_single_pass<R: AsGlowRenderer>(
-        renderer: &R,
-        texture_elem: TextureRenderElement<GlesTexture>,
-        blur_radius: f32,
-        horizontal: bool,
-    ) -> TextureShaderElement {
-        let shader = Self::get(renderer);
-        let geo = texture_elem.geometry(1.0.into());
-
-        TextureShaderElement::new(
-            texture_elem,
-            shader,
-            vec![
-                Uniform::new("tex_size", [geo.size.w as f32, geo.size.h as f32]),
-                Uniform::new("blur_radius", blur_radius),
-                Uniform::new("direction", if horizontal { 0.0 } else { 1.0 }),
-            ],
-        )
+impl DualKawaseUpsampleShader {
+    pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
+        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
+            .egl_context()
+            .user_data()
+            .get::<DualKawaseUpsampleShader>()
+            .expect("Custom Shaders not initialized")
+            .0
+            .clone()
     }
 }
 
@@ -667,7 +611,6 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         if egl_context.user_data().get::<IndicatorShader>().is_some()
             && egl_context.user_data().get::<BackdropShader>().is_some()
             && egl_context.user_data().get::<PostprocessShader>().is_some()
-            && egl_context.user_data().get::<BlurShader>().is_some()
             && egl_context
                 .user_data()
                 .get::<BlurredBackdropShader>()
@@ -727,12 +670,18 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("window_corner_radius", UniformType::_4f),
         ],
     )?;
-    let blur_shader = renderer.compile_custom_texture_shader(
-        BLUR_SHADER,
+    let dual_kawase_downsample_shader = renderer.compile_custom_texture_shader(
+        DUAL_KAWASE_DOWNSAMPLE_SHADER,
         &[
-            UniformName::new("tex_size", UniformType::_2f),
-            UniformName::new("blur_radius", UniformType::_1f),
-            UniformName::new("direction", UniformType::_1f),
+            UniformName::new("half_texel", UniformType::_2f),
+            UniformName::new("offset", UniformType::_1f),
+        ],
+    )?;
+    let dual_kawase_upsample_shader = renderer.compile_custom_texture_shader(
+        DUAL_KAWASE_UPSAMPLE_SHADER,
+        &[
+            UniformName::new("half_texel", UniformType::_2f),
+            UniformName::new("offset", UniformType::_1f),
         ],
     )?;
     let blurred_backdrop_shader = renderer.compile_custom_texture_shader(
@@ -770,7 +719,10 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         .insert_if_missing(|| ShadowShader(shadow_shader));
     egl_context
         .user_data()
-        .insert_if_missing(|| BlurShader(blur_shader));
+        .insert_if_missing(|| DualKawaseDownsampleShader(dual_kawase_downsample_shader));
+    egl_context
+        .user_data()
+        .insert_if_missing(|| DualKawaseUpsampleShader(dual_kawase_upsample_shader));
     egl_context
         .user_data()
         .insert_if_missing(|| BlurredBackdropShader(blurred_backdrop_shader));
@@ -2101,7 +2053,8 @@ where
 
     // Check if there are blur windows and get their geometries
     let ssd_blur = shell_ref.theme().header_backdrop_blur();
-    let has_workspace_blur = workspace_ref.has_blur_windows(ssd_blur);
+    let blur_enabled = blur::blur_config_enabled();
+    let has_workspace_blur = blur_enabled && workspace_ref.has_blur_windows(ssd_blur);
     let mut blur_geometries = if has_workspace_blur {
         workspace_ref.blur_window_geometries(1.0, ssd_blur)
     } else {
@@ -2112,7 +2065,11 @@ where
 
     // Get layer blur surfaces from cache (populated by main thread, safe for render thread)
     use smithay::wayland::shell::wlr_layer::Layer;
-    let cached_layer_blur = get_layer_blur_surfaces(&output.name());
+    let cached_layer_blur = if blur_enabled {
+        get_layer_blur_surfaces(&output.name())
+    } else {
+        Vec::new()
+    };
     let layer_blur_surfaces: Vec<(ObjectId, Rectangle<i32, Local>, Layer, Option<f32>)> =
         cached_layer_blur
             .into_iter()
@@ -2483,7 +2440,7 @@ where
             };
             let downsample_elapsed = downsample_start.elapsed();
 
-            // Apply blur passes (on downsampled or full-size textures)
+            // Apply Dual Kawase blur (progressive downsample/upsample)
             // Since they share the same background, they share the same blurred result
             let blur_passes_start = std::time::Instant::now();
             if downsample_ok && blur_state.is_ready() {
@@ -2500,17 +2457,14 @@ where
                     blur_state.texture_a.as_mut(),
                     blur_state.texture_b.as_mut(),
                 ) {
-                    let blur_iterations =
-                        crate::backend::render::gpu_profiler::effective_blur_iterations();
-                    let blur_result = apply_blur_passes(
+                    let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
                         ping,
                         pong,
                         blur_size,
-                        scale,
-                        blur_iterations,
-                        None,
+                        blur::effective_blur_levels(),
+                        blur::effective_blur_offset(),
                     );
 
                     if blur_result.is_ok() {
@@ -2590,9 +2544,7 @@ where
             }
         }
         if has_layer_blur && blur_state.is_ready() {
-            // Group surfaces by (layer type, blur radius) for proper capture.
-            // Surfaces with different radii need separate blur passes even if
-            // they are on the same layer.
+            // Group surfaces by layer type for proper capture.
             use std::collections::HashMap as StdHashMap;
             let layer_to_key = |l: Layer| -> u8 {
                 match l {
@@ -2611,35 +2563,21 @@ where
                 }
             };
 
-            // Key: (layer_key, quantized radius in millipixels) to group surfaces
-            // that share the same layer AND blur radius.
-            fn radius_key(r: Option<f32>) -> i32 {
-                match r {
-                    Some(v) => (v * 1000.0) as i32,
-                    None => -1, // default radius
-                }
-            }
-
-            let mut surfaces_by_group: StdHashMap<
-                (u8, i32),
-                Vec<(ObjectId, Rectangle<i32, Local>)>,
-            > = StdHashMap::new();
-            let mut group_radius_map: StdHashMap<(u8, i32), Option<f32>> = StdHashMap::new();
-            for (surface_id, geo, layer, blur_radius) in &layer_blur_surfaces {
-                let key = (layer_to_key(*layer), radius_key(*blur_radius));
+            let mut surfaces_by_group: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Local>)>> =
+                StdHashMap::new();
+            for (surface_id, geo, layer, _blur_radius) in &layer_blur_surfaces {
+                let key = layer_to_key(*layer);
                 surfaces_by_group
                     .entry(key)
                     .or_default()
                     .push((surface_id.clone(), *geo));
-                group_radius_map.entry(key).or_insert(*blur_radius);
             }
 
             let layer_blur_start = std::time::Instant::now();
 
-            // Process each group (layer + radius) that has blur surfaces
+            // Process each group (by layer) that has blur surfaces
             for (group_key, surfaces) in &surfaces_by_group {
-                let layer_type = key_to_layer(group_key.0);
-                let group_blur_radius = group_radius_map.get(group_key).copied().flatten();
+                let layer_type = key_to_layer(*group_key);
                 let layer_group_start = std::time::Instant::now();
 
                 // Check if all surfaces in this layer have valid cached blur textures
@@ -2781,7 +2719,7 @@ where
                     continue;
                 }
 
-                // Apply blur passes using dedicated layer blur textures
+                // Apply Dual Kawase blur using dedicated layer blur textures
                 // (separate from window blur's texture_a/texture_b to prevent cache pollution)
                 let blur_passes_start = std::time::Instant::now();
                 let blur_size = blur_state.texture_size;
@@ -2796,17 +2734,14 @@ where
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
-                    let blur_iterations =
-                        crate::backend::render::gpu_profiler::effective_blur_iterations();
-                    let blur_result = apply_blur_passes(
+                    let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
                         ping,
                         pong,
                         blur_size,
-                        scale,
-                        blur_iterations,
-                        group_blur_radius,
+                        blur::effective_blur_levels(),
+                        blur::effective_blur_offset(),
                     );
 
                     if blur_result.is_ok() {

@@ -8,7 +8,10 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     sync::{Arc, Mutex, mpsc::Receiver},
+    time::Instant,
 };
+
+use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
 // iced 0.15 direct imports (no libcosmic re-exports)
 use iced_core::{
@@ -133,6 +136,11 @@ pub trait Program {
     /// Returns the view element.
     /// `theme` provides design tokens for pre-baking styles into closures.
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message>;
+
+    /// Program name for profiling logs. Defaults to the type name.
+    fn program_name() -> &'static str {
+        std::any::type_name::<Self>()
+    }
 
     fn background_color(&self, _theme: &CompTheme) -> Color {
         Color::TRANSPARENT
@@ -267,13 +275,15 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         let last_seat = Arc::new(Mutex::new(None));
         let renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(16.0));
 
-        // Load icetron fonts into the global font system so themed text renders correctly
-        {
+        // Load icetron fonts into the global font system so themed text renders correctly.
+        // Guarded by Once to avoid redundant write-lock + iteration on every IcedElement.
+        static FONTS_LOADED: std::sync::Once = std::sync::Once::new();
+        FONTS_LOADED.call_once(|| {
             let mut fs = font_system().write().expect("Write font system");
             for font_data in icetron::icetron_assets::fonts::ALL {
                 fs.load_font(std::borrow::Cow::Borrowed(*font_data));
             }
-        }
+        });
 
         let (executor, scheduler) = calloop::futures::executor().expect("Out of file descriptors");
         let (tx, rx) = std::sync::mpsc::channel();
@@ -305,7 +315,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             executor_token,
             rx,
         };
-        internal.update(true);
+        internal.update(UpdateSource::Forced);
 
         IcedElement(Arc::new(Mutex::new(internal)))
     }
@@ -345,7 +355,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
         internal_ref.size = size;
         internal_ref.pending_realloc = true;
-        internal_ref.update(true);
+        internal_ref.update(UpdateSource::Forced);
     }
 
     pub fn set_additional_scale(&self, scale: f64) {
@@ -362,14 +372,14 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     }
 
     pub fn force_update(&self) {
-        self.0.lock().unwrap().update(true);
+        self.0.lock().unwrap().update(UpdateSource::Forced);
     }
 
     pub fn set_theme(&self, theme: CompTheme) {
         let mut guard = self.0.lock().unwrap();
         guard.iced_theme = theme.to_iced_theme();
         guard.theme = theme;
-        guard.update(true);
+        guard.update(UpdateSource::Forced);
     }
 
     pub fn force_redraw(&self) {
@@ -430,7 +440,10 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
     }
 
     #[profiling::function]
-    fn update(&mut self, force: bool) {
+    fn update(&mut self, source: UpdateSource) {
+        let update_start = Instant::now();
+        let force = matches!(source, UpdateSource::Forced);
+
         // Drain async task results and process them through the program
         while let Ok(Some(message)) = self.rx.try_recv() {
             let task = self.program.update(
@@ -442,6 +455,24 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         }
 
         if self.event_queue.is_empty() && !force {
+            // Record skipped update
+            if iced_perf_logging_enabled()
+                && let Ok(mut profiler) = ICED_PROFILER.try_lock()
+            {
+                profiler.record_update(UpdateRecord {
+                    program_name: P::program_name(),
+                    source,
+                    view_duration: std::time::Duration::ZERO,
+                    build_duration: std::time::Duration::ZERO,
+                    ui_update_duration: std::time::Duration::ZERO,
+                    draw_duration: std::time::Duration::ZERO,
+                    message_loop_duration: std::time::Duration::ZERO,
+                    total_duration: update_start.elapsed(),
+                    had_messages: false,
+                    skipped: true,
+                });
+                profiler.maybe_report();
+            }
             return;
         }
 
@@ -461,18 +492,25 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             .map(Cursor::Available)
             .unwrap_or(Cursor::Unavailable);
 
-        // Build the UserInterface from the current view
+        // Phase 1: view() — build the element tree
+        let view_start = Instant::now();
         let element = self.program.view(&self.theme);
+        let view_duration = view_start.elapsed();
+
+        // Phase 2: build — create UserInterface from element tree
+        let build_start = Instant::now();
         let bounds = IcedSize::new(self.size.w as f32, self.size.h as f32);
         let cache = std::mem::take(&mut self.cache);
-
         let mut interface = UserInterface::build(element, bounds, cache, &mut self.renderer);
+        let build_duration = build_start.elapsed();
 
-        // Process queued events through the UI, collecting messages
+        // Phase 3: ui_update — process queued events, collecting messages
+        let ui_update_start = Instant::now();
         let mut messages = Vec::new();
         let (state, _statuses) =
             interface.update(&self.event_queue, cursor, &mut self.renderer, &mut messages);
         self.event_queue.clear();
+        let ui_update_duration = ui_update_start.elapsed();
 
         // Store the mouse interaction and check for animation redraw requests.
         match state {
@@ -492,17 +530,21 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             }
         }
 
-        // Draw the UI (populates renderer layers for later rasterization)
+        // Phase 4: draw — populate renderer layers for rasterization
+        let draw_start = Instant::now();
         let style = RendererStyle {
             text_color: self.theme.on_bg_color(),
         };
         interface.draw(&mut self.renderer, &self.iced_theme, &style, cursor);
+        let draw_duration = draw_start.elapsed();
 
         // Preserve widget tree state for next frame
         self.cache = interface.into_cache();
 
-        // Process messages produced by widget interactions
-        if !messages.is_empty() {
+        // Phase 5: message loop — process widget messages and rebuild if needed
+        let msg_start = Instant::now();
+        let had_messages = !messages.is_empty();
+        if had_messages {
             for msg in messages {
                 let task =
                     self.program
@@ -517,6 +559,28 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             let mut interface = UserInterface::build(element, bounds, cache, &mut self.renderer);
             interface.draw(&mut self.renderer, &self.iced_theme, &style, cursor);
             self.cache = interface.into_cache();
+        }
+        let message_loop_duration = msg_start.elapsed();
+
+        let total_duration = update_start.elapsed();
+
+        // Record to profiler
+        if iced_perf_logging_enabled()
+            && let Ok(mut profiler) = ICED_PROFILER.try_lock()
+        {
+            profiler.record_update(UpdateRecord {
+                program_name: P::program_name(),
+                source,
+                view_duration,
+                build_duration,
+                ui_update_duration,
+                draw_duration,
+                message_loop_duration,
+                total_duration,
+                had_messages,
+                skipped: false,
+            });
+            profiler.maybe_report();
         }
     }
 }
@@ -541,7 +605,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
             .push(Event::Mouse(MouseEvent::CursorMoved { position }));
         internal.cursor_pos = Some(event_location);
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn motion(
@@ -558,7 +622,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
             .push(Event::Mouse(MouseEvent::CursorMoved { position }));
         internal.cursor_pos = Some(event_location);
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn relative_motion(
@@ -587,7 +651,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
             ButtonState::Released => MouseEvent::ButtonReleased(button),
         }));
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn axis(
@@ -612,7 +676,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
                     }
                 },
             }));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn frame(&self, _seat: &Seat<crate::state::State>, _data: &mut crate::state::State) {}
@@ -629,7 +693,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         internal
             .event_queue
             .push(Event::Mouse(MouseEvent::CursorLeft));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn gesture_swipe_begin(
@@ -708,7 +772,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         internal.touch_map.insert(id, position);
         internal.cursor_pos = Some(event_location);
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), seq));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn up(
@@ -725,7 +789,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
             internal
                 .event_queue
                 .push(Event::Touch(TouchEvent::FingerLifted { id, position }));
-            internal.update(false);
+            internal.update(UpdateSource::Input);
         }
     }
 
@@ -746,7 +810,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
             .push(Event::Touch(TouchEvent::FingerMoved { id, position }));
         internal.touch_map.insert(id, position);
         internal.cursor_pos = Some(event_location);
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn frame(
@@ -769,7 +833,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
                 .event_queue
                 .push(Event::Touch(TouchEvent::FingerLost { id, position }));
         }
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn shape(
@@ -821,7 +885,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
                     repeat: false,
                 }));
         }
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn leave(
@@ -873,7 +937,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
         };
         internal.event_queue.push(Event::Keyboard(event));
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), serial));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn modifiers(
@@ -900,7 +964,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
         internal
             .event_queue
             .push(Event::Keyboard(KeyboardEvent::ModifiersChanged(mods)));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 }
 
@@ -933,7 +997,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
         } else {
             WindowEvent::Unfocused
         }));
-        internal.update(false);
+        internal.update(UpdateSource::Input);
     }
 
     fn output_enter(&self, output: &Output, _overlap: Rectangle<i32, Logical>) {
@@ -1005,7 +1069,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
                 ),
             );
         }
-        internal.update(false);
+        internal.update(UpdateSource::Refresh);
     }
 }
 
@@ -1031,6 +1095,7 @@ where
 
         // Drive animation frames: if a previous update requested a redraw,
         // inject a RedrawRequested event so animation widgets can advance.
+        let element_id = Arc::as_ptr(&self.0) as usize;
         if internal_ref.needs_redraw {
             internal_ref.needs_redraw = false;
             internal_ref
@@ -1038,7 +1103,36 @@ where
                 .push(Event::Window(WindowEvent::RedrawRequested(
                     IcedInstant::now(),
                 )));
-            internal_ref.update(false);
+            internal_ref.update(UpdateSource::AnimRedraw);
+
+            // Track animation burst
+            if iced_perf_logging_enabled() {
+                if let Ok(mut profiler) = ICED_PROFILER.try_lock() {
+                    profiler.animation_burst_frame(element_id);
+                }
+
+                // Check if animation ended (no further redraw requested)
+                if !internal_ref.needs_redraw
+                    && let Ok(mut profiler) = ICED_PROFILER.try_lock()
+                {
+                    profiler.animation_burst_end(element_id);
+                }
+            }
+        } else {
+            // No animation active — end any tracked burst
+            if iced_perf_logging_enabled()
+                && let Ok(mut profiler) = ICED_PROFILER.try_lock()
+            {
+                profiler.animation_burst_end(element_id);
+            }
+        }
+
+        // Track animation burst starts (needs_redraw was set by update above)
+        if iced_perf_logging_enabled()
+            && internal_ref.needs_redraw
+            && let Ok(mut profiler) = ICED_PROFILER.try_lock()
+        {
+            profiler.animation_burst_start(element_id);
         }
         if std::mem::replace(&mut internal_ref.pending_realloc, false) {
             for (scale, (buffer, old_primitives)) in internal_ref.buffers.iter_mut() {

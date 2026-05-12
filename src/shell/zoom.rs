@@ -493,6 +493,10 @@ impl ZoomProgram {
 impl Program for ZoomProgram {
     type Message = ZoomMessage;
 
+    fn program_name() -> &'static str {
+        "ZoomProgram"
+    }
+
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         // Helper: icon button using icetron_assets SVG bytes
         let icon_color = theme.fill_skim();

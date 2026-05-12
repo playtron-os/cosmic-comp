@@ -136,38 +136,46 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         // Pass application icon with native SVG colors via title_content.
         // We wrap in animated_opacity to replicate app_header's title fade behavior
         // (0.8 when unfocused, animates to 1.0 on hover/focus).
-        if let Some(ref icon) = self.app_icon {
-            let icon_size = theme.ui_size_icon_sm();
+        {
             let title_color = theme.text_primary();
             let mut title_style = theme.text_styles().sm();
             title_style.font_weight = 500;
-
-            let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                match icon {
-                    AppIcon::Svg(bytes) => {
-                        let handle = iced_core::svg::Handle::from_memory(*bytes);
-                        Svg::new(handle)
-                            .width(icon_size)
-                            .height(icon_size)
-                            .style(|_theme, _status| svg::Style {
-                                color: Some(Color::TRANSPARENT),
-                            })
-                            .into()
-                    }
-                    AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
-                        .width(icon_size)
-                        .height(icon_size)
-                        .into(),
-                };
 
             let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 styled_text(&self.title, title_style, title_color).into();
 
             let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                row![icon_element, text_element]
-                    .spacing(theme.spacing_2_5())
-                    .align_y(Alignment::Center)
-                    .into();
+                if let Some(ref icon) = self.app_icon {
+                    let icon_size = theme.ui_size_icon_sm();
+                    let icon_element: Element<
+                        'a,
+                        Message,
+                        iced_core::Theme,
+                        iced_tiny_skia::Renderer,
+                    > = match icon {
+                        AppIcon::Svg(bytes) => {
+                            let handle = iced_core::svg::Handle::from_memory(*bytes);
+                            Svg::new(handle)
+                                .width(icon_size)
+                                .height(icon_size)
+                                .style(|_theme, _status| svg::Style {
+                                    color: Some(Color::TRANSPARENT),
+                                })
+                                .into()
+                        }
+                        AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
+                            .width(icon_size)
+                            .height(icon_size)
+                            .into(),
+                    };
+                    row![icon_element, text_element]
+                        .spacing(theme.spacing_2_5())
+                        .align_y(Alignment::Center)
+                        .into()
+                } else {
+                    // No icon yet (async resolution pending) — show title only
+                    text_element
+                };
 
             // Replicate app_header's opacity animation logic
             let target_opacity = if self.hovered || self.focused {

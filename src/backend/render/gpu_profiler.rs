@@ -197,25 +197,6 @@ impl GpuInfo {
             if self.is_software { "YES" } else { "no" }
         );
         info!("╚══════════════════════════════════════════════════════════════╝");
-
-        if self.is_adreno {
-            info!("Adreno GPU detected — applying tile-based renderer optimizations:");
-            info!("  • Minimizing render target switches (FBO ping-pong)");
-            info!("  • Reducing blur iterations for tile-based architecture");
-            info!("  • Using larger downsample factor for blur");
-            info!("  • Preferring direct scanout when possible");
-
-            // Check for known problematic Adreno GPUs
-            if self.gl_renderer.contains("Adreno (TM) 6") {
-                info!("  • Adreno 6xx series: mid-range, moderate shader complexity recommended");
-            } else if self.gl_renderer.contains("Adreno (TM) 7") {
-                info!("  • Adreno 7xx series: capable GPU, standard optimizations apply");
-            }
-        }
-
-        if self.is_tiler && !self.is_adreno {
-            info!("Tile-based GPU detected — rendering optimizations will be applied");
-        }
     }
 }
 
@@ -234,6 +215,7 @@ pub struct FrameProfile {
     pub total_duration: Duration,
     pub element_count: usize,
     pub blur_window_count: usize,
+    pub blur_layer_count: usize,
     pub damage_rects: usize,
     pub skipped: bool,
 }
@@ -249,6 +231,7 @@ impl Default for FrameProfile {
             total_duration: Duration::ZERO,
             element_count: 0,
             blur_window_count: 0,
+            blur_layer_count: 0,
             damage_rects: 0,
             skipped: false,
         }
@@ -312,6 +295,7 @@ impl FrameProfiler {
                 submit_ms = format!("{:.2}", profile.submit_duration.as_secs_f64() * 1000.0),
                 elements = profile.element_count,
                 blur_windows = profile.blur_window_count,
+                blur_layers = profile.blur_layer_count,
                 damage = profile.damage_rects,
                 "SLOW FRAME (>{:.1}ms): {:.2}ms total",
                 self.slow_threshold.as_secs_f64() * 2000.0,
@@ -420,6 +404,12 @@ impl FrameProfiler {
             .map(|p| p.blur_window_count as f64)
             .sum::<f64>()
             / window_size as f64;
+        let avg_blur_layers: f64 = self
+            .profiles
+            .iter()
+            .map(|p| p.blur_layer_count as f64)
+            .sum::<f64>()
+            / window_size as f64;
         let avg_damage: f64 = self
             .profiles
             .iter()
@@ -427,17 +417,17 @@ impl FrameProfiler {
             .sum::<f64>()
             / window_size as f64;
 
-        info!(
+        warn!(
             "┌─── PERF REPORT: {} ({} frames) ──────────────────────────────",
             self.output_name, window_size
         );
-        info!(
+        warn!(
             "│ FPS:     avg={:.1}  target={:.1}  slow_frames={:.1}%",
             avg_fps,
             1.0 / self.slow_threshold.as_secs_f64(),
             slow_pct,
         );
-        info!(
+        warn!(
             "│ Frame:   avg={:.2}ms  min={:.2}ms  max={:.2}ms  p95={:.2}ms  p99={:.2}ms",
             avg_total.as_secs_f64() * 1000.0,
             min_total.as_secs_f64() * 1000.0,
@@ -445,18 +435,18 @@ impl FrameProfiler {
             p95_total.as_secs_f64() * 1000.0,
             p99_total.as_secs_f64() * 1000.0,
         );
-        info!(
+        warn!(
             "│ Phases:  elements={:.2}ms  blur={:.2}ms  draw={:.2}ms  submit={:.2}ms",
             avg_elements_dur_ms(avg_elements_ms(&self.profiles)),
             avg_blur.as_secs_f64() * 1000.0,
             avg_draw.as_secs_f64() * 1000.0,
             avg_submit.as_secs_f64() * 1000.0,
         );
-        info!(
-            "│ Load:    elements={:.0}  blur_windows={:.1}  damage_rects={:.0}",
-            avg_elements, avg_blur_wins, avg_damage,
+        warn!(
+            "│ Load:    elements={:.0}  blur_windows={:.1}  blur_layers={:.1}  damage_rects={:.0}",
+            avg_elements, avg_blur_wins, avg_blur_layers, avg_damage,
         );
-        info!("└──────────────────────────────────────────────────────────────");
+        warn!("└──────────────────────────────────────────────────────────────");
     }
 }
 
@@ -476,111 +466,19 @@ fn avg_elements_dur_ms(v: f64) -> f64 {
 }
 
 // =============================================================================
-// Adreno Optimization Settings
-// =============================================================================
-
-/// Adaptive quality settings for tile-based GPUs (Adreno/Mali).
-///
-/// These can be checked at render time to reduce GPU load.
-#[derive(Debug, Clone)]
-pub struct TilerOptimizations {
-    /// Reduce blur iterations (default 12 → 6 on Adreno).
-    pub blur_iterations: u32,
-    /// Increase blur downsample factor (default 8 → 12 on Adreno).
-    pub blur_downsample_factor: i32,
-    /// Whether to skip shadow rendering when frame budget is tight.
-    pub adaptive_shadows: bool,
-    /// Maximum number of blur windows to process per frame.
-    /// Beyond this, remaining blur windows use fallback solid color.
-    pub max_blur_windows_per_frame: usize,
-    /// Whether to prefer direct scanout for fullscreen surfaces.
-    pub prefer_direct_scanout: bool,
-    /// Blur throttle interval - how long to wait between re-blurs when content changes.
-    /// Longer intervals save GPU on slower tiler GPUs.
-    pub blur_throttle_interval: std::time::Duration,
-}
-
-impl Default for TilerOptimizations {
-    fn default() -> Self {
-        Self {
-            blur_iterations: super::BLUR_ITERATIONS,
-            blur_downsample_factor: super::BLUR_DOWNSAMPLE_FACTOR,
-            adaptive_shadows: false,
-            max_blur_windows_per_frame: usize::MAX,
-            prefer_direct_scanout: true,
-            blur_throttle_interval: std::time::Duration::from_millis(100),
-        }
-    }
-}
-
-impl TilerOptimizations {
-    /// Create optimizations tuned for Adreno GPUs.
-    pub fn for_adreno() -> Self {
-        Self {
-            // Adreno tile-based architecture is penalized by many FBO switches
-            // from ping-pong blur passes. Reduce iterations significantly.
-            blur_iterations: 6,
-            // Larger downsample = less pixels to blur = massive FBO savings.
-            blur_downsample_factor: 12,
-            // Enable adaptive shadow quality when running behind.
-            adaptive_shadows: true,
-            // Limit concurrent blur windows to avoid FBO thrashing.
-            max_blur_windows_per_frame: 3,
-            // Adreno benefits greatly from direct scanout (bypasses composition).
-            prefer_direct_scanout: true,
-            // 250ms throttle = max 4 blur updates/sec. Background changes like
-            // wallpaper clock are imperceptible at this rate through blurred glass.
-            blur_throttle_interval: std::time::Duration::from_millis(250),
-        }
-    }
-
-    /// Create optimizations for other tile-based GPUs (Mali, etc.).
-    pub fn for_tiler() -> Self {
-        Self {
-            blur_iterations: 8,
-            blur_downsample_factor: 10,
-            adaptive_shadows: true,
-            max_blur_windows_per_frame: 4,
-            prefer_direct_scanout: true,
-            blur_throttle_interval: std::time::Duration::from_millis(150),
-        }
-    }
-}
-
-// =============================================================================
 // Global State
 // =============================================================================
 
 /// Global GPU info, set once during initialization.
 static GPU_INFO: LazyLock<RwLock<Option<GpuInfo>>> = LazyLock::new(|| RwLock::new(None));
 
-/// Global tiler optimizations, set based on detected GPU.
-static TILER_OPTS: LazyLock<RwLock<TilerOptimizations>> =
-    LazyLock::new(|| RwLock::new(TilerOptimizations::default()));
-
 /// Set the global GPU info (called once during device initialization).
 pub fn set_gpu_info(info: GpuInfo) {
-    // Determine and set optimizations based on GPU type
-    let opts = if info.is_adreno {
-        TilerOptimizations::for_adreno()
-    } else if info.is_tiler {
-        TilerOptimizations::for_tiler()
-    } else {
-        TilerOptimizations::default()
-    };
-
     info!(
         gpu_vendor = %info.vendor_name,
         is_tiler = info.is_tiler,
-        blur_iterations = opts.blur_iterations,
-        blur_downsample = opts.blur_downsample_factor,
-        max_blur_windows = opts.max_blur_windows_per_frame,
-        "GPU optimization profile applied"
+        "GPU detected"
     );
-
-    if let Ok(mut guard) = TILER_OPTS.write() {
-        *guard = opts;
-    }
 
     // Log full diagnostics if requested
     if gpu_diag_enabled() {
@@ -597,45 +495,6 @@ pub fn get_gpu_info() -> Option<GpuInfo> {
     GPU_INFO.read().ok().and_then(|g| g.clone())
 }
 
-/// Get the active tiler optimizations.
-pub fn get_tiler_opts() -> TilerOptimizations {
-    TILER_OPTS
-        .read()
-        .ok()
-        .map(|g| g.clone())
-        .unwrap_or_default()
-}
-
-/// Check if the detected GPU is a tile-based renderer.
-pub fn is_tiler_gpu() -> bool {
-    GPU_INFO
-        .read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|i| i.is_tiler))
-        .unwrap_or(false)
-}
-
-/// Check if the detected GPU is Adreno.
-pub fn is_adreno_gpu() -> bool {
-    GPU_INFO
-        .read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|i| i.is_adreno))
-        .unwrap_or(false)
-}
-
-/// Get the effective blur iteration count (may be reduced for tile-based GPUs).
-pub fn effective_blur_iterations() -> u32 {
-    // Allow env override
-    if let Some(val) = std::env::var("COSMIC_BLUR_ITERATIONS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-    {
-        return val;
-    }
-    get_tiler_opts().blur_iterations
-}
-
 /// Get the effective blur downsample factor.
 pub fn effective_blur_downsample_factor() -> i32 {
     // Allow env override
@@ -645,12 +504,7 @@ pub fn effective_blur_downsample_factor() -> i32 {
     {
         return val;
     }
-    get_tiler_opts().blur_downsample_factor
-}
-
-/// Check if blur processing should be skipped for this window index.
-pub fn should_skip_blur_window(window_index: usize) -> bool {
-    window_index >= get_tiler_opts().max_blur_windows_per_frame
+    super::BLUR_DOWNSAMPLE_FACTOR
 }
 
 // =============================================================================
@@ -658,9 +512,11 @@ pub fn should_skip_blur_window(window_index: usize) -> bool {
 // =============================================================================
 
 /// Check if performance logging is enabled via COSMIC_PERF_LOG.
-/// Enabled by default. Set COSMIC_PERF_LOG=0 to disable.
+/// Disabled by default. Set COSMIC_PERF_LOG=1 to enable.
 pub fn perf_logging_enabled() -> bool {
-    crate::utils::env::bool_var("COSMIC_PERF_LOG").unwrap_or(true)
+    static ENABLED: LazyLock<bool> =
+        LazyLock::new(|| crate::utils::env::bool_var("COSMIC_PERF_LOG").unwrap_or(false));
+    *ENABLED
 }
 
 /// Check if GPU diagnostics logging is enabled via COSMIC_GPU_DIAG.

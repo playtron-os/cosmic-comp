@@ -64,10 +64,6 @@ pub fn init_logger() -> Result<()> {
         std::env::var("COSMIC_GPU_DIAG").unwrap_or_else(|_| "unset".into())
     );
     info!(
-        "  COSMIC_BLUR_ITERATIONS={} (override blur iteration count)",
-        std::env::var("COSMIC_BLUR_ITERATIONS").unwrap_or_else(|_| "auto".into())
-    );
-    info!(
         "  COSMIC_BLUR_DOWNSAMPLE_FACTOR={} (override blur downsample)",
         std::env::var("COSMIC_BLUR_DOWNSAMPLE_FACTOR").unwrap_or_else(|_| "auto".into())
     );

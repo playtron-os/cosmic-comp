@@ -107,6 +107,10 @@ fn accent_container_class(theme: &CompTheme) -> Box<dyn Fn(&iced_core::Theme) ->
 impl Program for ResizeIndicatorInternal {
     type Message = ();
 
+    fn program_name() -> &'static str {
+        "ResizeIndicator"
+    }
+
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         let edges = self.edges.lock().unwrap();
         let on_accent = theme.on_accent_color();
