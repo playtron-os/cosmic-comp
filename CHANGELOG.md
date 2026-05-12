@@ -1,3 +1,15 @@
+# [1.20.0](https://github.com/playtron-os/cosmic-comp/compare/v1.19.1...v1.20.0) (2026-05-12)
+
+
+### Bug Fixes
+
+* use inset border for SSD windows to eliminate top edge gap ([25ddbda](https://github.com/playtron-os/cosmic-comp/commit/25ddbdac8b85e286e54b6a15450de16f1a60d23d))
+
+
+### Features
+
+* use dynamic theme tokens for window border and shadow rendering ([dbeccdf](https://github.com/playtron-os/cosmic-comp/commit/dbeccdf7b271edf5d25fd7a14ed5dcfdc7ffccae))
+
 ## [1.19.1](https://github.com/playtron-os/cosmic-comp/compare/v1.19.0...v1.19.1) (2026-05-12)
 
 
