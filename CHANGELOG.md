@@ -1,3 +1,10 @@
+## [1.19.1](https://github.com/playtron-os/cosmic-comp/compare/v1.19.0...v1.19.1) (2026-05-12)
+
+
+### Bug Fixes
+
+* use theme radius for SSD windows so theme changes update corner radius ([fe8a55c](https://github.com/playtron-os/cosmic-comp/commit/fe8a55c53d33aa7ce8054c46e16ef4ad0a29ab52))
+
 # [1.19.0](https://github.com/playtron-os/cosmic-comp/compare/v1.18.1...v1.19.0) (2026-05-11)
 
 
