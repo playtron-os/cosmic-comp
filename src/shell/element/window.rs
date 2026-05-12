@@ -503,13 +503,16 @@ impl CosmicWindowInternal {
         let surface_corners = self.window.corner_radius(geometry_size);
 
         match (has_ssd, clip) {
-            (_has_ssd, true) => {
-                // If client explicitly set corner radius, use it directly;
-                // otherwise fall back to theme radii
+            (true, true) => {
+                // SSD: compositor owns decorations — always use theme radius.
+                // Client-set protocol values are ignored so theme changes propagate immediately.
+                radii
+            }
+            (false, true) => {
+                // CSD: client draws its own corners — prefer client hint if set.
                 surface_corners.unwrap_or(radii)
             }
-            (true, false) => surface_corners.unwrap_or([default_radius; 4]),
-            (false, false) => surface_corners.unwrap_or([default_radius; 4]),
+            (_, false) => surface_corners.unwrap_or([default_radius; 4]),
         }
     }
 }

@@ -120,9 +120,10 @@ impl CompTheme {
             theme_name,
             is_dark,
             using_fallback,
+            radius_window = theme.radius_window(),
             bg_color = ?theme.fill_default(),
             text_color = ?theme.text_primary(),
-            "CompTheme loaded"
+            "CompTheme loaded, window radius: {}", theme.radius_window()
         );
 
         Self {
