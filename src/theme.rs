@@ -118,12 +118,6 @@ fn reload_theme(state: &mut State) {
         }
     };
 
-    info!(
-        theme_name = ?theme_name,
-        is_dark,
-        "Reloading compositor theme"
-    );
-
     state.common.theme = new_theme.clone();
     let shell = state.common.shell.clone();
     let mut workspace_guard = state.common.workspace_state.update();

@@ -131,6 +131,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .hovered(self.hovered)
             .is_windowed(!self.maximized)
             .backdrop_blur(false)
+            .opaque(true)
             .show_border(true);
 
         // Pass application icon with native SVG colors via title_content.
@@ -210,14 +211,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.on_right_click(msg);
         }
 
-        // Top corner radius should match the window's corner radius so the header
-        // clips correctly when composited. Bottom corners are 0 (window content below).
+        let header_height = header_height(&**theme);
         let top_radius = if self.maximized {
             0.0
         } else {
             theme.radius_window()[0]
         };
-        let header_height = header_height(&**theme);
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
         container(header_elem)

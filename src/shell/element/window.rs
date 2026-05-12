@@ -937,33 +937,19 @@ impl CosmicWindow {
                 let theme = p.theme.lock().unwrap();
                 theme.window_border_color().a
             });
-            // SSD windows: draw the border 1px outside the geo so the border's
-            // opaque inner edge covers the SSD header corners (prevents dark bleed).
-            // CSD windows: draw the border inside the geo so there's no gap between
-            // the client-drawn decorations and the border.
-            let elem = if has_ssd && !is_embedded {
-                CosmicWindowRenderElement::Border(IndicatorShader::focus_element(
-                    renderer,
-                    Key::Window(Usage::Border, window_key.clone()),
-                    geo.to_i32_round().as_local(),
-                    border_thickness,
-                    radii,
-                    border_alpha * alpha,
-                    scale.x,
-                    border_color,
-                ))
-            } else {
-                CosmicWindowRenderElement::Border(IndicatorShader::element(
-                    renderer,
-                    Key::Window(Usage::Border, window_key.clone()),
-                    geo.to_i32_round().as_local(),
-                    border_thickness,
-                    radii,
-                    border_alpha * alpha,
-                    scale.x,
-                    border_color,
-                ))
-            };
+            // SSD windows: draw the border inset (inside the geo) so the
+            // border overlays the header/surface edges with no gap at the top.
+            // CSD windows: same — draw the border inside the geo.
+            let elem = CosmicWindowRenderElement::Border(IndicatorShader::element(
+                renderer,
+                Key::Window(Usage::Border, window_key.clone()),
+                geo.to_i32_round().as_local(),
+                border_thickness,
+                radii,
+                border_alpha * alpha,
+                scale.x,
+                border_color,
+            ));
             elements.push(elem);
         }
 
@@ -1224,60 +1210,11 @@ impl Program for CosmicWindowInternal {
 
     fn foreground(
         &self,
-        pixels: &mut tiny_skia::PixmapMut<'_>,
+        _pixels: &mut tiny_skia::PixmapMut<'_>,
         _damage: &[Rectangle<i32, Buffer>],
-        scale: f32,
-        theme: &crate::comp_theme::CompTheme,
+        _scale: f32,
+        _theme: &crate::comp_theme::CompTheme,
     ) {
-        // Clear top corners to transparent so the SSD header doesn't bleed
-        // past the window's rounded border. The border shader handles the
-        // outer anti-aliased edge; this mask just ensures the dark header
-        // pixels are fully transparent in the border zone.
-        let maximized = self.window.is_maximized(false);
-        let radius_raw = theme.radius_window()[0];
-        let radius = (radius_raw * scale).round() as u32;
-        let w = pixels.width();
-        let h = pixels.height();
-
-        if maximized {
-            return;
-        }
-        if radius == 0 {
-            return;
-        }
-        let r = radius.min(w / 2).min(h);
-        let r_f = r as f64;
-        for py in 0..r {
-            let dy = r_f - py as f64 - 0.5;
-            for px in 0..r {
-                let dx = r_f - px as f64 - 0.5;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist > r_f - 1.0 {
-                    let alpha = (r_f - dist).clamp(0.0, 1.0);
-                    let apply = |pixel: &mut tiny_skia::PremultipliedColorU8| {
-                        if alpha <= 0.0 {
-                            *pixel = tiny_skia::PremultipliedColorU8::TRANSPARENT;
-                        } else {
-                            let a = (pixel.alpha() as f64 * alpha).round() as u8;
-                            let r = (pixel.red() as f64 * alpha).round() as u8;
-                            let g = (pixel.green() as f64 * alpha).round() as u8;
-                            let b = (pixel.blue() as f64 * alpha).round() as u8;
-                            *pixel =
-                                tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, a).unwrap();
-                        }
-                    };
-                    // Top-left corner
-                    if let Some(pixel) = pixels.pixels_mut().get_mut((py * w + px) as usize) {
-                        apply(pixel);
-                    }
-                    // Top-right corner
-                    let rx = w - 1 - px;
-                    if let Some(pixel) = pixels.pixels_mut().get_mut((py * w + rx) as usize) {
-                        apply(pixel);
-                    }
-                }
-            }
-        }
     }
 
     fn view<'a>(
