@@ -1408,23 +1408,36 @@ where
                 // Render shadow behind the popup if enabled via protocol
                 let popup_surface_id = popup_wl_surface.id();
                 if surface_has_shadow(popup_wl_surface) {
-                    let is_dark = theme.is_dark;
+                    let shadow_layers = theme.shadow_window();
                     let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
-                    let shadow_element = ShadowShader::layer_element(
-                        renderer,
-                        &popup_surface_id,
-                        local_geo,
-                        shadow_radius,
-                        1.0,
-                        scale,
-                        is_dark,
-                    );
+                    if let Some(shadow) = shadow_layers.first() {
+                        let shadow_color = [
+                            shadow.color.r,
+                            shadow.color.g,
+                            shadow.color.b,
+                            shadow.color.a,
+                        ];
+                        let shadow_offset = [shadow.offset.x, shadow.offset.y];
+                        let shadow_softness = shadow.blur_radius;
 
-                    let shadow: WorkspaceRenderElement<R> =
-                        Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
-                    if let Some(cropped) = crop_to_output(shadow) {
-                        elements.push(cropped.into());
+                        let shadow_element = ShadowShader::layer_element(
+                            renderer,
+                            &popup_surface_id,
+                            local_geo,
+                            shadow_radius,
+                            1.0,
+                            scale,
+                            shadow_color,
+                            shadow_offset,
+                            shadow_softness,
+                        );
+
+                        let shadow: WorkspaceRenderElement<R> =
+                            Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
+                        if let Some(cropped) = crop_to_output(shadow) {
+                            elements.push(cropped.into());
+                        }
                     }
                 }
 
@@ -1549,23 +1562,36 @@ where
                 // Render shadow behind the layer surface if enabled
                 // Alpha handles fading for home visibility surfaces
                 if surface_has_shadow(layer.wl_surface()) {
-                    let is_dark = theme.is_dark;
+                    let shadow_layers = theme.shadow_window();
                     let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
-                    let shadow_element = ShadowShader::layer_element(
-                        renderer,
-                        &surface_id,
-                        local_geo,
-                        shadow_radius,
-                        alpha,
-                        scale,
-                        is_dark,
-                    );
+                    if let Some(shadow) = shadow_layers.first() {
+                        let shadow_color = [
+                            shadow.color.r,
+                            shadow.color.g,
+                            shadow.color.b,
+                            shadow.color.a,
+                        ];
+                        let shadow_offset = [shadow.offset.x, shadow.offset.y];
+                        let shadow_softness = shadow.blur_radius;
 
-                    let shadow: WorkspaceRenderElement<R> =
-                        Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
-                    if let Some(cropped) = crop_to_output(shadow) {
-                        elements.push(cropped.into());
+                        let shadow_element = ShadowShader::layer_element(
+                            renderer,
+                            &surface_id,
+                            local_geo,
+                            shadow_radius,
+                            alpha,
+                            scale,
+                            shadow_color,
+                            shadow_offset,
+                            shadow_softness,
+                        );
+
+                        let shadow: WorkspaceRenderElement<R> =
+                            Into::<CosmicMappedRenderElement<R>>::into(shadow_element).into();
+                        if let Some(cropped) = crop_to_output(shadow) {
+                            elements.push(cropped.into());
+                        }
                     }
                 }
 

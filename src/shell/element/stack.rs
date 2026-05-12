@@ -731,6 +731,22 @@ impl CosmicStack {
             geo = geo.upscale(scale);
             geo.loc += location.to_f64().to_logical(output_scale);
 
+            let shadow_layers = if activated {
+                theme.shadow_window()
+            } else {
+                theme.shadow_window_unfocused()
+            };
+
+            let shadow = shadow_layers.first()?;
+            let shadow_color = [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ];
+            let shadow_offset = [shadow.offset.x, shadow.offset.y];
+            let shadow_softness = shadow.blur_radius;
+
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0)));
 
@@ -740,9 +756,11 @@ impl CosmicStack {
                     window_key,
                     geo.to_i32_round().as_local(),
                     radii,
-                    if activated { alpha } else { alpha * 0.75 },
+                    alpha,
                     output_scale.x,
-                    theme.is_dark,
+                    shadow_color,
+                    shadow_offset,
+                    shadow_softness,
                 ))
                 .into(),
             )
@@ -804,15 +822,17 @@ impl CosmicStack {
                 CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0)));
 
             let border = (!maximized && !is_embedded && !windows[active].has_blur()).then(|| {
-                // TODO: Update this
-                let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
+                let c = theme.window_border_color();
+                let border_color = [c.r, c.g, c.b];
+                let border_thickness = theme.window_border_width() as u8;
+                let border_alpha = c.a;
                 CosmicStackRenderElement::Border(IndicatorShader::focus_element(
                     renderer,
                     Key::Window(Usage::Border, window_key.clone()),
                     geo.to_i32_round().as_local(),
-                    1,
+                    border_thickness,
                     radii.unwrap_or([0, 0, 0, 0]),
-                    1.0 * alpha,
+                    border_alpha * alpha,
                     scale.x,
                     border_color,
                 ))

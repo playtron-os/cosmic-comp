@@ -810,8 +810,25 @@ impl CosmicWindow {
             // Use helper function to compute corner radius (avoids code duplication)
             let radii = p.compute_corner_radius(geo_size, 0);
 
-            // Extract is_dark
-            let is_dark = p.theme.lock().unwrap().is_dark;
+            // Extract shadow parameters from theme
+            let theme = p.theme.lock().unwrap();
+            let shadow_layers = if activated {
+                theme.shadow_window()
+            } else {
+                theme.shadow_window_unfocused()
+            };
+            drop(theme);
+
+            // Use the first shadow layer (the shader supports a single shadow)
+            let shadow = shadow_layers.first()?;
+            let shadow_color = [
+                shadow.color.r,
+                shadow.color.g,
+                shadow.color.b,
+                shadow.color.a,
+            ];
+            let shadow_offset = [shadow.offset.x, shadow.offset.y];
+            let shadow_softness = shadow.blur_radius;
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
@@ -832,9 +849,11 @@ impl CosmicWindow {
                     window_key,
                     geo.to_i32_round().as_local(),
                     radii,
-                    if activated { alpha } else { alpha * 0.75 },
+                    alpha,
                     output_scale.x,
-                    is_dark,
+                    shadow_color,
+                    shadow_offset,
+                    shadow_softness,
                 ))
                 .into(),
             )
@@ -909,8 +928,15 @@ impl CosmicWindow {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 
-            // TODO: Update this
-            let border_color = [240.0 / 255.0, 240.0 / 255.0, 240.0 / 255.0];
+            let (border_color, border_thickness) = self.0.with_program(|p| {
+                let theme = p.theme.lock().unwrap();
+                let c = theme.window_border_color();
+                ([c.r, c.g, c.b], theme.window_border_width() as u8)
+            });
+            let border_alpha = self.0.with_program(|p| {
+                let theme = p.theme.lock().unwrap();
+                theme.window_border_color().a
+            });
             // SSD windows: draw the border 1px outside the geo so the border's
             // opaque inner edge covers the SSD header corners (prevents dark bleed).
             // CSD windows: draw the border inside the geo so there's no gap between
@@ -920,9 +946,9 @@ impl CosmicWindow {
                     renderer,
                     Key::Window(Usage::Border, window_key.clone()),
                     geo.to_i32_round().as_local(),
-                    1,
+                    border_thickness,
                     radii,
-                    1.0 * alpha,
+                    border_alpha * alpha,
                     scale.x,
                     border_color,
                 ))
@@ -931,9 +957,9 @@ impl CosmicWindow {
                     renderer,
                     Key::Window(Usage::Border, window_key.clone()),
                     geo.to_i32_round().as_local(),
-                    1,
+                    border_thickness,
                     radii,
-                    1.0 * alpha,
+                    border_alpha * alpha,
                     scale.x,
                     border_color,
                 ))

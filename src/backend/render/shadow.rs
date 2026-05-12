@@ -27,7 +27,9 @@ pub struct ShadowParameters {
     scale: f64,
     alpha: f32,
     radius: [u8; 4],
-    dark_mode: bool,
+    shadow_color: [f32; 4],
+    shadow_offset: [f32; 2],
+    shadow_softness: f32,
 }
 type ShadowCache = RefCell<HashMap<CosmicMappedKey, (ShadowParameters, PixelShaderElement)>>;
 /// Cache for layer surface shadows (keyed by WlSurface ObjectId)
@@ -51,14 +53,18 @@ impl ShadowShader {
         radius: [u8; 4],
         alpha: f32,
         scale: f64,
-        dark_mode: bool,
+        shadow_color: [f32; 4],
+        shadow_offset: [f32; 2],
+        shadow_softness: f32,
     ) -> PixelShaderElement {
         let params = ShadowParameters {
             geo,
             scale,
             alpha,
             radius,
-            dark_mode,
+            shadow_color,
+            shadow_offset,
+            shadow_softness,
         };
         let ceil = |logical: f64| (logical * scale).ceil() / scale;
 
@@ -84,11 +90,11 @@ impl ShadowShader {
         {
             let shader = Self::get(renderer);
 
-            // Primary shadow: rgba(0, 0, 0, 0.1) 0px 24px 80px
-            let softness = 80.;
+            // Shadow parameters from theme
+            let softness = shadow_softness as f64;
             let spread = 0.;
-            let offset = [0., 24.];
-            let color = [0., 0., 0., 0.1];
+            let offset = [shadow_offset[0] as f64, shadow_offset[1] as f64];
+            let color = shadow_color;
 
             let radius = radius.map(|r| ceil(r as f64));
             let radius = [
@@ -214,14 +220,18 @@ impl ShadowShader {
         radius: [u8; 4],
         alpha: f32,
         scale: f64,
-        dark_mode: bool,
+        shadow_color: [f32; 4],
+        shadow_offset: [f32; 2],
+        shadow_softness: f32,
     ) -> PixelShaderElement {
         let params = ShadowParameters {
             geo,
             scale,
             alpha,
             radius,
-            dark_mode,
+            shadow_color,
+            shadow_offset,
+            shadow_softness,
         };
         let ceil = |logical: f64| (logical * scale).ceil() / scale;
 
@@ -246,11 +256,11 @@ impl ShadowShader {
         {
             let shader = Self::get(renderer);
 
-            // Primary shadow: rgba(0, 0, 0, 0.12) 0px 8px 32px
-            let softness = 32.;
+            // Shadow parameters from caller
+            let softness = shadow_softness as f64;
             let spread = 0.;
-            let offset = [0., 8.];
-            let color = [0., 0., 0., 0.12];
+            let offset = [shadow_offset[0] as f64, shadow_offset[1] as f64];
+            let color = shadow_color;
 
             let radius = radius.map(|r| ceil(r as f64));
             let radius = [
