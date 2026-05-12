@@ -212,6 +212,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
 
         let header_height = header_height(&**theme);
+        let header_bg = theme.header_background();
         let top_radius = if self.maximized {
             0.0
         } else {
@@ -223,6 +224,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .width(Length::Fill)
             .height(Length::Fixed(header_height))
             .style(move |_theme| container::Style {
+                background: Some(iced_core::Background::Color(header_bg)),
                 border: iced_core::Border {
                     radius: iced_core::border::Radius {
                         top_left: top_radius,
