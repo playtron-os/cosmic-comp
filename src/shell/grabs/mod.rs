@@ -20,7 +20,7 @@ use smithay::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::protocol::wl_surface::WlSurface,
     },
-    utils::{Logical, Point, Serial},
+    utils::{Logical, Point, Serial, Size},
     xwayland::xwm,
 };
 
@@ -495,6 +495,7 @@ impl MoveGrab {
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
         transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
+        target_size: Option<Size<i32, Logical>>,
     ) -> MoveGrab {
         MoveGrab::Move(moving::MoveGrab::new(
             start_data,
@@ -508,6 +509,7 @@ impl MoveGrab {
             release,
             evlh,
             transient_children,
+            target_size,
         ))
     }
 

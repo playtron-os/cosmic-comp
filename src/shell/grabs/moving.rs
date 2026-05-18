@@ -55,7 +55,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::Resource,
-    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial},
+    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial, Size},
     wayland::seat::WaylandFocus,
 };
 use std::{
@@ -80,6 +80,9 @@ pub struct MoveGrabState {
     stacking_indicator: Option<(StackHover, Point<i32, Logical>)>,
     location: Point<f64, Logical>,
     cursor_output: Output,
+    /// Target window size after unmaximize, used on drop when the client
+    /// hasn't yet committed a buffer at the new size.
+    target_size: Option<Size<i32, Logical>>,
     /// X11 transient children that follow the parent during drag.
     /// Each entry is (child_mapped, offset_from_parent).
     /// Children are unmapped from the workspace during drag and rendered
@@ -976,6 +979,7 @@ impl MoveGrab {
         release: ReleaseMode,
         evlh: LoopHandle<'static, State>,
         transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
+        target_size: Option<Size<i32, Logical>>,
     ) -> MoveGrab {
         let mut outputs = HashSet::new();
         outputs.insert(cursor_output.clone());
@@ -994,6 +998,7 @@ impl MoveGrab {
             previous: previous_layer,
             location: start_data.location(),
             cursor_output: cursor_output.clone(),
+            target_size,
             transient_children,
         };
 
@@ -1096,12 +1101,16 @@ impl Drop for MoveGrab {
                         }
                     }
 
+                    let drop_size = grab_state
+                        .target_size
+                        .map(|s| s.as_global())
+                        .unwrap_or_else(|| grab_state.window.geometry().size.as_global());
+
                     let drop_result = match previous {
                         ManagedLayer::Sticky => {
-                            grab_state.window.set_geometry(Rectangle::new(
-                                window_location,
-                                grab_state.window.geometry().size.as_global(),
-                            ));
+                            grab_state
+                                .window
+                                .set_geometry(Rectangle::new(window_location, drop_size));
                             let set = shell.workspaces.sets.get_mut(&output).unwrap();
                             let (window, location) = set
                                 .sticky_layer
@@ -1120,10 +1129,9 @@ impl Drop for MoveGrab {
                             Some((window, location.to_global(&output)))
                         }
                         _ => {
-                            grab_state.window.set_geometry(Rectangle::new(
-                                window_location,
-                                grab_state.window.geometry().size.as_global(),
-                            ));
+                            grab_state
+                                .window
+                                .set_geometry(Rectangle::new(window_location, drop_size));
                             let theme = shell.theme.clone();
                             let workspace = shell.active_space_mut(&output).unwrap();
                             let (window, location) = workspace.floating_layer.drop_window(

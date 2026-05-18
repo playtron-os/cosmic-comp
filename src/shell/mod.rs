@@ -130,6 +130,8 @@ const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
 const GESTURE_VELOCITY_THRESHOLD: f64 = 0.02;
 const MOVE_GRAB_Y_OFFSET: f64 = 16.;
+/// When dragging a zone-filling window, shrink it to this fraction of the zone.
+const DRAG_UNMAXIMIZE_FRACTION: (i32, i32) = (2, 3);
 const ACTIVATION_TOKEN_EXPIRE_TIME: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
@@ -5728,6 +5730,21 @@ impl Shell {
         Some((grab, Focus::Keep))
     }
 
+    /// If a window's size fills the given zone, return the zone size scaled
+    /// down by [`DRAG_UNMAXIMIZE_FRACTION`] for use as a drag target size.
+    fn drag_shrink_size(
+        win_w: i32,
+        win_h: i32,
+        zone: Rectangle<i32, Logical>,
+    ) -> Option<Size<i32, Logical>> {
+        if win_w >= zone.size.w && win_h >= zone.size.h {
+            let (n, d) = DRAG_UNMAXIMIZE_FRACTION;
+            Some(Size::from((zone.size.w * n / d, zone.size.h * n / d)))
+        } else {
+            None
+        }
+    }
+
     pub fn move_request(
         &mut self,
         surface: &WlSurface,
@@ -5849,18 +5866,54 @@ impl Shell {
             seat.active_output()
         };
 
-        let (initial_window_location, layer, workspace_handle) =
+        let (initial_window_location, layer, workspace_handle, target_size) =
             if let Some(workspace) = self.space_for_mut(&old_mapped) {
                 let elem_geo = element_geo.or_else(|| workspace.element_geometry(&old_mapped))?;
                 let mut initial_window_location = elem_geo.loc.to_global(workspace.output());
 
                 let mut new_size = if old_mapped.maximized_state.lock().unwrap().is_some() {
                     // If surface is maximized then unmaximize it
-                    workspace
-                        .unmaximize_request(&old_mapped)
-                        .map(|geo| geo.size.as_logical())
+                    let geo = workspace.unmaximize_request(&old_mapped);
+                    // The pipelined unmaximize defers set_maximized/set_tiled
+                    // until animation completion, but the element is about to be
+                    // unmapped for the grab so the animation will never finish.
+                    // Clear the protocol state flags and configure to the target
+                    // (original) size immediately.
+                    old_mapped.set_maximized(false);
+                    old_mapped.set_tiled(false);
+
+                    // If the original geometry is as large as (or larger than)
+                    // the output zone, shrink to 2/3 so the window actually
+                    // appears unmaximized when dropped.
+                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                    let clamped_geo = geo.map(|mut g| {
+                        if let Some(s) = Self::drag_shrink_size(g.size.w, g.size.h, zone) {
+                            g.size = s.as_local();
+                        }
+                        g
+                    });
+
+                    if let Some(ref geo) = clamped_geo {
+                        old_mapped.set_geometry(geo.to_global(workspace.output()));
+                    }
+                    old_mapped.configure();
+                    clamped_geo.map(|geo| geo.size.as_logical())
                 } else {
-                    None
+                    // Not maximized, but if the window fills the output zone,
+                    // shrink it on drag so the user can reposition it.
+                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                    if let Some(new_size) =
+                        Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
+                    {
+                        old_mapped.set_geometry(Rectangle::new(
+                            elem_geo.loc.to_global(workspace.output()),
+                            new_size.as_local().as_global(),
+                        ));
+                        old_mapped.configure();
+                        Some(new_size)
+                    } else {
+                        None
+                    }
                 };
 
                 let layer = if if mapped == old_mapped {
@@ -5896,7 +5949,7 @@ impl Shell {
                     .to_i32_round();
                 }
 
-                (initial_window_location, layer, workspace.handle)
+                (initial_window_location, layer, workspace.handle, new_size)
             } else if let Some(sticky_layer) = self
                 .workspaces
                 .sets
@@ -5911,7 +5964,16 @@ impl Shell {
                     if let Some(state) = old_mapped.maximized_state.lock().unwrap().take() {
                         // If surface is maximized then unmaximize it
                         old_mapped.set_maximized(false);
-                        let new_size = state.original_geometry.size.as_logical();
+                        old_mapped.set_tiled(false);
+                        old_mapped.configure();
+                        let mut new_size = state.original_geometry.size.as_logical();
+
+                        // Clamp to 2/3 of zone if original size fills the output
+                        let zone = layer_map_for_output(&cursor_output).non_exclusive_zone();
+                        if let Some(s) = Self::drag_shrink_size(new_size.w, new_size.h, zone) {
+                            new_size = s;
+                        }
+
                         sticky_layer.map_internal(
                             mapped.clone(),
                             Some(state.original_geometry.loc),
@@ -5921,7 +5983,21 @@ impl Shell {
 
                         Some(new_size)
                     } else {
-                        None
+                        // Not maximized, but if the window fills the output zone,
+                        // shrink it on drag so the user can reposition it.
+                        let zone = layer_map_for_output(&cursor_output).non_exclusive_zone();
+                        if let Some(new_size) =
+                            Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
+                        {
+                            old_mapped.set_geometry(Rectangle::new(
+                                elem_geo.loc.to_global(&cursor_output),
+                                new_size.as_local().as_global(),
+                            ));
+                            old_mapped.configure();
+                            Some(new_size)
+                        } else {
+                            None
+                        }
                     };
 
                 if mapped == old_mapped
@@ -5945,6 +6021,7 @@ impl Shell {
                     initial_window_location,
                     ManagedLayer::Sticky,
                     self.active_space(&cursor_output).unwrap().handle,
+                    new_size,
                 )
             } else {
                 return None;
@@ -5981,6 +6058,7 @@ impl Shell {
             release,
             evlh.clone(),
             transient_children,
+            target_size,
         );
 
         if grab.is_tiling_grab() {

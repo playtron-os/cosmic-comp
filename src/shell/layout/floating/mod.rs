@@ -813,11 +813,18 @@ impl FloatingLayout {
         mapped: CosmicMapped,
         target_geometry: Rectangle<i32, Local>,
     ) {
-        let current_geo = self
-            .space
-            .element_geometry(&mapped)
-            .map(RectExt::as_local)
-            .unwrap_or(target_geometry);
+        // Use the intended maximize zone as the starting geometry rather than
+        // element_geometry from the space, which reflects the committed buffer
+        // size and may be stale if the client hasn't resized to the zone yet.
+        let current_geo = if let Some(output) = self.space.outputs().next() {
+            let layers = layer_map_for_output(output);
+            layers.non_exclusive_zone().as_local()
+        } else {
+            self.space
+                .element_geometry(&mapped)
+                .map(RectExt::as_local)
+                .unwrap_or(target_geometry)
+        };
 
         let output = self.space.outputs().next().unwrap().clone();
 
@@ -1261,12 +1268,25 @@ impl FloatingLayout {
             // animation instead of MapFadeIn. The window already existed — it
             // was just grabbed, not newly created.
             let geo = Rectangle::new(position, window.geometry().size.as_local());
-            self.map_internal(window.clone(), Some(position), None, Some(geo));
+            // Explicitly pass current size so map_internal uses it instead of
+            // the stale last_geometry saved during unmap (which may be larger
+            // if the window was resized during the grab).
+            let size = Some(geo.size.as_logical());
+            self.map_internal(window.clone(), Some(position), size, Some(geo));
             (window, position)
         }
     }
 
     pub fn element_geometry(&self, elem: &CosmicMapped) -> Option<Rectangle<i32, Local>> {
+        // If the window is maximized, return the intended maximize zone geometry
+        // rather than the committed buffer size, which may be stale if the client
+        // hasn't yet committed at the full size (common with Electron apps).
+        if elem.is_maximized(true)
+            && let Some(output) = self.space.outputs().next()
+        {
+            let layers = layer_map_for_output(output);
+            return Some(layers.non_exclusive_zone().as_local());
+        }
         self.space.element_geometry(elem).map(RectExt::as_local)
     }
 

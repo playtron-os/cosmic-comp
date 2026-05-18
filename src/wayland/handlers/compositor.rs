@@ -11,7 +11,10 @@ use smithay::{
         utils::{on_commit_buffer_handler, with_renderer_surface_state},
     },
     desktop::{LayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output},
-    reexports::wayland_server::{Client, Resource, protocol::wl_surface::WlSurface},
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState,
+        wayland_server::{Client, Resource, protocol::wl_surface::WlSurface},
+    },
     utils::{Clock, Logical, Monotonic, SERIAL_COUNTER, Size, Time},
     wayland::{
         compositor::{
@@ -447,6 +450,15 @@ impl State {
                 } else if pending.maximized {
                     let active_output = shell.seats.last_active().active_output();
                     let zone = layer_map_for_output(&active_output).non_exclusive_zone();
+                    // Set maximized + tiled states so the client knows to use
+                    // the configured size on its very first commit.
+                    toplevel.with_pending_state(|state| {
+                        state.states.set(ToplevelState::Maximized);
+                        state.states.set(ToplevelState::TiledLeft);
+                        state.states.set(ToplevelState::TiledRight);
+                        state.states.set(ToplevelState::TiledTop);
+                        state.states.set(ToplevelState::TiledBottom);
+                    });
                     Some(zone.size)
                 } else {
                     // For floating windows, set bounds so the client picks a
