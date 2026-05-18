@@ -667,6 +667,7 @@ impl FloatingLayout {
         mapped.set_bounds(target_geometry.size.as_logical());
         mapped.set_tiled(true);
         mapped.set_maximized(true);
+        mapped.set_fills_output_zone(false);
 
         let parent_surface_id = mapped
             .active_window()
@@ -1131,6 +1132,13 @@ impl FloatingLayout {
             });
 
         mapped.set_tiled(false);
+        let zone = output_geometry.as_local();
+        mapped.set_fills_output_zone(
+            position.x == zone.loc.x
+                && position.y == zone.loc.y
+                && win_geo.size.w >= zone.size.w
+                && win_geo.size.h >= zone.size.h,
+        );
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
 
@@ -2081,6 +2089,7 @@ impl FloatingLayout {
                 let (new_pos, new_size) = (new_geo.loc, new_geo.size);
                 element.set_tiled(true); // TODO: More fine grained?
                 element.set_maximized(false);
+                element.set_fills_output_zone(false);
 
                 if tiled_state.is_none() {
                     let last_geometry = element
@@ -2196,6 +2205,13 @@ impl FloatingLayout {
                 })
             };
             mapped.set_geometry(window_geometry.to_global(&output));
+            mapped.set_fills_output_zone(
+                !mapped.is_maximized(false)
+                    && window_geometry.loc.x == geometry.loc.x
+                    && window_geometry.loc.y == geometry.loc.y
+                    && window_geometry.size.w >= geometry.size.w
+                    && window_geometry.size.h >= geometry.size.h,
+            );
 
             let is_activated = mapped.is_activated(false);
             mapped.configure();
@@ -2435,6 +2451,18 @@ impl FloatingLayout {
                     if let Some(maximize) = *is_maximize {
                         mapped.set_maximized(maximize);
                         mapped.set_tiled(maximize);
+                        if !maximize {
+                            let layers = layer_map_for_output(output);
+                            let zone = layers.non_exclusive_zone().as_local();
+                            mapped.set_fills_output_zone(
+                                target_geometry.loc.x == zone.loc.x
+                                    && target_geometry.loc.y == zone.loc.y
+                                    && target_geometry.size.w >= zone.size.w
+                                    && target_geometry.size.h >= zone.size.h,
+                            );
+                        } else {
+                            mapped.set_fills_output_zone(false);
+                        }
                     }
                     mapped.set_geometry(target_geometry.to_global(output));
                     mapped.configure();

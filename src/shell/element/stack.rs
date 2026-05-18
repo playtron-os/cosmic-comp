@@ -119,6 +119,7 @@ pub struct CosmicStackInternal {
     geometry: Mutex<Option<Rectangle<i32, Global>>>,
     mask: Mutex<Option<tiny_skia::Mask>>,
     tiled: AtomicBool,
+    fills_output_zone: AtomicBool,
     theme: Mutex<CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
@@ -184,6 +185,7 @@ impl CosmicStack {
                 geometry: Mutex::new(None),
                 mask: Mutex::new(None),
                 tiled: AtomicBool::new(false),
+                fills_output_zone: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
@@ -517,6 +519,11 @@ impl CosmicStack {
     pub fn set_tiled(&self, tiled: bool) {
         self.0
             .with_program(|p| p.tiled.store(tiled, Ordering::Release));
+    }
+
+    pub fn set_fills_output_zone(&self, fills: bool) {
+        self.0
+            .with_program(|p| p.fills_output_zone.store(fills, Ordering::Release));
     }
 
     pub fn surfaces(&self) -> impl Iterator<Item = CosmicSurface> {
@@ -994,6 +1001,11 @@ impl CosmicStack {
 
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>, default_radius: u8) -> [u8; 4] {
         self.0.with_program(|p| {
+            // Non-maximized windows that fill the output zone get square corners
+            if p.fills_output_zone.load(Ordering::Acquire) {
+                return [0; 4];
+            }
+
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
             let is_tiled = p.tiled.load(Ordering::Acquire);
             let appearance = p.appearance_conf.lock().unwrap();

@@ -323,6 +323,14 @@ impl CosmicMapped {
         }
     }
 
+    pub fn set_fills_output_zone(&self, fills: bool) {
+        match &self.element {
+            CosmicMappedInternal::Stack(s) => s.set_fills_output_zone(fills),
+            CosmicMappedInternal::Window(w) => w.set_fills_output_zone(fills),
+            _ => unreachable!(),
+        }
+    }
+
     pub fn is_tiled(&self, pending: bool) -> Option<bool> {
         let window = match &self.element {
             CosmicMappedInternal::Stack(s) => s.active(),

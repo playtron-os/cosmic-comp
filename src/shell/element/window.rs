@@ -136,6 +136,9 @@ pub struct CosmicWindowInternal {
     /// Tuple: (app_id used for lookup, optional override).
     desktop_override: Mutex<(String, Option<DesktopOverride>)>,
     tiled: AtomicBool,
+    /// Whether the window fills the output zone (position 0,0 and size >= zone).
+    /// Used to give square corners to non-maximized windows that visually fill the screen.
+    fills_output_zone: AtomicBool,
     theme: Mutex<crate::comp_theme::CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
@@ -473,6 +476,11 @@ impl CosmicWindowInternal {
             return [0; 4];
         }
 
+        // Non-maximized windows that fill the output zone also get square corners
+        if self.fills_output_zone.load(Ordering::Acquire) {
+            return [0; 4];
+        }
+
         // X11 transient children (utility/toolbar windows) get 0 corner radius
         // unless the surface itself explicitly sets a radius.
         // This matches GNOME/KWin behavior where sub-windows have square corners.
@@ -556,6 +564,7 @@ impl CosmicWindow {
                 cached_icon: Mutex::new((app_id.clone(), None)),
                 desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
                 tiled: AtomicBool::new(false),
+                fills_output_zone: AtomicBool::new(false),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
@@ -1061,6 +1070,13 @@ impl CosmicWindow {
         });
     }
 
+    /// Mark whether this window visually fills the entire output zone.
+    /// When true, corner radius is forced to 0 (square) even if not protocol-maximized.
+    pub fn set_fills_output_zone(&self, fills: bool) {
+        self.0
+            .with_program(|p| p.fills_output_zone.store(fills, Ordering::Release));
+    }
+
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>, default_radius: u8) -> [u8; 4] {
         self.0
             .with_program(|p| p.compute_corner_radius(geometry_size, default_radius))
@@ -1255,7 +1271,9 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_right_click(Message::Menu)
             .focused(focused)
             .hovered(hovered)
-            .maximized(win.window.is_maximized(false))
+            .maximized(
+                win.window.is_maximized(false) || win.fills_output_zone.load(Ordering::Acquire),
+            )
             .theme(theme);
 
         // Pass the application icon if resolved

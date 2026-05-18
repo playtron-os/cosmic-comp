@@ -694,6 +694,26 @@ impl ResizeSurfaceGrab {
         self.window.set_resizing(false);
         self.window.configure();
 
+        // Update fills_output_zone based on the final resize geometry.
+        let zone = layer_map_for_output(&self.output)
+            .non_exclusive_zone()
+            .as_local();
+        let mut final_loc = self.initial_window_location;
+        if self.edges.intersects(ResizeEdge::LEFT) {
+            final_loc.x = self.initial_window_location.x + self.initial_window_size.w
+                - self.last_window_size.w;
+        }
+        if self.edges.intersects(ResizeEdge::TOP) {
+            final_loc.y = self.initial_window_location.y + self.initial_window_size.h
+                - self.last_window_size.h;
+        }
+        self.window.set_fills_output_zone(
+            final_loc.x == zone.loc.x
+                && final_loc.y == zone.loc.y
+                && self.last_window_size.w >= zone.size.w
+                && self.last_window_size.h >= zone.size.h,
+        );
+
         let mut resize_state = self.window.resize_state.lock().unwrap();
         if let Some(ResizeState::Resizing(resize_data)) = *resize_state {
             *resize_state = Some(ResizeState::WaitingForCommit(resize_data));
