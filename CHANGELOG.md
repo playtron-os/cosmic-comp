@@ -1,3 +1,17 @@
+# [1.21.0](https://github.com/playtron-os/cosmic-comp/compare/v1.20.1...v1.21.0) (2026-05-27)
+
+
+### Bug Fixes
+
+* shrink zone-filling windows on drag to prevent stuck maximized state ([28ce53f](https://github.com/playtron-os/cosmic-comp/commit/28ce53fc21a12e7f3c7de8b1d33937399a9e3df8))
+* update deps ([4ac237f](https://github.com/playtron-os/cosmic-comp/commit/4ac237f8b60bbbab8e48815ff952fa8f318c4b32))
+
+
+### Features
+
+* panel slide animation with window size save/restore ([324e1df](https://github.com/playtron-os/cosmic-comp/commit/324e1dfde7046bb9bddbd8ada8d5142d3084cc7c))
+* square corners for windows filling the output zone ([3f7c543](https://github.com/playtron-os/cosmic-comp/commit/3f7c543993db6196b25dd5a9b5bd0cd8937591e1))
+
 ## [1.20.1](https://github.com/playtron-os/cosmic-comp/compare/v1.20.0...v1.20.1) (2026-05-12)
 
 
