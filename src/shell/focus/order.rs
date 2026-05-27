@@ -601,7 +601,7 @@ fn layer_surfaces<'a>(
         // Apply layer fade-in alpha if this surface is still fading in
         let is_fading_in =
             if let Some(&fade_alpha) = home_visibility.layer_fade_in_alphas.get(&surface_id) {
-                tracing::debug!(
+                tracing::trace!(
                     surface_protocol_id = s.wl_surface().id().protocol_id(),
                     fade_alpha = format!("{:.3}", fade_alpha),
                     original_alpha = format!("{:.3}", alpha),
@@ -618,7 +618,7 @@ fn layer_surfaces<'a>(
         // but with decreasing alpha.
         let is_fading_out =
             if let Some(&fade_alpha) = home_visibility.layer_fade_out_alphas.get(&surface_id) {
-                tracing::debug!(
+                tracing::trace!(
                     surface_protocol_id = s.wl_surface().id().protocol_id(),
                     fade_alpha = format!("{:.3}", fade_alpha),
                     "layer_surfaces: applying fade-OUT alpha"
@@ -634,7 +634,7 @@ fn layer_surfaces<'a>(
         // but squared during home visibility animation for a softer blur transition
         let blur_alpha = if is_fading_in || is_fading_out {
             let result = alpha;
-            tracing::debug!(
+            tracing::trace!(
                 surface_protocol_id = s.wl_surface().id().protocol_id(),
                 blur_alpha = format!("{:.3}", result),
                 is_fading_in,

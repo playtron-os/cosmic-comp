@@ -901,6 +901,8 @@ pub struct HomeVisibilityContext {
     pub hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     pub hidden_surfaces: std::collections::HashSet<ObjectId>,
+    /// Set of surface IDs that currently have active slide animations
+    pub sliding_surfaces: std::collections::HashSet<ObjectId>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
     /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
@@ -921,6 +923,11 @@ impl HomeVisibilityContext {
             home_only_surfaces: shell.home_only_surfaces().clone(),
             hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
             hidden_surfaces: shell.hidden_surfaces().clone(),
+            sliding_surfaces: shell
+                .layer_slides
+                .iter()
+                .map(|s| s.surface_id.clone())
+                .collect(),
             home_alpha: shell.home_alpha(),
             voice_mode_alpha: shell.voice_mode_window_alpha(),
             voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
@@ -1521,10 +1528,15 @@ where
                 // so hidden surfaces don't intercept clicks.
                 let surface_id = layer.wl_surface().id();
                 let layer_geo = layer.bbox();
+
                 let (offset_x, offset_y) =
                     shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
-                let render_location = if offset_x != 0 || offset_y != 0 {
-                    location + smithay::utils::Point::from((offset_x, offset_y))
+                // Also apply layer slide offset (side-panel visibility animation).
+                let (slide_x, slide_y) = shell.get_layer_slide_offset(&surface_id);
+                let total_offset_x = offset_x + slide_x;
+                let total_offset_y = offset_y + slide_y;
+                let render_location = if total_offset_x != 0 || total_offset_y != 0 {
+                    location + smithay::utils::Point::from((total_offset_x, total_offset_y))
                 } else {
                     location
                 };
@@ -1546,12 +1558,27 @@ where
                         FRAME_TIME_FILTER,
                     );
 
+                let is_sliding = shell.is_layer_sliding(&surface_id);
+                let pre_crop_count = if is_sliding {
+                    surface_elements.len()
+                } else {
+                    0
+                };
+                let elements_before = elements.len();
                 elements.extend(
                     surface_elements
                         .into_iter()
                         .flat_map(crop_to_output)
                         .map(Into::into),
                 );
+                if is_sliding {
+                    let added = elements.len() - elements_before;
+                    tracing::trace!(
+                        pre_crop_count,
+                        post_crop_count = added,
+                        "layer_slide: element counts after crop"
+                    );
+                }
 
                 let local_geo =
                     Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());

@@ -104,6 +104,10 @@ fn reload_theme(state: &mut State) {
 
     let is_dark = matches!(get_color_mode(), Mode::Dark);
     let theme_name = DynamicTheme::current_theme_name();
+    info!(
+        "Theme change detected — reloading (theme={:?}, dark={})",
+        theme_name, is_dark
+    );
 
     let new_theme = match theme_name {
         Some(ref name) => CompTheme::from_file(name, is_dark),

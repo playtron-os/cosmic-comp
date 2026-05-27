@@ -373,6 +373,11 @@ impl CompositorHandler for State {
             .cloned();
 
         if let Some(ref output) = layer_output {
+            // Override exclusive zones for surfaces with active slide animations
+            // BEFORE arrange() runs, to prevent one-frame jumps when the client
+            // commits a new exclusive_zone value.
+            shell.override_slide_exclusive_zones(output);
+
             let changed = layer_map_for_output(output).arrange();
             if changed {
                 shell.workspaces.recalculate();

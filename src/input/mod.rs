@@ -2544,10 +2544,14 @@ impl State {
                         // Apply auto-hide offset so hidden surfaces
                         // don't intercept keyboard focus.
                         let layer_geo = layer.bbox();
+                        let surface_id = layer.wl_surface().id();
                         let (ox, oy) =
                             shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
-                        let input_location = if ox != 0 || oy != 0 {
-                            location + smithay::utils::Point::from((ox, oy))
+                        let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
+                        let total_ox = ox + sx;
+                        let total_oy = oy + sy;
+                        let input_location = if total_ox != 0 || total_oy != 0 {
+                            location + smithay::utils::Point::from((total_ox, total_oy))
                         } else {
                             location
                         };
@@ -2709,10 +2713,14 @@ impl State {
                         // surfaces don't intercept pointer input at
                         // their original position.
                         let layer_geo = layer.bbox();
+                        let surface_id = layer.wl_surface().id();
                         let (ox, oy) =
                             shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
-                        let input_location = if ox != 0 || oy != 0 {
-                            location + smithay::utils::Point::from((ox, oy))
+                        let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
+                        let total_ox = ox + sx;
+                        let total_oy = oy + sy;
+                        let input_location = if total_ox != 0 || total_oy != 0 {
+                            location + smithay::utils::Point::from((total_ox, total_oy))
                         } else {
                             location
                         };

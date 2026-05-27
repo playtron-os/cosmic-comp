@@ -69,6 +69,17 @@ pub struct FloatingLayout {
     dirty: AtomicBool,
     pub theme: crate::comp_theme::CompTheme,
     pub appearance: AppearanceConfig,
+    /// Original positions of windows before being pushed by exclusive zone changes
+    /// (e.g., panel slide animations). Stored as (original_rect, last_computed_rect).
+    /// When zone shrinks back, windows return to their original position.
+    pre_slide_positions: HashMap<CosmicMapped, (Rectangle<i32, Local>, Rectangle<i32, Local>)>,
+    /// When true, a layer slide animation is active. Windows skip `configure()`
+    /// calls and get scaled in the render path instead, for smooth animation.
+    pub slide_active: bool,
+    /// Target geometries for windows during slide animation. Stored during recalculate()
+    /// so the render path knows what size to scale to (since space.element_geometry()
+    /// returns the buffer's committed size, not the animated target).
+    slide_target_geometries: HashMap<CosmicMapped, Rectangle<i32, Local>>,
 }
 
 #[derive(Debug)]
@@ -849,6 +860,10 @@ impl FloatingLayout {
             first_geo = ?first_geo,
             "[PIPELINE] Starting pipelined unmaximize"
         );
+
+        // Clear any lingering slide target geometry — the window is now under
+        // client-driven animation and should not be overridden by stale slide data.
+        self.slide_target_geometries.remove(&mapped);
 
         let now = Instant::now();
         self.animations.insert(
@@ -2165,9 +2180,8 @@ impl FloatingLayout {
         let output_size = output.geometry().size.as_local();
         let old_output_size = Some(self.last_output_size).filter(|size| *size != output_size);
 
-        let geometry = layer_map_for_output(&output)
-            .non_exclusive_zone()
-            .as_local();
+        let geometry =
+            crate::shell::layer_slide::get_effective_non_exclusive_zone(&output).as_local();
 
         // update elements
         for mapped in self
@@ -2181,6 +2195,7 @@ impl FloatingLayout {
             let prev = self.space.element_geometry(&mapped).map(RectExt::as_local);
 
             let window_geometry = if mapped.is_maximized(false) {
+                self.pre_slide_positions.remove(&mapped);
                 geometry
             } else {
                 prev.map(|mut rect| {
@@ -2198,29 +2213,192 @@ impl FloatingLayout {
                         )
                         .to_i32_round();
                     }
-                    Rectangle::new(rect.loc.constrain(geometry), rect.size)
+
+                    self.compute_slide_constrained_position(&mapped, rect, geometry)
                 })
                 .unwrap_or_else(|| {
                     Rectangle::new(Point::from((0, 0)), mapped.geometry().size.as_local())
                 })
             };
-            mapped.set_geometry(window_geometry.to_global(&output));
-            mapped.set_fills_output_zone(
-                !mapped.is_maximized(false)
-                    && window_geometry.loc.x == geometry.loc.x
-                    && window_geometry.loc.y == geometry.loc.y
-                    && window_geometry.size.w >= geometry.size.w
-                    && window_geometry.size.h >= geometry.size.h,
-            );
-
+            // Capture committed buffer size for the shrinking check below.
+            let buffer_size = mapped.geometry().size.as_local();
             let is_activated = mapped.is_activated(false);
-            mapped.configure();
+            // During slide animations, skip configure AND set_geometry when SHRINKING
+            // (panel opening, windows pushed smaller). We must not touch the toplevel's
+            // pending state at all — any pending != last_sent would leak a configure
+            // via space.refresh(). The render path uses slide_target_geometries for
+            // visual sizing. When GROWING (panel closing), allow configure so the client
+            // renders at the larger size (avoids stretching a small buffer up).
+            let is_shrinking = self.slide_active
+                && (window_geometry.size.w < buffer_size.w
+                    || window_geometry.size.h < buffer_size.h);
+            if !is_shrinking {
+                mapped.set_geometry(window_geometry.to_global(&output));
+                mapped.set_fills_output_zone(
+                    !mapped.is_maximized(false)
+                        && window_geometry.loc.x == geometry.loc.x
+                        && window_geometry.loc.y == geometry.loc.y
+                        && window_geometry.size.w >= geometry.size.w
+                        && window_geometry.size.h >= geometry.size.h,
+                );
+                mapped.configure();
+            }
+            // Store target geometry for the render path during slide.
+            // Also update when slide just ended (!slide_active) but entries still exist,
+            // so they reflect the final target size (not the last animated frame's target).
+            // Skip windows with active per-element animations (e.g., drag-unmaximize) —
+            // their geometry is driven by the animation, not the slide.
+            if (self.slide_active || self.slide_target_geometries.contains_key(&mapped))
+                && !self.animations.contains_key(&mapped)
+            {
+                self.slide_target_geometries
+                    .insert(mapped.clone(), window_geometry);
+            } else if self.animations.contains_key(&mapped) {
+                // Window has an animation — remove any stale slide target
+                self.slide_target_geometries.remove(&mapped);
+            }
             self.space
                 .map_element(mapped, window_geometry.loc.as_logical(), is_activated);
         }
 
         self.last_output_size = output_size;
+        if !self.slide_active {
+            // Only clear target geometries for windows whose buffer has caught up.
+            // This prevents a 1-frame gap when slide_active goes false but clients
+            // haven't committed at the target size yet.
+            self.slide_target_geometries.retain(|mapped, target_geo| {
+                if !mapped.alive() {
+                    return false;
+                }
+                let buffer_size = mapped.geometry().size.as_local();
+                // Keep if buffer hasn't reached target yet
+                buffer_size.w != target_geo.size.w || buffer_size.h != target_geo.size.h
+            });
+        }
+        self.pre_slide_positions.retain(|w, _| w.alive());
         self.refresh();
+    }
+
+    /// Compute a window's position during/after a panel slide animation.
+    ///
+    /// Uses the saved original position as base (if available), detects manual
+    /// user moves/resizes, constrains to the available zone, and manages the
+    /// save/restore lifecycle in `pre_slide_positions`.
+    fn compute_slide_constrained_position(
+        &mut self,
+        mapped: &CosmicMapped,
+        rect: Rectangle<i32, Local>,
+        zone: Rectangle<i32, Local>,
+    ) -> Rectangle<i32, Local> {
+        // Resolve base position: use saved original if not manually changed.
+        let base = self.resolve_slide_base(mapped, rect);
+
+        // Constrain to available zone, saving/restoring as needed.
+        self.constrain_to_zone(mapped, base, zone)
+    }
+
+    /// Determine the base rectangle for slide positioning.
+    /// Returns the saved original position unless the window was manually moved/resized.
+    fn resolve_slide_base(
+        &mut self,
+        mapped: &CosmicMapped,
+        rect: Rectangle<i32, Local>,
+    ) -> Rectangle<i32, Local> {
+        let Some((saved, last_computed)) = self.pre_slide_positions.get(mapped) else {
+            return rect;
+        };
+        let saved = *saved;
+        let last_computed = *last_computed;
+
+        let manually_changed = if self.slide_active {
+            // During slide: only position changes count (size mismatches are
+            // expected from skipped configures and client latency).
+            rect.loc != last_computed.loc
+        } else {
+            // After slide: treat as manual only if position moved unexpectedly
+            // or size is outside the range between saved and last_computed
+            // (accounts for client latency on rapid configures).
+            let position_changed = rect.loc != last_computed.loc && rect.loc != saved.loc;
+            let size_in_expected_range = rect.size.w >= saved.size.w.min(last_computed.size.w)
+                && rect.size.w <= saved.size.w.max(last_computed.size.w)
+                && rect.size.h >= saved.size.h.min(last_computed.size.h)
+                && rect.size.h <= saved.size.h.max(last_computed.size.h);
+            position_changed || !size_in_expected_range
+        };
+
+        if manually_changed {
+            tracing::debug!(
+                "[PRE_SLIDE] manually_changed: slide_active={} rect={rect:?} \
+                 last_computed={last_computed:?} saved={saved:?}",
+                self.slide_active
+            );
+            self.pre_slide_positions.remove(mapped);
+            rect
+        } else {
+            saved
+        }
+    }
+
+    /// Constrain a window rectangle to fit within `zone`, managing save/restore state.
+    fn constrain_to_zone(
+        &mut self,
+        mapped: &CosmicMapped,
+        base: Rectangle<i32, Local>,
+        zone: Rectangle<i32, Local>,
+    ) -> Rectangle<i32, Local> {
+        let mut result = base;
+        let zone_right = zone.loc.x + zone.size.w;
+        let zone_bottom = zone.loc.y + zone.size.h;
+
+        let out_of_bounds = result.loc.x + result.size.w > zone_right
+            || result.loc.x < zone.loc.x
+            || result.loc.y + result.size.h > zone_bottom
+            || result.loc.y < zone.loc.y;
+
+        if out_of_bounds {
+            // Save original position on first push
+            if !self.pre_slide_positions.contains_key(mapped) {
+                tracing::debug!("[PRE_SLIDE] saving original: base={base:?} zone={zone:?}");
+                self.pre_slide_positions
+                    .insert(mapped.clone(), (base, base));
+            }
+
+            // Clamp horizontally
+            if result.loc.x + result.size.w > zone_right {
+                result.loc.x = zone_right - result.size.w;
+            }
+            if result.loc.x < zone.loc.x {
+                result.loc.x = zone.loc.x;
+                result.size.w = result.size.w.min(zone.size.w);
+            }
+
+            // Clamp vertically
+            if result.loc.y + result.size.h > zone_bottom {
+                result.loc.y = zone_bottom - result.size.h;
+            }
+            if result.loc.y < zone.loc.y {
+                result.loc.y = zone.loc.y;
+                result.size.h = result.size.h.min(zone.size.h);
+            }
+
+            // Track computed position for manual-change detection
+            if let Some(entry) = self.pre_slide_positions.get_mut(mapped) {
+                entry.1 = result;
+            }
+        } else if self.pre_slide_positions.contains_key(mapped) {
+            if self.slide_active {
+                // Still animating — keep tracking but update last_computed
+                if let Some(entry) = self.pre_slide_positions.get_mut(mapped) {
+                    entry.1 = result;
+                }
+            } else {
+                // Animation ended — window fits at original, clear saved
+                tracing::debug!("[PRE_SLIDE] restoring original: base={base:?} result={result:?}");
+                self.pre_slide_positions.remove(mapped);
+            }
+        }
+
+        result
     }
 
     #[profiling::function]
@@ -3037,6 +3215,17 @@ impl FloatingLayout {
                 })
                 .unwrap_or_else(|| (self.space.element_geometry(elem).unwrap().as_local(), alpha));
 
+            // During slide animations (no per-element animation), override geometry
+            // with the target from recalculate. This ensures shadow, blur, decorations,
+            // and content ALL render at the correct animated size — not the buffer's
+            // committed size. Eliminates visual snapping when client commits new frames.
+            // Also applies post-slide while waiting for client buffers to catch up.
+            if anim_opt.is_none()
+                && let Some(target_geo) = self.slide_target_geometries.get(elem)
+            {
+                geometry = *target_geo;
+            }
+
             // Pre-compute the animated geometry for Tiled animations.
             // This is used for blur/backdrop placement so they track the animated size,
             // while the actual buffer stays at previous_geometry and gets rescaled later.
@@ -3456,6 +3645,59 @@ impl FloatingLayout {
                                     RelocateRenderElement::from_element(
                                         rescaled,
                                         relocation,
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            x => x,
+                        })
+                        .collect();
+                }
+            } else if self.slide_target_geometries.contains_key(elem) {
+                // No per-element animation, but a layer slide is active (or just ended
+                // and we're waiting for client catch-up). geometry is already overridden
+                // to target_geo above, so we just need to scale the buffer content.
+                let buffer_size = elem.geometry().size;
+                if buffer_size.w > 0
+                    && buffer_size.h > 0
+                    && (buffer_size.w != geometry.size.w || buffer_size.h != geometry.size.h)
+                {
+                    let scale = Scale {
+                        x: geometry.size.w as f64 / buffer_size.w as f64,
+                        y: geometry.size.h as f64 / buffer_size.h as f64,
+                    };
+                    let render_loc_phys = geometry
+                        .loc
+                        .as_logical()
+                        .to_physical_precise_round(output_scale);
+
+                    window_elements = window_elements
+                        .into_iter()
+                        .map(|element| match element {
+                            CosmicMappedRenderElement::Stack(elem) => {
+                                CosmicMappedRenderElement::MovingStack({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        render_loc_phys,
+                                        scale,
+                                    );
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        Point::from((0, 0)),
+                                        Relocate::Relative,
+                                    )
+                                })
+                            }
+                            CosmicMappedRenderElement::Window(elem) => {
+                                CosmicMappedRenderElement::MovingWindow({
+                                    let rescaled = RescaleRenderElement::from_element(
+                                        elem,
+                                        render_loc_phys,
+                                        scale,
+                                    );
+                                    RelocateRenderElement::from_element(
+                                        rescaled,
+                                        Point::from((0, 0)),
                                         Relocate::Relative,
                                     )
                                 })

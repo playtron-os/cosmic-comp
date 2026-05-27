@@ -1892,6 +1892,30 @@ impl SurfaceThreadState {
         profile.elements_duration = elements_phase_start.elapsed();
         profile.element_count = elements.len();
 
+        // Force full-screen damage during layer slide animations.
+        // Without this, the DRM compositor's damage tracker may not detect
+        // that surface elements moved positions between frames.
+        {
+            let shell = self.shell.read();
+            if shell
+                .layer_slides
+                .iter()
+                .any(|s| s.visibility.is_animating())
+                && let Some(mode) = self.output.current_mode()
+            {
+                let scale = self.output.current_scale().fractional_scale();
+                let logical_w = (mode.size.w as f64 / scale).round() as i32;
+                let logical_h = (mode.size.h as f64 / scale).round() as i32;
+                let damage_rect = Rectangle::new((0, 0).into(), (logical_w, logical_h).into());
+                elements.push(DamageElement::new(damage_rect).into());
+                tracing::trace!(
+                    "layer_slide: forced full-screen damage {}x{}",
+                    logical_w,
+                    logical_h
+                );
+            }
+        }
+
         if vrr && fullscreen_drives_refresh_rate && !self.timings.past_min_render_time(&self.clock)
         {
             additional_frame_flags |= FrameFlags::SKIP_CURSOR_ONLY_UPDATES;
@@ -1910,6 +1934,12 @@ impl SurfaceThreadState {
 
         // actual rendering
         let draw_phase_start = std::time::Instant::now();
+        let has_layer_slides = self
+            .shell
+            .read()
+            .layer_slides
+            .iter()
+            .any(|s| s.visibility.is_animating());
         let source_output = self
             .mirroring
             .as_ref()
@@ -1919,6 +1949,13 @@ impl SurfaceThreadState {
                     != PostprocessOutputConfig::for_output(&self.output)
                     || !self.screen_filter.is_noop()
             });
+        if has_layer_slides {
+            tracing::trace!(
+                postprocess = source_output.is_some(),
+                element_count = elements.len(),
+                "layer_slide: render path info"
+            );
+        }
 
         let mut pre_postprocess_data = PrePostprocessData::default();
 
@@ -2123,6 +2160,20 @@ impl SurfaceThreadState {
         self.timings.draw_done(&self.clock);
         profile.draw_duration = draw_phase_start.elapsed();
 
+        if has_layer_slides {
+            match &res {
+                Ok(frame_result) => {
+                    tracing::trace!(
+                        is_empty = frame_result.is_empty,
+                        "layer_slide: frame_result after render_frame"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("layer_slide: render_frame FAILED: {:?}", e);
+                }
+            }
+        }
+
         let submit_phase_start = std::time::Instant::now();
         match res {
             Ok(frame_result) => {
@@ -2148,6 +2199,12 @@ impl SurfaceThreadState {
 
                 match compositor.queue_frame(feedback) {
                     x @ Ok(()) | x @ Err(FrameError::EmptyFrame) => {
+                        if has_layer_slides {
+                            info!(
+                                ok = x.is_ok(),
+                                "layer_slide: queue_frame result (ok=true means submitted, ok=false means EmptyFrame)"
+                            );
+                        }
                         self.timings.submitted_for_presentation(&self.clock);
 
                         // Update `state` after `queue_frame`, before any early return from errors

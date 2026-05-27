@@ -1,6 +1,8 @@
 // Taken and modified from niri, licensed GPL-3.
 
 use std::borrow::{Borrow, BorrowMut};
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use cgmath::{Matrix3, Vector2};
 use smithay::backend::renderer::{
@@ -14,6 +16,11 @@ use smithay::backend::renderer::{
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
 
 use crate::backend::render::element::AsGlowRenderer;
+
+thread_local! {
+    /// Tracks the last-known radius per element ID to detect radius changes across frames.
+    static LAST_RADIUS: RefCell<HashMap<Id, [u8; 4]>> = RefCell::new(HashMap::new());
+}
 
 pub static CLIPPING_SHADER: &str = include_str!("./shaders/clipped_surface.frag");
 pub struct ClippingShader(pub GlesTexProgram);
@@ -197,15 +204,40 @@ where
         scale: Scale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        // FIXME: radius changes need to cause damage.
         let damage = self.inner.damage_since(scale, commit);
 
         // Intersect with geometry, since we're clipping by it.
         let mut geo = self.geometry.to_physical_precise_round(scale);
         geo.loc -= self.geometry(scale).loc;
+
+        // Track radius changes across frames via thread-local cache.
+        // Only report corner regions as damage when the radius actually changed.
+        let radius_changed = LAST_RADIUS.with(|cache| {
+            let mut map = cache.borrow_mut();
+            let id = self.inner.id().clone();
+            let prev = map.insert(id, self.radius);
+            prev.is_some_and(|r| r != self.radius)
+        });
+
+        let corner_damage: Vec<Rectangle<i32, Physical>> = if radius_changed {
+            let elem_loc = self.geometry(scale).loc;
+            let corners = Self::rounded_corners(self.geometry, self.radius);
+            corners
+                .into_iter()
+                .filter_map(|rect| {
+                    let mut corner = rect.to_physical_precise_up(scale);
+                    corner.loc -= elem_loc;
+                    corner.intersection(geo)
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         damage
             .into_iter()
             .filter_map(|rect| rect.intersection(geo))
+            .chain(corner_damage)
             .collect()
     }
 

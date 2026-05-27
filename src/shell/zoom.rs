@@ -69,7 +69,7 @@ pub struct OutputZoomState {
     pub(super) previous_level: Option<(f64, Instant)>,
     focal_point: Point<f64, Local>,
     previous_point: Option<(Point<f64, Local>, Instant)>,
-    element: ZoomElement,
+    pub(super) element: ZoomElement,
 }
 
 impl OutputZoomState {
@@ -499,7 +499,7 @@ impl Program for ZoomProgram {
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
         // Helper: icon button using icetron_assets SVG bytes
-        let icon_color = theme.fill_skim();
+        let icon_color = theme.text_secondary();
         let icon_btn =
             |icon_bytes: &'static [u8], msg: ZoomMessage| -> CompElement<'_, ZoomMessage> {
                 IconButton::new(Source::Memory(icon_bytes), &**theme)

@@ -97,6 +97,7 @@ pub mod auto_hide;
 pub mod element;
 pub mod focus;
 pub mod grabs;
+pub mod layer_slide;
 pub mod layout;
 mod seats;
 mod workspace;
@@ -622,6 +623,9 @@ pub struct Shell {
     /// Surfaces registered for compositor-driven auto-hide.
     pub auto_hide_surfaces: Vec<auto_hide::AutoHideSurface>,
 
+    /// Layer surfaces with active slide animations (visibility-protocol triggered).
+    pub layer_slides: Vec<layer_slide::LayerSlide>,
+
     /// Original X11 geometry at map time (before compositor configuration).
     /// Used to compute correct relative offsets for transient children.
     original_x11_positions: HashMap<u32, Rectangle<i32, Logical>>,
@@ -799,7 +803,14 @@ fn merge_workspaces(
             toplevel_info_state.toplevel_enter_workspace(&toplevel, &into.handle);
         }
     }
-    // TODO: merge minimized windows
+    // Merge minimized windows, updating toplevel workspace tracking
+    for minimized in &workspace.minimized_windows {
+        for toplevel in minimized.windows() {
+            toplevel_info_state.toplevel_leave_workspace(&toplevel, &workspace.handle);
+            toplevel_info_state.toplevel_enter_workspace(&toplevel, &into.handle);
+        }
+    }
+    into.minimized_windows.extend(workspace.minimized_windows.drain(..));
     into.tiling_layer.merge(workspace.tiling_layer);
     into.floating_layer.merge(workspace.floating_layer);
     workspace_state.remove_workspace(workspace.handle);
@@ -1993,6 +2004,9 @@ impl Shell {
             // Compositor-driven auto-hide surfaces
             auto_hide_surfaces: Vec::new(),
 
+            // Layer slide animations (visibility-protocol triggered)
+            layer_slides: Vec::new(),
+
             // Original X11 geometry at map time
             original_x11_positions: HashMap::new(),
 
@@ -2745,6 +2759,10 @@ impl Shell {
             .auto_hide_surfaces
             .iter()
             .any(|s| s.visibility.is_animating());
+        let layer_slide = self
+            .layer_slides
+            .iter()
+            .any(|s| s.visibility.is_animating());
         let fade_in = !self.layer_fade_in.is_empty();
         let pending_fade = !self.pending_layer_fade_in.is_empty();
         let fade_out = !self.layer_fade_out.is_empty();
@@ -2758,6 +2776,7 @@ impl Shell {
             || workspaces
             || zoom
             || auto_hide
+            || layer_slide
             || fade_in
             || pending_fade
             || fade_out
@@ -2785,12 +2804,29 @@ impl Shell {
         }
         // Update auto-hide animations and send visibility events
         self.update_auto_hide_animations();
+        // Update layer slide animations (visibility-protocol side panels)
+        let slide_completed = self.update_layer_slide_animations();
+        // Override exclusive zones in cached state and re-arrange so ALL surfaces
+        // (windows and other layer surfaces) animate with the panel.
+        let has_active_slides = self
+            .layer_slides
+            .iter()
+            .any(|s| s.visibility.is_animating());
+        if has_active_slides {
+            self.apply_slide_exclusive_zones();
+        } else if slide_completed || self.is_slide_active() {
+            // Slides just finished (either slide-out completed, or slide-in finished
+            // and entry was removed) — disable slide scaling and configure windows
+            // to their final size (they were skipping configures during animation).
+            self.set_slide_active(false);
+            self.workspaces.recalculate();
+        }
         // Clean up completed layer surface fade-ins
         self.cleanup_layer_fade_ins();
         // Complete layer surface fade-outs (moves to hidden_surfaces)
         let completed_fade_outs = self.cleanup_layer_fade_outs();
-        if !completed_fade_outs.is_empty() {
-            // Update layer blur cache for outputs with completed fade-outs
+        if !completed_fade_outs.is_empty() || slide_completed {
+            // Update layer blur cache for outputs with completed fade-outs or slides
             for output in self.outputs().cloned().collect::<Vec<_>>() {
                 crate::wayland::handlers::layer_shell::update_layer_blur_state(
                     &output,
@@ -3252,6 +3288,185 @@ impl Shell {
         (0, 0)
     }
 
+    /// Get the slide render offset for a surface. Returns (0, 0) if the
+    /// surface has no active slide animation.
+    pub fn get_layer_slide_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        for s in &self.layer_slides {
+            if s.surface_id == *surface_id {
+                let offset = s.render_offset();
+                if offset != (0, 0) {
+                    tracing::debug!(
+                        surface_protocol_id = surface_id.protocol_id(),
+                        ?offset,
+                        factor = s.visibility.factor(),
+                        "get_layer_slide_offset: non-zero offset"
+                    );
+                }
+                return offset;
+            }
+        }
+        (0, 0)
+    }
+
+    /// Check if a surface has an active slide animation (used to suppress
+    /// the normal fade animation for sliding surfaces).
+    pub fn is_layer_sliding(&self, surface_id: &ObjectId) -> bool {
+        self.layer_slides
+            .iter()
+            .any(|s| s.surface_id == *surface_id)
+    }
+
+    /// Override exclusive_zone in cached state for any sliding surface on the
+    /// given output. Called before arrange() in the commit handler to prevent
+    /// the client's raw value from causing layout jumps.
+    pub fn override_slide_exclusive_zones(&self, output: &Output) {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+
+        let map = layer_map_for_output(output);
+        for slide in &self.layer_slides {
+            if !slide.visibility.is_animating() {
+                continue;
+            }
+            let animated_ez = slide.effective_exclusive_zone();
+            for layer in map.layers() {
+                if layer.wl_surface().id() == slide.surface_id {
+                    with_states(layer.wl_surface(), |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        cached.current().exclusive_zone =
+                            ExclusiveZone::Exclusive(animated_ez as u32);
+                    });
+                }
+            }
+        }
+    }
+
+    /// Get the effective non-exclusive zone for an output, accounting for
+    /// layer slide animations. During slide-in/out, the exclusive zone is
+    /// interpolated so other surfaces resize smoothly.
+    pub fn effective_non_exclusive_zone(&self, output: &Output) -> Rectangle<i32, Logical> {
+        let map = layer_map_for_output(output);
+        let mut zone = map.non_exclusive_zone();
+
+        // For each surface with a slide entry (animating or hidden), add back
+        // the portion of exclusive zone that's not currently "active".
+        // The layer_map always subtracts the full exclusive_zone, so we add back
+        // the difference: exclusive_zone * factor (factor=1 when hidden, 0 when visible).
+        for slide in &self.layer_slides {
+            if slide.exclusive_zone <= 0 {
+                continue;
+            }
+            // Verify this surface is on this output
+            if !map
+                .layers()
+                .any(|l| l.wl_surface().id() == slide.surface_id)
+            {
+                continue;
+            }
+            let factor = slide.visibility.factor();
+            if factor <= 0.0 {
+                continue; // Fully visible, no adjustment needed
+            }
+            let adjustment = (slide.exclusive_zone as f32 * factor).round() as i32;
+            match slide.edge {
+                layer_slide::SlideEdge::Right => {
+                    zone.size.w += adjustment;
+                }
+                layer_slide::SlideEdge::Left => {
+                    zone.loc.x -= adjustment;
+                    zone.size.w += adjustment;
+                }
+            }
+        }
+
+        zone
+    }
+
+    /// Update layer slide animations, completing finished ones.
+    /// Returns true if any slide-out completed (surfaces moved to hidden_surfaces).
+    fn update_layer_slide_animations(&mut self) -> bool {
+        let mut completed_hidden = Vec::new();
+        for slide in &mut self.layer_slides {
+            if let Some(false) = slide.visibility.update() {
+                // Slide-out complete — mark as fully hidden
+                completed_hidden.push(slide.surface_id.clone());
+            }
+        }
+        let had_completions = !completed_hidden.is_empty();
+        // Move fully-hidden slides' surfaces to hidden_surfaces
+        for surface_id in &completed_hidden {
+            self.hidden_surfaces.insert(surface_id.clone());
+        }
+        // Remove completed slide entries (both fully Visible and fully Hidden).
+        // Once animation completes, the cached state matches the client's value.
+        self.layer_slides.retain(|s| s.visibility.is_animating());
+        had_completions
+    }
+
+    /// Override the exclusive_zone in smithay's LayerSurfaceCachedState for each
+    /// surface with an active slide animation, then re-arrange layer maps and
+    /// recalculate workspace layouts. This ensures ALL surfaces (windows and other
+    /// layer surfaces) animate smoothly with the panel.
+    fn apply_slide_exclusive_zones(&mut self) {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+
+        let mut outputs_to_arrange: Vec<Output> = Vec::new();
+
+        for slide in &self.layer_slides {
+            if !slide.visibility.is_animating() {
+                continue;
+            }
+            let animated_ez = slide.effective_exclusive_zone();
+
+            // Find the surface in the layer map and override its cached state
+            for output in self.outputs() {
+                let map = layer_map_for_output(output);
+                for layer in map.layers() {
+                    if layer.wl_surface().id() == slide.surface_id {
+                        with_states(layer.wl_surface(), |states| {
+                            let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                            cached.current().exclusive_zone =
+                                ExclusiveZone::Exclusive(animated_ez as u32);
+                        });
+                        if !outputs_to_arrange.contains(output) {
+                            outputs_to_arrange.push(output.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mark floating layouts as slide-active BEFORE arrange, so any
+        // recalculate triggered by zone changes skips configure sends.
+        self.set_slide_active(true);
+
+        // Re-arrange layer maps so all layer surfaces reposition
+        for output in &outputs_to_arrange {
+            layer_map_for_output(output).arrange();
+        }
+        // Recalculate workspace layouts (tiling/floating) with the new zone
+        self.workspaces.recalculate();
+    }
+
+    /// Set slide_active on all floating and tiling layouts (sticky + per-workspace).
+    fn set_slide_active(&mut self, active: bool) {
+        tracing::debug!(active, "[SLIDE] set_slide_active");
+        for set in self.workspaces.sets.values_mut() {
+            set.sticky_layer.slide_active = active;
+            for workspace in &mut set.workspaces {
+                workspace.floating_layer.slide_active = active;
+                workspace.tiling_layer.slide_active = active;
+            }
+        }
+    }
+
+    /// Check if any floating/tiling layer still has slide_active set.
+    fn is_slide_active(&self) -> bool {
+        self.workspaces
+            .sets
+            .values()
+            .any(|set| set.sticky_layer.slide_active)
+    }
+
     /// Whether a surface is registered for compositor-driven auto-hide.
     pub fn is_auto_hide_surface(&self, surface: &WlSurface) -> bool {
         self.auto_hide_surfaces
@@ -3483,48 +3698,184 @@ impl Shell {
 
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
     pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
-        if hidden {
-            // Start fade-out animation instead of immediately hiding.
-            // The surface will remain visible with decreasing alpha until
-            // the animation completes, then moved to hidden_surfaces.
-            let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
-            let was_pending = self.pending_layer_fade_in.remove(&surface_id);
-            tracing::debug!(
-                ?surface_id,
-                was_fading_in,
-                was_pending,
-                "set_surface_hidden(true): starting fade-out"
-            );
-            self.layer_fade_out
-                .entry(surface_id.clone())
-                .or_insert_with(Instant::now);
+        // Check if this is a side-anchored layer surface that should use slide animation.
+        let slide_edge = self.detect_layer_slide_edge(&surface_id);
+
+        if let Some((edge, width, exclusive_zone)) = slide_edge {
+            // Use slide animation for side-anchored panels
+            if hidden {
+                let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
+                let was_pending = self.pending_layer_fade_in.remove(&surface_id);
+                tracing::debug!(
+                    ?surface_id,
+                    ?edge,
+                    width,
+                    exclusive_zone,
+                    was_fading_in,
+                    was_pending,
+                    "set_surface_hidden(true): starting slide-out"
+                );
+                // Check if already sliding
+                if let Some(existing) = self
+                    .layer_slides
+                    .iter_mut()
+                    .find(|s| s.surface_id == surface_id)
+                {
+                    existing.visibility.start_hide();
+                } else {
+                    let mut slide =
+                        layer_slide::LayerSlide::new(surface_id, edge, width, exclusive_zone);
+                    slide.visibility.start_hide();
+                    self.layer_slides.push(slide);
+                }
+            } else {
+                let was_hidden = self.hidden_surfaces.remove(&surface_id);
+                let was_sliding_out = self.layer_slides.iter().any(|s| {
+                    s.surface_id == surface_id
+                        && matches!(
+                            s.visibility,
+                            layer_slide::SlideVisibility::SlidingOut { .. }
+                                | layer_slide::SlideVisibility::Hidden
+                        )
+                });
+                tracing::debug!(
+                    ?surface_id,
+                    ?edge,
+                    width,
+                    exclusive_zone,
+                    was_hidden,
+                    was_sliding_out,
+                    "set_surface_hidden(false): starting slide-in"
+                );
+                // Only start slide-in if the surface was actually hidden or sliding out
+                if was_hidden || was_sliding_out {
+                    if let Some(existing) = self
+                        .layer_slides
+                        .iter_mut()
+                        .find(|s| s.surface_id == surface_id)
+                    {
+                        existing.visibility.start_show();
+                    } else {
+                        let mut slide = layer_slide::LayerSlide::new_hidden(
+                            surface_id,
+                            edge,
+                            width,
+                            exclusive_zone,
+                        );
+                        slide.visibility.start_show();
+                        self.layer_slides.push(slide);
+                    }
+                }
+            }
         } else {
-            let was_hidden = self.hidden_surfaces.remove(&surface_id);
-            let was_fading_out = self.layer_fade_out.remove(&surface_id);
-            tracing::debug!(
-                ?surface_id,
-                was_hidden,
-                was_fading_out = was_fading_out.is_some(),
-                "set_surface_hidden(false): making visible"
-            );
-            // Defer blur fade-in until the surface commits its first buffer
-            // after becoming visible. This prevents the blur animating over
-            // stale/empty content while the client renders its first frame.
-            if was_hidden {
+            // Use normal fade animation for non-side-anchored surfaces
+            if hidden {
+                // Start fade-out animation instead of immediately hiding.
+                // The surface will remain visible with decreasing alpha until
+                // the animation completes, then moved to hidden_surfaces.
+                let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
+                let was_pending = self.pending_layer_fade_in.remove(&surface_id);
                 tracing::debug!(
                     ?surface_id,
-                    "set_surface_hidden: deferring fade-in until next buffer commit"
+                    was_fading_in,
+                    was_pending,
+                    "set_surface_hidden(true): starting fade-out"
                 );
-                self.pending_layer_fade_in.insert(surface_id);
-            } else if was_fading_out.is_some() {
-                // Was still fading out — restart fade-in from current position
+                self.layer_fade_out
+                    .entry(surface_id.clone())
+                    .or_insert_with(Instant::now);
+            } else {
+                let was_hidden = self.hidden_surfaces.remove(&surface_id);
+                let was_fading_out = self.layer_fade_out.remove(&surface_id);
                 tracing::debug!(
                     ?surface_id,
-                    "set_surface_hidden: was fading out, restarting fade-in"
+                    was_hidden,
+                    was_fading_out = was_fading_out.is_some(),
+                    "set_surface_hidden(false): making visible"
                 );
-                self.layer_fade_in.insert(surface_id, Instant::now());
+                // Defer blur fade-in until the surface commits its first buffer
+                // after becoming visible. This prevents the blur animating over
+                // stale/empty content while the client renders its first frame.
+                if was_hidden {
+                    tracing::debug!(
+                        ?surface_id,
+                        "set_surface_hidden: deferring fade-in until next buffer commit"
+                    );
+                    self.pending_layer_fade_in.insert(surface_id);
+                } else if was_fading_out.is_some() {
+                    // Was still fading out — restart fade-in from current position
+                    tracing::debug!(
+                        ?surface_id,
+                        "set_surface_hidden: was fading out, restarting fade-in"
+                    );
+                    self.layer_fade_in.insert(surface_id, Instant::now());
+                }
             }
         }
+    }
+
+    /// Detect if a layer surface is anchored to a single lateral edge (Left or Right)
+    /// and should use slide animation. Returns the edge and surface width if so.
+    fn detect_layer_slide_edge(
+        &self,
+        surface_id: &ObjectId,
+    ) -> Option<(layer_slide::SlideEdge, i32, i32)> {
+        use smithay::wayland::shell::wlr_layer::{Anchor, ExclusiveZone};
+
+        for output in self.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.wl_surface().id() == *surface_id {
+                    let (anchor, size, exclusive_zone) =
+                        with_states(layer.wl_surface(), |states| {
+                            let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                            let current = cached.current();
+                            let ez = match current.exclusive_zone {
+                                ExclusiveZone::Exclusive(v) => v as i32,
+                                _ => 0,
+                            };
+                            (current.anchor, current.size, ez)
+                        });
+                    tracing::debug!(
+                        ?surface_id,
+                        ?anchor,
+                        ?size,
+                        exclusive_zone,
+                        "detect_layer_slide_edge: found surface in layer map"
+                    );
+                    // Detect right-anchored panel: has RIGHT but not LEFT
+                    // (typically RIGHT | TOP | BOTTOM for a full-height side panel)
+                    if anchor.contains(Anchor::RIGHT) && !anchor.contains(Anchor::LEFT) {
+                        let width = if size.w > 0 {
+                            size.w
+                        } else {
+                            // Fallback to actual geometry
+                            map.layer_geometry(layer).map(|g| g.size.w).unwrap_or(0)
+                        };
+                        if width > 0 {
+                            return Some((layer_slide::SlideEdge::Right, width, exclusive_zone));
+                        }
+                    }
+                    // Detect left-anchored panel: has LEFT but not RIGHT
+                    if anchor.contains(Anchor::LEFT) && !anchor.contains(Anchor::RIGHT) {
+                        let width = if size.w > 0 {
+                            size.w
+                        } else {
+                            map.layer_geometry(layer).map(|g| g.size.w).unwrap_or(0)
+                        };
+                        if width > 0 {
+                            return Some((layer_slide::SlideEdge::Left, width, exclusive_zone));
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+        tracing::debug!(
+            ?surface_id,
+            "detect_layer_slide_edge: surface NOT found in any layer map"
+        );
+        None
     }
 
     /// Check if a surface is explicitly hidden
@@ -4726,8 +5077,15 @@ impl Shell {
             && active_handle == workspace_handle)
             || parent_is_sticky
         {
-            // TODO: enforce focus stealing prevention by also checking the same rules as for the else case.
-            Some(KeyboardFocusTarget::from(mapped.clone()))
+            // Focus stealing prevention: only grant immediate focus if the window
+            // was user-initiated (activation token), workspace was empty, or it's a dialog.
+            if workspace_empty || was_activated || is_dialog {
+                Some(KeyboardFocusTarget::from(mapped.clone()))
+            } else {
+                self.append_focus_stack(mapped, &seat);
+                workspace_state.add_workspace_state(&workspace_handle, WState::Urgent);
+                None
+            }
         } else {
             if workspace_empty || was_activated {
                 self.append_focus_stack(mapped, &seat);
@@ -5054,13 +5412,52 @@ impl Shell {
         // will get a fresh fade-in when they transition to visible via the
         // layer_surface_visibility protocol (restart_layer_fade_in).
         if !is_hidden {
-            self.layer_fade_in.insert(surface_id, Instant::now());
+            self.layer_fade_in
+                .insert(surface_id.clone(), Instant::now());
         }
 
         {
             let mut map = layer_map_for_output(&pending.output);
             map.map_layer(&pending.surface).unwrap();
         }
+
+        // Detect if newly-mapped surface should slide in (first-open animation)
+        if !is_hidden
+            && let Some((edge, width, exclusive_zone)) = self.detect_layer_slide_edge(&surface_id)
+            && exclusive_zone > 0
+        {
+            use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+            tracing::debug!(
+                ?surface_id,
+                ?edge,
+                width,
+                exclusive_zone,
+                "map_layer: starting first-open slide-in"
+            );
+            // Start hidden, then immediately begin slide-in
+            let mut slide = layer_slide::LayerSlide::new_hidden(
+                surface_id.clone(),
+                edge,
+                width,
+                exclusive_zone,
+            );
+            slide.visibility.start_show();
+            self.layer_slides.push(slide);
+            // Remove fade-in since we're doing a slide instead
+            self.layer_fade_in.remove(&surface_id);
+            // Override exclusive_zone to 0 for the start of animation,
+            // then re-arrange so other surfaces don't jump immediately.
+            let wl_surface = pending.surface.wl_surface();
+            with_states(wl_surface, |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                cached.current().exclusive_zone = ExclusiveZone::Exclusive(0);
+            });
+            {
+                let mut map = layer_map_for_output(&pending.output);
+                map.arrange();
+            }
+        }
+
         for workspace in self.workspaces.spaces_mut() {
             workspace.recalculate();
         }
@@ -7152,7 +7549,26 @@ impl Shell {
     ) {
         self.theme = theme.clone();
         self.refresh(xdg_activation_state, workspace_state);
+
+        // Update all mapped windows (SSDs, tab bars, etc.)
         self.workspaces.set_theme(theme.clone());
+
+        // Update transient shell UI elements
+        if let Some(ref indicator) = self.swap_indicator {
+            indicator.set_theme(theme.clone());
+        }
+        if let Some(ref indicator) = self.resize_indicator {
+            indicator.set_theme(theme.clone());
+        }
+
+        // Update zoom UI elements on all outputs
+        if self.zoom_state.is_some() {
+            for output in self.outputs().cloned().collect::<Vec<_>>() {
+                if let Some(state) = output.user_data().get::<Mutex<OutputZoomState>>() {
+                    state.lock().unwrap().element.set_theme(theme.clone());
+                }
+            }
+        }
     }
 
     pub fn theme(&self) -> &crate::comp_theme::CompTheme {
