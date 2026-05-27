@@ -2232,7 +2232,25 @@ impl FloatingLayout {
             let is_shrinking = self.slide_active
                 && (window_geometry.size.w < buffer_size.w
                     || window_geometry.size.h < buffer_size.h);
-            if !is_shrinking {
+            if is_shrinking {
+                tracing::debug!(
+                    app_id = %mapped.active_window().app_id(),
+                    buf_w = buffer_size.w, buf_h = buffer_size.h,
+                    tgt_w = window_geometry.size.w, tgt_h = window_geometry.size.h,
+                    "[SLIDE_RECALC] skipping configure (shrinking)"
+                );
+            } else {
+                if buffer_size.w != window_geometry.size.w
+                    || buffer_size.h != window_geometry.size.h
+                {
+                    tracing::debug!(
+                        app_id = %mapped.active_window().app_id(),
+                        buf_w = buffer_size.w, buf_h = buffer_size.h,
+                        tgt_w = window_geometry.size.w, tgt_h = window_geometry.size.h,
+                        slide_active = self.slide_active,
+                        "[SLIDE_RECALC] sending configure (size mismatch)"
+                    );
+                }
                 mapped.set_geometry(window_geometry.to_global(&output));
                 mapped.set_fills_output_zone(
                     !mapped.is_maximized(false)
@@ -2271,7 +2289,6 @@ impl FloatingLayout {
                     return false;
                 }
                 let buffer_size = mapped.geometry().size.as_local();
-                // Keep if buffer hasn't reached target yet
                 buffer_size.w != target_geo.size.w || buffer_size.h != target_geo.size.h
             });
         }
@@ -3478,7 +3495,16 @@ impl FloatingLayout {
                     geometry.loc,
                     Size::from((geometry.size.w, elem.ssd_height(false).unwrap_or(0))),
                 );
-                let ssd_corner_radius = [0.0f32; 4];
+                // Use window's top corner radius for the header (bottom corners are flat
+                // since the header meets the window content below).
+                // NOTE: The shader's rounded_box SDF uses y-up convention but screen
+                // coords are y-down, so tr/br uniforms are swapped relative to screen.
+                // Pass top-right radius in the br slot (index 2) for correct screen mapping.
+                let full_radius = elem.blur_corner_radius(
+                    geometry.size.as_logical(),
+                    window_border_radius.round() as u8,
+                );
+                let ssd_corner_radius = [full_radius[0], 0.0, full_radius[1], 0.0];
 
                 let output_name = output.name();
                 let window_key = elem.key();

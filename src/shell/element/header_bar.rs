@@ -212,7 +212,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
 
         let header_height = header_height(&**theme);
-        let header_bg = theme.header_background();
+        // Force header background to fully opaque — the blur backdrop renders
+        // behind the header and should not bleed through.
+        let header_bg = {
+            let c = theme.header_background();
+            Color { a: 1.0, ..c }
+        };
         let top_radius = if self.maximized {
             0.0
         } else {

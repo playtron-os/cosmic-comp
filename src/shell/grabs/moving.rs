@@ -313,6 +313,70 @@ impl MoveGrabState {
             vec![]
         };
 
+        // Render blur backdrop for SSD header on windows without full-window blur
+        let ssd_header_blur_element: Vec<CosmicMappedRenderElement<R>> =
+            if !self.window.has_blur() && self.window.has_ssd() && theme.header_backdrop_blur() {
+                let window_geo = self.window.geometry();
+                let header_height = self.window.ssd_height(false).unwrap_or(0);
+                let scaled_size = window_geo.size.to_f64().upscale(scale).to_i32_round();
+                let header_geo = Rectangle::new(
+                    render_location,
+                    Size::from((scaled_size.w, (header_height as f64 * scale) as i32)),
+                )
+                .as_local();
+
+                let radius_s = theme.radius_s()[0];
+                let window_radius = (if radius_s < 4.0 {
+                    radius_s
+                } else {
+                    radius_s + 4.0
+                })
+                .round() as u8;
+                let full_radius = self
+                    .window
+                    .blur_corner_radius(window_geo.size.as_logical(), window_radius);
+                // Shader's rounded_box SDF uses y-up but screen is y-down:
+                // tr uniform (index 1) maps to screen bottom-right,
+                // br uniform (index 2) maps to screen top-right.
+                let ssd_corner_radius = [full_radius[0], 0.0, full_radius[1], 0.0];
+
+                let output_name = output.name();
+                let window_key = self.window.key();
+                let output_transform = output.current_transform();
+                let output_scale_f = output.current_scale().fractional_scale();
+
+                let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
+                if let Some(blur_info) = blur_info {
+                    vec![CosmicMappedRenderElement::from(
+                        BlurredBackdropShader::element(
+                            renderer,
+                            &blur_info.texture,
+                            header_geo,
+                            blur_info.size,
+                            blur_info.screen_size,
+                            output_scale_f,
+                            output_transform,
+                            ssd_corner_radius,
+                            alpha,
+                            BLUR_TINT_COLOR,
+                            BLUR_TINT_STRENGTH,
+                            false,
+                        ),
+                    )]
+                } else {
+                    vec![CosmicMappedRenderElement::from(BackdropShader::element(
+                        renderer,
+                        Key::Window(Usage::Overlay, self.window.key()),
+                        header_geo,
+                        ssd_corner_radius,
+                        alpha * BLUR_FALLBACK_ALPHA,
+                        BLUR_FALLBACK_COLOR,
+                    ))]
+                }
+            } else {
+                vec![]
+            };
+
         let w_elements = self
             .window
             .render_elements::<R, CosmicMappedRenderElement<R>>(
@@ -488,6 +552,7 @@ impl MoveGrabState {
                     )
                     .chain(orb_element)
                     .chain(blur_backdrop_element.into_iter())
+                    .chain(ssd_header_blur_element.into_iter())
                     .chain(backdrop_color_element.into_iter())
                     .chain(snapping_indicator),
             )
