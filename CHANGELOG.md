@@ -1,3 +1,10 @@
+## [1.21.1](https://github.com/playtron-os/cosmic-comp/compare/v1.21.0...v1.21.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* issues with SSD header transparency and blur effect ([418c821](https://github.com/playtron-os/cosmic-comp/commit/418c8215a79faa81f18b7fae692ae479b84af975))
+
 # [1.21.0](https://github.com/playtron-os/cosmic-comp/compare/v1.20.1...v1.21.0) (2026-05-27)
 
 
