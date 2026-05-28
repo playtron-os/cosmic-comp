@@ -12,6 +12,7 @@ use icetron::prelude::{animated_opacity, app_header, header_height, styled_text}
 use crate::comp_theme::CompTheme;
 
 /// SSD header bar height in logical pixels for the given theme.
+/// Adds 1px for the bottom border rendered by app_header's `show_border`.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     header_height(&**theme) as u32
 }

@@ -2830,7 +2830,7 @@ dependencies = [
 [[package]]
 name = "icetron"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#3c3af2ea18b9ed8ae5a7532e6b1e88f4572726ae"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2860,8 +2860,8 @@ dependencies = [
 
 [[package]]
 name = "icetron-themes"
-version = "1.20.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#9aafd9890586b5cd79ba6959ae0a00423536952c"
+version = "1.21.0"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#45e75d5de5270af6d8c8036c4ce362b910b63deb"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -2872,12 +2872,12 @@ dependencies = [
 [[package]]
 name = "icetron_assets"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#3c3af2ea18b9ed8ae5a7532e6b1e88f4572726ae"
 
 [[package]]
 name = "icetron_utils"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#3c3af2ea18b9ed8ae5a7532e6b1e88f4572726ae"
 dependencies = [
  "freedesktop-icons",
  "iced",
@@ -3972,9 +3972,9 @@ checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
 name = "mio"
-version = "1.2.0"
+version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
+checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
 dependencies = [
  "libc",
  "log",
@@ -6363,9 +6363,9 @@ checksum = "27207bb65232eda1f588cf46db2fee75c0808d557f6b3cf19a75f5d6d7c94df1"
 
 [[package]]
 name = "socket2"
-version = "0.6.3"
+version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
+checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
