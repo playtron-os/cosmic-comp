@@ -1,3 +1,14 @@
+## [1.21.2](https://github.com/playtron-os/cosmic-comp/compare/v1.21.1...v1.21.2) (2026-05-28)
+
+
+### Bug Fixes
+
+* re-enable transparent SSD header ([c6e043b](https://github.com/playtron-os/cosmic-comp/commit/c6e043bcd26d43d67ed4ff6f717f8573e8474375))
+* update icetron and themes libs ([ef35766](https://github.com/playtron-os/cosmic-comp/commit/ef35766bc56086d777df60449a2e64c3baf6d08c))
+* update icetron themes to fix theme watching in system dirs ([86fc1d7](https://github.com/playtron-os/cosmic-comp/commit/86fc1d75c15823ffba482c23035db31de0464adf))
+* update icetron themes to fix theming issues ([42b6b79](https://github.com/playtron-os/cosmic-comp/commit/42b6b79533c793cdf787c25927985c1773f7574f))
+* update icetron to fix SSD header not showing border ([0ad8c84](https://github.com/playtron-os/cosmic-comp/commit/0ad8c84114265f1eedd38a80d1695e627cd80f84))
+
 ## [1.21.1](https://github.com/playtron-os/cosmic-comp/compare/v1.21.0...v1.21.1) (2026-05-27)
 
 
