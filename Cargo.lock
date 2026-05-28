@@ -2830,7 +2830,7 @@ dependencies = [
 [[package]]
 name = "icetron"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#63f976f01d3b4d5aa187761275efb4f9b670543a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2860,8 +2860,8 @@ dependencies = [
 
 [[package]]
 name = "icetron-themes"
-version = "1.19.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#10f1104443bfa77093405c2cfff5be5f9e2a8155"
+version = "1.20.0"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#9aafd9890586b5cd79ba6959ae0a00423536952c"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -2872,12 +2872,12 @@ dependencies = [
 [[package]]
 name = "icetron_assets"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#63f976f01d3b4d5aa187761275efb4f9b670543a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
 
 [[package]]
 name = "icetron_utils"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#63f976f01d3b4d5aa187761275efb4f9b670543a"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#66eabf832dc0b1240f747bd4492749a757d8ca2f"
 dependencies = [
  "freedesktop-icons",
  "iced",
