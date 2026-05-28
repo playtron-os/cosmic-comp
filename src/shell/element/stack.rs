@@ -1512,6 +1512,7 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
                     },
                     width: 0.0,
                     color: Color::TRANSPARENT,
+                    ..Default::default()
                 },
                 shadow: Default::default(),
                 snap: false,

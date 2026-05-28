@@ -360,6 +360,7 @@ where
                         radius: self.style.radius.into(),
                         width: 0.0,
                         color: Color::TRANSPARENT,
+                        ..Default::default()
                     },
                     shadow: Default::default(),
                     snap: true,

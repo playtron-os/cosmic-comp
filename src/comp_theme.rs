@@ -212,6 +212,7 @@ impl CompTheme {
                 radius: 18.0.into(),
                 width: 0.0,
                 color: Color::TRANSPARENT,
+                ..Default::default()
             },
         }
     }
@@ -225,6 +226,7 @@ impl CompTheme {
                 radius: radius_from_array(self.radius_s()),
                 width: 1.0,
                 color: self.theme.stroke_subtle(),
+                ..Default::default()
             },
         }
     }

@@ -61,6 +61,7 @@ impl Program for StackHoverInternal {
                 radius: 18.0.into(),
                 width: 0.0,
                 color: iced_core::Color::TRANSPARENT,
+                ..Default::default()
             },
             shadow: Default::default(),
             snap: false,

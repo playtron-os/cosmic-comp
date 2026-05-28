@@ -550,6 +550,7 @@ impl Program for ContextMenu {
                 radius: border_radius.into(),
                 width: border_width,
                 color: border_color,
+                ..Default::default()
             },
             ..Default::default()
         })

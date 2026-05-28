@@ -97,6 +97,7 @@ fn accent_container_class(theme: &CompTheme) -> Box<dyn Fn(&iced_core::Theme) ->
             radius: 18.0.into(),
             width: 0.0,
             color: Color::TRANSPARENT,
+            ..Default::default()
         },
         shadow: Default::default(),
         snap: false,
