@@ -1,3 +1,10 @@
+## [1.21.3](https://github.com/playtron-os/cosmic-comp/compare/v1.21.2...v1.21.3) (2026-05-29)
+
+
+### Bug Fixes
+
+* update dependencies ([ebd45d9](https://github.com/playtron-os/cosmic-comp/commit/ebd45d920766a793f7774db22a5dcb7a630cb87e))
+
 ## [1.21.2](https://github.com/playtron-os/cosmic-comp/compare/v1.21.1...v1.21.2) (2026-05-28)
 
 
