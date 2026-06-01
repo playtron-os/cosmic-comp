@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/playtron-os/cosmic-comp/compare/v1.21.3...v1.22.0) (2026-06-01)
+
+
+### Features
+
+* add support to launch agentos-settings instead of cosmic-settings ([9dbdcb1](https://github.com/playtron-os/cosmic-comp/commit/9dbdcb191fd41bcee4cc5e8ee8ae9f692e47c1d0))
+
 ## [1.21.3](https://github.com/playtron-os/cosmic-comp/compare/v1.21.2...v1.21.3) (2026-05-29)
 
 
