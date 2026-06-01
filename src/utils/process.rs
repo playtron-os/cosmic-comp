@@ -4,9 +4,23 @@ use std::sync::LazyLock;
 static WORKSPACES_INSTALLED: LazyLock<bool> =
     LazyLock::new(|| is_binary_installed("cosmic-workspaces"));
 
+static SETTINGS_BINARY: LazyLock<&'static str> = LazyLock::new(|| {
+    if is_binary_installed("agentos-settings") {
+        "agentos-settings"
+    } else {
+        "cosmic-settings"
+    }
+});
+
 /// Returns whether cosmic-workspaces is installed on the system.
 pub fn workspaces_enabled() -> bool {
     *WORKSPACES_INSTALLED
+}
+
+/// Returns the system settings binary to launch, preferring `agentos-settings`
+/// over `cosmic-settings` when it is installed.
+pub fn settings_binary() -> &'static str {
+    *SETTINGS_BINARY
 }
 
 fn is_binary_installed(name: &str) -> bool {

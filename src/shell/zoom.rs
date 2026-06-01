@@ -760,10 +760,10 @@ impl Program for ZoomProgram {
                                         Item::Separator,
                                         Item::new(crate::fl!("a11y-zoom-settings"), |handle| {
                                             let _ = handle.insert_idle(move |state| {
-                                                state.spawn_command(
-                                                    "cosmic-settings accessibility-magnifier"
-                                                        .into(),
-                                                );
+                                                state.spawn_command(format!(
+                                                    "{} accessibility-magnifier",
+                                                    crate::utils::process::settings_binary(),
+                                                ));
                                             });
                                         }),
                                     ]
