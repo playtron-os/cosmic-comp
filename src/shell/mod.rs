@@ -2856,16 +2856,24 @@ impl Shell {
 
         let mut entry = auto_hide::AutoHideSurface::new(surface, edge, mode);
 
-        // For "Always" mode, start hidden unless the workspace has no visible
-        // windows (so the dock stays visible on an empty desktop).
-        // For "OnMaximize" mode, start hidden if maximized/fullscreen windows exist.
-        let should_start_hidden = match mode {
-            auto_hide::AutoHideMode::Always => self
-                .auto_hide_surface_output(surface)
-                .is_some_and(|output| self.output_has_visible_windows(&output)),
-            auto_hide::AutoHideMode::OnMaximize => self
-                .auto_hide_surface_output(surface)
-                .is_some_and(|output| self.output_has_maximized_or_fullscreen(&output)),
+        // Decide the initial visibility:
+        // - "Always" mode: start hidden unless the workspace has no visible
+        //   windows (so the dock stays visible on an empty desktop).
+        // - "OnMaximize" mode: start hidden if maximized/fullscreen windows exist.
+        // - Output not resolved yet: the surface registered for auto-hide before
+        //   its first buffer commit (e.g. a panel that requests auto-hide on
+        //   open), so we can't read the desktop state. Start hidden to avoid a
+        //   visible startup flash — `refresh_auto_hide` re-evaluates once the
+        //   surface is mapped (and `force_show`s it if the desktop is empty),
+        //   so this lets clients start hidden without a 1×1 boot trick.
+        let should_start_hidden = match self.auto_hide_surface_output(surface) {
+            Some(output) => match mode {
+                auto_hide::AutoHideMode::Always => self.output_has_visible_windows(&output),
+                auto_hide::AutoHideMode::OnMaximize => {
+                    self.output_has_maximized_or_fullscreen(&output)
+                }
+            },
+            None => true,
         };
 
         if should_start_hidden {
