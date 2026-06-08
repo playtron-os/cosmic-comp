@@ -27,8 +27,9 @@ use smithay::{
 
 use crate::{
     backend::render::{
-        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
-        BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader, Key, Usage,
+        BLUR_BORDER_STRENGTH, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR,
+        BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader, ElementFilter, IndicatorShader,
+        Key, Usage,
         element::AsGlowRenderer,
         get_cached_blur_texture_for_window,
         voice_orb::{VoiceOrbShader, VoiceOrbState},
@@ -51,6 +52,7 @@ use crate::{
     utils::{prelude::*, tween::EaseRectangle},
     wayland::handlers::xdg_shell::popup::get_popup_toplevel,
     wayland::protocols::backdrop_color::get_surface_backdrop_color,
+    wayland::protocols::blur::{get_blur_border, get_blur_saturation, get_blur_tint},
 };
 
 mod grabs;
@@ -3450,6 +3452,19 @@ impl FloatingLayout {
                 let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
 
                 if let Some(blur_info) = blur_info {
+                    let active = elem.active_window();
+                    let blur_saturation = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_saturation(&s))
+                        .unwrap_or(1.0);
+                    let blur_tint = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_tint(&s))
+                        .unwrap_or(BLUR_TINT_STRENGTH);
+                    let blur_border = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_border(&s))
+                        .unwrap_or(BLUR_BORDER_STRENGTH);
                     // Use BlurredBackdropShader with the cached blurred texture
                     let blur_backdrop = BlurredBackdropShader::element(
                         renderer,
@@ -3462,8 +3477,10 @@ impl FloatingLayout {
                         corner_radius,
                         alpha,
                         BLUR_TINT_COLOR,
-                        BLUR_TINT_STRENGTH,
+                        blur_tint,
                         false, // No blur border for regular windows
+                        blur_saturation,
+                        blur_border,
                     );
 
                     window_elements.push(blur_backdrop.into());
@@ -3513,6 +3530,19 @@ impl FloatingLayout {
 
                 let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
                 if let Some(blur_info) = blur_info {
+                    let active = elem.active_window();
+                    let blur_saturation = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_saturation(&s))
+                        .unwrap_or(1.0);
+                    let blur_tint = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_tint(&s))
+                        .unwrap_or(BLUR_TINT_STRENGTH);
+                    let blur_border = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_border(&s))
+                        .unwrap_or(BLUR_BORDER_STRENGTH);
                     let blur_backdrop = BlurredBackdropShader::element(
                         renderer,
                         &blur_info.texture,
@@ -3524,8 +3554,10 @@ impl FloatingLayout {
                         ssd_corner_radius,
                         alpha,
                         BLUR_TINT_COLOR,
-                        BLUR_TINT_STRENGTH,
+                        blur_tint,
                         false,
+                        blur_saturation,
+                        blur_border,
                     );
                     window_elements.push(blur_backdrop.into());
                 } else {

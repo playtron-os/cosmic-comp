@@ -2,8 +2,8 @@
 
 use crate::{
     backend::render::{
-        BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR, BLUR_TINT_STRENGTH,
-        BackdropShader, BlurredBackdropShader, IndicatorShader, Key, Usage,
+        BLUR_BORDER_STRENGTH, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR,
+        BLUR_TINT_STRENGTH, BackdropShader, BlurredBackdropShader, IndicatorShader, Key, Usage,
         cursor::CursorState,
         element::AsGlowRenderer,
         get_cached_blur_texture_for_window,
@@ -26,6 +26,7 @@ use crate::{
         },
         protocols::{
             backdrop_color::get_surface_backdrop_color,
+            blur::{get_blur_border, get_blur_saturation, get_blur_tint},
             toplevel_info::{toplevel_enter_output, toplevel_enter_workspace},
         },
     },
@@ -247,6 +248,19 @@ impl MoveGrabState {
             let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
 
             if let Some(blur_info) = blur_info {
+                let active = self.window.active_window();
+                let blur_saturation = active
+                    .wl_surface()
+                    .and_then(|s| get_blur_saturation(&s))
+                    .unwrap_or(1.0);
+                let blur_tint = active
+                    .wl_surface()
+                    .and_then(|s| get_blur_tint(&s))
+                    .unwrap_or(BLUR_TINT_STRENGTH);
+                let blur_border = active
+                    .wl_surface()
+                    .and_then(|s| get_blur_border(&s))
+                    .unwrap_or(BLUR_BORDER_STRENGTH);
                 let blur_elem = CosmicMappedRenderElement::from(BlurredBackdropShader::element(
                     renderer,
                     &blur_info.texture,
@@ -258,8 +272,10 @@ impl MoveGrabState {
                     corner_radius,
                     alpha,
                     BLUR_TINT_COLOR,
-                    BLUR_TINT_STRENGTH,
+                    blur_tint,
                     false, // No blur border for moving windows
+                    blur_saturation,
+                    blur_border,
                 ));
                 vec![blur_elem]
             } else {
@@ -347,6 +363,19 @@ impl MoveGrabState {
 
                 let blur_info = get_cached_blur_texture_for_window(&output_name, &window_key);
                 if let Some(blur_info) = blur_info {
+                    let active = self.window.active_window();
+                    let blur_saturation = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_saturation(&s))
+                        .unwrap_or(1.0);
+                    let blur_tint = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_tint(&s))
+                        .unwrap_or(BLUR_TINT_STRENGTH);
+                    let blur_border = active
+                        .wl_surface()
+                        .and_then(|s| get_blur_border(&s))
+                        .unwrap_or(BLUR_BORDER_STRENGTH);
                     vec![CosmicMappedRenderElement::from(
                         BlurredBackdropShader::element(
                             renderer,
@@ -359,8 +388,10 @@ impl MoveGrabState {
                             ssd_corner_radius,
                             alpha,
                             BLUR_TINT_COLOR,
-                            BLUR_TINT_STRENGTH,
+                            blur_tint,
                             false,
+                            blur_saturation,
+                            blur_border,
                         ),
                     )]
                 } else {

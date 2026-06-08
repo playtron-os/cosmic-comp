@@ -65,6 +65,9 @@ pub const BLUR_DOWNSAMPLE_FACTOR: i32 = 2;
 pub const BLUR_TINT_COLOR: [f32; 3] = [1.0, 1.0, 1.0];
 /// Strength of the tint overlay (0.30 = 30% opacity)
 pub const BLUR_TINT_STRENGTH: f32 = 0.15;
+/// Default frosted-glass border alpha (0.0 = no border). Per-surface overridable
+/// via the blur protocol's `set_border`.
+pub const BLUR_BORDER_STRENGTH: f32 = 0.2;
 /// Alpha for fallback solid color when blur texture not available
 pub const BLUR_FALLBACK_ALPHA: f32 = 0.95;
 /// Fallback color when blur texture not available (light gray-blue)
@@ -125,6 +128,60 @@ pub fn effective_blur_offset() -> f32 {
     let intensity = blur_config_intensity();
     // Linear map: 0.0 → 0.5, 1.0 → 5.0
     0.5 + intensity * 4.5
+}
+
+// -----------------------------------------------------------------------------
+// Per-surface blur radius → intensity (org_kde_kwin_blur set_radius)
+// -----------------------------------------------------------------------------
+//
+// A client can request a custom blur radius (in pixels) per surface via the blur
+// protocol. We map that radius onto the SAME 0.0..1.0 intensity axis the global
+// config slider uses, so a custom radius is just an alternate way to pick a point
+// on the existing levels/offset curve. Surfaces that don't request a radius keep
+// using the global config intensity (see `resolve_blur_params`).
+
+/// Lower bound of the radius→intensity map: ~1px ⇒ near-zero blur (1 level).
+pub const BLUR_RADIUS_MIN_PX: f32 = 1.0;
+/// Upper bound of the radius→intensity map: ~100px ⇒ full blur (6 levels / 5.0
+/// offset). Larger client values clamp here. (The design's `blur(40px)` lands
+/// partway up the curve, leaving headroom for stronger blur.)
+pub const BLUR_RADIUS_MAX_PX: f32 = 100.0;
+
+/// Map a per-surface pixel radius to the 0.0..1.0 intensity domain, clamped.
+/// Non-finite values (NaN/±inf from a malformed client) and ≤MIN map to 0.0 so
+/// they can never produce a NaN offset (which would be fatal to the blur shader).
+fn radius_to_intensity(radius_px: f32) -> f32 {
+    if !radius_px.is_finite() {
+        return 0.0;
+    }
+    let t = (radius_px - BLUR_RADIUS_MIN_PX) / (BLUR_RADIUS_MAX_PX - BLUR_RADIUS_MIN_PX);
+    t.clamp(0.0, 1.0)
+}
+
+/// Map a per-surface blur radius (pixels) to Dual Kawase levels (1-6).
+/// Same curve shape as [`effective_blur_levels`], driven by the radius.
+pub fn blur_levels_for_radius(radius_px: f32) -> u32 {
+    let intensity = radius_to_intensity(radius_px);
+    let levels = 1.0 + intensity * 5.0;
+    (levels.round() as u32).clamp(1, 6)
+}
+
+/// Map a per-surface blur radius (pixels) to Dual Kawase offset (0.5-5.0).
+/// Same curve shape as [`effective_blur_offset`], driven by the radius.
+pub fn blur_offset_for_radius(radius_px: f32) -> f32 {
+    let intensity = radius_to_intensity(radius_px);
+    0.5 + intensity * 4.5
+}
+
+/// Resolve the `(levels, offset)` Dual Kawase parameters for an optional
+/// per-surface radius. `None` ⇒ the global config intensity (unchanged
+/// behaviour for surfaces that don't opt in); `Some(px)` ⇒ radius-derived.
+/// Single source of truth so every blur call site stays consistent.
+pub fn resolve_blur_params(radius_px: Option<f32>) -> (u32, f32) {
+    match radius_px {
+        Some(r) => (blur_levels_for_radius(r), blur_offset_for_radius(r)),
+        None => (effective_blur_levels(), effective_blur_offset()),
+    }
 }
 
 // =============================================================================
@@ -1380,6 +1437,66 @@ pub trait HasBlur {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_radius_maps_min_to_no_blur_max_to_full() {
+        // 1px (and anything below) ⇒ minimum blur (1 level, 0.5 offset).
+        assert_eq!(blur_levels_for_radius(BLUR_RADIUS_MIN_PX), 1);
+        assert!((blur_offset_for_radius(BLUR_RADIUS_MIN_PX) - 0.5).abs() < 1e-6);
+        assert_eq!(blur_levels_for_radius(0.0), 1);
+        assert_eq!(blur_levels_for_radius(-5.0), 1);
+
+        // 40px (and anything above) ⇒ maximum blur (6 levels, 5.0 offset).
+        assert_eq!(blur_levels_for_radius(BLUR_RADIUS_MAX_PX), 6);
+        assert!((blur_offset_for_radius(BLUR_RADIUS_MAX_PX) - 5.0).abs() < 1e-6);
+        assert_eq!(blur_levels_for_radius(120.0), 6);
+        assert!((blur_offset_for_radius(120.0) - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_radius_levels_are_monotonic_nondecreasing() {
+        let mut last = 0;
+        let mut r = 0.0;
+        while r <= 120.0 {
+            let lvl = blur_levels_for_radius(r);
+            assert!(lvl >= last, "levels must not decrease as radius grows");
+            assert!((1..=6).contains(&lvl));
+            last = lvl;
+            r += 0.5;
+        }
+        // The top of the range must actually reach full blur.
+        assert_eq!(blur_levels_for_radius(BLUR_RADIUS_MAX_PX), 6);
+    }
+
+    #[test]
+    fn test_non_finite_radius_is_safe_never_nan() {
+        // A malformed client value must never produce a NaN offset (shader-fatal)
+        // and must collapse to the minimum (treated like "no custom radius").
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let off = blur_offset_for_radius(bad);
+            assert!(off.is_finite(), "offset must stay finite for {bad:?}");
+            assert!((off - 0.5).abs() < 1e-6);
+            assert_eq!(blur_levels_for_radius(bad), 1);
+        }
+    }
+
+    #[test]
+    fn test_resolve_none_matches_global_config() {
+        // None must be byte-for-byte the previous global behaviour.
+        set_blur_intensity(0.7);
+        assert_eq!(
+            resolve_blur_params(None),
+            (effective_blur_levels(), effective_blur_offset())
+        );
+        // Some(px) must be the radius-derived params, independent of the global.
+        assert_eq!(
+            resolve_blur_params(Some(BLUR_RADIUS_MAX_PX)),
+            (
+                blur_levels_for_radius(BLUR_RADIUS_MAX_PX),
+                blur_offset_for_radius(BLUR_RADIUS_MAX_PX)
+            )
+        );
+    }
 
     #[test]
     fn test_mip_size_chain_calculation() {

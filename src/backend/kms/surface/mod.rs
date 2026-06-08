@@ -998,6 +998,8 @@ fn process_blur(
                 blur_state.texture_a.as_mut(),
                 blur_state.texture_b.as_mut(),
             ) {
+                // Toplevel windows carry no per-surface blur radius (only layer
+                // surfaces do), so window blur always uses the global config intensity.
                 let blur_result = apply_dual_kawase_blur(
                     renderer,
                     &src,
@@ -1106,10 +1108,24 @@ fn process_blur(
             }
         };
 
-        let mut surfaces_by_group: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Logical>)>> =
+        // Group by (layer, radius bucket): surfaces with different radii need
+        // separate blur passes. None/non-finite radius ⇒ u32::MAX ⇒ global intensity.
+        let radius_bucket = |r: Option<f32>| -> u32 {
+            use crate::backend::render::blur::{BLUR_RADIUS_MAX_PX, BLUR_RADIUS_MIN_PX};
+            match r {
+                Some(px) if px.is_finite() => {
+                    px.clamp(BLUR_RADIUS_MIN_PX, BLUR_RADIUS_MAX_PX).round() as u32
+                }
+                _ => u32::MAX,
+            }
+        };
+        let mut surfaces_by_group: StdHashMap<(u8, u32), Vec<(ObjectId, Rectangle<i32, Logical>)>> =
             StdHashMap::new();
         for layer_info in &layer_blur_surfaces {
-            let key = layer_to_key(layer_info.layer);
+            let key = (
+                layer_to_key(layer_info.layer),
+                radius_bucket(layer_info.blur_radius),
+            );
             surfaces_by_group
                 .entry(key)
                 .or_default()
@@ -1123,9 +1139,15 @@ fn process_blur(
             "[BLUR-TIMING] KMS layer blur processing starting"
         );
 
-        // Process each group (by layer) that has blur surfaces
-        for (group_key, surfaces) in surfaces_by_group {
+        // Process each group (by layer + radius bucket) that has blur surfaces
+        for ((group_key, bucket), surfaces) in surfaces_by_group {
             let layer_type = key_to_layer(group_key);
+            // Reconstruct the group's blur radius (None ⇒ global config intensity).
+            let group_radius = if bucket == u32::MAX {
+                None
+            } else {
+                Some(bucket as f32)
+            };
             let layer_group_start = std::time::Instant::now();
 
             let _layer_span = tracing::debug_span!(
@@ -1149,7 +1171,9 @@ fn process_blur(
             // EARLY THROTTLE CHECK: Skip the expensive capture + hash + blur entirely
             // if we already have cached textures and the last blur was recent enough.
             // This avoids the workspace_elements() call (~100-900us) on throttled frames.
-            let hash_key = format!("{}_{:?}", output_name, layer_type);
+            // Keyed per (output, layer, radius bucket) so distinct buckets in the same
+            // layer don't share throttle/content-hash state.
+            let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
             if all_cached && should_throttle_layer_blur(&hash_key) {
                 tracing::trace!(
                     layer = ?layer_type,
@@ -1311,14 +1335,17 @@ fn process_blur(
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
+                    // Per-surface radius drives intensity; None ⇒ global config.
+                    let (blur_levels, blur_offset) =
+                        crate::backend::render::blur::resolve_blur_params(group_radius);
                     let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
                         ping,
                         pong,
                         blur_size,
-                        crate::backend::render::blur::effective_blur_levels(),
-                        crate::backend::render::blur::effective_blur_offset(),
+                        blur_levels,
+                        blur_offset,
                     );
 
                     if blur_result.is_ok() {

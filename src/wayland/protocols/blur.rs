@@ -41,6 +41,14 @@ pub struct BlurRegionData {
     pub region: Option<Vec<Rectangle<i32, Logical>>>,
     /// Custom blur radius in pixels. If None, the compositor default is used.
     pub radius: Option<f32>,
+    /// Backdrop saturation multiplier (1.0 = unchanged). If None, no saturation
+    /// adjustment is applied (matches CSS `backdrop-filter: saturate(x)`).
+    pub saturation: Option<f32>,
+    /// Frosted-glass white-tint strength (0.0 = no tint, faithful backdrop-filter).
+    /// If None, the compositor default tint is used.
+    pub tint: Option<f32>,
+    /// Frosted-glass border alpha (0.0 = no border). If None, compositor default.
+    pub border: Option<f32>,
 }
 
 /// Cacheable blur state for double-buffering
@@ -52,6 +60,13 @@ pub struct CacheableBlurState {
     pub data: Option<BlurRegionData>,
     /// Custom blur radius in pixels. If None, the compositor default is used.
     pub radius: Option<f32>,
+    /// Backdrop saturation multiplier (1.0 = unchanged). If None, no saturation
+    /// adjustment is applied.
+    pub saturation: Option<f32>,
+    /// Frosted-glass white-tint strength (0.0 = no tint). If None, compositor default.
+    pub tint: Option<f32>,
+    /// Frosted-glass border alpha (0.0 = no border). If None, compositor default.
+    pub border: Option<f32>,
 }
 
 impl Cacheable for CacheableBlurState {
@@ -68,6 +83,9 @@ pub struct BlurData {
     surface: Weak<WlSurface>,
     pending_region: Mutex<Option<Vec<Rectangle<i32, Logical>>>>,
     pending_radius: Mutex<Option<f32>>,
+    pending_saturation: Mutex<Option<f32>>,
+    pending_tint: Mutex<Option<f32>>,
+    pending_border: Mutex<Option<f32>>,
 }
 
 /// State for the blur manager protocol
@@ -87,7 +105,7 @@ impl BlurState {
             + 'static,
     {
         let global =
-            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(2, ());
+            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(3, ());
         BlurState { global }
     }
 
@@ -152,6 +170,9 @@ where
                     surface: surface.downgrade(),
                     pending_region: Mutex::new(None),
                     pending_radius: Mutex::new(None),
+                    pending_saturation: Mutex::new(None),
+                    pending_tint: Mutex::new(None),
+                    pending_border: Mutex::new(None),
                 };
                 data_init.init(id, blur_data);
             }
@@ -194,12 +215,18 @@ where
 
                 let pending_region = data.pending_region.lock().unwrap().take();
                 let pending_radius = data.pending_radius.lock().unwrap().take();
+                let pending_saturation = data.pending_saturation.lock().unwrap().take();
+                let pending_tint = data.pending_tint.lock().unwrap().take();
+                let pending_border = data.pending_border.lock().unwrap().take();
 
                 tracing::trace!(
                     surface_id = surface.id().protocol_id(),
                     has_region = pending_region.is_some(),
                     region_count = pending_region.as_ref().map(|r| r.len()).unwrap_or(0),
                     ?pending_radius,
+                    ?pending_saturation,
+                    ?pending_tint,
+                    ?pending_border,
                     "Blur Commit for surface"
                 );
 
@@ -208,9 +235,15 @@ where
                     let pending = cached.pending();
                     pending.enabled = true;
                     pending.radius = pending_radius;
+                    pending.saturation = pending_saturation;
+                    pending.tint = pending_tint;
+                    pending.border = pending_border;
                     pending.data = Some(BlurRegionData {
                         region: pending_region,
                         radius: pending_radius,
+                        saturation: pending_saturation,
+                        tint: pending_tint,
+                        border: pending_border,
                     });
                 });
 
@@ -258,6 +291,26 @@ where
                 tracing::trace!(radius_fixed, radius_px, "Blur SetRadius");
                 *data.pending_radius.lock().unwrap() = Some(radius_px);
             }
+            org_kde_kwin_blur::Request::SetSaturation { saturation_fixed } => {
+                // Fixed-point 8.8 (same encoding as radius): divide by 256.
+                // 1.0 = unchanged, >1.0 = more saturated (e.g. 1.3 → 332).
+                let saturation = saturation_fixed as f32 / 256.0;
+                tracing::trace!(saturation_fixed, saturation, "Blur SetSaturation");
+                *data.pending_saturation.lock().unwrap() = Some(saturation);
+            }
+            org_kde_kwin_blur::Request::SetTint { tint_fixed } => {
+                // Fixed-point 8.8: divide by 256. 0.0 = no white tint (faithful
+                // backdrop-filter), 0.15 ≈ the compositor default.
+                let tint = tint_fixed as f32 / 256.0;
+                tracing::trace!(tint_fixed, tint, "Blur SetTint");
+                *data.pending_tint.lock().unwrap() = Some(tint);
+            }
+            org_kde_kwin_blur::Request::SetBorder { border_fixed } => {
+                // Fixed-point 8.8: divide by 256. 0.0 = no border, 0.2 ≈ default.
+                let border = border_fixed as f32 / 256.0;
+                tracing::trace!(border_fixed, border, "Blur SetBorder");
+                *data.pending_border.lock().unwrap() = Some(border);
+            }
         }
     }
 }
@@ -292,6 +345,24 @@ pub fn has_blur(surface: &WlSurface) -> bool {
 /// Returns `None` if the surface uses the compositor default.
 pub fn get_blur_radius(surface: &WlSurface) -> Option<f32> {
     get_blur_state(surface).and_then(|state| state.radius)
+}
+
+/// Get the backdrop saturation multiplier for a surface, if set.
+/// Returns `None` (i.e. no saturation change, 1.0) if the surface didn't request one.
+pub fn get_blur_saturation(surface: &WlSurface) -> Option<f32> {
+    get_blur_state(surface).and_then(|state| state.saturation)
+}
+
+/// Get the frosted-glass white-tint strength for a surface, if set.
+/// Returns `None` (use the compositor default tint) if the surface didn't request one.
+pub fn get_blur_tint(surface: &WlSurface) -> Option<f32> {
+    get_blur_state(surface).and_then(|state| state.tint)
+}
+
+/// Get the frosted-glass border alpha for a surface, if set.
+/// Returns `None` (use the compositor default border) if the surface didn't request one.
+pub fn get_blur_border(surface: &WlSurface) -> Option<f32> {
+    get_blur_state(surface).and_then(|state| state.border)
 }
 
 /// Macro to delegate blur protocol handling

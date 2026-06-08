@@ -34,11 +34,12 @@ uniform float corner_radius_bl;   // Bottom-left corner radius
 uniform vec3 tint_color;       // Tint overlay color (e.g., white = 1.0, 1.0, 1.0)
 uniform float tint_strength;   // Tint opacity (0.10 for 10% white overlay)
 uniform float border_enabled;  // 1.0 = draw border, 0.0 = no border
+uniform float saturation;      // Backdrop saturation multiplier (1.0 = unchanged, matches CSS saturate())
+uniform float border_strength; // Border alpha/opacity (0.0 = no border; per-surface, default 0.2)
 
-// Border configuration (hardcoded for now)
+// Border configuration
 const float BORDER_WIDTH = 1.0;       // 1px border
 const vec3 BORDER_COLOR = vec3(1.0, 1.0, 1.0);  // White
-const float BORDER_ALPHA = 0.2;       // 20% opacity
 
 // Signed distance field for a rounded box with per-corner radii
 // p: position relative to box center
@@ -54,7 +55,14 @@ float rounded_box(vec2 p, vec2 b, vec4 r) {
 void main() {
     // Sample the blurred texture
     vec4 blurred = texture2D(tex, v_coords);
-    
+
+    // Apply backdrop saturation (CSS `backdrop-filter: saturate()` semantics):
+    // mix between luminance (fully desaturated) and the original color. The
+    // backdrop is opaque, so operating on .rgb directly is correct. saturation
+    // defaults to 1.0 (no change) for surfaces that don't request it.
+    float luma = dot(blurred.rgb, vec3(0.2126, 0.7152, 0.0722)); // Rec.709
+    blurred.rgb = clamp(mix(vec3(luma), blurred.rgb, saturation), 0.0, 1.0);
+
     // Convert texture coords to local element pixel coordinates
     vec2 screen_pos = v_coords * screen_size;
     vec2 pixel_coords = screen_pos - element_pos;
@@ -94,8 +102,8 @@ void main() {
         border_mask = outer - inner;
     }
     
-    // Blend border color over tinted background
-    vec3 final_color = mix(tinted, BORDER_COLOR, border_mask * BORDER_ALPHA);
+    // Blend border color over tinted background (border_strength = per-surface alpha)
+    vec3 final_color = mix(tinted, BORDER_COLOR, border_mask * border_strength);
     
     // Final output with premultiplied alpha
     // cosmic-comp uses premultiplied alpha throughout the pipeline

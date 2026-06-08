@@ -39,7 +39,10 @@ use crate::{
             screencopy::{FrameHolder, SessionData, render_session},
         },
         protocols::{
-            blur::{get_blur_state, has_blur as surface_has_blur},
+            blur::{
+                get_blur_border, get_blur_saturation, get_blur_state, get_blur_tint,
+                has_blur as surface_has_blur,
+            },
             corner_radius::get_surface_corner_radius,
             layer_shadow::surface_has_shadow,
             workspace::WorkspaceHandle,
@@ -143,8 +146,8 @@ pub static ACTIVE_GROUP_COLOR: [f32; 3] = [0.58, 0.922, 0.922];
 
 // Blur module re-exports
 pub use blur::{
-    BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR, BLUR_TINT_COLOR,
-    BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+    BLUR_BORDER_STRENGTH, BLUR_DOWNSAMPLE_FACTOR, BLUR_FALLBACK_ALPHA, BLUR_FALLBACK_COLOR,
+    BLUR_TINT_COLOR, BLUR_TINT_STRENGTH, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
     CachedLayerSurface, HasBlur, LayerBlurSurfaceInfo, apply_dual_kawase_blur,
     blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
     clear_blur_textures_for_output, clear_cached_layer_surfaces,
@@ -503,6 +506,8 @@ impl BlurredBackdropShader {
         tint_color: [f32; 3],
         tint_strength: f32,
         border_enabled: bool,
+        saturation: f32,
+        border_strength: f32,
     ) -> TextureShaderElement {
         use crate::utils::geometry::RectLocalExt;
 
@@ -600,6 +605,8 @@ impl BlurredBackdropShader {
                     "border_enabled",
                     if border_enabled { 1.0f32 } else { 0.0f32 },
                 ),
+                Uniform::new("saturation", saturation),
+                Uniform::new("border_strength", border_strength),
             ],
         )
     }
@@ -698,6 +705,8 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("tint_color", UniformType::_3f),
             UniformName::new("tint_strength", UniformType::_1f),
             UniformName::new("border_enabled", UniformType::_1f),
+            UniformName::new("saturation", UniformType::_1f),
+            UniformName::new("border_strength", UniformType::_1f),
         ],
     )?;
 
@@ -1504,8 +1513,10 @@ where
                                 blur_corner_radius,
                                 1.0,
                                 BLUR_TINT_COLOR,
-                                BLUR_TINT_STRENGTH,
+                                get_blur_tint(popup_wl_surface).unwrap_or(BLUR_TINT_STRENGTH),
                                 true, // Enable border for popups
+                                get_blur_saturation(popup_wl_surface).unwrap_or(1.0),
+                                get_blur_border(popup_wl_surface).unwrap_or(BLUR_BORDER_STRENGTH),
                             );
 
                             let backdrop_element: WorkspaceRenderElement<R> =
@@ -1720,8 +1731,10 @@ where
                                 blur_corner_radius,
                                 blur_alpha,
                                 BLUR_TINT_COLOR,
-                                BLUR_TINT_STRENGTH,
+                                get_blur_tint(layer.wl_surface()).unwrap_or(BLUR_TINT_STRENGTH),
                                 blur_border,
+                                get_blur_saturation(layer.wl_surface()).unwrap_or(1.0),
+                                get_blur_border(layer.wl_surface()).unwrap_or(BLUR_BORDER_STRENGTH),
                             );
 
                             let backdrop_element: WorkspaceRenderElement<R> =
@@ -2510,6 +2523,9 @@ where
                     blur_state.texture_a.as_mut(),
                     blur_state.texture_b.as_mut(),
                 ) {
+                    // Toplevel windows carry no per-surface blur radius (only layer
+                    // surfaces do, via the blur protocol), so window blur always uses
+                    // the global config intensity.
                     let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
@@ -2616,10 +2632,25 @@ where
                 }
             };
 
-            let mut surfaces_by_group: StdHashMap<u8, Vec<(ObjectId, Rectangle<i32, Local>)>> =
-                StdHashMap::new();
-            for (surface_id, geo, layer, _blur_radius) in &layer_blur_surfaces {
-                let key = layer_to_key(*layer);
+            // Group by (layer, radius bucket). Surfaces with different blur radii
+            // need separate blur passes (the per-group blurred texture is shared by
+            // all surfaces in the group), so a custom radius can't share a texture
+            // with a differently-blurred surface. None/non-finite radius ⇒ u32::MAX
+            // bucket ⇒ global config intensity (unchanged behaviour).
+            let radius_bucket = |r: Option<f32>| -> u32 {
+                match r {
+                    Some(px) if px.is_finite() => px
+                        .clamp(blur::BLUR_RADIUS_MIN_PX, blur::BLUR_RADIUS_MAX_PX)
+                        .round() as u32,
+                    _ => u32::MAX,
+                }
+            };
+            let mut surfaces_by_group: StdHashMap<
+                (u8, u32),
+                Vec<(ObjectId, Rectangle<i32, Local>)>,
+            > = StdHashMap::new();
+            for (surface_id, geo, layer, blur_radius) in &layer_blur_surfaces {
+                let key = (layer_to_key(*layer), radius_bucket(*blur_radius));
                 surfaces_by_group
                     .entry(key)
                     .or_default()
@@ -2628,9 +2659,15 @@ where
 
             let layer_blur_start = std::time::Instant::now();
 
-            // Process each group (by layer) that has blur surfaces
-            for (group_key, surfaces) in &surfaces_by_group {
+            // Process each group (by layer + radius bucket) that has blur surfaces
+            for ((group_key, bucket), surfaces) in &surfaces_by_group {
                 let layer_type = key_to_layer(*group_key);
+                // Reconstruct the group's blur radius (None ⇒ global config intensity).
+                let group_radius = if *bucket == u32::MAX {
+                    None
+                } else {
+                    Some(*bucket as f32)
+                };
                 let layer_group_start = std::time::Instant::now();
 
                 // Check if all surfaces in this layer have valid cached blur textures
@@ -2638,8 +2675,10 @@ where
                     get_cached_blur_texture_for_layer(&output_name, surface_id).is_some()
                 });
 
-                // EARLY THROTTLE CHECK: Skip capture entirely if all cached and recent
-                let hash_key = format!("{}_{:?}", output_name, layer_type);
+                // EARLY THROTTLE CHECK: Skip capture entirely if all cached and recent.
+                // Throttle/content-hash state is keyed per (output, layer, radius bucket)
+                // so distinct buckets in the same layer don't clobber each other.
+                let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
                 if all_cached && should_throttle_layer_blur(&hash_key) {
                     any_blur_applied = true;
                     continue;
@@ -2787,24 +2826,46 @@ where
                     blur_state.layer_texture_a.as_mut(),
                     blur_state.layer_texture_b.as_mut(),
                 ) {
+                    // Per-surface radius drives intensity; None ⇒ global config.
+                    let (blur_levels, blur_offset) = blur::resolve_blur_params(group_radius);
                     let blur_result = apply_dual_kawase_blur(
                         renderer,
                         &src,
                         ping,
                         pong,
                         blur_size,
-                        blur::effective_blur_levels(),
-                        blur::effective_blur_offset(),
+                        blur_levels,
+                        blur_offset,
                     );
 
                     if blur_result.is_ok() {
-                        // Cache the blurred texture for all surfaces in this layer
+                        // Copy the blurred result out of the shared ping/pong buffer
+                        // BEFORE the next (layer, radius) group reuses layer_texture_b —
+                        // otherwise this group's cached texture would be overwritten by
+                        // the next group's blur pass. (Mirrors the KMS path; previously a
+                        // bare pong.clone() was only safe with a single group per frame.)
+                        let cached_texture = match copy_blur_texture_for_cache(
+                            renderer, pong, blur_size,
+                        ) {
+                            Ok(tex) => tex,
+                            Err(e) => {
+                                tracing::warn!(
+                                    output = %output_name,
+                                    layer = ?layer_type,
+                                    error = ?e,
+                                    "Failed to copy layer blur texture for cache, using original"
+                                );
+                                pong.clone()
+                            }
+                        };
+
+                        // Cache the SAME blurred texture for all surfaces in this group
                         for (surface_id, _geo) in surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
                                 surface_id.clone(),
                                 BlurredTextureInfo {
-                                    texture: pong.clone(),
+                                    texture: cached_texture.clone(),
                                     size: blur_size,
                                     screen_size: output_size,
                                     scale,
