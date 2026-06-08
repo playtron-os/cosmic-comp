@@ -1,3 +1,15 @@
+# [1.23.0](https://github.com/playtron-os/cosmic-comp/compare/v1.22.0...v1.23.0) (2026-06-08)
+
+
+### Bug Fixes
+
+* hide surfaces on spawn when needed ([ee911af](https://github.com/playtron-os/cosmic-comp/commit/ee911af2088c5140ae986230d0895d3444891450))
+
+
+### Features
+
+* implement ability to fine tune border, tint, and add saturate feature in blur protocol ([ce59ba0](https://github.com/playtron-os/cosmic-comp/commit/ce59ba0b5990504b74154af23c0c44eef505b6c6))
+
 # [1.22.0](https://github.com/playtron-os/cosmic-comp/compare/v1.21.3...v1.22.0) (2026-06-01)
 
 
