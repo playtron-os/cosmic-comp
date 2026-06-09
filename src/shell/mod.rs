@@ -97,6 +97,7 @@ pub mod auto_hide;
 pub mod element;
 pub mod focus;
 pub mod grabs;
+pub mod layer_open;
 pub mod layer_slide;
 pub mod layout;
 mod seats;
@@ -126,6 +127,9 @@ use self::{
 
 const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
+/// Wayland namespace of agentos-panel popover surfaces that get the
+/// compositor-side open animation (see [`layer_open`]).
+const POPOVER_NAMESPACE: &str = "agentos-panel-popover";
 const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(100);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
@@ -625,6 +629,36 @@ pub struct Shell {
 
     /// Layer surfaces with active slide animations (visibility-protocol triggered).
     pub layer_slides: Vec<layer_slide::LayerSlide>,
+
+    /// Popover layer surfaces (`agentos-panel-popover`) currently playing their
+    /// compositor-side open animation (160ms easeInOut slide-up + scale + fade).
+    pub layer_opens: Vec<layer_open::LayerOpen>,
+    /// Popover surfaces that have requested an open animation but are waiting for
+    /// their first buffer commit (auto_size geometry is 0 until then). Moved to
+    /// `layer_opens` when the surface next commits a buffer.
+    pending_layer_opens: std::collections::HashSet<ObjectId>,
+
+    /// Popover layer surfaces (`agentos-panel-popover`) currently playing their
+    /// compositor-side CLOSE animation (the reverse of the open: 160ms easeInOut
+    /// slide-down + scale-down + fade-out). Triggered when the panel hides the
+    /// surface via the `layer_surface_visibility` protocol; the surface stays
+    /// alive and rendered until the animation completes (then it's hidden, and
+    /// the panel destroys it shortly after).
+    pub layer_closes: Vec<layer_open::LayerClose>,
+    /// All currently-mapped popover surface IDs (`agentos-panel-popover`), so
+    /// the visibility-protocol hide path can tell a popover from any other layer
+    /// surface and play the close animation instead of the plain cross-fade.
+    popover_surfaces: std::collections::HashSet<ObjectId>,
+
+    /// Per-surface show/hide transition override requested via the
+    /// `layer_surface_visibility` protocol (`set_transition`).  When a surface
+    /// requests `Fade`, it uses the cross-fade animation even if it is
+    /// edge-anchored (which would otherwise slide).  Surfaces absent from this
+    /// map fall back to the anchor-based heuristic.
+    layer_transitions: std::collections::HashMap<
+        ObjectId,
+        crate::wayland::protocols::layer_surface_visibility::LayerTransition,
+    >,
 
     /// Original X11 geometry at map time (before compositor configuration).
     /// Used to compute correct relative offsets for transient children.
@@ -2007,6 +2041,15 @@ impl Shell {
             // Layer slide animations (visibility-protocol triggered)
             layer_slides: Vec::new(),
 
+            // Popover open animations (agentos-panel-popover)
+            layer_opens: Vec::new(),
+            pending_layer_opens: std::collections::HashSet::new(),
+            layer_closes: Vec::new(),
+            popover_surfaces: std::collections::HashSet::new(),
+
+            // Per-surface show/hide transition overrides
+            layer_transitions: std::collections::HashMap::new(),
+
             // Original X11 geometry at map time
             original_x11_positions: HashMap::new(),
 
@@ -2763,6 +2806,9 @@ impl Shell {
             .layer_slides
             .iter()
             .any(|s| s.visibility.is_animating());
+        let layer_open = self.layer_opens.iter().any(|o| o.is_animating());
+        let pending_open = !self.pending_layer_opens.is_empty();
+        let layer_close = self.layer_closes.iter().any(|c| c.is_animating());
         let fade_in = !self.layer_fade_in.is_empty();
         let pending_fade = !self.pending_layer_fade_in.is_empty();
         let fade_out = !self.layer_fade_out.is_empty();
@@ -2777,6 +2823,9 @@ impl Shell {
             || zoom
             || auto_hide
             || layer_slide
+            || layer_open
+            || pending_open
+            || layer_close
             || fade_in
             || pending_fade
             || fade_out
@@ -2823,9 +2872,13 @@ impl Shell {
         }
         // Clean up completed layer surface fade-ins
         self.cleanup_layer_fade_ins();
+        // Clean up completed popover open animations
+        self.cleanup_layer_opens();
+        // Complete popover close animations (moves to hidden_surfaces)
+        let completed_closes = self.cleanup_layer_closes();
         // Complete layer surface fade-outs (moves to hidden_surfaces)
         let completed_fade_outs = self.cleanup_layer_fade_outs();
-        if !completed_fade_outs.is_empty() || slide_completed {
+        if !completed_fade_outs.is_empty() || !completed_closes.is_empty() || slide_completed {
             // Update layer blur cache for outputs with completed fade-outs or slides
             for output in self.outputs().cloned().collect::<Vec<_>>() {
                 crate::wayland::handlers::layer_shell::update_layer_blur_state(
@@ -2866,7 +2919,11 @@ impl Shell {
         //   visible startup flash — `refresh_auto_hide` re-evaluates once the
         //   surface is mapped (and `force_show`s it if the desktop is empty),
         //   so this lets clients start hidden without a 1×1 boot trick.
-        let should_start_hidden = match self.auto_hide_surface_output(surface) {
+        let output = self.auto_hide_surface_output(surface);
+        // `output` resolves only once the surface is MAPPED. An unmapped
+        // (startup) registration can't read desktop state.
+        let mapped = output.is_some();
+        let should_hide = match output {
             Some(output) => match mode {
                 auto_hide::AutoHideMode::Always => self.output_has_visible_windows(&output),
                 auto_hide::AutoHideMode::OnMaximize => {
@@ -2876,18 +2933,32 @@ impl Shell {
             None => true,
         };
 
-        if should_start_hidden {
-            // Start fully hidden — no animation, no visible flash on startup.
-            entry.visibility = auto_hide::AutoHideVisibility::Hidden;
-            // Notify the client that it's hidden so it can set empty input region.
-            crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(surface, false);
+        if should_hide {
+            if mapped {
+                // Re-registration of an already-mapped, visible bar (e.g. the
+                // panel re-arming auto-hide after a popover closes): SLIDE OUT
+                // (animated) instead of snapping. Reuses the same SlidingOut
+                // transition as the normal cursor-leave hide; the terminal
+                // `visibility_changed(false)` is emitted by
+                // `update_auto_hide_animations` when the slide completes, so the
+                // client clears its input region at the right moment.
+                entry.visibility.start_hide(false);
+            } else {
+                // Unmapped/startup: snap fully hidden — no animation, no first-
+                // frame flash. `refresh_auto_hide` re-evaluates once mapped.
+                entry.visibility = auto_hide::AutoHideVisibility::Hidden;
+                crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(
+                    surface, false,
+                );
+            }
         }
 
         tracing::info!(
             surface_id,
             ?edge,
             ?mode,
-            should_start_hidden,
+            should_hide,
+            mapped,
             "auto_hide: registered surface"
         );
         self.auto_hide_surfaces.push(entry);
@@ -3324,6 +3395,67 @@ impl Shell {
             .any(|s| s.surface_id == *surface_id)
     }
 
+    // -----------------------------------------------------------------------
+    // Popover open-animation methods (agentos-panel-popover)
+    // -----------------------------------------------------------------------
+
+    /// True if this surface currently has an active open animation. Used to gate
+    /// the translate/scale render path so non-popover layers are untouched.
+    pub fn is_layer_opening(&self, surface_id: &ObjectId) -> bool {
+        self.layer_opens.iter().any(|o| o.surface_id == *surface_id)
+    }
+
+    /// The translate offset `(x, y)` (logical px) for an opening surface, or
+    /// `(0, 0)` if it isn't opening. Folds into the layer-surface render offset.
+    pub fn get_layer_open_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        for o in &self.layer_opens {
+            if o.surface_id == *surface_id {
+                return o.translate_offset();
+            }
+        }
+        (0, 0)
+    }
+
+    /// The scale factor for an opening surface, or `1.0` if it isn't opening.
+    pub fn get_layer_open_scale(&self, surface_id: &ObjectId) -> f32 {
+        for o in &self.layer_opens {
+            if o.surface_id == *surface_id {
+                return o.scale();
+            }
+        }
+        1.0
+    }
+
+    /// True if this surface currently has an active CLOSE animation (popover
+    /// being hidden). Gates the same translate/scale render path as the open.
+    pub fn is_layer_closing(&self, surface_id: &ObjectId) -> bool {
+        self.layer_closes
+            .iter()
+            .any(|c| c.surface_id == *surface_id)
+    }
+
+    /// The translate offset `(x, y)` (logical px) for a closing surface, or
+    /// `(0, 0)` if it isn't closing. Slides DOWN `0 → +6px`.
+    pub fn get_layer_close_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        for c in &self.layer_closes {
+            if c.surface_id == *surface_id {
+                return c.translate_offset();
+            }
+        }
+        (0, 0)
+    }
+
+    /// The scale factor for a closing surface, or `1.0` if it isn't closing.
+    /// Scales DOWN `1.0 → 0.97`.
+    pub fn get_layer_close_scale(&self, surface_id: &ObjectId) -> f32 {
+        for c in &self.layer_closes {
+            if c.surface_id == *surface_id {
+                return c.scale();
+            }
+        }
+        1.0
+    }
+
     /// Override exclusive_zone in cached state for any sliding surface on the
     /// given output. Called before arrange() in the commit handler to prevent
     /// the client's raw value from causing layout jumps.
@@ -3704,10 +3836,52 @@ impl Shell {
         &self.hidden_surfaces
     }
 
+    /// Set a surface's show/hide transition (via layer_surface_visibility protocol).
+    /// Surfaces that never call this fall back to the anchor-based heuristic.
+    pub fn set_surface_transition(
+        &mut self,
+        surface_id: ObjectId,
+        transition: crate::wayland::protocols::layer_surface_visibility::LayerTransition,
+    ) {
+        tracing::debug!(?surface_id, ?transition, "set_surface_transition");
+        self.layer_transitions.insert(surface_id, transition);
+    }
+
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
     pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
-        // Check if this is a side-anchored layer surface that should use slide animation.
-        let slide_edge = self.detect_layer_slide_edge(&surface_id);
+        use crate::wayland::protocols::layer_surface_visibility::LayerTransition;
+        // Decide whether to slide or fade. A surface that explicitly requested
+        // `Fade` never slides (even if edge-anchored); otherwise fall back to
+        // the anchor-based heuristic.
+        let slide_edge = match self.layer_transitions.get(&surface_id) {
+            Some(LayerTransition::Fade) => None,
+            _ => self.detect_layer_slide_edge(&surface_id),
+        };
+
+        // Hiding cancels any in-flight OPEN (entrance) animation. For a popover
+        // we first capture how "open" it currently is, so the close can start
+        // from there (a seamless reverse) instead of snapping to full-open and
+        // popping. `close_backdate_ms` is how far to back-date the LayerClose:
+        //   - mid-open at linear progress p → (1 - p) · CLOSE_DURATION (symmetry)
+        //   - never shown (still pending first commit) → CLOSE_DURATION (already hidden)
+        //   - fully open / resting → 0 (full close from the top)
+        let close_backdate_ms: u64 = if hidden {
+            let backdate = if let Some(o) =
+                self.layer_opens.iter().find(|o| o.surface_id == surface_id)
+            {
+                let p = (o.start.elapsed().as_secs_f32() / layer_open::OPEN_DURATION.as_secs_f32())
+                    .clamp(0.0, 1.0);
+                ((1.0 - p) * layer_open::CLOSE_DURATION.as_millis() as f32) as u64
+            } else if self.pending_layer_opens.contains(&surface_id) {
+                layer_open::CLOSE_DURATION.as_millis() as u64
+            } else {
+                0
+            };
+            self.remove_layer_open(&surface_id);
+            backdate
+        } else {
+            0
+        };
 
         if let Some((edge, width, exclusive_zone)) = slide_edge {
             // Use slide animation for side-anchored panels
@@ -3783,15 +3957,36 @@ impl Shell {
                 // the animation completes, then moved to hidden_surfaces.
                 let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
                 let was_pending = self.pending_layer_fade_in.remove(&surface_id);
-                tracing::debug!(
-                    ?surface_id,
-                    was_fading_in,
-                    was_pending,
-                    "set_surface_hidden(true): starting fade-out"
-                );
-                self.layer_fade_out
-                    .entry(surface_id.clone())
-                    .or_insert_with(Instant::now);
+                if self.popover_surfaces.contains(&surface_id) {
+                    // Popover close: play the EXACT REVERSE of the open animation
+                    // (slide-DOWN + scale-DOWN + fade-OUT) from one eased factor,
+                    // not the plain cross-fade. Its alpha is funneled through
+                    // `layer_fade_out_alphas()` (synced with the scale/translate),
+                    // so we must NOT also start the plain `layer_fade_out` timer.
+                    // Drop any stale entry so a re-close restarts cleanly.
+                    tracing::debug!(
+                        ?surface_id,
+                        was_fading_in,
+                        was_pending,
+                        "set_surface_hidden(true): starting popover close animation"
+                    );
+                    self.layer_closes.retain(|c| c.surface_id != surface_id);
+                    self.layer_closes
+                        .push(layer_open::LayerClose::new_backdated(
+                            surface_id.clone(),
+                            close_backdate_ms,
+                        ));
+                } else {
+                    tracing::debug!(
+                        ?surface_id,
+                        was_fading_in,
+                        was_pending,
+                        "set_surface_hidden(true): starting fade-out"
+                    );
+                    self.layer_fade_out
+                        .entry(surface_id.clone())
+                        .or_insert_with(Instant::now);
+                }
             } else {
                 let was_hidden = self.hidden_surfaces.remove(&surface_id);
                 let was_fading_out = self.layer_fade_out.remove(&surface_id);
@@ -3899,6 +4094,7 @@ impl Shell {
     /// Remove a surface from hidden tracking (called when surface is destroyed)
     pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
         self.hidden_surfaces.remove(surface_id);
+        self.layer_transitions.remove(surface_id);
     }
 
     // Layer fade-in methods
@@ -3934,6 +4130,18 @@ impl Shell {
         for surface_id in &self.pending_layer_fade_in {
             result.entry(surface_id.clone()).or_insert(0.0);
         }
+        // Popover open animations drive their alpha (0→1) from the SAME single
+        // eased factor as their translate/scale. We funnel it through this map so
+        // order.rs applies it to BOTH the surface alpha and the blur alpha — they
+        // fade in perfectly synced with the slide-up + scale. (We suppressed the
+        // plain layer_fade_in for these surfaces, so there is no double-fade.)
+        for open in &self.layer_opens {
+            result.insert(open.surface_id.clone(), open.alpha());
+        }
+        // Popovers still waiting for their first buffer commit are held at 0.
+        for surface_id in &self.pending_layer_opens {
+            result.entry(surface_id.clone()).or_insert(0.0);
+        }
         if !result.is_empty() {
             tracing::debug!(
                 count = result.len(),
@@ -3952,11 +4160,50 @@ impl Shell {
         });
     }
 
+    /// Remove completed popover open animations (called from update_animations).
+    /// When an open finishes, the surface renders bare (scale 1.0 / alpha 1.0)
+    /// because `is_layer_opening` returns false and it's no longer in the alpha map.
+    fn cleanup_layer_opens(&mut self) {
+        self.layer_opens.retain(|o| o.is_animating());
+    }
+
+    /// Complete popover close animations: when one finishes (160ms elapsed),
+    /// move the surface to `hidden_surfaces` so it stops rendering (the panel
+    /// destroys it shortly after via `RemoveWindow`). Returns the completed IDs
+    /// so the caller can refresh the layer blur cache (same as fade-outs).
+    fn cleanup_layer_closes(&mut self) -> Vec<ObjectId> {
+        let mut completed = Vec::new();
+        self.layer_closes.retain(|c| {
+            if c.is_animating() {
+                true
+            } else {
+                tracing::debug!(
+                    surface_id = ?c.surface_id,
+                    "cleanup_layer_closes: close complete, moving to hidden_surfaces"
+                );
+                completed.push(c.surface_id.clone());
+                false
+            }
+        });
+        for surface_id in &completed {
+            self.hidden_surfaces.insert(surface_id.clone());
+        }
+        completed
+    }
+
+    /// Remove a surface's close animation + popover registration (called when the
+    /// surface is destroyed). Safe to call mid-animation: drops a still-running
+    /// close so nothing lingers if the panel destroys the surface early.
+    pub fn remove_layer_close(&mut self, surface_id: &ObjectId) {
+        self.layer_closes.retain(|c| c.surface_id != *surface_id);
+        self.popover_surfaces.remove(surface_id);
+    }
+
     /// Get the map of layer surfaces currently fading out with their alpha values.
     /// Alpha goes from 1.0 → 0.0 over LAYER_FADE_OUT_DURATION.
     pub fn layer_fade_out_alphas(&self) -> std::collections::HashMap<ObjectId, f32> {
         let now = Instant::now();
-        let result: std::collections::HashMap<ObjectId, f32> = self
+        let mut result: std::collections::HashMap<ObjectId, f32> = self
             .layer_fade_out
             .iter()
             .filter_map(|(surface_id, start)| {
@@ -3972,6 +4219,13 @@ impl Shell {
                 }
             })
             .collect();
+        // Popover CLOSE animations drive their alpha (1→0) from the SAME single
+        // eased factor as their slide-down/scale-down. Funnel it through this map
+        // so order.rs marks the surface visible (`is_fading_out`) and syncs the
+        // blur alpha — it fades out perfectly in step with the slide + scale.
+        for close in &self.layer_closes {
+            result.insert(close.surface_id.clone(), close.alpha());
+        }
         result
     }
 
@@ -4005,6 +4259,13 @@ impl Shell {
         self.pending_layer_fade_in.remove(surface_id);
     }
 
+    /// Remove a surface from popover open-animation tracking (called when the
+    /// surface is destroyed).
+    pub fn remove_layer_open(&mut self, surface_id: &ObjectId) {
+        self.layer_opens.retain(|o| o.surface_id != *surface_id);
+        self.pending_layer_opens.remove(surface_id);
+    }
+
     /// Remove a surface from fade-out tracking (called when surface is destroyed)
     pub fn remove_layer_fade_out(&mut self, surface_id: &ObjectId) {
         self.layer_fade_out.remove(surface_id);
@@ -4023,6 +4284,20 @@ impl Shell {
             );
             self.layer_fade_in
                 .insert(surface_id.clone(), Instant::now());
+        }
+
+        // Popover surfaces (agentos-panel-popover) start their compositor-side
+        // open animation on the SAME first-buffer-commit hook (auto_size means
+        // geometry is only valid now). Replace any stale entry so a re-show
+        // restarts the animation cleanly.
+        if self.pending_layer_opens.remove(surface_id) {
+            tracing::debug!(
+                ?surface_id,
+                "activate_pending_fade_in: starting popover open animation on buffer commit"
+            );
+            self.layer_opens.retain(|o| o.surface_id != *surface_id);
+            self.layer_opens
+                .push(layer_open::LayerOpen::new(surface_id.clone()));
         }
     }
 
@@ -5416,12 +5691,44 @@ impl Shell {
             })
         };
 
+        // Detect agentos-panel popover surfaces: Overlay layer, bottom-anchored,
+        // namespace "agentos-panel-popover".  These get a compositor-side OPEN
+        // animation (slide-up + scale + fade from a single eased factor) instead
+        // of the plain cross-fade.  We hold them in `pending_layer_opens` until
+        // their first buffer commit (auto_size → geometry is 0 until then), then
+        // start the actual animation in `activate_pending_fade_in`.
+        let is_popover = !is_hidden && {
+            use smithay::wayland::shell::wlr_layer::Anchor;
+            pending.surface.namespace() == POPOVER_NAMESPACE
+                && with_states(pending.surface.wl_surface(), |states| {
+                    let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
+                    let current = state.current();
+                    matches!(current.layer, Layer::Overlay)
+                        && current.anchor.contains(Anchor::BOTTOM)
+                })
+        };
+
         // Only start fade-in animation for visible surfaces.  Hidden surfaces
         // will get a fresh fade-in when they transition to visible via the
         // layer_surface_visibility protocol (restart_layer_fade_in).
+        //
+        // For popovers we SUPPRESS the plain fade-in: the open animation drives
+        // alpha itself from the one eased factor, so a separate fade would
+        // double-fade and desync from the translate/scale.  We register a
+        // pending open instead, which holds alpha at 0 until the first commit.
+        if is_popover {
+            // Remember this is a popover so the visibility-protocol hide path
+            // can play the close animation (cleared in `layer_destroyed`).
+            self.popover_surfaces.insert(surface_id.clone());
+        }
+
         if !is_hidden {
-            self.layer_fade_in
-                .insert(surface_id.clone(), Instant::now());
+            if is_popover {
+                self.pending_layer_opens.insert(surface_id.clone());
+            } else {
+                self.layer_fade_in
+                    .insert(surface_id.clone(), Instant::now());
+            }
         }
 
         {
@@ -5429,8 +5736,11 @@ impl Shell {
             map.map_layer(&pending.surface).unwrap();
         }
 
-        // Detect if newly-mapped surface should slide in (first-open animation)
+        // Detect if newly-mapped surface should slide in (first-open animation).
+        // A surface that explicitly requested `Fade` opts out of the slide.
         if !is_hidden
+            && self.layer_transitions.get(&surface_id)
+                != Some(&crate::wayland::protocols::layer_surface_visibility::LayerTransition::Fade)
             && let Some((edge, width, exclusive_zone)) = self.detect_layer_slide_edge(&surface_id)
             && exclusive_zone > 0
         {

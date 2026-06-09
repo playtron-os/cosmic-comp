@@ -250,10 +250,17 @@ where
     }
 }
 
-/// Check if a click on the given surface should trigger dismiss for any armed controllers
-/// Returns the controllers that should be dismissed
+/// Check if a click should trigger dismiss for any armed controllers.
+///
+/// `clicked_surface_id` is the surface under the pointer/touch, or `None` when
+/// the click landed on empty space with no surface beneath it. Empty space is
+/// definitionally OUTSIDE every dismiss group, so a `None` click dismisses all
+/// armed controllers — without this, clicking the bare desktop (anywhere a
+/// background surface isn't painted) would leave an open popover stuck.
+///
+/// Returns the controllers that should be dismissed.
 pub fn check_dismiss_on_click(
-    clicked_surface_id: u32,
+    clicked_surface_id: Option<u32>,
     controllers: &[zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1],
 ) -> Vec<zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1> {
     let mut to_dismiss = Vec::new();
@@ -269,14 +276,17 @@ pub fn check_dismiss_on_click(
                     .upgrade()
                     .map(|s| s.id().protocol_id())
                     .unwrap_or(0);
+                // In the group only if there's a clicked surface AND it's a member.
+                // A click on empty space (`None`) is never in the group → dismiss.
+                let in_group = clicked_surface_id.is_some_and(|id| group.contains(&id));
                 debug!(
-                    clicked_surface_id,
+                    ?clicked_surface_id,
                     controlled_surface_id,
+                    in_group,
                     group_members = ?group.iter().collect::<Vec<_>>(),
                     "Checking dismiss - clicked vs group"
                 );
-                // If the clicked surface is NOT in the group, trigger dismiss
-                if !group.contains(&clicked_surface_id) {
+                if !in_group {
                     to_dismiss.push(controller.clone());
                 }
             }

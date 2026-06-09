@@ -6,7 +6,7 @@ use crate::shell::Shell;
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::state::State;
 use crate::wayland::protocols::layer_surface_visibility::{
-    LayerSurfaceVisibilityHandler, LayerSurfaceVisibilityState,
+    LayerSurfaceVisibilityHandler, LayerSurfaceVisibilityState, LayerTransition,
 };
 use smithay::desktop::layer_map_for_output;
 use smithay::reexports::wayland_server::Resource;
@@ -166,6 +166,11 @@ impl LayerSurfaceVisibilityHandler for State {
                 Shell::set_focus(self, Some(&target), &seat, None, false);
             }
         }
+    }
+
+    fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition) {
+        let mut shell = self.common.shell.write();
+        shell.set_surface_transition(surface_id, transition);
     }
 
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {

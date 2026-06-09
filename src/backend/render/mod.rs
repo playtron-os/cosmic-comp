@@ -25,7 +25,7 @@ use crate::{
     shell::{
         CosmicMapped, CosmicMappedRenderElement, OverviewMode, SeatExt, Trigger, WorkspaceDelta,
         WorkspaceRenderElement,
-        element::CosmicMappedKey,
+        element::{CosmicMappedKey, window::CosmicWindowRenderElement},
         focus::{FocusTarget, Stage, render_input_order, target::WindowGroup},
         grabs::{SeatMenuGrabState, SeatMoveGrabState},
         layout::tiling::ANIMATION_DURATION,
@@ -1544,8 +1544,26 @@ where
                     shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                 // Also apply layer slide offset (side-panel visibility animation).
                 let (slide_x, slide_y) = shell.get_layer_slide_offset(&surface_id);
-                let total_offset_x = offset_x + slide_x;
-                let total_offset_y = offset_y + slide_y;
+                // And the popover open/close animation translate + scale. The
+                // open slides UP (+6px → 0) + scales 0.97→1.0; the close is the
+                // exact reverse (0 → +6px, 1.0→0.97). Only ONE is ever active for
+                // a given surface; both fold into the same scale render path.
+                // All of (translate, scale, alpha) come from one eased factor.
+                let is_opening = shell.is_layer_opening(&surface_id);
+                let is_closing = shell.is_layer_closing(&surface_id);
+                let (anim_x, anim_y, anim_scale) = if is_opening {
+                    let (x, y) = shell.get_layer_open_offset(&surface_id);
+                    (x, y, shell.get_layer_open_scale(&surface_id))
+                } else if is_closing {
+                    let (x, y) = shell.get_layer_close_offset(&surface_id);
+                    (x, y, shell.get_layer_close_scale(&surface_id))
+                } else {
+                    (0, 0, 1.0)
+                };
+                // Whether to route through the center-scale render path this frame.
+                let is_scaling = is_opening || is_closing;
+                let total_offset_x = offset_x + slide_x + anim_x;
+                let total_offset_y = offset_y + slide_y + anim_y;
                 let render_location = if total_offset_x != 0 || total_offset_y != 0 {
                     location + smithay::utils::Point::from((total_offset_x, total_offset_y))
                 } else {
@@ -1558,41 +1576,95 @@ where
                     .as_logical()
                     .to_physical_precise_round(scale);
 
-                // First render the layer surface content
-                let surface_elements =
-                    render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
-                        renderer,
-                        layer.wl_surface(),
-                        surface_render_phys_loc,
-                        Scale::from(scale),
-                        alpha,
-                        FRAME_TIME_FILTER,
-                    );
-
-                let is_sliding = shell.is_layer_sliding(&surface_id);
-                let pre_crop_count = if is_sliding {
-                    surface_elements.len()
-                } else {
-                    0
-                };
-                let elements_before = elements.len();
-                elements.extend(
-                    surface_elements
-                        .into_iter()
-                        .flat_map(crop_to_output)
-                        .map(Into::into),
-                );
-                if is_sliding {
-                    let added = elements.len() - elements_before;
-                    tracing::trace!(
-                        pre_crop_count,
-                        post_crop_count = added,
-                        "layer_slide: element counts after crop"
-                    );
-                }
-
                 let local_geo =
                     Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
+
+                // Focal point for the open animation's scale: the CENTER of the
+                // surface in PHYSICAL coords. Scaling around a corner instead would
+                // make the popover lunge sideways, so we must use the center.
+                let open_origin_phys: Point<i32, Physical> = {
+                    let center_local =
+                        local_geo.loc + Point::from((local_geo.size.w / 2, local_geo.size.h / 2));
+                    center_local.as_logical().to_physical_precise_round(scale)
+                };
+
+                if is_scaling {
+                    // OPENING or CLOSING: render the surface tree as bare Wayland
+                    // elements (alpha already baked in via `alpha`), then wrap each
+                    // in a RescaleRenderElement about the surface CENTER so it
+                    // scales in place (open 0.97→1.0, close 1.0→0.97), and route
+                    // through GrabbedWindow which carries exactly
+                    // RescaleRenderElement<CosmicWindowRenderElement>.
+                    let surface_elements =
+                        render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                            renderer,
+                            layer.wl_surface(),
+                            surface_render_phys_loc,
+                            Scale::from(scale),
+                            alpha,
+                            FRAME_TIME_FILTER,
+                        );
+                    elements.extend(
+                        surface_elements
+                            .into_iter()
+                            .map(|surf_elem| {
+                                let win_elem: CosmicWindowRenderElement<R> = surf_elem.into();
+                                let scaled = RescaleRenderElement::from_element(
+                                    win_elem,
+                                    open_origin_phys,
+                                    anim_scale as f64,
+                                );
+                                let mapped: CosmicMappedRenderElement<R> =
+                                    CosmicMappedRenderElement::GrabbedWindow(scaled);
+                                let wre: WorkspaceRenderElement<R> = mapped.into();
+                                wre
+                            })
+                            .flat_map(crop_to_output)
+                            .map(Into::into),
+                    );
+                } else {
+                    // First render the layer surface content
+                    let surface_elements =
+                        render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
+                            renderer,
+                            layer.wl_surface(),
+                            surface_render_phys_loc,
+                            Scale::from(scale),
+                            alpha,
+                            FRAME_TIME_FILTER,
+                        );
+
+                    let is_sliding = shell.is_layer_sliding(&surface_id);
+                    let pre_crop_count = if is_sliding {
+                        surface_elements.len()
+                    } else {
+                        0
+                    };
+                    let elements_before = elements.len();
+                    elements.extend(
+                        surface_elements
+                            .into_iter()
+                            .flat_map(crop_to_output)
+                            .map(Into::into),
+                    );
+                    if is_sliding {
+                        let added = elements.len() - elements_before;
+                        tracing::trace!(
+                            pre_crop_count,
+                            post_crop_count = added,
+                            "layer_slide: element counts after crop"
+                        );
+                    }
+                }
+
+                // While opening OR closing, scale the shadow/blur rect by the SAME
+                // factor around the SAME center so the frosted backdrop and shadow
+                // track the surface instead of staying full-size behind a scaled card.
+                let local_geo = if is_scaling && anim_scale != 1.0 {
+                    scale_rect_about_center(local_geo, anim_scale)
+                } else {
+                    local_geo
+                };
 
                 // Get corner radius from the surface (same as windows)
                 let corner_radius = get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
@@ -1921,6 +1993,27 @@ where
     }
 
     Ok(elements)
+}
+
+/// Scale a logical-`Local` rectangle by `scale` about its own center, so a
+/// shadow/blur rect tracks a surface being rendered with the same scale around
+/// the same center (used by the popover open animation).
+fn scale_rect_about_center(rect: Rectangle<i32, Local>, scale: f32) -> Rectangle<i32, Local> {
+    // Use the SAME integer floor-division center as the GPU focal point
+    // (`open_origin_phys` in the LayerSurface stage), which is computed as
+    // `local_geo.loc + (size.w / 2, size.h / 2)`. A float center here would
+    // drift ~0.5px from that on odd surface dimensions, mismatching the
+    // shadow/blur rect against the scaled surface content during the open.
+    let cx = (rect.loc.x + rect.size.w / 2) as f32;
+    let cy = (rect.loc.y + rect.size.h / 2) as f32;
+    let new_w = rect.size.w as f32 * scale;
+    let new_h = rect.size.h as f32 * scale;
+    let new_x = (cx - new_w / 2.0).round() as i32;
+    let new_y = (cy - new_h / 2.0).round() as i32;
+    Rectangle::new(
+        Point::from((new_x, new_y)),
+        Size::from((new_w.round() as i32, new_h.round() as i32)),
+    )
 }
 
 fn session_lock_elements<R>(

@@ -36,7 +36,7 @@
     - Can be shown instantly without Wayland roundtrip overhead
   </description>
 
-  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="1">
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="2">
     <description summary="manager for layer surface visibility">
       This interface allows layer-shell clients to control the visibility
       of their surfaces.
@@ -62,13 +62,22 @@
     </request>
   </interface>
 
-  <interface name="zcosmic_layer_surface_visibility_v1" version="1">
+  <interface name="zcosmic_layer_surface_visibility_v1" version="2">
     <description summary="visibility controller for a layer surface">
       This interface controls whether a layer surface is visible or hidden.
-      
+
       By default, surfaces are visible. Use set_hidden to hide the surface
       and set_visible to show it again.
     </description>
+
+    <enum name="transition" since="2">
+      <description summary="show/hide transition animation">
+        Selects how the compositor animates this surface when it is hidden or
+        shown via set_hidden / set_visible.
+      </description>
+      <entry name="slide" value="0" summary="slide in/out from the anchored screen edge"/>
+      <entry name="fade" value="1" summary="cross-fade the surface opacity"/>
+    </enum>
 
     <request name="destroy" type="destructor">
       <description summary="destroy this controller">
@@ -93,6 +102,24 @@
         
         The surface will be rendered and can receive input events again.
       </description>
+    </request>
+
+    <request name="set_transition" since="2">
+      <description summary="choose the show/hide animation">
+        Select the animation the compositor uses when this surface is hidden or
+        shown via set_hidden / set_visible.
+
+        By default (when this request is never sent) the compositor picks an
+        animation based on the surface's anchor: a layer surface anchored to a
+        single lateral edge (left or right) slides in/out from that edge, while
+        all other surfaces cross-fade.  This request lets a surface override
+        that heuristic — for example a corner-anchored notification toast can
+        request "fade" so it does not slide horizontally.
+
+        The transition applies to subsequent set_hidden / set_visible calls and
+        is remembered for the lifetime of this controller.
+      </description>
+      <arg name="transition" type="uint" enum="transition" summary="desired transition animation"/>
     </request>
 
     <event name="visibility_changed">

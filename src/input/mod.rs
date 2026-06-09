@@ -813,15 +813,18 @@ impl State {
                             )
                         };
 
-                        if let Some(surface_id) = clicked_surface_id {
+                        // Check dismiss even when the click landed on empty space
+                        // (`clicked_surface_id == None`): bare desktop is outside
+                        // every dismiss group, so it must still close armed popovers.
+                        {
                             let controllers = self.common.dismiss_controller_registry.get_all();
                             let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
-                                surface_id,
+                                clicked_surface_id,
                                 &controllers,
                             );
                             if !to_dismiss.is_empty() {
                                 tracing::debug!(
-                                    clicked_surface_id = surface_id,
+                                    ?clicked_surface_id,
                                     dismiss_count = to_dismiss.len(),
                                     "Firing dismiss for armed controllers"
                                 );
@@ -1391,16 +1394,17 @@ impl State {
 
                     std::mem::drop(shell);
 
-                    // Fire dismiss if touch is outside armed surfaces
-                    if let Some(surface_id) = clicked_surface_id {
+                    // Fire dismiss if touch is outside armed surfaces — including a
+                    // touch on empty space (`None`), which is outside every group.
+                    {
                         let controllers = self.common.dismiss_controller_registry.get_all();
                         let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
-                            surface_id,
+                            clicked_surface_id,
                             &controllers,
                         );
                         if !to_dismiss.is_empty() {
                             tracing::debug!(
-                                clicked_surface_id = surface_id,
+                                ?clicked_surface_id,
                                 dismiss_count = to_dismiss.len(),
                                 "Firing dismiss for armed controllers (touch)"
                             );
@@ -2548,8 +2552,11 @@ impl State {
                         let (ox, oy) =
                             shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                         let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
-                        let total_ox = ox + sx;
-                        let total_oy = oy + sy;
+                        // Popover open-animation translate (slide-up), so hit-testing
+                        // tracks the surface as it rises into place.
+                        let (opx, opy) = shell.get_layer_open_offset(&surface_id);
+                        let total_ox = ox + sx + opx;
+                        let total_oy = oy + sy + opy;
                         let input_location = if total_ox != 0 || total_oy != 0 {
                             location + smithay::utils::Point::from((total_ox, total_oy))
                         } else {
@@ -2717,8 +2724,11 @@ impl State {
                         let (ox, oy) =
                             shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                         let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
-                        let total_ox = ox + sx;
-                        let total_oy = oy + sy;
+                        // Popover open-animation translate (slide-up), so pointer
+                        // hit-testing tracks the surface as it rises into place.
+                        let (opx, opy) = shell.get_layer_open_offset(&surface_id);
+                        let total_ox = ox + sx + opx;
+                        let total_oy = oy + sy + opy;
                         let input_location = if total_ox != 0 || total_oy != 0 {
                             location + smithay::utils::Point::from((total_ox, total_oy))
                         } else {

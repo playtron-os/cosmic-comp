@@ -25,12 +25,25 @@ mod generated {
 }
 
 use smithay::reexports::wayland_server::{
-    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
     backend::GlobalId, protocol::wl_surface::WlSurface,
 };
 use std::sync::Mutex;
 use tracing::{debug, info, warn};
 use wayland_backend::server::ObjectId;
+
+/// Show/hide transition animation a surface requests via `set_transition`.
+///
+/// When a surface never sends `set_transition`, the compositor falls back to
+/// its anchor-based heuristic (edge-anchored panels slide, everything else
+/// fades).  `Fade` lets an edge-anchored surface opt out of the slide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerTransition {
+    /// Slide in/out from the anchored screen edge.
+    Slide,
+    /// Cross-fade the surface opacity.
+    Fade,
+}
 
 /// User data for the visibility controller
 pub struct LayerSurfaceVisibilityControllerData {
@@ -71,7 +84,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(1, ());
+        >(2, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -88,6 +101,9 @@ pub trait LayerSurfaceVisibilityHandler {
 
     /// Set a surface's hidden state in the Shell
     fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool);
+
+    /// Set a surface's show/hide transition animation in the Shell
+    fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition);
 
     /// Check if a surface is hidden
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool;
@@ -233,6 +249,31 @@ where
                     resource.visibility_changed(1);
                 } else {
                     warn!("SetVisible called on dead surface");
+                }
+            }
+            zcosmic_layer_surface_visibility_v1::Request::SetTransition { transition } => {
+                let transition = match transition {
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Slide) => {
+                        LayerTransition::Slide
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Fade) => {
+                        LayerTransition::Fade
+                    }
+                    other => {
+                        warn!(?other, "SetTransition called with unknown transition value");
+                        return;
+                    }
+                };
+                if let Ok(surface) = data.surface.upgrade() {
+                    let surface_id = surface.id();
+                    info!(
+                        ?surface_id,
+                        ?transition,
+                        "Layer surface transition set by client"
+                    );
+                    state.set_surface_transition(surface_id, transition);
+                } else {
+                    warn!("SetTransition called on dead surface");
                 }
             }
         }
