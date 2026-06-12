@@ -29,16 +29,28 @@ pub enum SlideEdge {
 }
 
 /// Visibility state machine for the slide animation.
+///
+/// The `duration` of an active transition is scaled by the distance it has to
+/// cover, so reversing a half-finished slide takes half the time instead of
+/// crawling through the full duration for the remaining distance.
 #[derive(Debug, Clone)]
 pub enum SlideVisibility {
     /// Fully visible (factor = 0.0, no offset).
     Visible,
     /// Actively sliding off the edge.
-    SlidingOut { start: Instant, from_factor: f32 },
+    SlidingOut {
+        start: Instant,
+        from_factor: f32,
+        duration: Duration,
+    },
     /// Fully hidden (factor = 1.0, fully off-screen).
     Hidden,
     /// Actively sliding back on-screen.
-    SlidingIn { start: Instant, from_factor: f32 },
+    SlidingIn {
+        start: Instant,
+        from_factor: f32,
+        duration: Duration,
+    },
 }
 
 impl SlideVisibility {
@@ -46,14 +58,22 @@ impl SlideVisibility {
     pub fn factor(&self) -> f32 {
         match self {
             Self::Visible => 0.0,
-            Self::SlidingOut { start, from_factor } => {
-                let t = progress_clamped(*start, SLIDE_OUT_DURATION);
+            Self::SlidingOut {
+                start,
+                from_factor,
+                duration,
+            } => {
+                let t = progress_clamped(*start, *duration);
                 let eased = cubic_bezier(t);
                 from_factor + (1.0 - from_factor) * eased
             }
             Self::Hidden => 1.0,
-            Self::SlidingIn { start, from_factor } => {
-                let t = progress_clamped(*start, SLIDE_IN_DURATION);
+            Self::SlidingIn {
+                start,
+                from_factor,
+                duration,
+            } => {
+                let t = progress_clamped(*start, *duration);
                 let eased = cubic_bezier(t);
                 from_factor * (1.0 - eased)
             }
@@ -65,20 +85,37 @@ impl SlideVisibility {
         matches!(self, Self::SlidingOut { .. } | Self::SlidingIn { .. })
     }
 
+    /// Fraction of the slide still to run: ~1.0 right after a transition
+    /// starts, 0.0 once settled. Eased, and consistent across reversals —
+    /// used to drive content crossfades locked to the motion.
+    pub fn remaining_fraction(&self) -> f32 {
+        match self {
+            Self::Visible | Self::Hidden => 0.0,
+            // factor: current → 0
+            Self::SlidingIn { .. } => self.factor().clamp(0.0, 1.0),
+            // factor: current → 1
+            Self::SlidingOut { .. } => (1.0 - self.factor()).clamp(0.0, 1.0),
+        }
+    }
+
     /// Advance the state machine. Returns `Some(true)` when fully visible,
     /// `Some(false)` when fully hidden (terminal transitions).
     pub fn update(&mut self) -> Option<bool> {
         match self {
-            Self::SlidingOut { start, .. } => {
-                if start.elapsed() >= SLIDE_OUT_DURATION {
+            Self::SlidingOut {
+                start, duration, ..
+            } => {
+                if start.elapsed() >= *duration {
                     *self = Self::Hidden;
                     Some(false)
                 } else {
                     None
                 }
             }
-            Self::SlidingIn { start, .. } => {
-                if start.elapsed() >= SLIDE_IN_DURATION {
+            Self::SlidingIn {
+                start, duration, ..
+            } => {
+                if start.elapsed() >= *duration {
                     *self = Self::Visible;
                     Some(true)
                 } else {
@@ -96,14 +133,16 @@ impl SlideVisibility {
                 *self = Self::SlidingOut {
                     start: Instant::now(),
                     from_factor: 0.0,
+                    duration: SLIDE_OUT_DURATION,
                 };
             }
             Self::SlidingIn { .. } => {
-                // Reverse from current position.
+                // Reverse from current position; remaining distance is 1 - current.
                 let current = self.factor();
                 *self = Self::SlidingOut {
                     start: Instant::now(),
                     from_factor: current,
+                    duration: SLIDE_OUT_DURATION.mul_f32((1.0 - current).clamp(0.0, 1.0)),
                 };
             }
             _ => {} // Already hiding or hidden
@@ -117,14 +156,16 @@ impl SlideVisibility {
                 *self = Self::SlidingIn {
                     start: Instant::now(),
                     from_factor: 1.0,
+                    duration: SLIDE_IN_DURATION,
                 };
             }
             Self::SlidingOut { .. } => {
-                // Reverse from current position.
+                // Reverse from current position; remaining distance is the current factor.
                 let current = self.factor();
                 *self = Self::SlidingIn {
                     start: Instant::now(),
                     from_factor: current,
+                    duration: SLIDE_IN_DURATION.mul_f32(current.clamp(0.0, 1.0)),
                 };
             }
             _ => {} // Already showing or visible
@@ -145,6 +186,10 @@ pub struct LayerSlide {
     pub surface_width: i32,
     /// The surface's exclusive zone value (for animating workspace layout).
     pub exclusive_zone: i32,
+    /// The exclusive zone value last written into cached state and arranged.
+    /// Lets the animation tick skip re-arranging/relayouting when the integer
+    /// zone hasn't moved a whole pixel since the last application.
+    pub last_applied_ez: Option<i32>,
 }
 
 impl LayerSlide {
@@ -160,6 +205,7 @@ impl LayerSlide {
             visibility: SlideVisibility::Visible,
             surface_width,
             exclusive_zone,
+            last_applied_ez: None,
         }
     }
 
@@ -176,6 +222,7 @@ impl LayerSlide {
             visibility: SlideVisibility::Hidden,
             surface_width,
             exclusive_zone,
+            last_applied_ez: None,
         }
     }
 
@@ -198,9 +245,14 @@ impl LayerSlide {
     /// When fully visible (factor=0), returns full exclusive_zone.
     /// When fully hidden (factor=1), returns 0.
     /// During animation, interpolates between these values.
+    ///
+    /// Computed as the exact complement of `render_offset`'s rounding so that
+    /// (when `exclusive_zone == surface_width`, the common case) the panel's
+    /// sliding edge and the workspace zone edge always sum to the full width —
+    /// rounding them independently produced transient 1px seams/overlaps.
     pub fn effective_exclusive_zone(&self) -> i32 {
         let factor = self.visibility.factor();
-        ((self.exclusive_zone as f32) * (1.0 - factor)).round() as i32
+        self.exclusive_zone - ((self.exclusive_zone as f32) * factor).round() as i32
     }
 }
 
@@ -245,40 +297,7 @@ fn bezier_component_derivative(u: f64, p1: f64, p2: f64) -> f64 {
 }
 
 /// Clamped progress ratio for an animation started at `start` with `duration`.
+/// A zero duration yields 1.0 (animation instantly complete).
 fn progress_clamped(start: Instant, duration: Duration) -> f32 {
     (start.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0)
-}
-
-// ---------------------------------------------------------------------------
-// Per-output effective non-exclusive zone cache
-// ---------------------------------------------------------------------------
-
-use parking_lot::RwLock;
-use smithay::utils::{Logical, Rectangle};
-use std::collections::HashMap;
-use std::sync::LazyLock;
-
-static EFFECTIVE_NON_EXCLUSIVE_ZONES: LazyLock<RwLock<HashMap<String, Rectangle<i32, Logical>>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-
-/// Store the effective non-exclusive zone for an output.
-/// Called by Shell during animation updates.
-pub fn set_effective_non_exclusive_zone(output_name: &str, zone: Rectangle<i32, Logical>) {
-    EFFECTIVE_NON_EXCLUSIVE_ZONES
-        .write()
-        .insert(output_name.to_string(), zone);
-}
-
-/// Get the effective non-exclusive zone for an output.
-/// Returns the animated zone if available, otherwise falls back to the
-/// layer_map's static non_exclusive_zone.
-pub fn get_effective_non_exclusive_zone(
-    output: &smithay::output::Output,
-) -> Rectangle<i32, Logical> {
-    let name = output.name();
-    if let Some(zone) = EFFECTIVE_NON_EXCLUSIVE_ZONES.read().get(&name) {
-        *zone
-    } else {
-        smithay::desktop::layer_map_for_output(output).non_exclusive_zone()
-    }
 }

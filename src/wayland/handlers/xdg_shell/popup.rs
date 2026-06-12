@@ -74,13 +74,20 @@ impl Shell {
                 let window_geo_offset = window.geometry().loc;
                 let window_loc: Point<i32, Global> =
                     element_geo.loc + offset.as_global() + window_geo_offset.as_global();
+                // Constrain against the usable area (output minus layer-shell
+                // exclusive zones), not the full output, so popups flip/slide
+                // away from panels instead of opening underneath them.
+                let usable_geo = layer_map_for_output(&output)
+                    .non_exclusive_zone()
+                    .as_local()
+                    .to_global(&output);
                 if is_tiled {
                     element_geo.loc = (0, 0).into();
                     if !unconstrain_xdg_popup_tile(surface, element_geo.as_logical()) {
-                        unconstrain_xdg_popup(surface, window_loc, output.geometry());
+                        unconstrain_xdg_popup(surface, window_loc, usable_geo);
                     }
                 } else {
-                    unconstrain_xdg_popup(surface, window_loc, output.geometry());
+                    unconstrain_xdg_popup(surface, window_loc, usable_geo);
                 }
             } else if let Some(output) = self.workspaces.spaces().find_map(|w| {
                 w.fullscreen.as_ref().and_then(|f| {

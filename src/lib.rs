@@ -232,10 +232,10 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
         {
             let shell = state.common.shell.read();
-            if shell.animations_going() {
-                for output in shell.outputs().cloned().collect::<Vec<_>>().into_iter() {
-                    state.backend.schedule_render(&output);
-                }
+            // Only outputs hosting an animation need continuous redraws; a
+            // layer slide on one output must not keep other outputs rendering.
+            for output in shell.animating_outputs() {
+                state.backend.schedule_render(&output);
             }
         }
 

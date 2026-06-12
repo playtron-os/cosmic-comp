@@ -62,7 +62,6 @@ pub mod swap_indicator;
 
 #[cfg(feature = "debug")]
 use egui_plot::{Corner, Legend, Plot, PlotPoints, Polygon};
-#[cfg(feature = "debug")]
 use smithay::backend::renderer::{element::texture::TextureRenderElement, gles::GlesTexture};
 #[cfg(feature = "debug")]
 use smithay::desktop::WindowSurface;
@@ -1174,6 +1173,10 @@ where
     Overlay(PixelShaderElement),
     BlurBackdrop(TextureShaderElement),
     StackHoverIndicator(MemoryRenderBufferRenderElement<R>),
+    /// Snapshot of a window's previous content, crossfaded out over the live
+    /// window after a slide-driven resize (the client's reflowed buffer would
+    /// otherwise pop in abruptly).
+    WindowSnapshot(TextureRenderElement<GlesTexture>),
     #[cfg(feature = "debug")]
     Egui(TextureRenderElement<GlesTexture>),
 }
@@ -1198,6 +1201,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.id(),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.id(),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.id(),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.id(),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.id(),
         }
@@ -1218,6 +1222,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.current_commit(),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.current_commit(),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.current_commit(),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.current_commit(),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.current_commit(),
         }
@@ -1238,6 +1243,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.src(),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.src(),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.src(),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.src(),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.src(),
         }
@@ -1258,6 +1264,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.geometry(scale),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.geometry(scale),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.geometry(scale),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.geometry(scale),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.geometry(scale),
         }
@@ -1278,6 +1285,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.location(scale),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.location(scale),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.location(scale),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.location(scale),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.location(scale),
         }
@@ -1298,6 +1306,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.transform(),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.transform(),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.transform(),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.transform(),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.transform(),
         }
@@ -1324,6 +1333,7 @@ where
             CosmicMappedRenderElement::StackHoverIndicator(elem) => {
                 elem.damage_since(scale, commit)
             }
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.damage_since(scale, commit),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.damage_since(scale, commit),
         }
@@ -1344,6 +1354,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.opaque_regions(scale),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.opaque_regions(scale),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.opaque_regions(scale),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.opaque_regions(scale),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.opaque_regions(scale),
         }
@@ -1364,6 +1375,7 @@ where
             CosmicMappedRenderElement::Overlay(elem) => elem.alpha(),
             CosmicMappedRenderElement::BlurBackdrop(elem) => elem.alpha(),
             CosmicMappedRenderElement::StackHoverIndicator(elem) => elem.alpha(),
+            CosmicMappedRenderElement::WindowSnapshot(elem) => elem.alpha(),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => elem.alpha(),
         }
@@ -1453,6 +1465,16 @@ where
             CosmicMappedRenderElement::StackHoverIndicator(elem) => {
                 elem.draw(frame, src, dst, damage, opaque_regions, None)
             }
+            CosmicMappedRenderElement::WindowSnapshot(elem) => RenderElement::<GlowRenderer>::draw(
+                elem,
+                R::glow_frame_mut(frame),
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                None,
+            )
+            .map_err(FromGlesError::from_gles_error),
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
@@ -1494,6 +1516,9 @@ where
             }
             CosmicMappedRenderElement::StackHoverIndicator(elem) => {
                 elem.underlying_storage(renderer)
+            }
+            CosmicMappedRenderElement::WindowSnapshot(elem) => {
+                elem.underlying_storage(renderer.glow_renderer_mut())
             }
             #[cfg(feature = "debug")]
             CosmicMappedRenderElement::Egui(elem) => {

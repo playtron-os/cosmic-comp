@@ -3055,8 +3055,9 @@ impl TilingLayout {
             let mut configures = Vec::new();
 
             let (outer, inner) = gaps;
-            let mut geo =
-                crate::shell::layer_slide::get_effective_non_exclusive_zone(output).as_local();
+            // The layer map already reflects the animated exclusive zone during
+            // slides (cached-state overrides + arrange happen before recalculate).
+            let mut geo = layer_map_for_output(output).non_exclusive_zone().as_local();
             geo.loc.x += outer;
             geo.loc.y += outer;
             geo.size.w -= outer * 2;
@@ -3451,9 +3452,9 @@ impl TilingLayout {
             overview.active_trigger(),
             Some(Trigger::Pointer(_) | Trigger::Touch(_))
         ) {
-            let non_exclusive_zone =
-                crate::shell::layer_slide::get_effective_non_exclusive_zone(&self.output)
-                    .as_local();
+            let non_exclusive_zone = layer_map_for_output(&self.output)
+                .non_exclusive_zone()
+                .as_local();
             let geometries = geometries_for_groupview(
                 tree,
                 Option::<&mut GlowRenderer>::None,

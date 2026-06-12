@@ -2,7 +2,10 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -10,18 +13,24 @@ use cosmic_comp_config::AppearanceConfig;
 use cosmic_settings_config::shortcuts::action::ResizeDirection;
 use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::{
-    backend::renderer::{
-        ImportAll, ImportMem, Renderer,
-        element::{
-            AsRenderElements, RenderElement,
-            utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
+    backend::{
+        allocator::Fourcc,
+        renderer::{
+            Bind, Color32F, ImportAll, ImportMem, Offscreen, Renderer,
+            element::{
+                AsRenderElements, Kind, RenderElement,
+                texture::{TextureRenderBuffer, TextureRenderElement},
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
+            },
+            gles::{GlesError, GlesTexture},
+            glow::GlowRenderer,
         },
     },
     desktop::{PopupKind, Space, WindowSurfaceType, layer_map_for_output, space::SpaceElement},
     input::Seat,
     output::Output,
     reexports::wayland_server::Resource,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::seat::WaylandFocus,
 };
 
@@ -60,6 +69,9 @@ pub use self::grabs::*;
 
 pub const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 pub const MINIMIZE_ANIMATION_DURATION: Duration = Duration::from_millis(320);
+/// Crossfade length when a window's reflowed buffer replaces the stretched
+/// pre-slide content at the end of a panel slide.
+pub const SLIDE_CROSSFADE_DURATION: Duration = Duration::from_millis(220);
 
 #[derive(Debug, Default)]
 pub struct FloatingLayout {
@@ -78,10 +90,47 @@ pub struct FloatingLayout {
     /// When true, a layer slide animation is active. Windows skip `configure()`
     /// calls and get scaled in the render path instead, for smooth animation.
     pub slide_active: bool,
+    /// Fraction of the running slide still to go (1.0 at transition start,
+    /// 0.0 settled), eased. Drives the content crossfade so it tracks the
+    /// motion exactly, including reversals. Set by the shell every tick.
+    pub slide_fade: f32,
     /// Target geometries for windows during slide animation. Stored during recalculate()
     /// so the render path knows what size to scale to (since space.element_geometry()
     /// returns the buffer's committed size, not the animated target).
     slide_target_geometries: HashMap<CosmicMapped, Rectangle<i32, Local>>,
+    /// Snapshots of pre-slide window content, captured in the render path
+    /// (hence the interior mutability). Windows are configured to their final
+    /// size the moment a slide starts; when the client's reflowed buffer
+    /// arrives (the content swap), the snapshot is crossfaded out over it —
+    /// without this the content would swap in a single frame, a visible blink
+    /// on e.g. maximized editors. Until the swap, the snapshot stays hidden:
+    /// the live (old) buffer is still on screen and shows identical pixels.
+    slide_snapshots: Mutex<HashMap<CosmicMapped, SlideSnapshot>>,
+    /// Windows whose old content must be snapshotted on the very next render
+    /// frame, mapped to the buffer size they had when the final-size configure
+    /// was sent. Armed by the slide-start layout pass: at that moment the
+    /// animated target still equals the committed buffer, so the render path's
+    /// size-mismatch check alone would capture too late (possibly after the
+    /// new buffer landed — the recorded size lets us detect that race).
+    pending_slide_snapshots: Mutex<HashMap<CosmicMapped, Size<i32, Local>>>,
+}
+
+/// Crossfade state for one window resized by a layer slide.
+#[derive(Debug)]
+struct SlideSnapshot {
+    /// The window's content as it looked before the resize, captured at the
+    /// committed buffer's size.
+    texture: TextureRenderBuffer<GlesTexture>,
+    /// Full extent of the captured texture in the element's logical space.
+    /// Passed as the explicit `src` so the snapshot is scaled into the target
+    /// rect — without it the element would crop instead of scale.
+    src_size: Size<f64, Logical>,
+    /// The committed buffer size at capture time. A change of the live buffer
+    /// away from this size IS the content swap — it starts the crossfade,
+    /// whether it happens mid-slide or long after.
+    captured_size: Size<i32, Local>,
+    /// Set at the content swap; the crossfade runs from here.
+    fade_start: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -866,6 +915,8 @@ impl FloatingLayout {
         // Clear any lingering slide target geometry — the window is now under
         // client-driven animation and should not be overridden by stale slide data.
         self.slide_target_geometries.remove(&mapped);
+        self.slide_snapshots.lock().unwrap().remove(&mapped);
+        self.pending_slide_snapshots.lock().unwrap().remove(&mapped);
 
         let now = Instant::now();
         self.animations.insert(
@@ -2178,12 +2229,26 @@ impl FloatingLayout {
     }
 
     pub fn recalculate(&mut self) {
+        let _ = self.recalculate_collect_resized();
+    }
+
+    /// Like [`Self::recalculate`], but returns the windows that were sent a
+    /// configure with a changed size, with `(old buffer size, new size)`.
+    /// Used by the slide-start layout pass to know which windows need an
+    /// old-content snapshot for the crossfade.
+    pub fn recalculate_collect_resized(
+        &mut self,
+    ) -> Vec<(CosmicMapped, Size<i32, Local>, Size<i32, Local>)> {
+        let mut resized = Vec::new();
         let output = self.space.outputs().next().unwrap().clone();
         let output_size = output.geometry().size.as_local();
         let old_output_size = Some(self.last_output_size).filter(|size| *size != output_size);
 
-        let geometry =
-            crate::shell::layer_slide::get_effective_non_exclusive_zone(&output).as_local();
+        // The layer map already reflects the animated exclusive zone during
+        // slides (cached-state overrides + arrange happen before recalculate).
+        let geometry = layer_map_for_output(&output)
+            .non_exclusive_zone()
+            .as_local();
 
         // update elements
         for mapped in self
@@ -2222,29 +2287,30 @@ impl FloatingLayout {
                     Rectangle::new(Point::from((0, 0)), mapped.geometry().size.as_local())
                 })
             };
-            // Capture committed buffer size for the shrinking check below.
+            // Capture committed buffer size for the size-change check below.
             let buffer_size = mapped.geometry().size.as_local();
             let is_activated = mapped.is_activated(false);
-            // During slide animations, skip configure AND set_geometry when SHRINKING
-            // (panel opening, windows pushed smaller). We must not touch the toplevel's
-            // pending state at all — any pending != last_sent would leak a configure
-            // via space.refresh(). The render path uses slide_target_geometries for
-            // visual sizing. When GROWING (panel closing), allow configure so the client
-            // renders at the larger size (avoids stretching a small buffer up).
-            let is_shrinking = self.slide_active
-                && (window_geometry.size.w < buffer_size.w
-                    || window_geometry.size.h < buffer_size.h);
-            if is_shrinking {
+            // During slide animations, skip configure AND set_geometry for ANY size
+            // change. We must not touch the toplevel's pending state at all — any
+            // pending != last_sent would leak a configure via space.refresh(). The
+            // render path uses slide_target_geometries for visual sizing (squish
+            // when shrinking, stretch when growing) and one configure goes out when
+            // the slide ends. Sending per-frame configures instead (the zone moves
+            // every frame) made heavy clients re-render at many intermediate sizes,
+            // and each lagging buffer flipped the render scale between squish and
+            // stretch — visible texture jitter on e.g. maximized editors.
+            // Position-only changes still flow through normally below.
+            let size_changed =
+                window_geometry.size.w != buffer_size.w || window_geometry.size.h != buffer_size.h;
+            if self.slide_active && size_changed {
                 tracing::debug!(
                     app_id = %mapped.active_window().app_id(),
                     buf_w = buffer_size.w, buf_h = buffer_size.h,
                     tgt_w = window_geometry.size.w, tgt_h = window_geometry.size.h,
-                    "[SLIDE_RECALC] skipping configure (shrinking)"
+                    "[SLIDE_RECALC] deferring configure during slide"
                 );
             } else {
-                if buffer_size.w != window_geometry.size.w
-                    || buffer_size.h != window_geometry.size.h
-                {
+                if size_changed {
                     tracing::debug!(
                         app_id = %mapped.active_window().app_id(),
                         buf_w = buffer_size.w, buf_h = buffer_size.h,
@@ -2252,6 +2318,7 @@ impl FloatingLayout {
                         slide_active = self.slide_active,
                         "[SLIDE_RECALC] sending configure (size mismatch)"
                     );
+                    resized.push((mapped.clone(), buffer_size, window_geometry.size));
                 }
                 mapped.set_geometry(window_geometry.to_global(&output));
                 mapped.set_fills_output_zone(
@@ -2295,7 +2362,34 @@ impl FloatingLayout {
             });
         }
         self.pre_slide_positions.retain(|w, _| w.alive());
+        self.slide_snapshots
+            .lock()
+            .unwrap()
+            .retain(|w, _| w.alive());
+        self.pending_slide_snapshots
+            .lock()
+            .unwrap()
+            .retain(|w, _| w.alive());
         self.refresh();
+        resized
+    }
+
+    /// Arm old-content snapshot capture for `windows` on the next render
+    /// frame, recording the buffer size each had when its final-size configure
+    /// went out — the capture must happen before the clients' reflowed buffers
+    /// can arrive, and the recorded size lets the render path detect when it
+    /// lost that race.
+    pub fn arm_slide_snapshots(
+        &mut self,
+        windows: Vec<(CosmicMapped, Size<i32, Local>, Size<i32, Local>)>,
+    ) {
+        if windows.is_empty() {
+            return;
+        }
+        let mut pending = self.pending_slide_snapshots.lock().unwrap();
+        for (mapped, old_size, _) in windows {
+            pending.insert(mapped, old_size);
+        }
     }
 
     /// Compute a window's position during/after a panel slide animation.
@@ -2550,7 +2644,14 @@ impl FloatingLayout {
     }
 
     pub fn animations_going(&self) -> bool {
-        self.dirty.swap(false, Ordering::SeqCst) || !self.animations.is_empty()
+        self.dirty.swap(false, Ordering::SeqCst)
+            || !self.animations.is_empty()
+            || self
+                .slide_snapshots
+                .lock()
+                .unwrap()
+                .values()
+                .any(|snapshot| snapshot.fade_start.is_some())
     }
 
     pub fn update_animation_state(&mut self) {
@@ -3032,6 +3133,88 @@ impl FloatingLayout {
         }
 
         elements
+    }
+
+    /// Render `mapped`'s current content (at its committed buffer size) into
+    /// an owned offscreen texture, for crossfading after a slide-driven
+    /// resize. The window elements are rebuilt against the glow renderer so
+    /// the capture works for any `R`; on setups where the surface textures
+    /// aren't reachable through it the capture fails gracefully (`None`) and
+    /// the content swap stays uncrossfaded.
+    fn capture_slide_snapshot<R>(
+        renderer: &mut R,
+        mapped: &CosmicMapped,
+        output_scale: f64,
+    ) -> Option<(TextureRenderBuffer<GlesTexture>, Size<f64, Logical>)>
+    where
+        R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+        R::TextureId: Send + Clone + 'static,
+    {
+        use smithay::backend::renderer::{Frame as _, element::Element as _};
+
+        let buffer_size = mapped.geometry().size;
+        if buffer_size.w <= 0 || buffer_size.h <= 0 {
+            return None;
+        }
+        let size_phys = buffer_size
+            .to_f64()
+            .to_physical(output_scale)
+            .to_i32_round();
+        // Window content positioned so its visual origin lands at (0, 0).
+        let location = (Point::<i32, Logical>::from((0, 0)) - mapped.geometry().loc)
+            .to_physical_precise_round(output_scale);
+
+        let glow = renderer.glow_renderer_mut();
+        let elements: Vec<CosmicMappedRenderElement<GlowRenderer>> =
+            mapped.render_elements(glow, location, None, output_scale.into(), 1.0, None);
+        if elements.is_empty() {
+            return None;
+        }
+
+        let buffer_dims = size_phys.to_logical(1).to_buffer(1, Transform::Normal);
+        let texture = Offscreen::<GlesTexture>::create_buffer(glow, Fourcc::Abgr8888, buffer_dims)
+            .map_err(|err| {
+                tracing::warn!(?err, "Failed to create slide snapshot texture");
+                err
+            })
+            .ok()?;
+        let mut texture_buffer =
+            TextureRenderBuffer::from_texture(glow, texture, 1, Transform::Normal, None);
+
+        texture_buffer
+            .render()
+            .draw::<_, GlesError>(|tex| {
+                let mut target = glow.bind(tex)?;
+                let mut frame = glow.render(&mut target, size_phys, Transform::Normal)?;
+                let full = [Rectangle::from_size(size_phys)];
+                frame.clear(Color32F::from([0.0, 0.0, 0.0, 0.0]), &full)?;
+                // Elements are ordered front-to-back; draw back-to-front.
+                for element in elements.iter().rev() {
+                    let src = element.src();
+                    let dst = element.geometry(output_scale.into());
+                    RenderElement::<GlowRenderer>::draw(
+                        element,
+                        &mut frame,
+                        src,
+                        dst,
+                        &full,
+                        &[],
+                        None,
+                    )?;
+                }
+                drop(frame);
+                Ok(vec![Rectangle::from_size(buffer_dims)])
+            })
+            .map_err(|err| {
+                tracing::warn!(?err, "Failed to render slide snapshot");
+                err
+            })
+            .ok()?;
+
+        // The texture was created with texture_scale 1, so its logical extent
+        // equals its pixel dimensions.
+        let src_size = Size::from((size_phys.w as f64, size_phys.h as f64));
+        Some((texture_buffer, src_size))
     }
 
     #[profiling::function]
@@ -3763,6 +3946,128 @@ impl FloatingLayout {
                             x => x,
                         })
                         .collect();
+                }
+            }
+
+            // Slide content crossfade. Windows are configured to their final
+            // size the moment a slide starts and their old content is
+            // snapshotted; when the client's reflowed buffer arrives — the
+            // content swap, whenever it happens — the snapshot fades out over
+            // it. Until the swap the snapshot stays hidden: the live (old)
+            // buffer is still on screen with identical pixels.
+            if anim_opt.is_none() {
+                let mut snapshots = self.slide_snapshots.lock().unwrap();
+                let buffer_size = elem.geometry().size.as_local();
+
+                let needs_capture = |snapshots: &HashMap<CosmicMapped, SlideSnapshot>| {
+                    snapshots
+                        .get(elem)
+                        // A snapshot from an earlier, already-fading cycle is
+                        // stale (it shows even older content) — replace it.
+                        .map(|s| s.fade_start.is_some())
+                        .unwrap_or(true)
+                };
+
+                // Armed by the slide-start layout pass: capture the old
+                // content right now, before the client's reflowed buffer can
+                // replace it.
+                if let Some(expected_old) =
+                    self.pending_slide_snapshots.lock().unwrap().remove(elem)
+                {
+                    if buffer_size != expected_old {
+                        // The client committed its final buffer before we got
+                        // a frame in — the old content is gone and this swap
+                        // cannot be faded. Shows up as a blink at slide start.
+                    } else if needs_capture(&snapshots)
+                        && let Some((texture, src_size)) =
+                            Self::capture_slide_snapshot(renderer, elem, output_scale)
+                    {
+                        snapshots.insert(
+                            elem.clone(),
+                            SlideSnapshot {
+                                texture,
+                                src_size,
+                                captured_size: buffer_size,
+                                fade_start: None,
+                            },
+                        );
+                    }
+                }
+
+                // Fallback capture: the window became size-mismatched during
+                // the slide without having been armed (e.g. it appeared late).
+                // Strictly only when we hold NOTHING for this window: after
+                // the content swap the live (final) buffer stays mismatched
+                // with the still-animating target for the rest of the slide,
+                // and replacing the snapshot then would abort the running
+                // crossfade one frame in — a blink.
+                if let Some(target_geo) = self.slide_target_geometries.get(elem)
+                    && buffer_size != target_geo.size
+                    && !snapshots.contains_key(elem)
+                    && let Some((texture, src_size)) =
+                        Self::capture_slide_snapshot(renderer, elem, output_scale)
+                {
+                    snapshots.insert(
+                        elem.clone(),
+                        SlideSnapshot {
+                            texture,
+                            src_size,
+                            captured_size: buffer_size,
+                            fade_start: None,
+                        },
+                    );
+                }
+
+                // The content swap: the live buffer no longer matches what the
+                // snapshot captured. Start the crossfade — alpha 1.0 here is
+                // pixel-continuous, since the previous frame showed the same
+                // old content (live) that the snapshot holds.
+                if let Some(snapshot) = snapshots.get_mut(elem)
+                    && snapshot.fade_start.is_none()
+                    && buffer_size != snapshot.captured_size
+                {
+                    snapshot.fade_start = Some(Instant::now());
+                }
+
+                // Snapshots that never see a swap (window ended at its old
+                // size, e.g. after a reversal) are dropped once the slide
+                // bookkeeping is gone.
+                if !self.slide_active
+                    && !self.slide_target_geometries.contains_key(elem)
+                    && snapshots.get(elem).is_some_and(|s| s.fade_start.is_none())
+                {
+                    snapshots.remove(elem);
+                }
+
+                let mut remove = false;
+                if let Some(snapshot) = snapshots.get(elem)
+                    && let Some(start) = snapshot.fade_start
+                {
+                    let t = (start.elapsed().as_secs_f32()
+                        / SLIDE_CROSSFADE_DURATION.as_secs_f32())
+                    .min(1.0);
+                    if t >= 1.0 {
+                        remove = true;
+                    } else {
+                        // Smoothstep opacity decay — reads as a gentle dissolve.
+                        let fade = 1.0 - t * t * (3.0 - 2.0 * t);
+                        let snapshot_elem = TextureRenderElement::from_texture_render_buffer(
+                            geometry.loc.as_logical().to_f64().to_physical(output_scale),
+                            &snapshot.texture,
+                            Some(alpha * fade),
+                            // Explicit full-texture src: with only `size` set
+                            // the element derives src from it and CROPS the
+                            // texture instead of scaling it into the rect.
+                            Some(Rectangle::from_size(snapshot.src_size)),
+                            Some(geometry.size.as_logical()),
+                            Kind::Unspecified,
+                        );
+                        window_elements
+                            .insert(0, CosmicMappedRenderElement::WindowSnapshot(snapshot_elem));
+                    }
+                }
+                if remove {
+                    snapshots.remove(elem);
                 }
             }
 

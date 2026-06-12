@@ -596,6 +596,13 @@ pub struct Shell {
     hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
     /// Surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     hidden_surfaces: std::collections::HashSet<ObjectId>,
+    /// The last exclusive zone each layer surface's client actually committed,
+    /// recorded before any compositor override. The slide animation scribbles
+    /// animated values into `LayerSurfaceCachedState`, so this map is the only
+    /// reliable record of the client's intent (e.g. for `detect_layer_slide_edge`
+    /// when showing a hidden surface, or for restoring the zone after a slide).
+    client_exclusive_zones:
+        std::collections::HashMap<ObjectId, smithay::wayland::shell::wlr_layer::ExclusiveZone>,
     /// Surfaces minimized by home mode (to restore when exiting)
     home_minimized_surfaces: Vec<CosmicSurface>,
 
@@ -1532,6 +1539,15 @@ impl Workspaces {
         }
     }
 
+    /// Recalculate only the workspace set of a single output. Used by the
+    /// per-frame slide animation path to avoid relayouting unrelated outputs.
+    pub fn recalculate_output(&mut self, output: &Output) {
+        if let Some(set) = self.sets.get_mut(output) {
+            set.sticky_layer.recalculate();
+            set.workspaces.iter_mut().for_each(|w| w.recalculate());
+        }
+    }
+
     pub fn refresh(
         &mut self,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
@@ -2018,6 +2034,7 @@ impl Shell {
             home_only_surfaces: std::collections::HashSet::new(),
             hide_on_home_surfaces: std::collections::HashSet::new(),
             hidden_surfaces: std::collections::HashSet::new(),
+            client_exclusive_zones: std::collections::HashMap::new(),
             home_minimized_surfaces: Vec::new(),
 
             // Voice mode state
@@ -2770,6 +2787,43 @@ impl Shell {
     }
 
     pub fn animations_going(&self) -> bool {
+        self.non_slide_animations_going()
+            || self
+                .layer_slides
+                .iter()
+                .any(|s| s.visibility.is_animating())
+    }
+
+    /// Outputs that need continuous redraws for ongoing animations. When only
+    /// layer slides are animating, this is just the outputs hosting the
+    /// sliding surfaces; any other animation type conservatively claims all
+    /// outputs. Returns an empty list when nothing is animating.
+    pub fn animating_outputs(&self) -> Vec<Output> {
+        if self.non_slide_animations_going() {
+            return self.outputs().cloned().collect();
+        }
+        let mut outputs: Vec<Output> = Vec::new();
+        for slide in &self.layer_slides {
+            if !slide.visibility.is_animating() {
+                continue;
+            }
+            for output in self.outputs() {
+                if outputs.contains(output) {
+                    continue;
+                }
+                let map = layer_map_for_output(output);
+                if map
+                    .layers()
+                    .any(|l| l.wl_surface().id() == slide.surface_id)
+                {
+                    outputs.push(output.clone());
+                }
+            }
+        }
+        outputs
+    }
+
+    fn non_slide_animations_going(&self) -> bool {
         let workspace_sets = self.workspaces.sets.values().any(|set| {
             set.previously_active
                 .as_ref()
@@ -2802,10 +2856,6 @@ impl Shell {
             .auto_hide_surfaces
             .iter()
             .any(|s| s.visibility.is_animating());
-        let layer_slide = self
-            .layer_slides
-            .iter()
-            .any(|s| s.visibility.is_animating());
         let layer_open = self.layer_opens.iter().any(|o| o.is_animating());
         let pending_open = !self.pending_layer_opens.is_empty();
         let layer_close = self.layer_closes.iter().any(|c| c.is_animating());
@@ -2822,7 +2872,6 @@ impl Shell {
             || workspaces
             || zoom
             || auto_hide
-            || layer_slide
             || layer_open
             || pending_open
             || layer_close
@@ -2868,6 +2917,16 @@ impl Shell {
             // and entry was removed) — disable slide scaling and configure windows
             // to their final size (they were skipping configures during animation).
             self.set_slide_active(false);
+            self.set_slide_fade(0.0);
+            // The cached state still holds the last animated zone (off by up to
+            // a pixel, and stale for surfaces that just became hidden). Restore
+            // the client's true zones / zero hidden ones and re-arrange before
+            // the final relayout.
+            let outputs = self.outputs().cloned().collect::<Vec<_>>();
+            for output in &outputs {
+                self.override_slide_exclusive_zones(output);
+                layer_map_for_output(output).arrange();
+            }
             self.workspaces.recalculate();
         }
         // Clean up completed layer surface fade-ins
@@ -3456,69 +3515,61 @@ impl Shell {
         1.0
     }
 
-    /// Override exclusive_zone in cached state for any sliding surface on the
-    /// given output. Called before arrange() in the commit handler to prevent
-    /// the client's raw value from causing layout jumps.
+    /// Reconcile the exclusive zones in smithay's cached state for all layer
+    /// surfaces on `output` with the compositor's view, prior to an `arrange()`:
+    ///
+    /// - surfaces with an active slide animation get the interpolated zone,
+    /// - hidden surfaces reserving space get `Exclusive(0)` — a hidden surface
+    ///   must not shrink the workspace, even if its client commits a non-zero
+    ///   zone while hidden (e.g. the chat panel re-claims its zone just before
+    ///   requesting show, which used to snap the desktop and storm clients
+    ///   with shrink+grow configures),
+    /// - all other surfaces get the client's last committed value restored
+    ///   (undoing stale animation overrides after a slide completes).
+    ///
+    /// Called before every `arrange()` (commit handler, animation tick, slide
+    /// completion), so the client's raw values never cause layout jumps.
     pub fn override_slide_exclusive_zones(&self, output: &Output) {
         use smithay::wayland::shell::wlr_layer::ExclusiveZone;
 
         let map = layer_map_for_output(output);
-        for slide in &self.layer_slides {
-            if !slide.visibility.is_animating() {
-                continue;
-            }
-            let animated_ez = slide.effective_exclusive_zone();
-            for layer in map.layers() {
-                if layer.wl_surface().id() == slide.surface_id {
-                    with_states(layer.wl_surface(), |states| {
-                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
-                        cached.current().exclusive_zone =
-                            ExclusiveZone::Exclusive(animated_ez as u32);
-                    });
+        for layer in map.layers() {
+            let id = layer.wl_surface().id();
+            // Use the zone recorded by the last animation tick so commits
+            // between ticks re-assert the exact value the layouts were
+            // arranged against, rather than a fresh (slightly later) sample.
+            let slide_ez = self
+                .layer_slides
+                .iter()
+                .find(|s| s.surface_id == id && s.visibility.is_animating())
+                .map(|s| {
+                    s.last_applied_ez
+                        .unwrap_or_else(|| s.effective_exclusive_zone())
+                        .max(0) as u32
+                });
+            let hidden = self.hidden_surfaces.contains(&id);
+            let client_ez = self.client_exclusive_zones.get(&id).copied();
+
+            with_states(layer.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = cached.current();
+                let desired = if let Some(ez) = slide_ez {
+                    Some(ExclusiveZone::Exclusive(ez))
+                } else if hidden {
+                    // Only suppress an actual reservation; Neutral/DontCare
+                    // surfaces reserve nothing and keep their semantics.
+                    match client_ez.unwrap_or(current.exclusive_zone) {
+                        ExclusiveZone::Exclusive(n) if n > 0 => Some(ExclusiveZone::Exclusive(0)),
+                        _ => None,
+                    }
+                } else {
+                    client_ez
+                };
+                if let Some(desired) = desired {
+                    current.exclusive_zone = desired;
                 }
-            }
+            });
         }
-    }
-
-    /// Get the effective non-exclusive zone for an output, accounting for
-    /// layer slide animations. During slide-in/out, the exclusive zone is
-    /// interpolated so other surfaces resize smoothly.
-    pub fn effective_non_exclusive_zone(&self, output: &Output) -> Rectangle<i32, Logical> {
-        let map = layer_map_for_output(output);
-        let mut zone = map.non_exclusive_zone();
-
-        // For each surface with a slide entry (animating or hidden), add back
-        // the portion of exclusive zone that's not currently "active".
-        // The layer_map always subtracts the full exclusive_zone, so we add back
-        // the difference: exclusive_zone * factor (factor=1 when hidden, 0 when visible).
-        for slide in &self.layer_slides {
-            if slide.exclusive_zone <= 0 {
-                continue;
-            }
-            // Verify this surface is on this output
-            if !map
-                .layers()
-                .any(|l| l.wl_surface().id() == slide.surface_id)
-            {
-                continue;
-            }
-            let factor = slide.visibility.factor();
-            if factor <= 0.0 {
-                continue; // Fully visible, no adjustment needed
-            }
-            let adjustment = (slide.exclusive_zone as f32 * factor).round() as i32;
-            match slide.edge {
-                layer_slide::SlideEdge::Right => {
-                    zone.size.w += adjustment;
-                }
-                layer_slide::SlideEdge::Left => {
-                    zone.loc.x -= adjustment;
-                    zone.size.w += adjustment;
-                }
-            }
-        }
-
-        zone
     }
 
     /// Update layer slide animations, completing finished ones.
@@ -3542,35 +3593,56 @@ impl Shell {
         had_completions
     }
 
-    /// Override the exclusive_zone in smithay's LayerSurfaceCachedState for each
-    /// surface with an active slide animation, then re-arrange layer maps and
-    /// recalculate workspace layouts. This ensures ALL surfaces (windows and other
-    /// layer surfaces) animate smoothly with the panel.
+    /// Apply the animated exclusive zones of active slides to the layer maps
+    /// and relayout the affected outputs. This ensures ALL surfaces (windows
+    /// and other layer surfaces) animate smoothly with the panel.
+    ///
+    /// Skips all work when no slide's integer zone moved since the last
+    /// application: this runs on every event-loop dispatch (input bursts,
+    /// client commits), which is far more often than the eased zone moves a
+    /// whole pixel — especially in the easing tail.
     fn apply_slide_exclusive_zones(&mut self) {
-        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+        // Drive the content crossfade every tick (it follows the eased motion,
+        // so it must advance even when the integer zone hasn't moved).
+        let fade = self
+            .layer_slides
+            .iter()
+            .filter(|s| s.visibility.is_animating())
+            .map(|s| s.visibility.remaining_fraction())
+            .fold(0.0f32, f32::max);
+        self.set_slide_fade(fade);
 
+        let mut any_change = false;
+        for slide in &mut self.layer_slides {
+            if !slide.visibility.is_animating() {
+                continue;
+            }
+            let ez = slide.effective_exclusive_zone();
+            if slide.last_applied_ez != Some(ez) {
+                slide.last_applied_ez = Some(ez);
+                any_change = true;
+            }
+        }
+        if !any_change {
+            return;
+        }
+
+        // Collect the outputs hosting animating slide surfaces.
         let mut outputs_to_arrange: Vec<Output> = Vec::new();
-
         for slide in &self.layer_slides {
             if !slide.visibility.is_animating() {
                 continue;
             }
-            let animated_ez = slide.effective_exclusive_zone();
-
-            // Find the surface in the layer map and override its cached state
             for output in self.outputs() {
+                if outputs_to_arrange.contains(output) {
+                    continue;
+                }
                 let map = layer_map_for_output(output);
-                for layer in map.layers() {
-                    if layer.wl_surface().id() == slide.surface_id {
-                        with_states(layer.wl_surface(), |states| {
-                            let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
-                            cached.current().exclusive_zone =
-                                ExclusiveZone::Exclusive(animated_ez as u32);
-                        });
-                        if !outputs_to_arrange.contains(output) {
-                            outputs_to_arrange.push(output.clone());
-                        }
-                    }
+                if map
+                    .layers()
+                    .any(|l| l.wl_surface().id() == slide.surface_id)
+                {
+                    outputs_to_arrange.push(output.clone());
                 }
             }
         }
@@ -3579,12 +3651,15 @@ impl Shell {
         // recalculate triggered by zone changes skips configure sends.
         self.set_slide_active(true);
 
-        // Re-arrange layer maps so all layer surfaces reposition
+        // Write the animated zones and re-arrange so all layer surfaces
+        // reposition, then relayout only the affected outputs' workspaces.
         for output in &outputs_to_arrange {
+            self.override_slide_exclusive_zones(output);
             layer_map_for_output(output).arrange();
         }
-        // Recalculate workspace layouts (tiling/floating) with the new zone
-        self.workspaces.recalculate();
+        for output in &outputs_to_arrange {
+            self.workspaces.recalculate_output(output);
+        }
     }
 
     /// Set slide_active on all floating and tiling layouts (sticky + per-workspace).
@@ -3597,6 +3672,100 @@ impl Shell {
                 workspace.tiling_layer.slide_active = active;
             }
         }
+    }
+
+    /// Propagate the current slide crossfade fraction (1.0 = transition just
+    /// started, 0.0 = settled) to all floating layouts.
+    fn set_slide_fade(&mut self, fade: f32) {
+        for set in self.workspaces.sets.values_mut() {
+            set.sticky_layer.slide_fade = fade;
+            for workspace in &mut set.workspaces {
+                workspace.floating_layer.slide_fade = fade;
+            }
+        }
+    }
+
+    /// One-shot layout pass at the start (or reversal) of a layer slide:
+    /// arrange the affected outputs at the slide's TERMINAL zone and send
+    /// every floating window a single configure at its final size. The
+    /// animation afterwards only moves visual bounds — clients render their
+    /// final buffer once, and the render path crossfades the old content out
+    /// over it, locked to the slide's motion. No further configures are sent
+    /// until (at most) a no-op one when the slide settles.
+    fn begin_slide_layout(&mut self, surface_id: &ObjectId) {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+
+        let Some(slide) = self
+            .layer_slides
+            .iter()
+            .find(|s| s.surface_id == *surface_id)
+        else {
+            return;
+        };
+        let terminal_ez = match slide.visibility {
+            layer_slide::SlideVisibility::SlidingIn { .. }
+            | layer_slide::SlideVisibility::Visible => slide.exclusive_zone.max(0),
+            layer_slide::SlideVisibility::SlidingOut { .. }
+            | layer_slide::SlideVisibility::Hidden => 0,
+        };
+        let initial_fade = slide.visibility.remaining_fraction();
+
+        let outputs: Vec<Output> = self
+            .outputs()
+            .filter(|o| {
+                layer_map_for_output(o)
+                    .layers()
+                    .any(|l| l.wl_surface().id() == *surface_id)
+            })
+            .cloned()
+            .collect();
+        if outputs.is_empty() {
+            return;
+        }
+
+        // Final-layout pass with configures enabled. Written directly (not via
+        // the reconcile helper, which would substitute the animated value).
+        self.set_slide_active(false);
+        for output in &outputs {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.wl_surface().id() == *surface_id {
+                    with_states(layer.wl_surface(), |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        cached.current().exclusive_zone =
+                            ExclusiveZone::Exclusive(terminal_ez as u32);
+                    });
+                }
+            }
+            drop(map);
+            layer_map_for_output(output).arrange();
+        }
+        // Only floating layouts take part: tiled windows keep the existing
+        // crop-and-configure-at-end flow (their buffers must keep covering the
+        // animated slots). Every window that got a final-size configure is
+        // armed for an old-content snapshot on the next render frame.
+        for (output, set) in self.workspaces.sets.iter_mut() {
+            if !outputs.contains(output) {
+                continue;
+            }
+            let resized = set.sticky_layer.recalculate_collect_resized();
+            set.sticky_layer.arm_slide_snapshots(resized);
+            for workspace in &mut set.workspaces {
+                let resized = workspace.floating_layer.recalculate_collect_resized();
+                workspace.floating_layer.arm_slide_snapshots(resized);
+            }
+        }
+
+        // Back to the animated state for visuals: re-apply the interpolated
+        // zone immediately so no frame renders the final layout early.
+        self.set_slide_active(true);
+        self.set_slide_fade(initial_fade);
+        for slide in &mut self.layer_slides {
+            if slide.surface_id == *surface_id {
+                slide.last_applied_ez = None;
+            }
+        }
+        self.apply_slide_exclusive_zones();
     }
 
     /// Check if any floating/tiling layer still has slide_active set.
@@ -3905,11 +4074,18 @@ impl Shell {
                 {
                     existing.visibility.start_hide();
                 } else {
-                    let mut slide =
-                        layer_slide::LayerSlide::new(surface_id, edge, width, exclusive_zone);
+                    let mut slide = layer_slide::LayerSlide::new(
+                        surface_id.clone(),
+                        edge,
+                        width,
+                        exclusive_zone,
+                    );
                     slide.visibility.start_hide();
                     self.layer_slides.push(slide);
                 }
+                // Configure all floating windows at their final size right
+                // away; the animation only moves visual bounds from here.
+                self.begin_slide_layout(&surface_id);
             } else {
                 let was_hidden = self.hidden_surfaces.remove(&surface_id);
                 let was_sliding_out = self.layer_slides.iter().any(|s| {
@@ -3939,7 +4115,7 @@ impl Shell {
                         existing.visibility.start_show();
                     } else {
                         let mut slide = layer_slide::LayerSlide::new_hidden(
-                            surface_id,
+                            surface_id.clone(),
                             edge,
                             width,
                             exclusive_zone,
@@ -3947,6 +4123,9 @@ impl Shell {
                         slide.visibility.start_show();
                         self.layer_slides.push(slide);
                     }
+                    // Configure all floating windows at their final size right
+                    // away; the animation only moves visual bounds from here.
+                    self.begin_slide_layout(&surface_id);
                 }
             }
         } else {
@@ -4029,16 +4208,24 @@ impl Shell {
             let map = layer_map_for_output(output);
             for layer in map.layers() {
                 if layer.wl_surface().id() == *surface_id {
-                    let (anchor, size, exclusive_zone) =
-                        with_states(layer.wl_surface(), |states| {
-                            let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
-                            let current = cached.current();
-                            let ez = match current.exclusive_zone {
-                                ExclusiveZone::Exclusive(v) => v as i32,
-                                _ => 0,
-                            };
-                            (current.anchor, current.size, ez)
-                        });
+                    let (anchor, size, cached_ez) = with_states(layer.wl_surface(), |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        let current = cached.current();
+                        (current.anchor, current.size, current.exclusive_zone)
+                    });
+                    // Prefer the client's recorded commit over cached state —
+                    // the cache may hold a stale animation override (e.g. ~0
+                    // after a completed slide-out), which would start the
+                    // slide with no zone to animate.
+                    let exclusive_zone = match self
+                        .client_exclusive_zones
+                        .get(surface_id)
+                        .copied()
+                        .unwrap_or(cached_ez)
+                    {
+                        ExclusiveZone::Exclusive(v) => v as i32,
+                        _ => 0,
+                    };
                     tracing::debug!(
                         ?surface_id,
                         ?anchor,
@@ -4095,6 +4282,21 @@ impl Shell {
     pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
         self.hidden_surfaces.remove(surface_id);
         self.layer_transitions.remove(surface_id);
+    }
+
+    /// Record the exclusive zone a layer surface's client last committed,
+    /// before any compositor override is applied for animations.
+    pub fn record_client_exclusive_zone(
+        &mut self,
+        surface_id: ObjectId,
+        zone: smithay::wayland::shell::wlr_layer::ExclusiveZone,
+    ) {
+        self.client_exclusive_zones.insert(surface_id, zone);
+    }
+
+    /// Forget a destroyed layer surface's recorded exclusive zone.
+    pub fn remove_client_exclusive_zone(&mut self, surface_id: &ObjectId) {
+        self.client_exclusive_zones.remove(surface_id);
     }
 
     // Layer fade-in methods

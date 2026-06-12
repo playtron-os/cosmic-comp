@@ -373,8 +373,26 @@ impl CompositorHandler for State {
             .cloned();
 
         if let Some(ref output) = layer_output {
-            // Override exclusive zones for surfaces with active slide animations
-            // BEFORE arrange() runs, to prevent one-frame jumps when the client
+            // Record the exclusive zone this client just committed (cached
+            // state is fresh from the commit here). The slide animation
+            // overrides cached state, so this map is the only reliable record
+            // of the client's intent.
+            let is_layer_toplevel = layer_map_for_output(output)
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .is_some();
+            if is_layer_toplevel {
+                let client_zone = with_states(surface, |states| {
+                    states
+                        .cached_state
+                        .get::<LayerSurfaceCachedState>()
+                        .current()
+                        .exclusive_zone
+                });
+                shell.record_client_exclusive_zone(surface.id(), client_zone);
+            }
+
+            // Override exclusive zones for sliding/hidden surfaces BEFORE
+            // arrange() runs, to prevent one-frame jumps when the client
             // commits a new exclusive_zone value.
             shell.override_slide_exclusive_zones(output);
 
