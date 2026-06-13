@@ -5,7 +5,7 @@
 //! so SSD windows match CSD visual design.
 
 use iced_core::Alignment;
-use iced_core::{Color, Element, Length};
+use iced_core::{Element, Length};
 use iced_widget::{Svg, container, row, svg};
 use icetron::prelude::{animated_opacity, app_header, header_height, styled_text};
 
@@ -139,9 +139,9 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         // We wrap in animated_opacity to replicate app_header's title fade behavior
         // (0.8 when unfocused, animates to 1.0 on hover/focus).
         {
-            let title_color = theme.text_primary();
-            let mut title_style = theme.text_styles().sm();
-            title_style.font_weight = 500;
+            let title_style = theme.header_title_text_style();
+            let title_color = theme.header_title_color();
+            let title_gap = theme.header_title_gap();
 
             let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 styled_text(&self.title, title_style, title_color).into();
@@ -157,11 +157,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     > = match icon {
                         AppIcon::Svg(bytes) => {
                             let handle = iced_core::svg::Handle::from_memory(*bytes);
+                            let icon_tint = title_color;
                             Svg::new(handle)
                                 .width(icon_size)
                                 .height(icon_size)
-                                .style(|_theme, _status| svg::Style {
-                                    color: Some(Color::TRANSPARENT),
+                                .style(move |_theme, _status| svg::Style {
+                                    color: Some(icon_tint),
                                 })
                                 .into()
                         }
@@ -171,7 +172,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                             .into(),
                     };
                     row![icon_element, text_element]
-                        .spacing(theme.spacing_2_5())
+                        .spacing(title_gap)
                         .align_y(Alignment::Center)
                         .into()
                 } else {
