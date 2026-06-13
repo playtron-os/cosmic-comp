@@ -1,6 +1,8 @@
 // Theme watching — monitors color mode and brand changes via inotify,
 // reloads CompTheme and propagates to the shell.
 
+use std::path::PathBuf;
+
 use calloop::LoopHandle;
 use tracing::{info, warn};
 
@@ -19,8 +21,9 @@ pub enum ThemeEvent {
 /// Watches:
 /// - `~/.config/cosmic/com.system76.CosmicTheme.Mode/v1/` (color mode)
 /// - `~/.config/icetron/` (brand theme symlink)
+/// - the active theme's installed directory (RON content, via the brand symlink)
 ///
-/// When either changes, builds a new `CompTheme` and calls `shell.set_theme()`.
+/// When any changes, builds a new `CompTheme` and calls `shell.set_theme()`.
 pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), Box<dyn std::error::Error>> {
     use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
@@ -41,11 +44,16 @@ pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), Box<dyn std::err
         std::fs::create_dir_all(dir).ok();
     }
 
+    // Also watch the active theme's installed directory so RON *content* updates
+    // (theme-package reinstalls) hot-reload, not just brand/color-mode switches.
+    let active_theme_dir = resolve_active_theme_dir();
+
     let (tx, rx) = calloop::channel::channel::<ThemeEvent>();
 
     // Spawn a background OS thread for the notify watcher
     let color_dir_clone = color_mode_dir.clone();
     let theme_dir_clone = theme_dir.clone();
+    let active_theme_dir_clone = active_theme_dir.clone();
 
     std::thread::Builder::new()
         .name("theme-watcher".into())
@@ -66,6 +74,11 @@ pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), Box<dyn std::err
                 && let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive)
             {
                 warn!("Failed to watch theme config dir {}: {e}", dir.display());
+            }
+            if let Some(ref dir) = active_theme_dir_clone
+                && let Err(e) = watcher.watch(dir, RecursiveMode::NonRecursive)
+            {
+                warn!("Failed to watch active theme dir {}: {e}", dir.display());
             }
 
             info!("Theme file watcher started");
@@ -95,6 +108,26 @@ pub fn watch_theme(handle: LoopHandle<'_, State>) -> Result<(), Box<dyn std::err
     // Note: state isn't available here — initial load happens via State::new().
 
     Ok(())
+}
+
+/// Resolve the active theme's installed directory by following the brand symlink
+/// (e.g. `~/.config/icetron/current-theme -> /usr/share/icetron/themes/playtron`),
+/// falling back to the system-wide symlink.
+///
+/// Watching this directory makes installed RON *content* updates (e.g. a
+/// `go-task install` of a rebuilt theme) trigger a live reload. Brand switches
+/// are already covered by the `~/.config/icetron/` watch; after one the stale
+/// directory keeps being watched until the next compositor start, which is
+/// acceptable for this dev/install-time convenience.
+fn resolve_active_theme_dir() -> Option<PathBuf> {
+    let candidates = [
+        dirs::config_dir().map(|d| d.join("icetron/current-theme")),
+        Some(PathBuf::from("/usr/share/icetron/current-theme")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|cand| std::fs::canonicalize(cand).ok().filter(|p| p.is_dir()))
 }
 
 /// Reload the theme from disk and propagate to the shell.
