@@ -10,10 +10,13 @@ use crate::{
     wayland::protocols::blur::{get_blur_radius, has_blur as surface_has_blur},
 };
 use smithay::{
-    desktop::{LayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output},
+    desktop::{
+        LayerSurface, PopupKind, PopupManager, WindowSurfaceType, layer_map_for_output,
+        utils::bbox_from_surface_tree,
+    },
     output::Output,
     reexports::wayland_server::{Resource, protocol::wl_output::WlOutput},
-    utils::IsAlive,
+    utils::{IsAlive, Rectangle},
     wayland::shell::{
         wlr_layer::{
             Layer, LayerSurface as WlrLayerSurface, WlrLayerShellHandler, WlrLayerShellState,
@@ -39,7 +42,7 @@ pub fn update_layer_blur_state(
     let layer_map = layer_map_for_output(output);
 
     // Update blur surfaces cache
-    let blur_surfaces: Vec<LayerBlurSurfaceInfo> = layer_map
+    let mut blur_surfaces: Vec<LayerBlurSurfaceInfo> = layer_map
         .layers()
         .filter(|layer| {
             let surface = layer.wl_surface();
@@ -84,6 +87,44 @@ pub fn update_layer_blur_state(
             })
         })
         .collect();
+
+    // Layer-shell POPUPS that request blur are NOT in `layer_map.layers()`, so
+    // enumerate them here too. `Stage::LayerPopup` looks the blur-capture texture
+    // up by the popup's OWN surface id, so without an entry here a popup never
+    // gets a texture and renders no backdrop. Geometry mirrors `layer_popups`'
+    // standard placement (parent layer loc + popup offset).
+    for layer in layer_map.layers() {
+        let Some(layer_geo) = layer_map.layer_geometry(layer) else {
+            continue;
+        };
+        for (popup, popup_offset) in PopupManager::popups_for_surface(layer.wl_surface()) {
+            let surface = popup.wl_surface();
+            if !surface.alive()
+                || !surface_has_blur(surface)
+                || hidden_surfaces.contains(&surface.id())
+            {
+                continue;
+            }
+            let popup_geo = popup.geometry();
+            // `popup.geometry()` is (0,0,0,0) until the client sets a window
+            // geometry; fall back to the surface-tree bounding box.
+            let size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
+                popup_geo.size
+            } else {
+                bbox_from_surface_tree(surface, (0, 0)).size
+            };
+            if (size.w.max(0) as i64) * (size.h.max(0) as i64) < 4 {
+                continue;
+            }
+            let loc = layer_geo.loc + (popup_offset - popup_geo.loc);
+            blur_surfaces.push(LayerBlurSurfaceInfo {
+                surface_id: surface.id(),
+                geometry: Rectangle::new(loc, size),
+                layer: layer.layer(),
+                blur_radius: get_blur_radius(surface),
+            });
+        }
+    }
 
     if !blur_surfaces.is_empty() {
         tracing::trace!(
