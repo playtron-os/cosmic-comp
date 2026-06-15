@@ -38,7 +38,7 @@ pub fn calculate_scale(embedded: bool, monitor_size_mm: (u32, u32), resolution: 
         return fallback_scale;
     }
 
-    let diag = (w_in.powf(2.) * h_in.powf(2.)).sqrt();
+    let diag = diagonal_inches(w_in, h_in);
     let dpi = (w_px as f64 / w_in + h_px as f64 / h_in) / 2.0;
 
     match diag {
@@ -83,25 +83,40 @@ pub fn scale_from_dpi(dpi: f64, step_size: u32, shorter_px: u16) -> f64 {
     scale.min(max).max(min)
 }
 
+/// Physical diagonal of a panel in inches, from its width and height in inches.
+///
+/// This is the Pythagorean diagonal `sqrt(w² + h²)`. It was historically
+/// written as `sqrt(w² · h²)` — which is just the panel *area* (`w · h`), not a
+/// diagonal — so the diagonal-keyed laptop (`< 20"`) and TV (`>= 40"`) gates in
+/// [`calculate_scale`] never matched on real hardware (every monitor's area is
+/// far above 40), leaving classification to the `embedded`/`h_in` fallbacks.
+fn diagonal_inches(w_in: f64, h_in: f64) -> f64 {
+    (w_in.powi(2) + h_in.powi(2)).sqrt()
+}
+
 #[cfg(test)]
 mod test {
-    use super::calculate_scale;
+    use super::{calculate_scale, diagonal_inches};
+
+    /// Build a panel of `diag_in` true-diagonal inches at the given pixel
+    /// resolution and return its recommended scale as a percentage. `embedded`
+    /// mirrors the compositor's `interface == EmbeddedDisplayPort` check.
+    fn scale(embedded: bool, diag_in: f64, w_px: u16, h_px: u16) -> i32 {
+        let aspect = (w_px as f64) / (h_px as f64);
+        let diag_mm = diag_in * 25.4;
+        let h_mm = diag_mm / (aspect.powf(2.0) + 1.0).sqrt();
+        let w_mm = h_mm * aspect;
+        // Round (don't truncate) to mimic how a real panel reports integer mm:
+        // truncating both dims undershoots the recovered diagonal and would trip
+        // the sharp `>= 40"` TV boundary for an exactly-40" display.
+        let size_mm = (w_mm.round() as u32, h_mm.round() as u32);
+        (calculate_scale(embedded, size_mm, (w_px, h_px)) * 100.0) as i32
+    }
 
     #[test]
     fn test_scale() {
-        // `embedded` mirrors the compositor's
-        // `interface == connector::Interface::EmbeddedDisplayPort` check. LVDS
-        // laptop panels report as non-embedded and currently fall through to
-        // the desktop heuristic, which happens to yield the same result for
-        // these inputs — so the laptop cases are asserted for both flag values.
-        fn scale(embedded: bool, diag_in: f64, w_px: u16, h_px: u16) -> i32 {
-            let aspect = (w_px as f64) / (h_px as f64);
-            let diag_mm = diag_in * 25.4;
-            let h_mm = diag_mm / (aspect.powf(2.0) + 1.0).sqrt();
-            let w_mm = h_mm * aspect;
-            (calculate_scale(embedded, (w_mm as u32, h_mm as u32), (w_px, h_px)) * 100.0) as i32
-        }
-
+        // These laptop panels are all under 20" diagonal, so they take the
+        // laptop branch whether or not the connector is embedded (eDP vs LVDS).
         // Laptops (eDP -> embedded; LVDS -> non-embedded)
         for &embedded in &[true, false] {
             // 14 inch 3:2
@@ -174,5 +189,36 @@ mod test {
             assert_eq!(scale(false, 0.0, 2560, 1440), 100);
             assert_eq!(scale(false, 0.0, 3840, 2160), 200);
         }
+    }
+
+    #[test]
+    fn diagonal_is_pythagorean() {
+        // `diagonal_inches` must be sqrt(w² + h²), not the area-root (w·h) the
+        // old code computed. A 16:9 panel cut from a 27" diagonal must read
+        // back ≈27" — whereas its area is ≈313 (the value the bug produced).
+        let aspect = 16.0 / 9.0_f64;
+        let h = 27.0 / (aspect.powi(2) + 1.0).sqrt();
+        let w = h * aspect;
+        assert!((diagonal_inches(w, h) - 27.0).abs() < 0.01);
+        assert!(w * h > 300.0); // the old `sqrt(w²·h²)` would have landed here
+    }
+
+    #[test]
+    fn large_monitor_below_40in_is_not_a_tv() {
+        // A 39" 16:9 1440p panel sits just under the 40" TV threshold by true
+        // diagonal, so it is a (low-DPI) desktop scaled at 100% — not a TV
+        // forced to 200%. The old area-based `diag` (≈650) tripped the TV
+        // branch and over-scaled it. (The neighbouring 40" panel *is* a TV at
+        // 1440p -> 200%, asserted in `test_scale`.)
+        assert_eq!(scale(false, 39.0, 2560, 1440), 100);
+    }
+
+    #[test]
+    fn small_external_monitor_uses_laptop_density() {
+        // A 19.3" 3200x1800 external (non-eDP) panel is below the 20" laptop
+        // threshold by true diagonal, so it gets the denser laptop target
+        // (150%). The old area-based `diag` (≈159) skipped the laptop branch,
+        // landing on the desktop target and over-scaling to 200%.
+        assert_eq!(scale(false, 19.3, 3200, 1800), 150);
     }
 }
