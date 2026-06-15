@@ -130,6 +130,12 @@ const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
 /// Wayland namespace of agentos-panel popover surfaces that get the
 /// compositor-side open animation (see [`layer_open`]).
 const POPOVER_NAMESPACE: &str = "agentos-panel-popover";
+/// Wayland namespace of centered AgentOS modal surfaces (e.g. agentos-projects'
+/// "New project" dialog) that opt into the same compositor-side open/close
+/// animation as [`POPOVER_NAMESPACE`]. Unlike panel popovers these are not
+/// edge-anchored, so detection keys on this exact namespace only — any other
+/// Overlay layer-shell surface (agentos-notifications, etc.) is unaffected.
+const MODAL_NAMESPACE: &str = "agentos-modal";
 const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(100);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
@@ -5893,21 +5899,29 @@ impl Shell {
             })
         };
 
-        // Detect agentos-panel popover surfaces: Overlay layer, bottom-anchored,
-        // namespace "agentos-panel-popover".  These get a compositor-side OPEN
-        // animation (slide-up + scale + fade from a single eased factor) instead
-        // of the plain cross-fade.  We hold them in `pending_layer_opens` until
-        // their first buffer commit (auto_size → geometry is 0 until then), then
-        // start the actual animation in `activate_pending_fade_in`.
+        // Detect AgentOS surfaces that get a compositor-side OPEN animation
+        // (slide-up + scale + fade from a single eased factor) instead of the
+        // plain cross-fade. Two families, both `Layer::Overlay`, keyed strictly
+        // by namespace so no other layer-shell surface is affected:
+        //   - panel popovers (`agentos-panel-popover`): bottom-anchored sheets;
+        //   - centered modals (`agentos-modal`): unanchored, e.g. the projects
+        //     "New project" dialog.
+        // We hold them in `pending_layer_opens` until their first buffer commit
+        // (auto_size → geometry is 0 until then), then start the actual animation
+        // in `activate_pending_fade_in`.
         let is_popover = !is_hidden && {
             use smithay::wayland::shell::wlr_layer::Anchor;
-            pending.surface.namespace() == POPOVER_NAMESPACE
-                && with_states(pending.surface.wl_surface(), |states| {
-                    let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
-                    let current = state.current();
-                    matches!(current.layer, Layer::Overlay)
-                        && current.anchor.contains(Anchor::BOTTOM)
-                })
+            let namespace = pending.surface.namespace();
+            with_states(pending.surface.wl_surface(), |states| {
+                let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = state.current();
+                matches!(current.layer, Layer::Overlay)
+                    && if namespace == POPOVER_NAMESPACE {
+                        current.anchor.contains(Anchor::BOTTOM)
+                    } else {
+                        namespace == MODAL_NAMESPACE
+                    }
+            })
         };
 
         // Only start fade-in animation for visible surfaces.  Hidden surfaces
