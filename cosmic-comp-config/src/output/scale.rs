@@ -7,6 +7,16 @@
 //! the exact same "Recommended" value the compositor seeds onto a freshly-seen
 //! output, e.g. "125% (Recommended)".
 
+/// Pixel-density bounds (DPI) outside which a non-zero EDID physical size is
+/// treated as bogus. Real panels — from ~110" 1080p displays (~20 DPI) up to
+/// dense 4K laptops and small tablets (~500 DPI) — sit comfortably inside.
+/// Values outside imply a junk size, such as centimetres reported in the
+/// millimetre field (≈10× too small → ≈10× too high DPI), or a KVM /
+/// passthrough feeding a fixed dummy size. The active resolution is always
+/// trustworthy, so an implausible DPI means the *size* is wrong.
+const MIN_PLAUSIBLE_DPI: f64 = 20.0;
+const MAX_PLAUSIBLE_DPI: f64 = 600.0;
+
 /// Compute a recommended fractional scale for an output from its physical size
 /// and active resolution.
 ///
@@ -38,8 +48,17 @@ pub fn calculate_scale(embedded: bool, monitor_size_mm: (u32, u32), resolution: 
         return fallback_scale;
     }
 
-    let diag = diagonal_inches(w_in, h_in);
     let dpi = (w_px as f64 / w_in + h_px as f64 / h_in) / 2.0;
+
+    // Reject bogus-but-non-zero EDID sizes: the resolution is trustworthy, so a
+    // DPI outside the plausible range means the physical size is junk (e.g.
+    // centimetres in the millimetre field, or KVM passthrough garbage). Trusting
+    // it would mis-snap the scale or misclassify the panel as a laptop/TV.
+    if !(MIN_PLAUSIBLE_DPI..=MAX_PLAUSIBLE_DPI).contains(&dpi) {
+        return fallback_scale;
+    }
+
+    let diag = diagonal_inches(w_in, h_in);
 
     match diag {
         _diag if diag < 20. || embedded => {
@@ -220,5 +239,29 @@ mod test {
         // (150%). The old area-based `diag` (≈159) skipped the laptop branch,
         // landing on the desktop target and over-scaling to 200%.
         assert_eq!(scale(false, 19.3, 3200, 1800), 150);
+    }
+
+    #[test]
+    fn garbage_small_edid_size_falls_back() {
+        // A 27" 1440p monitor whose EDID reports its size in centimetres
+        // (60×34) instead of millimetres reads as ~1080 DPI. The size is junk,
+        // so we fall back to the resolution-only guess (100%) instead of
+        // trusting it — which would otherwise snap to 150%.
+        assert_eq!(calculate_scale(false, (60, 34), (2560, 1440)), 1.0);
+    }
+
+    #[test]
+    fn garbage_large_edid_size_falls_back() {
+        // A 27" 1440p monitor reporting a ~10× too-large size (6000×3360 mm)
+        // reads as ~11 DPI and would be misclassified as a giant TV (200%).
+        // Fall back to the resolution-only guess (100%) instead.
+        assert_eq!(calculate_scale(false, (6000, 3360), (2560, 1440)), 1.0);
+    }
+
+    #[test]
+    fn dense_4k_laptop_is_not_treated_as_garbage() {
+        // A 14" 4K laptop is ~315 DPI — dense but real — and must stay inside
+        // the plausible-DPI window (scaled at 200%), not be rejected as bogus.
+        assert_eq!(scale(true, 14.0, 3840, 2160), 200);
     }
 }
