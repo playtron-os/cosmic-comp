@@ -1377,6 +1377,13 @@ where
     // Get voice mode window alpha for fading windows during voice mode
     let voice_mode_alpha = shell.voice_mode_window_alpha();
 
+    // Fade factors for closing layer POPUPS (e.g. tooltips hidden via the
+    // visibility protocol): 1.0→0.0 while fading, then 0.0 once parked in
+    // `hidden_surfaces`. Applied to the popup's content, shadow and blur below so
+    // they fade out together instead of the surface vanishing instantly.
+    let popup_fade_alphas = shell.layer_fade_out_alphas();
+    let popup_hidden = shell.hidden_surfaces().clone();
+
     render_input_order::<()>(&shell, output, previous, current, element_filter, |stage| {
         match stage {
             Stage::ZoomUI => {
@@ -1397,6 +1404,19 @@ where
                 let popup_wl_surface = popup.wl_surface();
                 let popup_geo = popup.geometry();
 
+                // Fade the whole popup (content + shadow + blur) when it's
+                // closing via the visibility protocol; 1.0 when not closing.
+                let popup_alpha = popup_fade_alphas
+                    .get(&popup_wl_surface.id())
+                    .copied()
+                    .unwrap_or_else(|| {
+                        if popup_hidden.contains(&popup_wl_surface.id()) {
+                            0.0
+                        } else {
+                            1.0
+                        }
+                    });
+
                 // Render the popup surface content
                 elements.extend(
                     render_elements_from_surface_tree::<_, WorkspaceRenderElement<_>>(
@@ -1407,7 +1427,7 @@ where
                             .as_logical()
                             .to_physical_precise_round(scale),
                         Scale::from(scale),
-                        1.0,
+                        popup_alpha,
                         FRAME_TIME_FILTER,
                     )
                     .into_iter()
@@ -1442,7 +1462,7 @@ where
                             &popup_surface_id,
                             local_geo,
                             shadow_radius,
-                            1.0,
+                            popup_alpha,
                             scale,
                             shadow_color,
                             shadow_offset,
@@ -1511,7 +1531,7 @@ where
                                 blur_info.scale.x,
                                 output_transform,
                                 blur_corner_radius,
-                                1.0,
+                                popup_alpha,
                                 BLUR_TINT_COLOR,
                                 get_blur_tint(popup_wl_surface).unwrap_or(BLUR_TINT_STRENGTH),
                                 true, // Enable border for popups
