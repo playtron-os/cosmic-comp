@@ -51,6 +51,11 @@ pub struct OutputConfig {
     pub max_bpc: Option<u32>,
     #[serde(default)]
     pub xwayland_primary: bool,
+    /// The scale the compositor recommended for this output when it was first
+    /// configured, derived from EDID physical size + resolution via
+    /// [`super::scale::calculate_scale`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_scale: Option<f64>,
 }
 
 impl Default for OutputConfig {
@@ -64,6 +69,7 @@ impl Default for OutputConfig {
             enabled: OutputState::Enabled,
             max_bpc: None,
             xwayland_primary: false,
+            recommended_scale: None,
         }
     }
 }
