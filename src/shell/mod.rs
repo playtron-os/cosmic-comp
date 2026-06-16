@@ -564,6 +564,57 @@ pub struct PendingLayer {
     pub output: Output,
 }
 
+/// Smallest the desktop/windows area may be reserved at while resizing the side
+/// panel. Once the panel would shrink the windows below this, its exclusive zone is
+/// capped here and the panel surface grows *over* the windows instead, so app
+/// layouts don't get squished and break. (Logical px.)
+const MIN_VIEWPORT_WIDTH: i32 = 500;
+
+/// Smallest width the side panel may be resized to (logical px). Mirrors the client's
+/// own `MIN_PANEL_WIDTH` — the client is a separate process, so the value is duplicated
+/// here rather than shared.
+const MIN_PANEL_WIDTH: i32 = 320;
+
+/// Fraction of the output width at/above which the side panel counts as "maximized": an
+/// edge double-click then restores it to its previous width instead of maximizing. (A
+/// drag-release uses its own, looser snap threshold — see `SNAP_TO_FULL_FRACTION` in
+/// `grabs::layer_resize`.)
+const MAXIMIZE_FRACTION: f32 = 0.99;
+
+/// An interactive resize of an edge-anchored layer-shell side panel in progress.
+/// The compositor recomputes `width` from the pointer each frame and forces it onto
+/// the surface (see [`Shell::override_active_layer_resize`]).
+#[derive(Debug, Clone)]
+pub struct LayerResize {
+    /// The layer surface being resized.
+    pub surface_id: ObjectId,
+    /// The output the panel is on (its right/left edge is the fixed anchor edge).
+    pub output: Output,
+    /// `true` if anchored to the right edge (dragged edge is the left), `false` for
+    /// a left-anchored panel.
+    pub anchor_right: bool,
+    /// Current target width in logical pixels.
+    pub width: i32,
+    /// Smallest allowed width.
+    pub min: i32,
+    /// Largest allowed width (the output's logical width).
+    pub max: i32,
+}
+
+/// Edge double-click maximize/restore bookkeeping for the side panel. Persists across
+/// resize grabs (unlike [`LayerResize`], which is cleared in `LayerResizeGrab::unset`),
+/// so the two clicks of a double-click can be timed and the pre-maximize width can be
+/// restored on the second toggle.
+#[derive(Debug, Clone)]
+pub struct LayerMaximizeState {
+    /// The surface the toggle applies to.
+    pub surface_id: ObjectId,
+    /// Width to restore to when un-maximizing (captured at the last maximize).
+    pub restore_width: i32,
+    /// Timestamp + global X of the last edge press, for double-click detection.
+    pub last_click: Option<(std::time::Instant, f64)>,
+}
+
 #[derive(Debug)]
 pub struct Shell {
     pub workspaces: Workspaces,
@@ -642,6 +693,17 @@ pub struct Shell {
 
     /// Layer surfaces with active slide animations (visibility-protocol triggered).
     pub layer_slides: Vec<layer_slide::LayerSlide>,
+
+    /// An in-progress interactive resize of an edge-anchored side panel (driven by
+    /// [`grabs::LayerResizeGrab`]). While set, [`Shell::override_active_layer_resize`]
+    /// forces the surface's cached size + exclusive zone to `width` before every
+    /// `arrange()`, so the compositor — not the client — owns the live resize.
+    pub active_layer_resize: Option<LayerResize>,
+
+    /// Edge double-click maximize/restore state for the side panel. Persists across
+    /// grabs so two separate clicks can be timed into a double-click and the
+    /// pre-maximize width can be restored. See [`Shell::toggle_layer_resize_maximize`].
+    pub layer_maximize: Option<LayerMaximizeState>,
 
     /// Popover layer surfaces (`agentos-panel-popover`) currently playing their
     /// compositor-side open animation (160ms easeInOut slide-up + scale + fade).
@@ -2064,6 +2126,10 @@ impl Shell {
             // Layer slide animations (visibility-protocol triggered)
             layer_slides: Vec::new(),
 
+            // No interactive side-panel resize in progress
+            active_layer_resize: None,
+            layer_maximize: None,
+
             // Popover open animations (agentos-panel-popover)
             layer_opens: Vec::new(),
             pending_layer_opens: std::collections::HashSet::new(),
@@ -3452,6 +3518,27 @@ impl Shell {
         (0, 0)
     }
 
+    /// Render offset that keeps the *anchored* edge of an actively-resized side panel
+    /// pinned to the output edge while the client's buffer catches up to the new
+    /// width. `arrange()` repositions a right-anchored surface to `output_right - width`
+    /// the instant we override its size, but the client renders the matching buffer a
+    /// frame later — so the still-narrow buffer would sit short of the screen edge
+    /// (the right edge appears to trail the drag, then snap back). Shifting the buffer
+    /// right by the width deficit re-pins the right edge every frame. Left-anchored
+    /// panels need no shift (their anchored edge is the surface origin already).
+    pub fn get_layer_resize_offset(&self, surface_id: &ObjectId, buffer_width: i32) -> (i32, i32) {
+        if let Some(resize) = &self.active_layer_resize
+            && &resize.surface_id == surface_id
+            && resize.anchor_right
+        {
+            let deficit = resize.width - buffer_width;
+            if deficit != 0 {
+                return (deficit, 0);
+            }
+        }
+        (0, 0)
+    }
+
     /// Check if a surface has an active slide animation (used to suppress
     /// the normal fade animation for sliding surfaces).
     pub fn is_layer_sliding(&self, surface_id: &ObjectId) -> bool {
@@ -3576,6 +3663,196 @@ impl Shell {
                 }
             });
         }
+    }
+
+    /// Force the actively-resized side panel's cached size + exclusive zone to the
+    /// grab's current `width` before `arrange()`. Like [`Self::override_slide_exclusive_zones`],
+    /// this runs on every layer commit (and from the resize grab's motion handler),
+    /// so the client's own `set_size` can never fight the compositor-driven resize.
+    pub fn override_active_layer_resize(&self, output: &Output) {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+
+        let Some(resize) = self.active_layer_resize.as_ref() else {
+            return;
+        };
+        if &resize.output != output {
+            return;
+        }
+        // The surface (size) may grow all the way to full screen, but the *reserved*
+        // (exclusive) zone is capped so the desktop/windows area never shrinks below
+        // MIN_VIEWPORT_WIDTH. Past that point the panel surface simply grows OVER the
+        // windows (they stay frozen at the minimum) instead of squishing them further
+        // and breaking their layouts.
+        let output_width = output.geometry().size.w;
+        let zone = resize
+            .width
+            .min((output_width - MIN_VIEWPORT_WIDTH).max(0))
+            .max(0);
+        let map = layer_map_for_output(output);
+        for layer in map.layers() {
+            if layer.wl_surface().id() != resize.surface_id {
+                continue;
+            }
+            with_states(layer.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = cached.current();
+                current.size = (resize.width, 0).into();
+                current.exclusive_zone = ExclusiveZone::Exclusive(zone as u32);
+            });
+        }
+    }
+
+    /// Apply a one-shot width to the side panel *without* an ongoing grab — used by the
+    /// double-click maximize/restore toggle. Mirrors the finalize path in
+    /// `LayerResizeGrab::unset`: seed a transient [`LayerResize`] at `width`, force it onto
+    /// the surface ([`Self::override_active_layer_resize`]), re-arrange, then clear it so
+    /// normal layout resumes. `width` is clamped to `[320, output width]`. The client
+    /// adopts the resulting `configure` through its `WindowResized` handler (re-asserting
+    /// size + exclusive zone and debounce-saving), exactly like the end of a drag.
+    pub fn set_layer_resize_width(
+        &mut self,
+        surface_id: &ObjectId,
+        output: &Output,
+        anchor_right: bool,
+        width: i32,
+    ) {
+        let max = output.geometry().size.w;
+        let width = width.clamp(MIN_PANEL_WIDTH, max);
+        self.active_layer_resize = Some(LayerResize {
+            surface_id: surface_id.clone(),
+            output: output.clone(),
+            anchor_right,
+            width,
+            min: MIN_PANEL_WIDTH,
+            max,
+        });
+        self.override_active_layer_resize(output);
+        if layer_map_for_output(output).arrange() {
+            self.workspaces.recalculate();
+        }
+        self.active_layer_resize = None;
+    }
+
+    /// Toggle the side panel between full width and its previous width on an edge
+    /// double-click. The decision is purely positional — if the panel is already within
+    /// 1% of the output width it *restores* to the saved previous width (falling back to a
+    /// half-width if none is known); otherwise it *maximizes*, remembering `current_width`
+    /// as the width to restore to. There is no separate "is maximized" flag to go stale
+    /// after a manual drag, so a manual resize followed by a double-click always does the
+    /// intuitive thing. `current_width` is the panel's present width (from
+    /// [`Self::layer_resize_target`]).
+    pub fn toggle_layer_resize_maximize(
+        &mut self,
+        surface_id: &ObjectId,
+        output: &Output,
+        anchor_right: bool,
+        current_width: i32,
+    ) {
+        let max = output.geometry().size.w;
+        let maximized_at = (max as f32 * MAXIMIZE_FRACTION) as i32;
+        let near_max = current_width >= maximized_at;
+        let target = if near_max {
+            // RESTORE: jump back to the last pre-maximize width, or a sane half-width.
+            self.layer_maximize
+                .as_ref()
+                .filter(|m| &m.surface_id == surface_id)
+                .map(|m| m.restore_width)
+                .filter(|w| *w >= MIN_PANEL_WIDTH && *w < maximized_at)
+                .unwrap_or((max / 2).max(MIN_PANEL_WIDTH))
+        } else {
+            // MAXIMIZE: remember the width we are leaving so the next toggle can restore.
+            match self.layer_maximize.as_mut() {
+                Some(m) if &m.surface_id == surface_id => m.restore_width = current_width,
+                _ => {
+                    self.layer_maximize = Some(LayerMaximizeState {
+                        surface_id: surface_id.clone(),
+                        restore_width: current_width,
+                        last_click: None,
+                    });
+                }
+            }
+            max
+        };
+        self.set_layer_resize_width(surface_id, output, anchor_right, target);
+    }
+
+    /// Clamp the agentos-chat-panel's exclusive zone so the desktop/windows area never
+    /// shrinks below `MIN_VIEWPORT_WIDTH`, regardless of the width the client requests.
+    /// Runs on every layer commit (before `arrange()`), so the cap persists after a
+    /// resize grab ends — the client re-asserts its full width as the exclusive zone,
+    /// and this clamps it (its surface stays full and simply overlaps the windows).
+    pub fn cap_chat_panel_exclusive_zone(&self, output: &Output) {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+
+        let cap = (output.geometry().size.w - MIN_VIEWPORT_WIDTH).max(0) as u32;
+        let map = layer_map_for_output(output);
+        for layer in map.layers() {
+            if layer.namespace() != "agentos-chat-panel" {
+                continue;
+            }
+            with_states(layer.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = cached.current();
+                if let ExclusiveZone::Exclusive(n) = current.exclusive_zone
+                    && n > cap
+                {
+                    current.exclusive_zone = ExclusiveZone::Exclusive(cap);
+                }
+            });
+        }
+    }
+
+    /// If `global_pos` is within `grab_px` of the inner (dragged) edge of the
+    /// `agentos-chat-panel` side panel, return the data to start a resize grab.
+    pub fn layer_resize_target(
+        &self,
+        global_pos: Point<f64, Global>,
+        grab_px: f64,
+    ) -> Option<LayerResize> {
+        use smithay::wayland::shell::wlr_layer::Anchor;
+
+        for output in self.outputs() {
+            let output_geo = output.geometry();
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.namespace() != "agentos-chat-panel" {
+                    continue;
+                }
+                let anchor = with_states(layer.wl_surface(), |states| {
+                    states
+                        .cached_state
+                        .get::<LayerSurfaceCachedState>()
+                        .current()
+                        .anchor
+                });
+                let anchor_right = anchor.contains(Anchor::RIGHT) && !anchor.contains(Anchor::LEFT);
+                let anchor_left = anchor.contains(Anchor::LEFT) && !anchor.contains(Anchor::RIGHT);
+                if !anchor_right && !anchor_left {
+                    continue;
+                }
+                let Some(geo) = map.layer_geometry(layer) else {
+                    continue;
+                };
+                // `layer_geometry` is output-local; lift it into global space.
+                let gx = output_geo.loc.x + geo.loc.x;
+                let gy = output_geo.loc.y + geo.loc.y;
+                if (global_pos.y as i32) < gy || (global_pos.y as i32) > gy + geo.size.h {
+                    continue;
+                }
+                let inner_edge_x = if anchor_right { gx } else { gx + geo.size.w };
+                if (global_pos.x - inner_edge_x as f64).abs() <= grab_px {
+                    return Some(LayerResize {
+                        surface_id: layer.wl_surface().id(),
+                        output: output.clone(),
+                        anchor_right,
+                        width: geo.size.w,
+                        min: MIN_PANEL_WIDTH,
+                        max: output_geo.size.w,
+                    });
+                }
+            }
+        }
+        None
     }
 
     /// Update layer slide animations, completing finished ones.

@@ -395,6 +395,12 @@ impl CompositorHandler for State {
             // arrange() runs, to prevent one-frame jumps when the client
             // commits a new exclusive_zone value.
             shell.override_slide_exclusive_zones(output);
+            // Likewise force the actively-resized side panel's size/zone, so the
+            // client's own commits can't fight a compositor-driven resize.
+            shell.override_active_layer_resize(output);
+            // Persistently cap the chat panel's exclusive zone so the desktop never
+            // shrinks below the min viewport (the panel surface may still overlap it).
+            shell.cap_chat_panel_exclusive_zone(output);
 
             let changed = layer_map_for_output(output).arrange();
             if changed {

@@ -1564,6 +1564,10 @@ where
                     shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
                 // Also apply layer slide offset (side-panel visibility animation).
                 let (slide_x, slide_y) = shell.get_layer_slide_offset(&surface_id);
+                // And the interactive-resize offset, which pins the anchored edge to
+                // the output while the client's buffer catches up to the new width.
+                let (resize_x, resize_y) =
+                    shell.get_layer_resize_offset(&surface_id, layer_geo.size.w);
                 // And the popover open/close animation translate + scale. The
                 // open slides UP (+6px → 0) + scales 0.97→1.0; the close is the
                 // exact reverse (0 → +6px, 1.0→0.97). Only ONE is ever active for
@@ -1582,8 +1586,8 @@ where
                 };
                 // Whether to route through the center-scale render path this frame.
                 let is_scaling = is_opening || is_closing;
-                let total_offset_x = offset_x + slide_x + anim_x;
-                let total_offset_y = offset_y + slide_y + anim_y;
+                let total_offset_x = offset_x + slide_x + anim_x + resize_x;
+                let total_offset_y = offset_y + slide_y + anim_y + resize_y;
                 let render_location = if total_offset_x != 0 || total_offset_y != 0 {
                     location + smithay::utils::Point::from((total_offset_x, total_offset_y))
                 } else {

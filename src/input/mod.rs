@@ -89,6 +89,11 @@ use std::{
 pub mod actions;
 pub mod gestures;
 
+/// Width of the invisible edge grab zone for the `agentos-chat-panel` side panel
+/// (logical px): a left press within this distance of the panel's inner edge starts a
+/// resize, and two such presses within the double-click window toggle maximize/restore.
+const EDGE_GRAB_PX: f64 = 8.0;
+
 /// Used for debouncing focus updates due to pointer motion, if after the focus change is
 /// triggered the event will cancel if the pointer moves to the original target
 #[derive(Debug)]
@@ -848,6 +853,113 @@ impl State {
                             let shell = self.common.shell.read();
                             State::element_under(global_position, &output, &shell, &seat)
                         };
+
+                        // Compositor-driven edge resize for the agentos-chat-panel
+                        // side panel: a left press within a few px of its inner
+                        // (dragged) edge starts a resize grab instead of forwarding
+                        // the click. The compositor owns the resize from here.
+                        if !shortcuts_inhibited
+                            && matches!(
+                                PointerButtonEvent::button(&event),
+                                Some(smithay::backend::input::MouseButton::Left)
+                            )
+                        {
+                            let resize_target = {
+                                let shell = self.common.shell.read();
+                                shell.layer_resize_target(global_position, EDGE_GRAB_PX)
+                            };
+                            if let Some(start) = resize_target {
+                                pass_event = false;
+                                seat.supressed_buttons().add(button);
+
+                                // A double-click on the edge toggles maximize/restore
+                                // instead of starting a drag. The press is never forwarded
+                                // to the client, so the double-click is timed here,
+                                // compositor-side, against the previous edge press.
+                                const DOUBLE_CLICK: std::time::Duration =
+                                    std::time::Duration::from_millis(400);
+                                // The two clicks must land within the same edge grab zone.
+                                const POS_TOL: f64 = EDGE_GRAB_PX;
+                                let now = std::time::Instant::now();
+                                let is_double = {
+                                    let shell = self.common.shell.read();
+                                    shell.layer_maximize.as_ref().is_some_and(|m| {
+                                        m.surface_id == start.surface_id
+                                            && m.last_click.is_some_and(|(t, x)| {
+                                                now.duration_since(t) <= DOUBLE_CLICK
+                                                    && (global_position.x - x).abs() <= POS_TOL
+                                            })
+                                    })
+                                };
+
+                                if is_double {
+                                    // Second click of a pair: apply the toggle now and
+                                    // consume the click — no grab is started.
+                                    let surface_id = start.surface_id.clone();
+                                    let out = start.output.clone();
+                                    let anchor_right = start.anchor_right;
+                                    let current_width = start.width;
+                                    {
+                                        let mut shell = self.common.shell.write();
+                                        shell.toggle_layer_resize_maximize(
+                                            &surface_id,
+                                            &out,
+                                            anchor_right,
+                                            current_width,
+                                        );
+                                        // Reset the tracker so a following click starts a
+                                        // fresh single-click (drag), not another toggle.
+                                        if let Some(m) = shell.layer_maximize.as_mut() {
+                                            m.last_click = None;
+                                        }
+                                    }
+                                    self.backend.schedule_render(&out);
+                                } else {
+                                    // First click: remember it for double-click detection,
+                                    // then start the normal interactive resize grab.
+                                    {
+                                        let mut shell = self.common.shell.write();
+                                        match shell.layer_maximize.as_mut() {
+                                            Some(m) if m.surface_id == start.surface_id => {
+                                                m.last_click = Some((now, global_position.x));
+                                            }
+                                            _ => {
+                                                shell.layer_maximize =
+                                                    Some(crate::shell::LayerMaximizeState {
+                                                        surface_id: start.surface_id.clone(),
+                                                        restore_width: start.width,
+                                                        last_click: Some((now, global_position.x)),
+                                                    });
+                                            }
+                                        }
+                                    }
+                                    let seat_clone = seat.clone();
+                                    self.common.event_loop_handle.insert_idle(move |state| {
+                                        let pointer = seat_clone.get_pointer().unwrap();
+                                        let grab_output = start.output.clone();
+                                        let start_data = smithay::input::pointer::GrabStartData {
+                                            focus: None,
+                                            button: 0x110,
+                                            location: pointer.current_location(),
+                                        };
+                                        state.common.shell.write().active_layer_resize =
+                                            Some(start);
+                                        let grab = crate::shell::grabs::LayerResizeGrab::new(
+                                            start_data,
+                                            &seat_clone,
+                                            grab_output,
+                                        );
+                                        pointer.set_grab(
+                                            state,
+                                            grab,
+                                            serial,
+                                            smithay::input::pointer::Focus::Clear,
+                                        );
+                                    });
+                                }
+                            }
+                        }
+
                         if let Some(target) = under {
                             if let Some(surface) = target.toplevel().map(Cow::into_owned)
                                 && seat.get_keyboard().unwrap().modifier_state().logo
