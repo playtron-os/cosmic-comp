@@ -1,3 +1,28 @@
+# [1.24.0](https://github.com/playtron-os/cosmic-comp/compare/v1.23.0...v1.24.0) (2026-06-16)
+
+
+### Bug Fixes
+
+* fix custom corner radius for surfaces ([49e0a46](https://github.com/playtron-os/cosmic-comp/commit/49e0a46410916b2ac5a6e97d827f2c4c1113a271))
+* keep panel anchored edge pinned during maximize/restore buffer lag ([5d962cb](https://github.com/playtron-os/cosmic-comp/commit/5d962cb6b61690957878df279776193174c61275))
+* **output:** compute panel diagonal with Pythagoras, not area ([a6fdf79](https://github.com/playtron-os/cosmic-comp/commit/a6fdf79dc8d07541f2320b2665e152937b5f2b87))
+* **output:** reject bogus non-zero EDID physical sizes ([6caa581](https://github.com/playtron-os/cosmic-comp/commit/6caa5817ec772fc93975a2eeb87d350df35eb3e2)), closes [hi#DPI](https://github.com/hi/issues/DPI)
+* support blur for popups ([f8bc8ef](https://github.com/playtron-os/cosmic-comp/commit/f8bc8ef9de665343704e0be3a4a266f7f513947e))
+* update deps and watch active theme changes ([2981d3f](https://github.com/playtron-os/cosmic-comp/commit/2981d3f4fc041a486d68a9a4fa7e958c90b0a6f5))
+* update smithay to fix surface arrangement with chat panel ([f1e0533](https://github.com/playtron-os/cosmic-comp/commit/f1e05335c062363634276b66624496063dc33d5f))
+* use correct tokens for header title syle and fix smithay rev ([7dee8ff](https://github.com/playtron-os/cosmic-comp/commit/7dee8ffa1a56e129819c3358c03d2c34b183c3b0))
+* wait for panel buffer to settle before finishing resize ([293ef7b](https://github.com/playtron-os/cosmic-comp/commit/293ef7b05ca47db169e8274cb35e4c0f5db3d3c7))
+
+
+### Features
+
+* add support for modal animations for surfaces with namespace "agentos-modal" ([6883290](https://github.com/playtron-os/cosmic-comp/commit/6883290b501ded30572b8c567959fbd3a7ff0c10))
+* compositor-driven resize, maximize, and z-order for the chat panel ([7b5d8bb](https://github.com/playtron-os/cosmic-comp/commit/7b5d8bba739486e1c5cc36d34d8954fa712c7c18))
+* fade out xdg popups as well ([b05de6b](https://github.com/playtron-os/cosmic-comp/commit/b05de6b63ee748d28fa152dddb1ecd41a60b3a1e))
+* **output:** expose recommended display scale for settings/FTUE ([9e1991f](https://github.com/playtron-os/cosmic-comp/commit/9e1991fe78395dc52430464dfbcaf56641544393))
+* support layer surface visibility transition ([76fac05](https://github.com/playtron-os/cosmic-comp/commit/76fac050d54e9f146b3f7629689a94c9a0f928f1))
+* update smithay to support arranging horizontal surfaces before vertical, fix xdg popups to respect exclusive zone, and improve cross fade transition when opening/closing panel ([e93cc76](https://github.com/playtron-os/cosmic-comp/commit/e93cc7680d0c3b7aaf3a1a45cc5c40b51e5c61aa))
+
 # [1.23.0](https://github.com/playtron-os/cosmic-comp/compare/v1.22.0...v1.23.0) (2026-06-08)
 
 
