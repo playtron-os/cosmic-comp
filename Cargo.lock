@@ -87,9 +87,9 @@ checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
 
 [[package]]
 name = "alloc-stdlib"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94fb8275041c72129eb51b7d0322c29b8387a0386127718b096429201a5d6ece"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
 dependencies = [
  "alloc-no-stdlib",
 ]
@@ -609,9 +609,9 @@ dependencies = [
 
 [[package]]
 name = "brotli-decompressor"
-version = "5.0.1"
+version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5962523e1b92ce1b5e793d9169b9943eece10d39f62550bc04bb605d75b94924"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
 dependencies = [
  "alloc-no-stdlib",
  "alloc-stdlib",
@@ -678,9 +678,9 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "bytesize"
-version = "2.3.1"
+version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bd91ee7b2422bcb158d90ef4d14f75ef67f340943fc4149891dcce8f8b972a3"
+checksum = "49e78e506b9d7633710dab98996f22f95f3d0f488e8f1aa162830556ed9fc14d"
 
 [[package]]
 name = "calloop"
@@ -1061,7 +1061,7 @@ dependencies = [
 [[package]]
 name = "cosmic-settings-config"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/cosmic-settings-daemon#fa82bdf9fe7b5f5bd6008f32f393efd5e7a71c47"
+source = "git+https://github.com/pop-os/cosmic-settings-daemon#e7936f0d4f01c8c5a436908c7ee9f6ad43e6a7d8"
 dependencies = [
  "cosmic-config",
  "ron 0.11.0",
@@ -1074,7 +1074,7 @@ dependencies = [
 [[package]]
 name = "cosmic-settings-daemon-config"
 version = "0.1.0"
-source = "git+https://github.com/pop-os/cosmic-settings-daemon#fa82bdf9fe7b5f5bd6008f32f393efd5e7a71c47"
+source = "git+https://github.com/pop-os/cosmic-settings-daemon#e7936f0d4f01c8c5a436908c7ee9f6ad43e6a7d8"
 dependencies = [
  "cosmic-config",
  "cosmic-theme",
@@ -1288,7 +1288,6 @@ version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
- "powerfmt",
  "serde_core",
 ]
 
@@ -2289,9 +2288,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2609,7 +2608,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_debug",
@@ -2647,7 +2646,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "bitflags 2.13.0",
  "bytes",
@@ -2665,7 +2664,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_futures 0.15.0-dev",
@@ -2688,7 +2687,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "futures",
  "iced_core 0.15.0-dev",
@@ -2702,7 +2701,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
@@ -2724,7 +2723,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -2733,7 +2732,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2745,7 +2744,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "bytes",
  "iced_core 0.15.0-dev",
@@ -2758,7 +2757,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "bytemuck",
  "cosmic-text 0.18.0",
@@ -2775,7 +2774,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
@@ -2796,7 +2795,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "iced_renderer",
  "log",
@@ -2811,7 +2810,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#8a1200bba3e3b498a741872508b5b626049644d2"
+source = "git+https://github.com/playtron-os/iced.git#ea5a432cc2cb92ebbc3fde563f1ef3b055c2cce0"
 dependencies = [
  "arboard",
  "iced_debug",
@@ -2830,7 +2829,7 @@ dependencies = [
 [[package]]
 name = "icetron"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9dd0ca9b822682ec208e3b11dd30b233defd99c0"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#d6bcaa15bd59195f56e260ad81947076e696ca66"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2861,7 +2860,7 @@ dependencies = [
 [[package]]
 name = "icetron-themes"
 version = "1.23.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#f0cff7f16b1f9e7ab350fd92c16e3f1e50dc3bbf"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#8ced69dc3d38539b56368737e2e711acdc8c14a0"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -2872,12 +2871,12 @@ dependencies = [
 [[package]]
 name = "icetron_assets"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9dd0ca9b822682ec208e3b11dd30b233defd99c0"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#d6bcaa15bd59195f56e260ad81947076e696ca66"
 
 [[package]]
 name = "icetron_utils"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron.git#9dd0ca9b822682ec208e3b11dd30b233defd99c0"
+source = "git+ssh://git@github.com/playtron-os/icetron.git#d6bcaa15bd59195f56e260ad81947076e696ca66"
 dependencies = [
  "freedesktop-icons",
  "iced",
@@ -6493,9 +6492,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.117"
+version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+checksum = "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6649,12 +6648,11 @@ dependencies = [
 
 [[package]]
 name = "time"
-version = "0.3.47"
+version = "0.3.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
+checksum = "711a53c2d47bbd818258c498c8dbfe186a2526c631495cfe7e078567f86b8469"
 dependencies = [
  "deranged",
- "itoa",
  "libc",
  "num-conv",
  "num_threads",
@@ -6666,15 +6664,15 @@ dependencies = [
 
 [[package]]
 name = "time-core"
-version = "0.1.8"
+version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
 
 [[package]]
 name = "time-macros"
-version = "0.2.27"
+version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+checksum = "71c652a3727a9cbb9a02f707f530b618ce00d0ccd762009c8c23bd191df3c17d"
 dependencies = [
  "num-conv",
  "time-core",

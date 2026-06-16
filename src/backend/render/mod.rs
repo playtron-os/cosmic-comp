@@ -1694,9 +1694,12 @@ where
                 let corner_radius = get_surface_corner_radius(layer.wl_surface(), layer_geo.size);
 
                 // Render shadow behind the layer surface if enabled
-                // Alpha handles fading for home visibility surfaces
+                // Alpha handles fading for home visibility surfaces.
+                // Layer-shell popovers/glances use `shadow_popup` (a lighter
+                // overlay shadow); it defaults to `shadow_window`, so themes that
+                // don't override it are unaffected.
                 if surface_has_shadow(layer.wl_surface()) {
-                    let shadow_layers = theme.shadow_window();
+                    let shadow_layers = theme.shadow_popup();
                     let shadow_radius = corner_radius.map(|r| r.round() as u8);
 
                     if let Some(shadow) = shadow_layers.first() {
@@ -1805,13 +1808,21 @@ where
                                 vec![local_geo]
                             };
 
-                        // Per-region blur uses a default card corner radius
-                        // since the KDE blur protocol doesn't carry radii.
+                        // Per-region blur falls back to a default card corner
+                        // radius since the KDE blur protocol doesn't carry radii.
+                        // If the client set its own corner radius (layer corner
+                        // radius protocol), honor it so the blur backdrop matches
+                        // the client's rounded corners, and let the client draw
+                        // its own border.
                         const PER_REGION_CORNER_RADIUS: f32 = 8.0;
 
                         for blur_geo in blur_geos {
                             let (blur_corner_radius, blur_border) = if has_per_region_blur {
-                                ([PER_REGION_CORNER_RADIUS; 4], true)
+                                if has_client_corner_radius {
+                                    (corner_radius, false)
+                                } else {
+                                    ([PER_REGION_CORNER_RADIUS; 4], true)
+                                }
                             } else {
                                 (corner_radius, !has_client_corner_radius)
                             };
