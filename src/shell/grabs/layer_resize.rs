@@ -72,6 +72,17 @@ impl LayerResizeGrab {
                 location.x - geo.loc.x as f64
             };
             resize.width = (raw.round() as i32).clamp(resize.min, resize.max);
+            tracing::debug!(
+                "RESIZE_DBG apply anchor_right={} out_loc_x={} out_w={} pointer_x={:.1} raw={:.1} -> width={} (min={} max={})",
+                resize.anchor_right,
+                geo.loc.x,
+                geo.size.w,
+                location.x,
+                raw,
+                resize.width,
+                resize.min,
+                resize.max,
+            );
             true
         } else {
             false
@@ -228,6 +239,19 @@ impl PointerGrab<State> for LayerResizeGrab {
         {
             resize.width = resize.max;
         }
+        if let Some(resize) = shell.active_layer_resize.as_ref() {
+            tracing::debug!(
+                "RESIZE_DBG grab END (unset) final_width={} max={} anchor_right={} snap_threshold={}",
+                resize.width,
+                resize.max,
+                resize.anchor_right,
+                (resize.max as f32 * SNAP_TO_FULL_FRACTION) as i32,
+            );
+        }
+        // Hold the final width so the size override + edge-pin offset keep applying until
+        // the client's buffer catches up (no blink to the trailing width on a fast
+        // release); cleared in `Shell::clear_layer_resize_settle_if_caught_up`.
+        shell.layer_resize_settle = shell.active_layer_resize.clone();
         shell.override_active_layer_resize(&output);
         if layer_map_for_output(&output).arrange() {
             shell.workspaces.recalculate();

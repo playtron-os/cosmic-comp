@@ -406,6 +406,9 @@ impl CompositorHandler for State {
             if changed {
                 shell.workspaces.recalculate();
             }
+            // Drop the post-grab resize "settle" once the client's buffer has caught up,
+            // so the size override stops holding the final width past convergence.
+            shell.clear_layer_resize_settle_if_caught_up(output);
 
             // If this surface was just un-hidden and had a deferred fade-in,
             // start the blur animation now that the client has committed

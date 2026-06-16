@@ -700,6 +700,14 @@ pub struct Shell {
     /// `arrange()`, so the compositor — not the client — owns the live resize.
     pub active_layer_resize: Option<LayerResize>,
 
+    /// The final state of a *just-ended* resize grab, held until the client's buffer
+    /// catches up to the committed width. While set, [`Shell::override_active_layer_resize`]
+    /// keeps forcing the size + zone and [`Shell::get_layer_resize_offset`] keeps the
+    /// anchored edge pinned — so a fast release never blinks to the trailing (lagging)
+    /// width before the final buffer lands. Cleared by
+    /// [`Shell::clear_layer_resize_settle_if_caught_up`] once the buffer matches.
+    pub layer_resize_settle: Option<LayerResize>,
+
     /// Edge double-click maximize/restore state for the side panel. Persists across
     /// grabs so two separate clicks can be timed into a double-click and the
     /// pre-maximize width can be restored. See [`Shell::toggle_layer_resize_maximize`].
@@ -2128,6 +2136,7 @@ impl Shell {
 
             // No interactive side-panel resize in progress
             active_layer_resize: None,
+            layer_resize_settle: None,
             layer_maximize: None,
 
             // Popover open animations (agentos-panel-popover)
@@ -3527,7 +3536,10 @@ impl Shell {
     /// right by the width deficit re-pins the right edge every frame. Left-anchored
     /// panels need no shift (their anchored edge is the surface origin already).
     pub fn get_layer_resize_offset(&self, surface_id: &ObjectId, buffer_width: i32) -> (i32, i32) {
-        if let Some(resize) = &self.active_layer_resize
+        if let Some(resize) = self
+            .active_layer_resize
+            .as_ref()
+            .or(self.layer_resize_settle.as_ref())
             && &resize.surface_id == surface_id
             && resize.anchor_right
         {
@@ -3537,6 +3549,25 @@ impl Shell {
             }
         }
         (0, 0)
+    }
+
+    /// Clear the post-grab resize "settle" ([`Self::layer_resize_settle`]) once the
+    /// client's buffer has caught up to the settled width. Called after `arrange()` on
+    /// every layer commit; until it fires, the size override + edge-pin offset keep
+    /// holding the final width so a fast release never blinks to the trailing width.
+    pub fn clear_layer_resize_settle_if_caught_up(&mut self, output: &Output) {
+        let Some(settle) = self.layer_resize_settle.as_ref() else {
+            return;
+        };
+        if &settle.output != output {
+            return;
+        }
+        let caught_up = layer_map_for_output(output)
+            .layers()
+            .any(|l| l.wl_surface().id() == settle.surface_id && l.bbox().size.w >= settle.width);
+        if caught_up {
+            self.layer_resize_settle = None;
+        }
     }
 
     /// Check if a surface has an active slide animation (used to suppress
@@ -3672,7 +3703,11 @@ impl Shell {
     pub fn override_active_layer_resize(&self, output: &Output) {
         use smithay::wayland::shell::wlr_layer::ExclusiveZone;
 
-        let Some(resize) = self.active_layer_resize.as_ref() else {
+        let Some(resize) = self
+            .active_layer_resize
+            .as_ref()
+            .or(self.layer_resize_settle.as_ref())
+        else {
             return;
         };
         if &resize.output != output {
@@ -3696,6 +3731,16 @@ impl Shell {
             with_states(layer.wl_surface(), |states| {
                 let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
                 let current = cached.current();
+                tracing::debug!(
+                    "RESIZE_DBG override prev_anchor={:?} prev_size=({},{}) -> new_width={} zone={} out_w={} anchor_right={}",
+                    current.anchor,
+                    current.size.w,
+                    current.size.h,
+                    resize.width,
+                    zone,
+                    output_width,
+                    resize.anchor_right,
+                );
                 current.size = (resize.width, 0).into();
                 current.exclusive_zone = ExclusiveZone::Exclusive(zone as u32);
             });
@@ -3793,10 +3838,19 @@ impl Shell {
             with_states(layer.wl_surface(), |states| {
                 let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
                 let current = cached.current();
-                if let ExclusiveZone::Exclusive(n) = current.exclusive_zone
-                    && n > cap
-                {
-                    current.exclusive_zone = ExclusiveZone::Exclusive(cap);
+                if let ExclusiveZone::Exclusive(n) = current.exclusive_zone {
+                    tracing::debug!(
+                        "RESIZE_DBG cap_zone cap={} current_zone={} size=({},{}) anchor={:?} will_cap={}",
+                        cap,
+                        n,
+                        current.size.w,
+                        current.size.h,
+                        current.anchor,
+                        n > cap,
+                    );
+                    if n > cap {
+                        current.exclusive_zone = ExclusiveZone::Exclusive(cap);
+                    }
                 }
             });
         }
@@ -3841,6 +3895,21 @@ impl Shell {
                 }
                 let inner_edge_x = if anchor_right { gx } else { gx + geo.size.w };
                 if (global_pos.x - inner_edge_x as f64).abs() <= grab_px {
+                    tracing::debug!(
+                        "RESIZE_DBG layer_resize_target HIT anchor={:?} anchor_right={} anchor_left={} out_loc_x={} out_w={} panel_loc=({},{}) panel_size=({},{}) inner_edge_x={} pointer_x={:.1} start_width={}",
+                        anchor,
+                        anchor_right,
+                        anchor_left,
+                        output_geo.loc.x,
+                        output_geo.size.w,
+                        gx,
+                        gy,
+                        geo.size.w,
+                        geo.size.h,
+                        inner_edge_x,
+                        global_pos.x,
+                        geo.size.w,
+                    );
                     return Some(LayerResize {
                         surface_id: layer.wl_surface().id(),
                         output: output.clone(),

@@ -933,6 +933,13 @@ impl State {
                                             }
                                         }
                                     }
+                                    tracing::debug!(
+                                        "RESIZE_DBG grab START anchor_right={} start_width={} min={} max={}",
+                                        start.anchor_right,
+                                        start.width,
+                                        start.min,
+                                        start.max,
+                                    );
                                     let seat_clone = seat.clone();
                                     self.common.event_loop_handle.insert_idle(move |state| {
                                         let pointer = seat_clone.get_pointer().unwrap();
@@ -942,8 +949,11 @@ impl State {
                                             button: 0x110,
                                             location: pointer.current_location(),
                                         };
-                                        state.common.shell.write().active_layer_resize =
-                                            Some(start);
+                                        {
+                                            let mut shell = state.common.shell.write();
+                                            shell.layer_resize_settle = None;
+                                            shell.active_layer_resize = Some(start);
+                                        }
                                         let grab = crate::shell::grabs::LayerResizeGrab::new(
                                             start_data,
                                             &seat_clone,
