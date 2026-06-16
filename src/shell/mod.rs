@@ -3775,6 +3775,12 @@ impl Shell {
         if layer_map_for_output(output).arrange() {
             self.workspaces.recalculate();
         }
+        // Hold the final width (same as the end of a drag grab) so the edge-pin offset
+        // keeps the anchored edge against the output while the client renders the wider
+        // buffer — otherwise the surface jumps to its new position a frame before the
+        // matching buffer lands, exposing a gap on the anchored edge. Cleared in
+        // `clear_layer_resize_settle_if_caught_up` once the buffer catches up.
+        self.layer_resize_settle = self.active_layer_resize.clone();
         self.active_layer_resize = None;
     }
 
