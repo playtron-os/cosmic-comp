@@ -14,6 +14,7 @@ pub mod layer_corner_radius;
 pub mod layer_shadow;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_visibility;
+pub mod layer_usable_area;
 pub mod output_configuration;
 pub mod output_power;
 pub mod overlap_notify;

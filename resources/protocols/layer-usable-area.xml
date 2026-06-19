@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="layer_usable_area">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="report the usable (non-exclusive) area of a surface's output">
+    This protocol lets a layer shell surface learn the usable area of the
+    output it is shown on: the output's logical geometry minus every exclusive
+    zone reserved by other layer surfaces (panels, docks, bars).
+
+    A centered or anchored overlay (launcher, switcher, system dialog) cannot
+    compute this itself — only the compositor knows the exclusive zones of the
+    other surfaces, and a non-overlapping surface receives nothing from the
+    overlap-notify protocol. With the usable area in hand the client can center
+    its content in the space actually free of panels rather than the full
+    output, on the correct per-output basis and updated live as panels appear,
+    disappear, resize, or toggle auto-hide.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="layer_usable_area_manager_v1" version="1">
+    <description summary="usable area manager for layer surfaces">
+      Manager for creating usable-area feedback objects for layer shell
+      surfaces.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Existing usable-area objects remain valid until destroyed.
+      </description>
+    </request>
+
+    <request name="get_usable_area">
+      <description summary="get usable-area feedback for a surface">
+        Create a usable-area feedback object for the given wl_surface, which
+        must be a layer shell surface.
+
+        If the given wl_surface already has a layer_usable_area_v1 object
+        associated, the already_exists protocol error is raised.
+
+        The compositor sends an initial usable_area event as soon as the
+        surface's output is known, and again whenever the usable area of that
+        output changes.
+      </description>
+      <arg name="id" type="new_id" interface="layer_usable_area_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="surface already has a usable-area object"/>
+    </enum>
+  </interface>
+
+  <interface name="layer_usable_area_v1" version="1">
+    <description summary="usable-area feedback for a surface">
+      Reports the usable (non-exclusive) area of the output the associated
+      surface is currently shown on. The rectangle is expressed in the
+      output's logical coordinate space (the same space as xdg-output logical
+      geometry), so the location is relative to the output's top-left corner.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the usable-area object">
+        Informs the compositor that the client is no longer interested in
+        usable-area updates for the surface.
+      </description>
+    </request>
+
+    <event name="usable_area">
+      <description summary="usable area changed">
+        Sent by the compositor with the current usable area of the output the
+        surface is shown on, in that output's logical coordinates. Sent once
+        when the object is created (once the output is known) and again
+        whenever the value changes (a panel maps, unmaps, resizes, or its
+        exclusive zone changes, or the output is reconfigured).
+      </description>
+      <arg name="x" type="int" summary="usable area left, output-logical px"/>
+      <arg name="y" type="int" summary="usable area top, output-logical px"/>
+      <arg name="width" type="int" summary="usable area width, logical px"/>
+      <arg name="height" type="int" summary="usable area height, logical px"/>
+    </event>
+
+    <enum name="error">
+      <entry name="surface_destroyed" value="0"
+        summary="the associated surface has been destroyed"/>
+    </enum>
+  </interface>
+</protocol>
