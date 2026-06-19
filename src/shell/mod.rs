@@ -2918,6 +2918,11 @@ impl Shell {
                 .layer_slides
                 .iter()
                 .any(|s| s.visibility.is_animating())
+            // A slide-content crossfade can outlive the slide *motion* (the
+            // client may not commit its reflowed buffer until after the slide
+            // settles), and it advances only when rendered. Keep redraws flowing
+            // until it finishes, otherwise the dissolve freezes and pops — a blink.
+            || self.any_slide_fade_in_flight()
     }
 
     /// Outputs that need continuous redraws for ongoing animations. When only
@@ -2944,6 +2949,22 @@ impl Shell {
                 {
                     outputs.push(output.clone());
                 }
+            }
+        }
+        // Outputs whose floating/sticky layer still has a crossfade in flight
+        // need redraws even after the slide motion has settled (see
+        // `animations_going`). Targeted so unrelated monitors stay idle.
+        for (output, set) in self.workspaces.sets.iter() {
+            if outputs.contains(output) {
+                continue;
+            }
+            if set.sticky_layer.has_slide_fade_in_flight()
+                || set
+                    .workspaces
+                    .iter()
+                    .any(|w| w.floating_layer.has_slide_fade_in_flight())
+            {
+                outputs.push(output.clone());
             }
         }
         outputs
@@ -3038,12 +3059,28 @@ impl Shell {
             .any(|s| s.visibility.is_animating());
         if has_active_slides {
             self.apply_slide_exclusive_zones();
+            // Send any withheld slide-start configures whose snapshot is now
+            // captured (window left pending_slide_snapshots). Runs AFTER the
+            // render that does the capture, so the old buffer was already
+            // snapshotted before the client is told to reflow.
+            self.flush_deferred_slide_configures(false);
+        // INVARIANT (no deferred-configure stranding): this settle branch is the
+        // ONLY place that force-flushes the rest. `slide_completed` is true only
+        // for slide-OUT; a slide-IN reaches here solely via `is_slide_active()`.
+        // So `slide_active` must remain true from begin_slide_layout until here —
+        // it is (only set false at settle and the transient toggle inside
+        // begin_slide_layout). Don't add a path that clears slide_active without
+        // a flush, or deferred configures could strand a window at its old size.
         } else if slide_completed || self.is_slide_active() {
             // Slides just finished (either slide-out completed, or slide-in finished
             // and entry was removed) — disable slide scaling and configure windows
             // to their final size (they were skipping configures during animation).
             self.set_slide_active(false);
             self.set_slide_fade(0.0);
+            // Settle: force out any still-withheld configures (e.g. a window
+            // that never rendered during the slide) so nothing is stranded at
+            // the old size.
+            self.flush_deferred_slide_configures(true);
             // The cached state still holds the last animated zone (off by up to
             // a pixel, and stale for surfaces that just became hidden). Restore
             // the client's true zones / zero hidden ones and re-arrange before
@@ -3623,6 +3660,86 @@ impl Shell {
             .any(|s| s.surface_id == *surface_id)
     }
 
+    /// Horizontal render scale to keep a full-width NEIGHBOR layer surface (e.g.
+    /// the agentos-panel bottom bar, anchored Left+Right) glued to an actively
+    /// sliding side panel's animated inner edge — instead of trailing it while
+    /// its client lags a couple of frames behind the per-tick reconfigures.
+    ///
+    /// Returns `Some(scale_x)` only for a genuine full-width neighbor being shrunk
+    /// by a RIGHT-anchored animating slide; the render path then squishes the
+    /// bar's committed buffer about its (fixed) LEFT edge so its right edge lands
+    /// exactly on the panel's animated left edge — the same `cached_factor` the
+    /// panel itself uses, so they're pixel-locked. `None` (no scale, current
+    /// behavior) for everything else, so this can never affect other surfaces.
+    ///
+    /// Map-free by construction: the render thread must NOT call
+    /// `layer_map_for_output` (it uses cached layer surfaces), so anchor is read
+    /// via `with_states` (per-surface, render-safe) and geometry is passed in.
+    /// `bar_left`/`rendered_width` are the surface's OUTPUT-LOCAL left x and
+    /// committed (bbox) width.
+    pub fn get_layer_slide_neighbor_scale(
+        &self,
+        output: &Output,
+        surface: &WlSurface,
+        bar_left: i32,
+        rendered_width: i32,
+    ) -> Option<f64> {
+        use smithay::wayland::shell::wlr_layer::Anchor;
+
+        if rendered_width <= 0 {
+            return None;
+        }
+        let output_w = output.geometry().size.w;
+        // A full-width bar on an output WITHOUT the slide stays full width — only
+        // squish one that's actually been shrunk (multi-output safety).
+        if rendered_width >= output_w {
+            return None;
+        }
+        let surface_id = surface.id();
+        if self.hidden_surfaces.contains(&surface_id) {
+            return None;
+        }
+        // Only RIGHT-edge slides are handled (the common chat-panel case): the bar
+        // keeps its left edge and shrinks on the right. Left-edge slides would
+        // need a right-edge origin — skipped (returns None → bar lags as before,
+        // no regression). The slide is not this surface itself.
+        //
+        // LIMITATION (multi-output): `LayerSlide` has no output, so this picks the
+        // first animating Right slide regardless of which output it's on. Safe for
+        // the single-output case and for a bar on a non-slide output (caught by the
+        // `rendered_width >= output_w` guard above). A misscale is only possible
+        // with TWO simultaneous Right slides on different outputs AND a bar on the
+        // other output independently shrunk below its width — rare; if it ever
+        // matters, add an `output` to LayerSlide and filter on it here.
+        let slide = self.layer_slides.iter().find(|s| {
+            s.visibility.is_animating()
+                && s.edge == layer_slide::SlideEdge::Right
+                && s.surface_id != surface_id
+        })?;
+        // Only full-width bars (anchored to BOTH horizontal edges) are driven by a
+        // horizontal exclusive zone; never scale a non-spanning surface.
+        let anchor = with_states(surface, |states| {
+            states
+                .cached_state
+                .get::<LayerSurfaceCachedState>()
+                .current()
+                .anchor
+        });
+        if !(anchor.contains(Anchor::LEFT) && anchor.contains(Anchor::RIGHT)) {
+            return None;
+        }
+        // The panel's animated inner (left) edge, from the SAME cached_factor the
+        // panel's render_offset uses → pixel-locked to the panel.
+        let target_right = output_w - slide.effective_exclusive_zone();
+        let target_width = (target_right - bar_left).max(1);
+        let scale = target_width as f64 / rendered_width as f64;
+        // Guard against absurd scales (capped zones / transient geometry).
+        if !scale.is_finite() || scale <= 0.0 {
+            return None;
+        }
+        Some(scale)
+    }
+
     // -----------------------------------------------------------------------
     // Popover open-animation methods (agentos-panel-popover)
     // -----------------------------------------------------------------------
@@ -3923,6 +4040,19 @@ impl Shell {
                 if layer.namespace() != "agentos-chat-panel" {
                     continue;
                 }
+                // Only a fully-shown panel exposes a draggable resize edge. A
+                // hidden/closed panel still occupies its docked geometry in the
+                // layer map (anchored at the output edge), so without this gate a
+                // click at that x — now inside the neighbouring window — would be
+                // swallowed and start a resize, applying an exclusive zone with no
+                // panel visible. Also skip while a slide is animating (the edge is
+                // moving and the panel is on its way in/out).
+                let surface_id = layer.wl_surface().id();
+                if self.hidden_surfaces.contains(&surface_id)
+                    || self.layer_slides.iter().any(|s| s.surface_id == surface_id)
+                {
+                    continue;
+                }
                 let anchor = with_states(layer.wl_surface(), |states| {
                     states
                         .cached_state
@@ -4020,12 +4150,26 @@ impl Shell {
             if !slide.visibility.is_animating() {
                 continue;
             }
-            let ez = slide.effective_exclusive_zone();
+            // Sample the live factor ONCE per tick and pin it as cached_factor,
+            // which both render_offset (panel edge) and the window zone derive
+            // from — so they're computed from one identical sample and never
+            // drift between ticks (viewport-lag fix). Updated EVERY tick (not
+            // only on a zone step): when surface_width == exclusive_zone (the
+            // common case) render_offset's integer rounding only changes at the
+            // same factor values the zone does, so they stay glued; but when the
+            // panel buffer is WIDER than its reserved zone (a capped zone, e.g.
+            // a very wide panel on a small output) the panel has finer pixel
+            // granularity than the zone, and updating every tick lets it track
+            // its own cadence instead of stair-stepping at the coarser zone rate.
+            let factor = slide.visibility.factor();
+            slide.cached_factor = factor;
+            let ez = slide.ez_for_factor(factor);
             if slide.last_applied_ez != Some(ez) {
                 slide.last_applied_ez = Some(ez);
                 any_change = true;
             }
         }
+
         if !any_change {
             return;
         }
@@ -4086,6 +4230,38 @@ impl Shell {
                 workspace.floating_layer.slide_fade = fade;
             }
         }
+    }
+
+    /// Mirror the current diagnostic slide epoch + start instant into every
+    /// floating layout so the render path can stamp `[SLIDE_*]` logs/snapshots.
+    /// Flush withheld slide-start configures across all floating layouts (see
+    /// `FloatingLayout::flush_deferred_slide_configures`). Called every slide
+    /// tick with `force_all=false` (sends each window's configure once its
+    /// snapshot is captured) and once at settle with `force_all=true`.
+    fn flush_deferred_slide_configures(&mut self, force_all: bool) {
+        for set in self.workspaces.sets.values_mut() {
+            set.sticky_layer.flush_deferred_slide_configures(force_all);
+            for workspace in &mut set.workspaces {
+                workspace
+                    .floating_layer
+                    .flush_deferred_slide_configures(force_all);
+            }
+        }
+    }
+
+    /// True while any floating layout holds a slide snapshot mid-crossfade. A
+    /// crossfade can outlive the slide *motion* (the client may not commit its
+    /// reflowed buffer until after the slide settles), so the redraw schedulers
+    /// (`animations_going` / `animating_outputs`) consult this to keep rendering
+    /// until the fade finishes — otherwise it freezes mid-dissolve (a blink).
+    pub fn any_slide_fade_in_flight(&self) -> bool {
+        self.workspaces.sets.values().any(|set| {
+            set.sticky_layer.has_slide_fade_in_flight()
+                || set
+                    .workspaces
+                    .iter()
+                    .any(|w| w.floating_layer.has_slide_fade_in_flight())
+        })
     }
 
     /// One-shot layout pass at the start (or reversal) of a layer slide:
@@ -4151,10 +4327,13 @@ impl Shell {
             if !outputs.contains(output) {
                 continue;
             }
-            let resized = set.sticky_layer.recalculate_collect_resized();
+            // defer_configures=true: withhold the final-size configure until the
+            // old content is snapshotted, so a fast client can't reflow ahead of
+            // the capture (the slide-start snapshot race).
+            let resized = set.sticky_layer.recalculate_collect_resized(true);
             set.sticky_layer.arm_slide_snapshots(resized);
             for workspace in &mut set.workspaces {
-                let resized = workspace.floating_layer.recalculate_collect_resized();
+                let resized = workspace.floating_layer.recalculate_collect_resized(true);
                 workspace.floating_layer.arm_slide_snapshots(resized);
             }
         }

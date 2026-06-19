@@ -139,10 +139,11 @@ impl SlideVisibility {
             Self::SlidingIn { .. } => {
                 // Reverse from current position; remaining distance is 1 - current.
                 let current = self.factor();
+                let duration = SLIDE_OUT_DURATION.mul_f32((1.0 - current).clamp(0.0, 1.0));
                 *self = Self::SlidingOut {
                     start: Instant::now(),
                     from_factor: current,
-                    duration: SLIDE_OUT_DURATION.mul_f32((1.0 - current).clamp(0.0, 1.0)),
+                    duration,
                 };
             }
             _ => {} // Already hiding or hidden
@@ -162,10 +163,11 @@ impl SlideVisibility {
             Self::SlidingOut { .. } => {
                 // Reverse from current position; remaining distance is the current factor.
                 let current = self.factor();
+                let duration = SLIDE_IN_DURATION.mul_f32(current.clamp(0.0, 1.0));
                 *self = Self::SlidingIn {
                     start: Instant::now(),
                     from_factor: current,
-                    duration: SLIDE_IN_DURATION.mul_f32(current.clamp(0.0, 1.0)),
+                    duration,
                 };
             }
             _ => {} // Already showing or visible
@@ -190,6 +192,13 @@ pub struct LayerSlide {
     /// Lets the animation tick skip re-arranging/relayouting when the integer
     /// zone hasn't moved a whole pixel since the last application.
     pub last_applied_ez: Option<i32>,
+    /// The eased factor sampled on the tick that last moved `last_applied_ez`.
+    /// `render_offset` and `effective_exclusive_zone` both read THIS (not a
+    /// fresh `visibility.factor()` at render time), so the panel's sliding edge
+    /// and the workspace zone are computed from one identical factor and step in
+    /// lockstep. Without this the panel offset sampled a slightly-fresher factor
+    /// at render than the zone did at the tick, so windows lagged the panel.
+    pub cached_factor: f32,
 }
 
 impl LayerSlide {
@@ -206,6 +215,7 @@ impl LayerSlide {
             surface_width,
             exclusive_zone,
             last_applied_ez: None,
+            cached_factor: 0.0, // Visible
         }
     }
 
@@ -223,13 +233,19 @@ impl LayerSlide {
             surface_width,
             exclusive_zone,
             last_applied_ez: None,
+            cached_factor: 1.0, // Hidden
         }
     }
 
     /// Compute the render offset for the current animation factor.
     /// Returns (x_offset, y_offset) to shift the surface off its edge.
+    ///
+    /// Uses `cached_factor` (the tick-pinned sample) — NOT a fresh
+    /// `visibility.factor()` — so the panel edge is computed from the exact same
+    /// factor as `effective_exclusive_zone`/`last_applied_ez` and the two never
+    /// drift a sub-pixel apart between ticks (the viewport-lag fix).
     pub fn render_offset(&self) -> (i32, i32) {
-        let factor = self.visibility.factor();
+        let factor = self.cached_factor;
         if factor == 0.0 {
             return (0, 0);
         }
@@ -251,7 +267,14 @@ impl LayerSlide {
     /// sliding edge and the workspace zone edge always sum to the full width —
     /// rounding them independently produced transient 1px seams/overlaps.
     pub fn effective_exclusive_zone(&self) -> i32 {
-        let factor = self.visibility.factor();
+        self.ez_for_factor(self.cached_factor)
+    }
+
+    /// The effective exclusive zone for an arbitrary factor. The tick uses this
+    /// with the live `visibility.factor()` to decide whether the integer zone
+    /// moved; on a move it commits both `last_applied_ez` and `cached_factor`
+    /// from that same factor so panel + zone stay coupled.
+    pub fn ez_for_factor(&self, factor: f32) -> i32 {
         self.exclusive_zone - ((self.exclusive_zone as f32) * factor).round() as i32
     }
 }

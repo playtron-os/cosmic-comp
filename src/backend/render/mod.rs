@@ -1612,6 +1612,18 @@ where
                     center_local.as_logical().to_physical_precise_round(scale)
                 };
 
+                // Neighbor squish (e.g. agentos-panel bottom bar tracking a side
+                // panel slide). Computed once so both the surface content AND its
+                // shadow/blur backdrop scale by the same factor about the left edge.
+                let neighbor_scale = shell
+                    .get_layer_slide_neighbor_scale(
+                        output,
+                        layer.wl_surface(),
+                        local_geo.loc.x,
+                        layer_geo.size.w,
+                    )
+                    .filter(|s| (*s - 1.0).abs() > 0.0005);
+
                 if is_scaling {
                     // OPENING or CLOSING: render the surface tree as bare Wayland
                     // elements (alpha already baked in via `alpha`), then wrap each
@@ -1637,6 +1649,43 @@ where
                                     win_elem,
                                     open_origin_phys,
                                     anim_scale as f64,
+                                );
+                                let mapped: CosmicMappedRenderElement<R> =
+                                    CosmicMappedRenderElement::GrabbedWindow(scaled);
+                                let wre: WorkspaceRenderElement<R> = mapped.into();
+                                wre
+                            })
+                            .flat_map(crop_to_output)
+                            .map(Into::into),
+                    );
+                } else if let Some(neighbor_scale) = neighbor_scale {
+                    // NEIGHBOR SQUISH: a full-width bar (e.g. agentos-panel) being
+                    // shrunk by an active side-panel slide. Scale its committed
+                    // buffer about its FIXED left edge so its right edge tracks the
+                    // panel's animated edge (pixel-locked via cached_factor),
+                    // masking the bar client's reflow lag — the same squish-to-fit
+                    // windows get. Mirrors the open/close scale wrap above, x-only.
+                    let surface_elements =
+                        render_elements_from_surface_tree::<_, WaylandSurfaceRenderElement<_>>(
+                            renderer,
+                            layer.wl_surface(),
+                            surface_render_phys_loc,
+                            Scale::from(scale),
+                            alpha,
+                            FRAME_TIME_FILTER,
+                        );
+                    elements.extend(
+                        surface_elements
+                            .into_iter()
+                            .map(|surf_elem| {
+                                let win_elem: CosmicWindowRenderElement<R> = surf_elem.into();
+                                let scaled = RescaleRenderElement::from_element(
+                                    win_elem,
+                                    surface_render_phys_loc,
+                                    Scale {
+                                        x: neighbor_scale,
+                                        y: 1.0,
+                                    },
                                 );
                                 let mapped: CosmicMappedRenderElement<R> =
                                     CosmicMappedRenderElement::GrabbedWindow(scaled);
@@ -1684,8 +1733,15 @@ where
                 // While opening OR closing, scale the shadow/blur rect by the SAME
                 // factor around the SAME center so the frosted backdrop and shadow
                 // track the surface instead of staying full-size behind a scaled card.
+                // For a neighbor squish, scale the backdrop WIDTH about the left edge
+                // by the same x-factor so the blur/shadow right edge tracks the
+                // squished content's right edge (no backdrop overhang at the seam).
                 let local_geo = if is_scaling && anim_scale != 1.0 {
                     scale_rect_about_center(local_geo, anim_scale)
+                } else if let Some(ns) = neighbor_scale {
+                    let mut g = local_geo;
+                    g.size.w = (local_geo.size.w as f64 * ns).round() as i32;
+                    g
                 } else {
                     local_geo
                 };

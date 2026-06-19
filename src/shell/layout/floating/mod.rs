@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -113,6 +113,16 @@ pub struct FloatingLayout {
     /// size-mismatch check alone would capture too late (possibly after the
     /// new buffer landed — the recorded size lets us detect that race).
     pending_slide_snapshots: Mutex<HashMap<CosmicMapped, Size<i32, Local>>>,
+    /// Windows whose final-size configure was DEFERRED at slide start: the
+    /// geometry is already set to final, but the `configure()` is withheld until
+    /// the old-content snapshot has been captured. Without this, a fast client
+    /// (e.g. vscode under rapid toggling) can commit its reflowed buffer before
+    /// the render frame snapshots the old content, so the slide-start content
+    /// swap has no snapshot to crossfade and blinks. Holding the configure
+    /// guarantees the old buffer is still committed when the capture runs.
+    /// Flushed (via `force_configure`) once the window leaves
+    /// `pending_slide_snapshots` (captured) — see `flush_deferred_slide_configures`.
+    deferred_slide_configures: HashSet<CosmicMapped>,
 }
 
 /// Crossfade state for one window resized by a layer slide.
@@ -917,6 +927,10 @@ impl FloatingLayout {
         self.slide_target_geometries.remove(&mapped);
         self.slide_snapshots.lock().unwrap().remove(&mapped);
         self.pending_slide_snapshots.lock().unwrap().remove(&mapped);
+        // Drop any withheld slide-start configure too: the pipelined resize now
+        // drives this window's configures, so a deferred slide configure would
+        // be a stale competing send.
+        self.deferred_slide_configures.remove(&mapped);
 
         let now = Instant::now();
         self.animations.insert(
@@ -2229,7 +2243,7 @@ impl FloatingLayout {
     }
 
     pub fn recalculate(&mut self) {
-        let _ = self.recalculate_collect_resized();
+        let _ = self.recalculate_collect_resized(false);
     }
 
     /// Like [`Self::recalculate`], but returns the windows that were sent a
@@ -2238,6 +2252,7 @@ impl FloatingLayout {
     /// old-content snapshot for the crossfade.
     pub fn recalculate_collect_resized(
         &mut self,
+        defer_configures: bool,
     ) -> Vec<(CosmicMapped, Size<i32, Local>, Size<i32, Local>)> {
         let mut resized = Vec::new();
         let output = self.space.outputs().next().unwrap().clone();
@@ -2310,6 +2325,10 @@ impl FloatingLayout {
                     "[SLIDE_RECALC] deferring configure during slide"
                 );
             } else {
+                // Defer ONLY size-changing configures at slide start: those
+                // trigger the client reflow we must snapshot before. Position-
+                // only updates carry no race and configure immediately.
+                let defer_this = defer_configures && size_changed;
                 if size_changed {
                     tracing::debug!(
                         app_id = %mapped.active_window().app_id(),
@@ -2328,7 +2347,14 @@ impl FloatingLayout {
                         && window_geometry.size.w >= geometry.size.w
                         && window_geometry.size.h >= geometry.size.h,
                 );
-                mapped.configure();
+                if defer_this {
+                    // Geometry is final, but withhold the configure until the
+                    // old content is snapshotted (flushed once the window leaves
+                    // pending_slide_snapshots). Prevents the slide-start race.
+                    self.deferred_slide_configures.insert(mapped.clone());
+                } else {
+                    mapped.configure();
+                }
             }
             // Store target geometry for the render path during slide.
             // Also update when slide just ended (!slide_active) but entries still exist,
@@ -2370,6 +2396,7 @@ impl FloatingLayout {
             .lock()
             .unwrap()
             .retain(|w, _| w.alive());
+        self.deferred_slide_configures.retain(|w| w.alive());
         self.refresh();
         resized
     }
@@ -2390,6 +2417,44 @@ impl FloatingLayout {
         for (mapped, old_size, _) in windows {
             pending.insert(mapped, old_size);
         }
+    }
+
+    /// Send the withheld slide-start configures for windows whose old-content
+    /// snapshot has now been captured (they've left `pending_slide_snapshots`).
+    /// `force_all` flushes every remaining one regardless — used at slide settle
+    /// so a window that never rendered (e.g. on an inactive workspace) still
+    /// gets its final size. Uses `force_configure` so the late send isn't
+    /// dropped by XDG configure throttling.
+    pub fn flush_deferred_slide_configures(&mut self, force_all: bool) {
+        if self.deferred_slide_configures.is_empty() {
+            return;
+        }
+        let pending = self.pending_slide_snapshots.lock().unwrap();
+        self.deferred_slide_configures.retain(|mapped| {
+            if !mapped.alive() {
+                return false; // window gone — drop it
+            }
+            let captured = !pending.contains_key(mapped);
+            if force_all || captured {
+                mapped.force_configure();
+                false // flushed — remove from the set
+            } else {
+                true // still awaiting capture — keep deferred
+            }
+        });
+    }
+
+    /// True while any captured slide snapshot is mid-crossfade (its `fade_start`
+    /// has fired but the fade hasn't completed). Diagnostic probe for the
+    /// redraw-scheduling path: the shell's `animations_going()` /
+    /// `animating_outputs()` track slide *motion* only, so a fade that outlives
+    /// the motion is invisible to them — this surfaces it.
+    pub fn has_slide_fade_in_flight(&self) -> bool {
+        self.slide_snapshots
+            .lock()
+            .unwrap()
+            .values()
+            .any(|s| s.fade_start.is_some())
     }
 
     /// Compute a window's position during/after a panel slide animation.
