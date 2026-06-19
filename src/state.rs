@@ -329,6 +329,7 @@ pub struct Common {
     pub overlap_notify_state: OverlapNotifyState,
     pub a11y_state: A11yState,
     pub a11y_keyboard_monitor_state: A11yKeyboardMonitorState,
+    pub game_mode_bridge: crate::dbus::game_mode::GameModeBridge,
 
     // shell-related wayland state
     pub xdg_shell_state: XdgShellState,
@@ -795,6 +796,11 @@ impl State {
 
         let a11y_keyboard_monitor_state = A11yKeyboardMonitorState::new(&async_executor);
 
+        let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
+        // Share the frame-time slot so the KMS surface thread (via Shell) can feed
+        // live values to the game-mode `AppFrametimeNs` reader.
+        shell.write().game_mode_frametime_ns = game_mode_bridge.frametime_handle();
+
         State {
             common: Common {
                 config,
@@ -870,6 +876,7 @@ impl State {
                 workspace_state,
                 a11y_state,
                 a11y_keyboard_monitor_state,
+                game_mode_bridge,
                 xwayland_scale: None,
                 xwayland_state: None,
                 xwayland_shell_state,
@@ -1375,9 +1382,15 @@ impl Common {
         }
     }
 
-    #[profiling::function]
     pub fn send_frames(&self, output: &Output, sequence: Option<usize>) {
         let time = self.clock.now();
+
+        // NB: game-mode fps limiting is NOT done here — withholding frame
+        // callbacks stalls cosmic-comp's damage-driven redraw into a freeze.
+        // Instead the KMS surface thread caps the *presentation rate* (see
+        // `Timings::set_fps_limit`), which sends one callback per (capped)
+        // present and keeps the output ticking.
+
         let should_send = |surface: &WlSurface, states: &SurfaceData| {
             // Do the standard primary scanout output check. For pointer surfaces it deduplicates
             // the frame callbacks across potentially multiple outputs, and for regular windows and

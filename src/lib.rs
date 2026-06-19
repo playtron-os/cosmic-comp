@@ -361,6 +361,7 @@ fn refresh(state: &mut State) {
 
     state.common.refresh();
     state::Common::refresh_focus(state);
+    state.refresh_game_mode_state();
     OverlapNotifyState::refresh(state);
     UsableAreaState::refresh(state);
     state.common.update_x11_stacking_order();

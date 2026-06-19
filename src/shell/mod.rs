@@ -615,6 +615,28 @@ pub struct LayerMaximizeState {
     pub last_click: Option<(std::time::Instant, f64)>,
 }
 
+/// Native exclusive gaming-mode state.
+///
+/// Entered when a game-mode client enters game mode for an app over the
+/// `one.playtron.GameMode` D-Bus interface (see [`crate::dbus::game_mode`]). Game
+/// mode makes the game an exclusive fullscreen surface — which on its own turns
+/// on cosmic-comp's fullscreen fast path (direct scanout + VRR) — and minimizes
+/// everything else, giving the macOS-style "the desktop clears and the game takes
+/// over" feel.
+#[derive(Debug, Default)]
+pub struct GameMode {
+    pub active: bool,
+    /// The app id currently in game mode.
+    pub app_id: Option<u32>,
+    /// The game surface we fullscreened, so we can un-fullscreen it on exit.
+    pub game_surface: Option<CosmicSurface>,
+    /// Windows we minimized on entry, restored verbatim on exit.
+    pub minimized: Vec<CosmicSurface>,
+    /// Set when entry was requested but no game window was focused/mapped yet;
+    /// retried from `refresh_game_mode_state` once a game window appears.
+    pub pending_app_id: Option<u32>,
+}
+
 #[derive(Debug)]
 pub struct Shell {
     pub workspaces: Workspaces,
@@ -643,6 +665,24 @@ pub struct Shell {
     )>,
     resize_indicator: Option<ResizeIndicator>,
     zoom_state: Option<ZoomState>,
+    pub game_mode: GameMode,
+    /// Whether tearing (immediate/async page flips) is permitted while in game
+    /// mode. Driven by the `one.playtron.GameMode` `SetTearing` D-Bus call; kept
+    /// on `Shell` (not `GameMode`) so it persists across game-mode enter/exit.
+    pub tearing_allowed: bool,
+    /// Game-mode frame-rate cap (0 = uncapped). Read by the KMS surface thread
+    /// for the output showing the fullscreen game, which caps its presentation
+    /// rate. Driven by `one.playtron.GameMode.SetFpsLimit`.
+    pub game_mode_fps_limit: u32,
+    /// Game-mode VRR policy. Read by the KMS surface thread to override the
+    /// output's adaptive-sync setting while a game is fullscreen. Driven by
+    /// `one.playtron.GameMode.SetVrr`.
+    pub game_mode_vrr: crate::dbus::game_mode::VrrMode,
+    /// Live recent frame time (ns) of the output showing the fullscreen game,
+    /// written each frame by the KMS surface thread. Shares its `Arc` with the
+    /// game-mode D-Bus bridge so `AppFrametimeNs` (Auto-TDP) reads live values.
+    /// Wired in `State::new` after the bridge is created; 0 when no game runs.
+    pub game_mode_frametime_ns: std::sync::Arc<std::sync::atomic::AtomicU64>,
     appearance_conf: AppearanceConfig,
     tiling_exceptions: TilingExceptions,
     /// Home mode state for animation (fading in/out of home screen)
@@ -2100,6 +2140,11 @@ impl Shell {
             resize_indicator: None,
             appearance_conf: config.cosmic_conf.appearance_settings,
             zoom_state: None,
+            game_mode: GameMode::default(),
+            tearing_allowed: false,
+            game_mode_fps_limit: 0,
+            game_mode_vrr: crate::dbus::game_mode::VrrMode::Auto,
+            game_mode_frametime_ns: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tiling_exceptions,
             // Start in home mode only if HOME_ENABLED is set
             home_mode: if home_enabled() {

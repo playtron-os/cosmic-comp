@@ -105,7 +105,6 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/playtron-os/smithay.git"
-rev = "a491bac7"
 default-features = false
 features = [
     "backend_drm",
@@ -167,7 +166,7 @@ iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
 iced_widget = { git = "https://github.com/playtron-os/iced.git" }
 [patch.crates-io]
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
-smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "a491bac7" }
+smithay = { git = "https://github.com/playtron-os/smithay.git" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
 #iced = { path = "../iced" }

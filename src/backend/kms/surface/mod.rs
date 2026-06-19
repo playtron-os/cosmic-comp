@@ -32,6 +32,8 @@ use crate::{
 use anyhow::{Context, Result};
 use calloop::channel::Channel;
 use cosmic_comp_config::output::comp::AdaptiveSync;
+
+use crate::dbus::game_mode::VrrMode;
 use smithay::{
     backend::{
         allocator::{
@@ -95,6 +97,8 @@ use smithay::{
     },
 };
 use tracing::{error, info, trace, warn};
+
+use crate::logger::GAMING_TARGET;
 use wayland_backend::server::ObjectId;
 
 use std::{
@@ -183,6 +187,13 @@ pub struct SurfaceThreadState {
 
     /// Count of consecutive render failures for backoff calculation.
     render_failure_count: u32,
+
+    /// Last tearing / VRR state, for change-only `gaming`-target logs.
+    last_tearing: bool,
+    last_vrr: bool,
+    /// Throttle for the periodic frame-pacing log (once/second while a game is
+    /// fullscreen).
+    last_pacing_log: Option<std::time::Instant>,
 }
 
 pub type GbmDrmOutput = DrmOutput<
@@ -577,6 +588,10 @@ fn surface_thread(
 
         frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler::new(&name),
         render_failure_count: 0,
+
+        last_tearing: false,
+        last_vrr: false,
+        last_pacing_log: None,
     };
 
     let signal = event_loop.get_signal();
@@ -1835,28 +1850,82 @@ impl SurfaceThreadState {
         let mut additional_frame_flags = FrameFlags::empty();
         let mut remove_frame_flags = FrameFlags::empty();
 
-        let (has_active_fullscreen, fullscreen_drives_refresh_rate, animations_going) = {
+        let (
+            has_active_fullscreen,
+            fullscreen_drives_refresh_rate,
+            animations_going,
+            game_mode_tearing,
+            game_mode_fps_limit,
+            game_mode_active,
+            game_mode_vrr,
+        ) = {
             let shell = self.shell.read();
             let animations_going = shell.animations_going();
+            // Tearing is allowed for an exclusive fullscreen game when the
+            // game-mode `SetTearing` flag is on. The scanout/VRR/compositing
+            // checks happen below.
+            let game_mode_tearing = shell.game_mode.active && shell.tearing_allowed;
+            let fps_limit = shell.game_mode_fps_limit;
+            let game_mode_active = shell.game_mode.active;
+            let game_mode_vrr = shell.game_mode_vrr;
             let output = self.mirroring.as_ref().unwrap_or(&self.output);
             if let Some((_, workspace)) = shell.workspaces.active(output) {
                 if let Some(fullscreen_surface) = workspace.get_fullscreen() {
                     const _30_FPS: Duration = Duration::from_nanos(1_000_000_000 / 30);
+                    let wl = fullscreen_surface.wl_surface();
+                    let wl = wl.as_deref();
                     (
                         true,
-                        fullscreen_surface.wl_surface().is_some_and(|surface| {
-                            recursive_frame_time_estimation(&self.clock, &surface)
+                        wl.is_some_and(|surface| {
+                            recursive_frame_time_estimation(&self.clock, surface)
                                 .is_some_and(|dur| dur <= _30_FPS)
                         }),
                         animations_going,
+                        game_mode_tearing,
+                        fps_limit,
+                        game_mode_active,
+                        game_mode_vrr,
                     )
                 } else {
-                    (false, false, animations_going)
+                    (
+                        false,
+                        false,
+                        animations_going,
+                        game_mode_tearing,
+                        fps_limit,
+                        game_mode_active,
+                        game_mode_vrr,
+                    )
                 }
             } else {
-                (false, false, animations_going)
+                (
+                    false,
+                    false,
+                    animations_going,
+                    game_mode_tearing,
+                    fps_limit,
+                    game_mode_active,
+                    game_mode_vrr,
+                )
             }
         };
+
+        // Cap the presentation rate to the game-mode fps limit, but only for the
+        // output actually showing the fullscreen game.
+        self.timings.set_fps_limit(if has_active_fullscreen {
+            game_mode_fps_limit
+        } else {
+            0
+        });
+        // Feed the game's live frame time to the game-mode D-Bus AppFrametimeNs
+        // reader (Auto-TDP). Only the output showing the game writes; when the game
+        // exits, `Active` goes false and the reader returns 0 regardless.
+        if has_active_fullscreen {
+            self.shell
+                .read()
+                .game_mode_frametime_ns
+                .store(self.timings.recent_frametime_ns(30), Ordering::Relaxed);
+        }
 
         if has_active_fullscreen || animations_going {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
@@ -1867,6 +1936,28 @@ impl SurfaceThreadState {
 
         if self.vrr_mode == AdaptiveSync::Enabled {
             vrr = has_active_fullscreen;
+        }
+
+        // Game-mode VRR policy (one.playtron.GameMode SetVrr) overrides the
+        // output's adaptive-sync setting while a game is fullscreen — gated on
+        // the fullscreen surface so a stale policy never leaks onto the desktop.
+        if game_mode_active && has_active_fullscreen {
+            match game_mode_vrr {
+                VrrMode::On => vrr = true,
+                VrrMode::Off => vrr = false,
+                VrrMode::Auto => {}
+            }
+        }
+
+        if vrr != self.last_vrr {
+            self.last_vrr = vrr;
+            info!(
+                target: GAMING_TARGET,
+                vrr,
+                output = %self.output.name(),
+                "VRR {}",
+                if vrr { "engaged" } else { "disabled" }
+            );
         }
 
         // Process blur for windows that request it
@@ -2175,10 +2266,21 @@ impl SurfaceThreadState {
             if let Err(err) = compositor.with_compositor(|c| c.use_vrr(vrr)) {
                 warn!("Unable to set adaptive VRR state: {}", err);
             }
+            // For an exclusive fullscreen game, clear to black: smithay only
+            // direct-scans-out the topmost full-output element if the clear color
+            // is black/transparent OR the element is opaque. A black clear lets a
+            // game that doesn't declare an opaque region (common for Xwayland/
+            // Proton titles) still take the primary plane — harmless since the
+            // game covers the whole output.
+            let clear = if game_mode_active && has_active_fullscreen {
+                smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0)
+            } else {
+                CLEAR_COLOR // TODO use a theme neutral color
+            };
             compositor.render_frame(
                 &mut renderer,
                 &elements,
-                CLEAR_COLOR, // TODO use a theme neutral color
+                clear,
                 self.frame_flags
                     .union(additional_frame_flags)
                     .difference(remove_frame_flags),
@@ -2224,6 +2326,73 @@ impl SurfaceThreadState {
                     elem.sync.wait()?;
                 }
 
+                // Tearing / immediate-flip decision: only on the pure direct-
+                // scanout path (a composited frame can't tear without an explicit
+                // fence), never under VRR, and only if the driver supports async
+                // flips.
+                let scanout = !matches!(
+                    &frame_result.primary_element,
+                    PrimaryPlaneElement::Swapchain(_)
+                );
+                let supports_tearing = compositor.with_compositor(|c| c.supports_tearing());
+                let tearing = game_mode_tearing && !vrr && scanout && supports_tearing;
+                compositor.with_compositor(|c| c.set_tearing(tearing));
+
+                if tearing != self.last_tearing {
+                    self.last_tearing = tearing;
+                    info!(
+                        target: GAMING_TARGET,
+                        tearing,
+                        output = %self.output.name(),
+                        requested = game_mode_tearing,
+                        vrr,
+                        scanout,
+                        supports_tearing,
+                        "tearing {} (async page flips {})",
+                        if tearing { "engaged" } else { "disabled" },
+                        if tearing { "on" } else { "off" },
+                    );
+                }
+
+                // Periodic frame-pacing instrumentation (once/second while a game
+                // is fullscreen): the pacer's wake-ahead budget + the achieved fps.
+                if has_active_fullscreen {
+                    let now = std::time::Instant::now();
+                    if self
+                        .last_pacing_log
+                        .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+                    {
+                        self.last_pacing_log = Some(now);
+                        let fps = self.timings.recent_fps(30);
+                        let min_interval_ms = self.timings.recent_min_interval_ms(30);
+                        let wake_ahead_ms = self.timings.rolling_draw_time().as_secs_f64() * 1000.0;
+                        // Scanout diagnostics (input element list, top-first). When
+                        // scanout=false: element_count==1 ⇒ the game alone failed the
+                        // primary plane (opacity/geometry/format); >1 ⇒ something sits
+                        // above it (top_kind shows the topmost — Cursor, or a panel/
+                        // dock/overlay surface as Unspecified) and isn't being lifted
+                        // to its own plane.
+                        let element_count = elements.len();
+                        let top_kind = elements.first().map(|e| e.kind());
+                        let cursor_present = elements.iter().any(|e| e.kind() == Kind::Cursor);
+                        info!(
+                            target: GAMING_TARGET,
+                            fps,
+                            min_interval_ms,
+                            wake_ahead_ms,
+                            fps_cap = game_mode_fps_limit,
+                            tearing,
+                            vrr,
+                            scanout,
+                            element_count,
+                            ?top_kind,
+                            cursor_present,
+                            output = %self.output.name(),
+                            "frame pacing",
+                        );
+                    }
+                }
+
                 match compositor.queue_frame(feedback) {
                     x @ Ok(()) | x @ Err(FrameError::EmptyFrame) => {
                         if has_layer_slides {
@@ -2233,6 +2402,15 @@ impl SurfaceThreadState {
                             );
                         }
                         self.timings.submitted_for_presentation(&self.clock);
+
+                        // Tell the pacer whether this frame was GPU-composited or
+                        // a pure direct scanout (e.g. a fullscreen game) — the
+                        // latter skips the compositing draw-time floor for the
+                        // tightest, lowest-latency pacing.
+                        self.timings.set_compositing(matches!(
+                            &frame_result.primary_element,
+                            PrimaryPlaneElement::Swapchain(_)
+                        ));
 
                         // Update `state` after `queue_frame`, before any early return from errors
                         if x.is_ok() {

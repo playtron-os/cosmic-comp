@@ -99,6 +99,20 @@ fn render_input_order_internal<R: 'static>(
     // Create home visibility context once for all layer surface filtering
     let home_visibility = HomeVisibilityContext::from_shell(shell);
 
+    // In game mode the fullscreen game is exclusive on its output: suppress all
+    // desktop layer-shell surfaces (overlay/top/bottom/background) so the game is
+    // the sole render element and can take the primary plane (direct scanout).
+    // This is independent of the keyboard-focus heuristic below, which an
+    // Xwayland game may not satisfy.
+    let game_mode_exclusive = shell.game_mode.active
+        && shell
+            .workspaces
+            .sets
+            .get(output)
+            .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
+            .and_then(|w| w.fullscreen.as_ref())
+            .is_some_and(|f| !f.is_animating());
+
     if shell
         .zoom_state
         .as_ref()
@@ -113,25 +127,27 @@ fn render_input_order_internal<R: 'static>(
     }
 
     // Overlay-level layer shell
-    // overlay is above everything
-    for (layer, popup, location, _alpha) in
-        layer_popups(output, Layer::Overlay, element_filter, &home_visibility)
-    {
-        callback(Stage::LayerPopup {
-            layer,
-            popup: &popup,
-            location,
-        })?;
-    }
-    for (layer, location, alpha, blur_alpha) in
-        layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
-    {
-        callback(Stage::LayerSurface {
-            layer,
-            location,
-            alpha,
-            blur_alpha,
-        })?;
+    // overlay is above everything (suppressed for an exclusive game).
+    if !game_mode_exclusive {
+        for (layer, popup, location, _alpha) in
+            layer_popups(output, Layer::Overlay, element_filter, &home_visibility)
+        {
+            callback(Stage::LayerPopup {
+                layer,
+                popup: &popup,
+                location,
+            })?;
+        }
+        for (layer, location, alpha, blur_alpha) in
+            layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
+        {
+            callback(Stage::LayerSurface {
+                layer,
+                location,
+                alpha,
+                blur_alpha,
+            })?;
+        }
     }
 
     // calculate a bunch of stuff for workspace transitions
@@ -159,16 +175,17 @@ fn render_input_order_internal<R: 'static>(
         .zip(fullscreen)
         .is_some_and(|(target, fullscreen)| target == &fullscreen.surface);
     let overview_is_open = workspace_overview_is_open(output);
-    let has_focused_fullscreen = if is_active_workspace {
-        let current_focus = seat.get_keyboard().unwrap().current_focus();
-        matches!(current_focus, Some(KeyboardFocusTarget::Fullscreen(_)))
-            || (current_focus.is_none()
-                && focus_stack_is_valid_fullscreen
-                && !workspace_overview_is_open(output))
-    } else {
-        focus_stack_is_valid_fullscreen && !overview_is_open
-    };
-    let has_fullscreen = fullscreen.is_some() && !overview_is_open;
+    let has_focused_fullscreen = game_mode_exclusive
+        || if is_active_workspace {
+            let current_focus = seat.get_keyboard().unwrap().current_focus();
+            matches!(current_focus, Some(KeyboardFocusTarget::Fullscreen(_)))
+                || (current_focus.is_none()
+                    && focus_stack_is_valid_fullscreen
+                    && !workspace_overview_is_open(output))
+        } else {
+            focus_stack_is_valid_fullscreen && !overview_is_open
+        };
+    let has_fullscreen = game_mode_exclusive || (fullscreen.is_some() && !overview_is_open);
 
     let (previous, current_offset) = match previous.as_ref() {
         Some((previous, previous_idx, start)) => {
