@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="layer_surface_placement">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="compositor-side placement of a layer surface within the usable area">
+    This protocol lets a layer shell surface ask the compositor to position it
+    within the output's usable (non-exclusive) area — the output's logical
+    geometry minus every exclusive zone reserved by other layer surfaces
+    (panels, docks, bars) — instead of computing and applying margins itself.
+
+    A centered or fractionally-placed overlay (launcher, switcher, system
+    dialog) otherwise has to learn the usable area, compute a margin, and apply
+    it only after the surface is already mapped. The usable area is reported a
+    frame or more after map (and again whenever the surface lands on a new
+    output), so the surface visibly jumps from its first position to the
+    corrected one. By describing the desired placement declaratively, the client
+    lets the compositor position the surface at map time and keep it positioned
+    across relayouts (panels appearing, resizing, or the surface moving to
+    another output) with no client round-trip and no jump.
+
+    The placement only takes effect while the surface is not anchored on the
+    axis it controls and reserves no exclusive zone; an anchored or exclusive
+    surface is positioned by the standard layer-shell rules instead. Horizontal
+    placement is left to the standard layer-shell rules — a surface that is not
+    anchored horizontally is centered within the usable area.
+
+    This protocol is companion to layer_usable_area, which reports the usable
+    area to clients that position themselves; here the compositor does the
+    positioning. A client never needs both for the same surface.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="layer_surface_placement_manager_v1" version="1">
+    <description summary="placement manager for layer surfaces">
+      Manager for creating placement objects for layer shell surfaces.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Existing placement objects remain valid until destroyed.
+      </description>
+    </request>
+
+    <request name="get_layer_surface_placement">
+      <description summary="get a placement object for a surface">
+        Create a placement object for the given wl_surface, which must be a
+        layer shell surface.
+
+        If the given wl_surface already has a layer_surface_placement_v1 object
+        associated, the already_exists protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="layer_surface_placement_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="surface already has a placement object"/>
+    </enum>
+  </interface>
+
+  <interface name="layer_surface_placement_v1" version="1">
+    <description summary="placement control for a layer surface">
+      Controls how the compositor positions the associated layer surface within
+      its output's usable (non-exclusive) area.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the placement object">
+        Clears any compositor-side placement and reverts the surface to standard
+        layer-shell positioning.
+      </description>
+    </request>
+
+    <request name="set_vertical_placement">
+      <description summary="place the surface vertically within the usable area">
+        Position the surface's top edge at
+
+          usable_top + round(fraction * usable_height) + offset
+
+        clamped so the top edge is at least min_margin below the usable area's
+        top edge, where usable_top/usable_height are that of the output the
+        surface is shown on, in logical pixels.
+
+        The placement takes effect at the next layout pass and persists — it is
+        re-applied on every relayout (a panel maps, unmaps, resizes, or the
+        surface moves to another output) — until changed by another
+        set_vertical_placement, cleared by unset_vertical_placement, or the
+        object is destroyed.
+
+        This only takes effect while the surface is not anchored vertically
+        (neither top nor bottom) and reserves no exclusive zone; otherwise the
+        standard layer-shell positioning applies.
+
+        fraction is a wl_fixed value, normally in the range [0.0, 1.0]. offset
+        and min_margin are signed/unsigned logical pixels respectively.
+      </description>
+      <arg name="fraction" type="fixed"
+        summary="fraction of usable-area height for the surface's top edge"/>
+      <arg name="offset" type="int"
+        summary="additional vertical offset, logical px (signed)"/>
+      <arg name="min_margin" type="int"
+        summary="minimum gap from the usable-area top, logical px"/>
+    </request>
+
+    <request name="unset_vertical_placement">
+      <description summary="clear compositor-side vertical placement">
+        Revert the surface to standard layer-shell vertical positioning: anchor
+        plus margin, or — for a surface not anchored vertically — vertical
+        centering within the usable area.
+      </description>
+    </request>
+
+    <request name="set_max_height">
+      <description summary="cap the surface height to a fraction of the usable area">
+        Clamp the surface's height to `max(round(fraction * usable_height),
+        min_height)` logical pixels, where usable_height is that of the output
+        the surface is shown on. This lets the client commit its full content
+        height and have the compositor cap it to a fraction of the usable area
+        (e.g. a grid that scrolls past 76% of the available height), without the
+        client recomputing the cap from a usable-area value that is stale right
+        after the surface appears on a new output.
+
+        Like set_vertical_placement, this is re-applied on every relayout and
+        persists until changed by another set_max_height, cleared by
+        unset_max_height, or the object is destroyed. It composes with
+        set_vertical_placement and with vertical centering (the cap is applied
+        before the surface is positioned).
+
+        fraction is a wl_fixed value, normally in the range [0.0, 1.0].
+        min_height is a floor (in logical px) for the resolved cap so a small
+        output can't shrink the surface below a usable minimum; pass 0 for none.
+      </description>
+      <arg name="fraction" type="fixed"
+        summary="fraction of usable-area height to cap the surface to"/>
+      <arg name="min_height" type="int"
+        summary="floor for the resolved cap, logical px"/>
+    </request>
+
+    <request name="unset_max_height">
+      <description summary="clear the compositor-side height cap">
+        Remove any height cap set by set_max_height; the surface is sized by the
+        standard layer-shell rules (its requested size, clamped to the zone).
+      </description>
+    </request>
+
+    <enum name="error">
+      <entry name="surface_destroyed" value="0"
+        summary="the associated surface has been destroyed"/>
+    </enum>
+  </interface>
+</protocol>
