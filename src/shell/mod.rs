@@ -94,10 +94,12 @@ use crate::{
 };
 
 pub mod auto_hide;
+pub mod ease;
 pub mod element;
 pub mod focus;
 pub mod grabs;
 pub mod layer_open;
+pub mod layer_resize_anim;
 pub mod layer_slide;
 pub mod layout;
 mod seats;
@@ -576,14 +578,12 @@ const MIN_VIEWPORT_WIDTH: i32 = 500;
 const MIN_PANEL_WIDTH: i32 = 320;
 
 /// Fraction of the output width at/above which the side panel counts as "maximized": an
-/// edge double-click then restores it to its previous width instead of maximizing. (A
-/// drag-release uses its own, looser snap threshold — see `SNAP_TO_FULL_FRACTION` in
-/// `grabs::layer_resize`.)
+/// edge double-click then restores it to its previous width instead of maximizing.
 const MAXIMIZE_FRACTION: f32 = 0.99;
 
-/// An interactive resize of an edge-anchored layer-shell side panel in progress.
-/// The compositor recomputes `width` from the pointer each frame and forces it onto
-/// the surface (see [`Shell::override_active_layer_resize`]).
+/// The side panel's current resize target. While a spring resize animation
+/// ([`layer_resize_anim::LayerResizeAnim`]) plays, this is updated each frame to the
+/// eased `width` and forced onto the surface (see [`Shell::override_active_layer_resize`]).
 #[derive(Debug, Clone)]
 pub struct LayerResize {
     /// The layer surface being resized.
@@ -602,9 +602,8 @@ pub struct LayerResize {
 }
 
 /// Edge double-click maximize/restore bookkeeping for the side panel. Persists across
-/// resize grabs (unlike [`LayerResize`], which is cleared in `LayerResizeGrab::unset`),
-/// so the two clicks of a double-click can be timed and the pre-maximize width can be
-/// restored on the second toggle.
+/// resize animations (unlike [`LayerResize`], which is transient), so the two clicks of a
+/// double-click can be timed and the pre-maximize width can be restored on the second toggle.
 #[derive(Debug, Clone)]
 pub struct LayerMaximizeState {
     /// The surface the toggle applies to.
@@ -734,10 +733,11 @@ pub struct Shell {
     /// Layer surfaces with active slide animations (visibility-protocol triggered).
     pub layer_slides: Vec<layer_slide::LayerSlide>,
 
-    /// An in-progress interactive resize of an edge-anchored side panel (driven by
-    /// [`grabs::LayerResizeGrab`]). While set, [`Shell::override_active_layer_resize`]
-    /// forces the surface's cached size + exclusive zone to `width` before every
-    /// `arrange()`, so the compositor — not the client — owns the live resize.
+    /// The width the side panel is currently being forced to, set each frame while a
+    /// spring resize animation ([`layer_resize_anim::LayerResizeAnim`]) plays. While
+    /// set, [`Shell::override_active_layer_resize`] forces the surface's cached size +
+    /// exclusive zone to `width` before every `arrange()`, so the compositor — not the
+    /// client — owns the resize and windows reflow in lockstep.
     pub active_layer_resize: Option<LayerResize>,
 
     /// The final state of a *just-ended* resize grab, held until the client's buffer
@@ -747,6 +747,12 @@ pub struct Shell {
     /// width before the final buffer lands. Cleared by
     /// [`Shell::clear_layer_resize_settle_if_caught_up`] once the buffer matches.
     pub layer_resize_settle: Option<LayerResize>,
+
+    /// The active spring resize animation for the side panel, if any (maximize /
+    /// restore today, width presets later). Ticked in [`Shell::update_animations`];
+    /// each tick sets [`Self::active_layer_resize`] to the eased width and on
+    /// completion hands off to [`Self::layer_resize_settle`].
+    pub active_layer_resize_anim: Option<layer_resize_anim::LayerResizeAnim>,
 
     /// Edge double-click maximize/restore state for the side panel. Persists across
     /// grabs so two separate clicks can be timed into a double-click and the
@@ -2182,6 +2188,7 @@ impl Shell {
             // No interactive side-panel resize in progress
             active_layer_resize: None,
             layer_resize_settle: None,
+            active_layer_resize_anim: None,
             layer_maximize: None,
 
             // Popover open animations (agentos-panel-popover)
@@ -3009,6 +3016,10 @@ impl Shell {
         let fade_in = !self.layer_fade_in.is_empty();
         let pending_fade = !self.pending_layer_fade_in.is_empty();
         let fade_out = !self.layer_fade_out.is_empty();
+        let layer_resize = self
+            .active_layer_resize_anim
+            .as_ref()
+            .is_some_and(|a| a.is_animating());
 
         workspace_sets
             || overview
@@ -3025,6 +3036,7 @@ impl Shell {
             || fade_in
             || pending_fade
             || fade_out
+            || layer_resize
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -3092,6 +3104,8 @@ impl Shell {
             }
             self.workspaces.recalculate();
         }
+        // Advance the side-panel spring resize (maximize/restore, presets).
+        self.update_layer_resize_animation();
         // Clean up completed layer surface fade-ins
         self.cleanup_layer_fade_ins();
         // Clean up completed popover open animations
@@ -3909,41 +3923,37 @@ impl Shell {
         }
     }
 
-    /// Apply a one-shot width to the side panel *without* an ongoing grab — used by the
-    /// double-click maximize/restore toggle. Mirrors the finalize path in
-    /// `LayerResizeGrab::unset`: seed a transient [`LayerResize`] at `width`, force it onto
-    /// the surface ([`Self::override_active_layer_resize`]), re-arrange, then clear it so
-    /// normal layout resumes. `width` is clamped to `[320, output width]`. The client
-    /// adopts the resulting `configure` through its `WindowResized` handler (re-asserting
-    /// size + exclusive zone and debounce-saving), exactly like the end of a drag.
+    /// Animate the side panel from `from_width` to `target_width` over the shared spring
+    /// curve — used by the double-click maximize/restore toggle (and width presets later).
+    /// Seeds a [`layer_resize_anim::LayerResizeAnim`]; its per-frame tick
+    /// ([`Self::update_layer_resize_animation`]) forces each eased width onto the surface
+    /// ([`Self::override_active_layer_resize`]) and re-arranges, so windows reflow in
+    /// lockstep and the client adopts each `configure` through its `WindowResized` handler
+    /// (re-asserting size + exclusive zone, debounce-saving) — exactly like a drag used to.
+    /// Both widths are clamped to `[320, output width]`; a no-op change is ignored.
     pub fn set_layer_resize_width(
         &mut self,
         surface_id: &ObjectId,
         output: &Output,
         anchor_right: bool,
-        width: i32,
+        from_width: i32,
+        target_width: i32,
     ) {
         let max = output.geometry().size.w;
-        let width = width.clamp(MIN_PANEL_WIDTH, max);
-        self.active_layer_resize = Some(LayerResize {
-            surface_id: surface_id.clone(),
-            output: output.clone(),
-            anchor_right,
-            width,
-            min: MIN_PANEL_WIDTH,
-            max,
-        });
-        self.override_active_layer_resize(output);
-        if layer_map_for_output(output).arrange() {
-            self.workspaces.recalculate();
+        let from = from_width.clamp(MIN_PANEL_WIDTH, max);
+        let target = target_width.clamp(MIN_PANEL_WIDTH, max);
+        if from == target {
+            return;
         }
-        // Hold the final width (same as the end of a drag grab) so the edge-pin offset
-        // keeps the anchored edge against the output while the client renders the wider
-        // buffer — otherwise the surface jumps to its new position a frame before the
-        // matching buffer lands, exposing a gap on the anchored edge. Cleared in
-        // `clear_layer_resize_settle_if_caught_up` once the buffer catches up.
-        self.layer_resize_settle = self.active_layer_resize.clone();
-        self.active_layer_resize = None;
+        self.active_layer_resize_anim = Some(layer_resize_anim::LayerResizeAnim::new(
+            surface_id.clone(),
+            output.clone(),
+            anchor_right,
+            from,
+            target,
+        ));
+        // Apply the first frame immediately so the motion starts this dispatch.
+        self.update_layer_resize_animation();
     }
 
     /// Toggle the side panel between full width and its previous width on an edge
@@ -3986,7 +3996,7 @@ impl Shell {
             }
             max
         };
-        self.set_layer_resize_width(surface_id, output, anchor_right, target);
+        self.set_layer_resize_width(surface_id, output, anchor_right, current_width, target);
     }
 
     /// Clamp the agentos-chat-panel's exclusive zone so the desktop/windows area never
@@ -4124,6 +4134,50 @@ impl Shell {
         // Once animation completes, the cached state matches the client's value.
         self.layer_slides.retain(|s| s.visibility.is_animating());
         had_completions
+    }
+
+    /// Advance the side-panel spring resize animation, if one is active.
+    ///
+    /// Each tick sets [`Self::active_layer_resize`] to the eased width and forces it
+    /// onto the surface via [`Self::override_active_layer_resize`] + `arrange()`,
+    /// exactly like the old live drag — so windows reflow in lockstep and the client
+    /// adopts each `configure`. On completion the final width is handed to
+    /// [`Self::layer_resize_settle`] (keeping the anchored edge pinned until the
+    /// client's buffer catches up) and the animation is cleared.
+    fn update_layer_resize_animation(&mut self) {
+        let Some(anim) = self.active_layer_resize_anim.as_ref() else {
+            return;
+        };
+        let output = anim.output.clone();
+        let surface_id = anim.surface_id.clone();
+        let anchor_right = anim.anchor_right;
+        let width = anim.current_width();
+        let done = !anim.is_animating();
+
+        // Keep `active_layer_resize` set to the eased width for the whole animation —
+        // `override_active_layer_resize`, `get_layer_resize_offset` (edge-pin) and the
+        // render path all read it, identical to a live drag grab.
+        let max = output.geometry().size.w;
+        self.active_layer_resize = Some(LayerResize {
+            surface_id,
+            output: output.clone(),
+            anchor_right,
+            width,
+            min: MIN_PANEL_WIDTH,
+            max,
+        });
+        self.override_active_layer_resize(&output);
+        if layer_map_for_output(&output).arrange() {
+            self.workspaces.recalculate();
+        }
+
+        if done {
+            // Hold the final width (same as the end of a drag) so the edge-pin keeps
+            // the anchored edge against the output until the client's wider buffer
+            // lands; cleared by `clear_layer_resize_settle_if_caught_up`.
+            self.layer_resize_settle = self.active_layer_resize.take();
+            self.active_layer_resize_anim = None;
+        }
     }
 
     /// Apply the animated exclusive zones of active slides to the layer maps

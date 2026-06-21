@@ -89,8 +89,6 @@ pub use self::menu::*;
 mod moving;
 pub use self::moving::SeatMoveGrabState;
 mod delay;
-mod layer_resize;
-pub use self::layer_resize::*;
 
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

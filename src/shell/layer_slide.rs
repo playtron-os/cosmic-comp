@@ -16,10 +16,10 @@
 use std::time::{Duration, Instant};
 use wayland_backend::server::ObjectId;
 
-/// Duration of the slide-out (hide) animation.
-pub const SLIDE_OUT_DURATION: Duration = Duration::from_millis(420);
-/// Duration of the slide-in (show) animation.
-pub const SLIDE_IN_DURATION: Duration = Duration::from_millis(420);
+/// Duration of the slide-out (hide) animation (design `--duration-slow`).
+pub const SLIDE_OUT_DURATION: Duration = super::ease::SPRING_DURATION;
+/// Duration of the slide-in (show) animation (design `--duration-slow`).
+pub const SLIDE_IN_DURATION: Duration = super::ease::SPRING_DURATION;
 
 /// Which edge the surface slides toward.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +64,7 @@ impl SlideVisibility {
                 duration,
             } => {
                 let t = progress_clamped(*start, *duration);
-                let eased = cubic_bezier(t);
+                let eased = super::ease::ease_spring(t);
                 from_factor + (1.0 - from_factor) * eased
             }
             Self::Hidden => 1.0,
@@ -74,7 +74,7 @@ impl SlideVisibility {
                 duration,
             } => {
                 let t = progress_clamped(*start, *duration);
-                let eased = cubic_bezier(t);
+                let eased = super::ease::ease_spring(t);
                 from_factor * (1.0 - eased)
             }
         }
@@ -277,46 +277,6 @@ impl LayerSlide {
     pub fn ez_for_factor(&self, factor: f32) -> i32 {
         self.exclusive_zone - ((self.exclusive_zone as f32) * factor).round() as i32
     }
-}
-
-/// cubic-bezier(0.16, 1, 0.3, 1) — fast start, gentle deceleration.
-/// Uses De Casteljau subdivision to solve t→x then sample y.
-fn cubic_bezier(t: f32) -> f32 {
-    // Control points: P0=(0,0), P1=(0.16,1), P2=(0.3,1), P3=(1,1)
-    const X1: f64 = 0.16;
-    const Y1: f64 = 1.0;
-    const X2: f64 = 0.3;
-    const Y2: f64 = 1.0;
-
-    let t = t as f64;
-    // Newton-Raphson to find parameter u where bezier_x(u) = t
-    let mut u = t; // initial guess
-    for _ in 0..8 {
-        let x = bezier_component(u, X1, X2) - t;
-        let dx = bezier_component_derivative(u, X1, X2);
-        if dx.abs() < 1e-12 {
-            break;
-        }
-        u -= x / dx;
-        u = u.clamp(0.0, 1.0);
-    }
-    bezier_component(u, Y1, Y2) as f32
-}
-
-/// Evaluate one component of a cubic bezier at parameter u.
-/// B(u) = 3(1-u)^2*u*p1 + 3(1-u)*u^2*p2 + u^3
-fn bezier_component(u: f64, p1: f64, p2: f64) -> f64 {
-    let u2 = u * u;
-    let u3 = u2 * u;
-    let inv = 1.0 - u;
-    let inv2 = inv * inv;
-    3.0 * inv2 * u * p1 + 3.0 * inv * u2 * p2 + u3
-}
-
-/// Derivative of bezier_component with respect to u.
-fn bezier_component_derivative(u: f64, p1: f64, p2: f64) -> f64 {
-    let inv = 1.0 - u;
-    3.0 * inv * inv * p1 + 6.0 * inv * u * (p2 - p1) + 3.0 * u * u * (1.0 - p2)
 }
 
 /// Clamped progress ratio for an animation started at `start` with `duration`.

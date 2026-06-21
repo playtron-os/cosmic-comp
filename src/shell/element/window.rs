@@ -132,6 +132,10 @@ pub struct CosmicWindowInternal {
     last_title: Mutex<String>,
     /// Cached app icon handle, resolved once and refreshed when app_id changes.
     cached_icon: Mutex<(String, Option<super::header_bar::AppIcon>)>,
+    /// Client-set toplevel icon (xdg-toplevel-icon protocol), taking priority
+    /// over `cached_icon`. Tuple: (fingerprint of the committed icon, resolved
+    /// icon). Refreshed when the fingerprint changes.
+    client_icon: Mutex<(String, Option<super::header_bar::AppIcon>)>,
     /// Desktop override from .desktop file with X-Cosmic-AppIdMatch.
     /// Tuple: (app_id used for lookup, optional override).
     desktop_override: Mutex<(String, Option<DesktopOverride>)>,
@@ -311,6 +315,86 @@ fn prescale_raster_icon(path: &str) -> Option<super::header_bar::AppIcon> {
     Some(super::header_bar::AppIcon::Image(
         iced_core::image::Handle::from_rgba(w, h, pixels),
     ))
+}
+
+/// Read the client-set toplevel icon (xdg-toplevel-icon protocol) committed on
+/// `surface`. Returns a `(fingerprint, icon)` pair: the fingerprint changes only
+/// when the committed icon changes, so the caller can skip rebuilding the icon
+/// (an expensive shm read) on unrelated commits. An empty fingerprint with `None`
+/// means the client has not set an icon (fall back to the app_id lookup).
+fn read_client_toplevel_icon(surface: &WlSurface) -> (String, Option<super::header_bar::AppIcon>) {
+    use smithay::reexports::wayland_server::Resource;
+    use smithay::wayland::compositor::with_states;
+    use smithay::wayland::xdg_toplevel_icon::ToplevelIconCachedState;
+
+    with_states(surface, |states| {
+        let mut guard = states.cached_state.get::<ToplevelIconCachedState>();
+        let current = guard.current();
+
+        // Named icon: resolve through the icon theme like an app_id.
+        if let Some(name) = current.icon_name() {
+            return (format!("name:{name}"), resolve_app_icon(name));
+        }
+
+        // Pixel buffers: pick the largest square buffer and decode it.
+        if let Some((buffer, _scale)) = current
+            .buffers()
+            .iter()
+            .max_by_key(|(b, _)| shm_buffer_edge(b))
+        {
+            let fingerprint = format!("buf:{:?}", buffer.id());
+            return (fingerprint, shm_buffer_to_app_icon(buffer));
+        }
+
+        (String::new(), None)
+    })
+}
+
+/// Edge length (square) of an shm buffer, or 0 if it can't be read.
+fn shm_buffer_edge(
+    buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+) -> i32 {
+    use smithay::wayland::shm::with_buffer_contents;
+    with_buffer_contents(buffer, |_ptr, _len, data| data.width).unwrap_or(0)
+}
+
+/// Decode an shm pixel buffer (ARGB/XRGB 8888) into an `AppIcon::Image`.
+fn shm_buffer_to_app_icon(
+    buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+) -> Option<super::header_bar::AppIcon> {
+    use smithay::reexports::wayland_server::protocol::wl_shm::Format;
+    use smithay::wayland::shm::with_buffer_contents;
+
+    with_buffer_contents(buffer, |ptr, len, data| {
+        let width = data.width.max(0) as usize;
+        let height = data.height.max(0) as usize;
+        let stride = data.stride.max(0) as usize;
+        if width == 0 || height == 0 || stride < width * 4 {
+            return None;
+        }
+        // SAFETY: smithay guarantees `ptr`/`len` describe the mapped buffer for
+        // the duration of this callback.
+        let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+        if bytes.len() < (height - 1) * stride + width * 4 {
+            return None;
+        }
+        let opaque = matches!(data.format, Format::Xrgb8888);
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for y in 0..height {
+            let row = &bytes[y * stride..y * stride + width * 4];
+            for px in row.chunks_exact(4) {
+                // wl_shm ARGB8888/XRGB8888 are little-endian: bytes are B, G, R, A.
+                let (b, g, r, a) = (px[0], px[1], px[2], px[3]);
+                let a = if opaque { 255 } else { a };
+                rgba.extend_from_slice(&[r, g, b, a]);
+            }
+        }
+        Some(super::header_bar::AppIcon::Image(
+            iced_core::image::Handle::from_rgba(width as u32, height as u32, rgba),
+        ))
+    })
+    .ok()
+    .flatten()
 }
 
 /// Override properties parsed from a .desktop file with `X-Cosmic-AppIdMatch`.
@@ -562,6 +646,7 @@ impl CosmicWindow {
                 pointer_over_window: AtomicBool::new(false),
                 last_title: Mutex::new(last_title),
                 cached_icon: Mutex::new((app_id.clone(), None)),
+                client_icon: Mutex::new((String::new(), None)),
                 desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
@@ -1276,8 +1361,16 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             )
             .theme(theme);
 
-        // Pass the application icon if resolved
-        if let Some(icon) = win.cached_icon.lock().unwrap().1.clone() {
+        // Pass the application icon if resolved — a client-set toplevel icon
+        // (xdg-toplevel-icon) takes priority over the app_id-based icon.
+        let icon = win
+            .client_icon
+            .lock()
+            .unwrap()
+            .1
+            .clone()
+            .or_else(|| win.cached_icon.lock().unwrap().1.clone());
+        if let Some(icon) = icon {
             header = header.app_icon(icon);
         }
 
@@ -1368,6 +1461,7 @@ impl SpaceElement for CosmicWindow {
             };
 
             // Refresh cached icon and desktop override if app_id changed
+            let mut needs_redraw = title_changed;
             let app_id = p.window.app_id();
             let mut cached = p.cached_icon.lock().unwrap();
             if cached.0 != app_id {
@@ -1380,11 +1474,24 @@ impl SpaceElement for CosmicWindow {
                 cached.0 = app_id.clone();
                 drop(cached);
                 *p.desktop_override.lock().unwrap() = (app_id, new_ovr);
-                return true; // force redraw
+                needs_redraw = true;
+            } else {
+                drop(cached);
             }
-            drop(cached);
 
-            title_changed
+            // Pick up a client-set toplevel icon (xdg-toplevel-icon protocol);
+            // it takes priority over the app_id-based icon in the header.
+            if let Some(surface) = p.window.wl_surface() {
+                let (fingerprint, icon) = read_client_toplevel_icon(&surface);
+                let mut client = p.client_icon.lock().unwrap();
+                if client.0 != fingerprint {
+                    client.0 = fingerprint;
+                    client.1 = icon;
+                    needs_redraw = true;
+                }
+            }
+
+            needs_redraw
         }) {
             self.0.force_update();
         } else {

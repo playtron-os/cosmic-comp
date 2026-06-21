@@ -915,57 +915,25 @@ impl State {
                                     }
                                     self.backend.schedule_render(&out);
                                 } else {
-                                    // First click: remember it for double-click detection,
-                                    // then start the normal interactive resize grab.
-                                    {
-                                        let mut shell = self.common.shell.write();
-                                        match shell.layer_maximize.as_mut() {
-                                            Some(m) if m.surface_id == start.surface_id => {
-                                                m.last_click = Some((now, global_position.x));
-                                            }
-                                            _ => {
-                                                shell.layer_maximize =
-                                                    Some(crate::shell::LayerMaximizeState {
-                                                        surface_id: start.surface_id.clone(),
-                                                        restore_width: start.width,
-                                                        last_click: Some((now, global_position.x)),
-                                                    });
-                                            }
+                                    // First click of a potential double-click: remember it so
+                                    // the next click within the window toggles maximize/restore.
+                                    // (Free-drag resize was removed — a single press on the edge
+                                    // no longer starts a drag grab; the panel resizes only via
+                                    // the animated maximize/restore toggle and, later, presets.)
+                                    let mut shell = self.common.shell.write();
+                                    match shell.layer_maximize.as_mut() {
+                                        Some(m) if m.surface_id == start.surface_id => {
+                                            m.last_click = Some((now, global_position.x));
+                                        }
+                                        _ => {
+                                            shell.layer_maximize =
+                                                Some(crate::shell::LayerMaximizeState {
+                                                    surface_id: start.surface_id.clone(),
+                                                    restore_width: start.width,
+                                                    last_click: Some((now, global_position.x)),
+                                                });
                                         }
                                     }
-                                    tracing::debug!(
-                                        "RESIZE_DBG grab START anchor_right={} start_width={} min={} max={}",
-                                        start.anchor_right,
-                                        start.width,
-                                        start.min,
-                                        start.max,
-                                    );
-                                    let seat_clone = seat.clone();
-                                    self.common.event_loop_handle.insert_idle(move |state| {
-                                        let pointer = seat_clone.get_pointer().unwrap();
-                                        let grab_output = start.output.clone();
-                                        let start_data = smithay::input::pointer::GrabStartData {
-                                            focus: None,
-                                            button: 0x110,
-                                            location: pointer.current_location(),
-                                        };
-                                        {
-                                            let mut shell = state.common.shell.write();
-                                            shell.layer_resize_settle = None;
-                                            shell.active_layer_resize = Some(start);
-                                        }
-                                        let grab = crate::shell::grabs::LayerResizeGrab::new(
-                                            start_data,
-                                            &seat_clone,
-                                            grab_output,
-                                        );
-                                        pointer.set_grab(
-                                            state,
-                                            grab,
-                                            serial,
-                                            smithay::input::pointer::Focus::Clear,
-                                        );
-                                    });
                                 }
                             }
                         }
