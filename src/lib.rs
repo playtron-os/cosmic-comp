@@ -200,12 +200,29 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         }
 
         // Poll audio levels from shared memory
-        let (clients, transition_completed) = {
+        let (clients, transition_completed, edge_resize_active) = {
             let mut shell = state.common.shell.write();
             shell.voice_orb_state.poll_shmem_audio_levels();
             let transition_completed = shell.voice_orb_state.transition_just_completed;
-            (shell.update_animations(), transition_completed)
+            // Captured before update_animations: if a side-panel resize spring or its
+            // post-resize settle is in flight, the panel edge may come to rest under a
+            // stationary pointer, so re-evaluate the hover sash/cursor below.
+            let edge_resize_active =
+                shell.active_layer_resize_anim.is_some() || shell.layer_resize_settle.is_some();
+            (
+                shell.update_animations(),
+                transition_completed,
+                edge_resize_active,
+            )
         };
+
+        // Re-evaluate the side-panel edge hover after a resize tick: the edge can
+        // settle under a stationary pointer with no motion event, so the sash + EW
+        // cursor would otherwise not reappear until the next pointer move.
+        if edge_resize_active {
+            let seat = state.common.shell.read().seats.last_active().clone();
+            state.update_edge_resize_hover(&seat);
+        }
 
         // Sync protocol state when attach_and_transition animation completes
         if transition_completed {

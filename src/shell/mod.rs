@@ -614,6 +614,39 @@ pub struct LayerMaximizeState {
     pub last_click: Option<(std::time::Instant, f64)>,
 }
 
+/// The side-panel edge currently hovered (pointer within the grab zone, no drag
+/// in progress). Drives the hover sash indicator + the EW-resize cursor.
+#[derive(Debug, Clone)]
+pub struct EdgeHover {
+    pub surface_id: ObjectId,
+    /// Whether the panel is right-anchored (its draggable edge is on the left).
+    pub anchor_right: bool,
+}
+
+/// An in-progress edge drag. The panel does **not** resize while dragging — only
+/// this ghost `width` follows the pointer; on release the panel springs to it via
+/// [`Shell::set_layer_resize_width`] (see [`grabs::EdgeResizeGrab`]).
+#[derive(Debug, Clone)]
+pub struct EdgeDragGhost {
+    pub surface_id: ObjectId,
+    pub output: Output,
+    pub anchor_right: bool,
+    /// Ghost width in logical px (clamped to the surface's `[min, max]`).
+    pub width: i32,
+}
+
+/// What the render path should draw for a surface's edge sash, if anything.
+pub enum EdgeIndicator {
+    /// Subtle bar at the resting outer edge (hover, pre-drag).
+    Hover { anchor_right: bool },
+    /// Brighter bar at the dragged ghost edge; `ghost_width` is the panel width
+    /// the bar represents (measured from the anchored edge).
+    Drag {
+        anchor_right: bool,
+        ghost_width: i32,
+    },
+}
+
 /// Native exclusive gaming-mode state.
 ///
 /// Entered when a game-mode client enters game mode for an app over the
@@ -753,6 +786,15 @@ pub struct Shell {
     /// each tick sets [`Self::active_layer_resize`] to the eased width and on
     /// completion hands off to [`Self::layer_resize_settle`].
     pub active_layer_resize_anim: Option<layer_resize_anim::LayerResizeAnim>,
+
+    /// The side-panel edge the pointer is currently hovering (no drag), if any —
+    /// drives the hover sash indicator. Set/cleared by the input motion handler.
+    pub edge_hover: Option<EdgeHover>,
+
+    /// An in-progress edge drag (ghost-only; the panel resizes on release). Set by
+    /// the input press handler, updated by [`grabs::EdgeResizeGrab`], drawn by the
+    /// render path, cleared on release.
+    pub edge_drag_ghost: Option<EdgeDragGhost>,
 
     /// Edge double-click maximize/restore state for the side panel. Persists across
     /// grabs so two separate clicks can be timed into a double-click and the
@@ -2189,6 +2231,8 @@ impl Shell {
             active_layer_resize: None,
             layer_resize_settle: None,
             active_layer_resize_anim: None,
+            edge_hover: None,
+            edge_drag_ghost: None,
             layer_maximize: None,
 
             // Popover open animations (agentos-panel-popover)
@@ -3647,6 +3691,27 @@ impl Shell {
         (0, 0)
     }
 
+    /// What edge sash, if any, the render path should draw for `surface_id`. The
+    /// dragged ghost takes priority over a resting hover.
+    pub fn get_layer_edge_indicator(&self, surface_id: &ObjectId) -> Option<EdgeIndicator> {
+        if let Some(ghost) = self.edge_drag_ghost.as_ref()
+            && &ghost.surface_id == surface_id
+        {
+            return Some(EdgeIndicator::Drag {
+                anchor_right: ghost.anchor_right,
+                ghost_width: ghost.width,
+            });
+        }
+        if let Some(hover) = self.edge_hover.as_ref()
+            && &hover.surface_id == surface_id
+        {
+            return Some(EdgeIndicator::Hover {
+                anchor_right: hover.anchor_right,
+            });
+        }
+        None
+    }
+
     /// Clear the post-grab resize "settle" ([`Self::layer_resize_settle`]) once the
     /// client's buffer has caught up to the settled width. Called after `arrange()` on
     /// every layer commit; until it fires, the size override + edge-pin offset keep
@@ -4010,7 +4075,13 @@ impl Shell {
         let cap = (output.geometry().size.w - MIN_VIEWPORT_WIDTH).max(0) as u32;
         let map = layer_map_for_output(output);
         for layer in map.layers() {
-            if layer.namespace() != "agentos-chat-panel" {
+            // Only surfaces opted into edge resize (via the layer_edge_resize
+            // protocol) get the viewport-floor cap on their exclusive zone.
+            if crate::wayland::protocols::layer_edge_resize::get_surface_edge_resize(
+                layer.wl_surface(),
+            )
+            .is_none()
+            {
                 continue;
             }
             with_states(layer.wl_surface(), |states| {
@@ -4047,9 +4118,16 @@ impl Shell {
             let output_geo = output.geometry();
             let map = layer_map_for_output(output);
             for layer in map.layers() {
-                if layer.namespace() != "agentos-chat-panel" {
+                // Opt-in via the layer_edge_resize protocol (replaces the former
+                // `namespace == "agentos-chat-panel"` hardcode). Width bounds come
+                // from the client; `max_width == 0` means "full output width".
+                let Some(cfg) =
+                    crate::wayland::protocols::layer_edge_resize::get_surface_edge_resize(
+                        layer.wl_surface(),
+                    )
+                else {
                     continue;
-                }
+                };
                 // Only a fully-shown panel exposes a draggable resize edge. A
                 // hidden/closed panel still occupies its docked geometry in the
                 // layer map (anchored at the output edge), so without this gate a
@@ -4101,13 +4179,21 @@ impl Shell {
                         global_pos.x,
                         geo.size.w,
                     );
+                    let max = if cfg.max_width == 0 {
+                        output_geo.size.w
+                    } else {
+                        cfg.max_width.min(output_geo.size.w)
+                    };
                     return Some(LayerResize {
                         surface_id: layer.wl_surface().id(),
                         output: output.clone(),
                         anchor_right,
                         width: geo.size.w,
-                        min: MIN_PANEL_WIDTH,
-                        max: output_geo.size.w,
+                        // MIN_PANEL_WIDTH is the hard floor (also enforced by
+                        // set_layer_resize_width), so the drag ghost and the release
+                        // clamp agree and a release never jumps the width.
+                        min: cfg.min_width.max(MIN_PANEL_WIDTH).min(max),
+                        max,
                     });
                 }
             }

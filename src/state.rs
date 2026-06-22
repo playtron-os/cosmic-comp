@@ -29,6 +29,7 @@ use crate::{
             image_capture_source::ImageCaptureSourceState,
             layer_auto_hide::LayerAutoHideState,
             layer_corner_radius::LayerCornerRadiusState,
+            layer_edge_resize::EdgeResizeState,
             layer_shadow::LayerShadowManagerState,
             layer_surface_dismiss::LayerSurfaceDismissState,
             layer_surface_placement::LayerSurfacePlacementState,
@@ -292,6 +293,7 @@ pub struct Common {
     pub layer_shadow_state: LayerShadowManagerState,
     pub layer_auto_hide_state: LayerAutoHideState,
     pub usable_area_state: UsableAreaState,
+    pub edge_resize_state: EdgeResizeState,
     pub layer_surface_placement_state: LayerSurfacePlacementState,
     pub tooltip_state: TooltipManagerState,
     pub data_device_state: DataDeviceState,
@@ -698,6 +700,7 @@ impl State {
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
         let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
         let usable_area_state = UsableAreaState::new::<Self>(dh);
+        let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let layer_surface_placement_state = LayerSurfacePlacementState::new::<Self>(dh);
         let tooltip_state = TooltipManagerState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
@@ -844,6 +847,7 @@ impl State {
                 layer_shadow_state,
                 layer_auto_hide_state,
                 usable_area_state,
+                edge_resize_state,
                 layer_surface_placement_state,
                 tooltip_state,
                 data_device_state,

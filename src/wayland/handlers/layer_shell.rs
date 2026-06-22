@@ -221,6 +221,53 @@ impl WlrLayerShellHandler for State {
         shell.output_agnostic_layers.remove(&surface_id);
         shell.exclusive_focus_granted.remove(&surface_id);
 
+        // Clean up any edge-resize state for this surface: a panel destroyed mid
+        // drag/animation must not leave a stuck ghost, grab target, spring or settle.
+        // (A stuck settle in particular would keep the dispatch loop re-evaluating
+        // edge hover every iteration forever.)
+        if shell
+            .edge_drag_ghost
+            .as_ref()
+            .is_some_and(|g| g.surface_id == surface_id)
+        {
+            shell.edge_drag_ghost = None;
+        }
+        if shell
+            .edge_hover
+            .as_ref()
+            .is_some_and(|h| h.surface_id == surface_id)
+        {
+            shell.edge_hover = None;
+        }
+        if shell
+            .active_layer_resize
+            .as_ref()
+            .is_some_and(|r| r.surface_id == surface_id)
+        {
+            shell.active_layer_resize = None;
+        }
+        if shell
+            .layer_resize_settle
+            .as_ref()
+            .is_some_and(|r| r.surface_id == surface_id)
+        {
+            shell.layer_resize_settle = None;
+        }
+        if shell
+            .active_layer_resize_anim
+            .as_ref()
+            .is_some_and(|a| a.surface_id == surface_id)
+        {
+            shell.active_layer_resize_anim = None;
+        }
+        if shell
+            .layer_maximize
+            .as_ref()
+            .is_some_and(|m| m.surface_id == surface_id)
+        {
+            shell.layer_maximize = None;
+        }
+
         let maybe_output = shell
             .outputs()
             .find(|o| {

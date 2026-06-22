@@ -170,6 +170,53 @@ impl ModifiersShortcutQueue {
 }
 
 impl State {
+    /// Update the side-panel edge hover state (sash indicator + EW-resize cursor)
+    /// on a non-grabbed pointer move. A no-op while grabbed or when the hovered
+    /// surface is unchanged; on a transition it flips the cursor and schedules a
+    /// redraw so the hover sash appears/disappears. Also re-run from the animation
+    /// loop after a resize so the sash reappears when the edge settles under a
+    /// stationary pointer (no motion event to trigger it otherwise).
+    pub(crate) fn update_edge_resize_hover(&mut self, seat: &Seat<State>) {
+        use crate::backend::render::cursor::CursorState;
+        use smithay::input::pointer::CursorIcon;
+
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        if pointer.is_grabbed() {
+            return;
+        }
+        let global_position = pointer.current_location().as_global();
+        let (new_hover, changed) = {
+            let shell = self.common.shell.read();
+            let new_hover = shell
+                .layer_resize_target(global_position, EDGE_GRAB_PX)
+                .map(|t| crate::shell::EdgeHover {
+                    surface_id: t.surface_id,
+                    anchor_right: t.anchor_right,
+                });
+            let changed = match (&shell.edge_hover, &new_hover) {
+                (None, None) => false,
+                (Some(a), Some(b)) => a.surface_id != b.surface_id,
+                _ => true,
+            };
+            (new_hover, changed)
+        };
+        if !changed {
+            return;
+        }
+        if let Some(cursor_state) = seat.user_data().get::<CursorState>() {
+            if new_hover.is_some() {
+                cursor_state.lock().unwrap().set_shape(CursorIcon::EwResize);
+            } else {
+                cursor_state.lock().unwrap().unset_shape();
+            }
+        }
+        let output = seat.active_output();
+        self.common.shell.write().edge_hover = new_hover;
+        self.backend.schedule_render(&output);
+    }
+
     #[profiling::function]
     pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>)
     where
@@ -661,6 +708,9 @@ impl State {
                             session.set_cursor_pos(Some(geometry.loc));
                         }
                     }
+
+                    drop(shell);
+                    self.update_edge_resize_hover(&seat);
                 }
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
@@ -765,6 +815,9 @@ impl State {
                             session.set_cursor_pos(Some(geometry.loc));
                         }
                     }
+
+                    drop(shell);
+                    self.update_edge_resize_hover(&seat);
                 }
             }
             InputEvent::PointerButton { event, .. } => {
@@ -915,25 +968,70 @@ impl State {
                                     }
                                     self.backend.schedule_render(&out);
                                 } else {
-                                    // First click of a potential double-click: remember it so
-                                    // the next click within the window toggles maximize/restore.
-                                    // (Free-drag resize was removed — a single press on the edge
-                                    // no longer starts a drag grab; the panel resizes only via
-                                    // the animated maximize/restore toggle and, later, presets.)
-                                    let mut shell = self.common.shell.write();
-                                    match shell.layer_maximize.as_mut() {
-                                        Some(m) if m.surface_id == start.surface_id => {
-                                            m.last_click = Some((now, global_position.x));
-                                        }
-                                        _ => {
-                                            shell.layer_maximize =
-                                                Some(crate::shell::LayerMaximizeState {
-                                                    surface_id: start.surface_id.clone(),
-                                                    restore_width: start.width,
-                                                    last_click: Some((now, global_position.x)),
-                                                });
+                                    // First click of a potential double-click: remember it (so
+                                    // the next click within the window toggles maximize/restore),
+                                    // then start a ghost-only edge-drag grab. The panel does NOT
+                                    // resize while dragging — only the ghost indicator follows the
+                                    // pointer; on release it springs to the ghost width (see
+                                    // `EdgeResizeGrab`).
+                                    {
+                                        let mut shell = self.common.shell.write();
+                                        match shell.layer_maximize.as_mut() {
+                                            Some(m) if m.surface_id == start.surface_id => {
+                                                m.last_click = Some((now, global_position.x));
+                                            }
+                                            _ => {
+                                                shell.layer_maximize =
+                                                    Some(crate::shell::LayerMaximizeState {
+                                                        surface_id: start.surface_id.clone(),
+                                                        restore_width: start.width,
+                                                        last_click: Some((now, global_position.x)),
+                                                    });
+                                            }
                                         }
                                     }
+                                    let seat_clone = seat.clone();
+                                    self.common.event_loop_handle.insert_idle(move |state| {
+                                        let pointer = seat_clone.get_pointer().unwrap();
+                                        let start_data = smithay::input::pointer::GrabStartData {
+                                            focus: None,
+                                            button: 0x110,
+                                            location: pointer.current_location(),
+                                        };
+                                        {
+                                            let mut shell = state.common.shell.write();
+                                            shell.layer_resize_settle = None;
+                                            // Cancel any in-flight release spring so a re-grab
+                                            // mid-animation starts from the panel's current
+                                            // rested width instead of resizing toward the old
+                                            // target during the new drag.
+                                            shell.active_layer_resize_anim = None;
+                                            shell.active_layer_resize = None;
+                                            // Clear hover so that after the grab ends (its Drop
+                                            // unsets the cursor), the next motion sees a
+                                            // None->Some transition and re-establishes the hover
+                                            // sash + EW-resize cursor.
+                                            shell.edge_hover = None;
+                                            shell.edge_drag_ghost =
+                                                Some(crate::shell::EdgeDragGhost {
+                                                    surface_id: start.surface_id.clone(),
+                                                    output: start.output.clone(),
+                                                    anchor_right: start.anchor_right,
+                                                    width: start.width,
+                                                });
+                                        }
+                                        let grab = crate::shell::grabs::EdgeResizeGrab::new(
+                                            start_data,
+                                            &seat_clone,
+                                            start,
+                                        );
+                                        pointer.set_grab(
+                                            state,
+                                            grab,
+                                            serial,
+                                            smithay::input::pointer::Focus::Clear,
+                                        );
+                                    });
                                 }
                             }
                         }

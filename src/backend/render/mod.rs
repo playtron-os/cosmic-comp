@@ -1603,6 +1603,57 @@ where
                 let local_geo =
                     Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
 
+                // Compositor-drawn edge resize sash for surfaces opted
+                // into the layer_edge_resize protocol: a themed full-height bar at the
+                // resting outer edge on hover, or at the dragged ghost edge while a
+                // drag is in progress (the panel itself only resizes, animated, on
+                // release). Pushed BEFORE the surface content so it draws on top, and
+                // only output-cropped so the drag ghost can float over the desktop.
+                if let Some(indicator) = shell.get_layer_edge_indicator(&surface_id) {
+                    use crate::shell::EdgeIndicator;
+                    let (edge_x, dragging) = match indicator {
+                        EdgeIndicator::Hover { anchor_right } => {
+                            let x = if anchor_right {
+                                local_geo.loc.x
+                            } else {
+                                local_geo.loc.x + local_geo.size.w
+                            };
+                            (x, false)
+                        }
+                        EdgeIndicator::Drag {
+                            anchor_right,
+                            ghost_width,
+                        } => {
+                            // Ghost edge measured from the anchored (fixed) edge.
+                            let x = if anchor_right {
+                                local_geo.loc.x + local_geo.size.w - ghost_width
+                            } else {
+                                local_geo.loc.x + ghost_width
+                            };
+                            (x, true)
+                        }
+                    };
+                    let bar_w: i32 = if dragging { 4 } else { 2 };
+                    let mut bar_geo = local_geo;
+                    bar_geo.loc.x = edge_x - bar_w / 2;
+                    bar_geo.size.w = bar_w;
+                    let c = theme.os_accent();
+                    let bar_alpha = alpha * if dragging { 1.0 } else { 0.6 };
+                    let bar_element = BackdropShader::element(
+                        renderer,
+                        Key::LayerSurface(surface_id.protocol_id()),
+                        bar_geo,
+                        [bar_w as f32 / 2.0; 4],
+                        bar_alpha,
+                        [c.r, c.g, c.b],
+                    );
+                    let bar: WorkspaceRenderElement<R> =
+                        Into::<CosmicMappedRenderElement<R>>::into(bar_element).into();
+                    if let Some(cropped) = crop_to_output(bar) {
+                        elements.push(cropped.into());
+                    }
+                }
+
                 // Focal point for the open animation's scale: the CENTER of the
                 // surface in PHYSICAL coords. Scaling around a corner instead would
                 // make the popover lunge sideways, so we must use the center.

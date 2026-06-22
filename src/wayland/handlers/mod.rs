@@ -25,6 +25,7 @@ pub mod input_method;
 pub mod keyboard_shortcuts_inhibit;
 pub mod layer_auto_hide;
 pub mod layer_corner_radius;
+pub mod layer_edge_resize;
 pub mod layer_shadow;
 pub mod layer_shell;
 pub mod layer_surface_dismiss;

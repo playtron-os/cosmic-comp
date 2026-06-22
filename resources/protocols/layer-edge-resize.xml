@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="layer_edge_resize">
+  <copyright>
+    Copyright 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+  </copyright>
+
+  <interface name="layer_edge_resize_manager_v1" version="1">
+    <description summary="opt-in compositor-drawn edge resize for layer surfaces">
+      Lets a layer-shell client opt a surface into a compositor-drawn,
+      VSCode-style edge resize sash on its outer (non-anchored) edge. The
+      compositor infers the resizable edge from the surface's anchor, draws a
+      themed indicator on hover near that edge, shows an EW-resize cursor, and
+      on press+drag shows a ghost that the surface springs to on release. The
+      resize is fully compositor-driven; the client only opts in and supplies
+      width bounds.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroying the manager does not affect already-created
+        layer_edge_resize_v1 objects.
+      </description>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="an edge_resize object already exists for this surface"/>
+    </enum>
+
+    <request name="get_edge_resize">
+      <description summary="enable edge resize for a layer surface">
+        Create an edge-resize object for the given layer surface. Only one such
+        object may exist per surface; a second request raises already_exists.
+        The surface is expected to be a layer-shell surface anchored to a single
+        vertical edge (left or right).
+      </description>
+      <arg name="id" type="new_id" interface="layer_edge_resize_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"
+        summary="the layer surface to make edge-resizable"/>
+    </request>
+  </interface>
+
+  <interface name="layer_edge_resize_v1" version="1">
+    <description summary="per-surface edge-resize handle">
+      Carries the width bounds for one edge-resizable layer surface. Bounds are
+      in logical pixels and take effect immediately (no commit required); they
+      constrain the next drag. Defaults are compositor-defined until set.
+    </description>
+
+    <request name="set_min_width">
+      <description summary="minimum surface width in logical px"/>
+      <arg name="width" type="int" summary="minimum width, logical px"/>
+    </request>
+
+    <request name="set_max_width">
+      <description summary="maximum surface width in logical px (0 = output width)"/>
+      <arg name="width" type="int" summary="maximum width, logical px; 0 means full output width"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="disable edge resize for this surface"/>
+    </request>
+  </interface>
+</protocol>
