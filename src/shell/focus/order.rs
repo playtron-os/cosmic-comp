@@ -583,7 +583,7 @@ fn layer_surfaces<'a>(
     };
 
     // we want to avoid deadlocks on the layer-map in callbacks, so we need to clone the layer surfaces
-    let mut layers = if skip_layer {
+    let layers = if skip_layer {
         // Skip this entire layer for layer blur capture
         Vec::new()
     } else if use_cache {
@@ -600,18 +600,6 @@ fn layer_surfaces<'a>(
             .map(|s| (s.clone(), layer_map.layer_geometry(s).unwrap().loc))
             .collect::<Vec<_>>()
     };
-
-    // Render the resizable side panel (`agentos-chat-panel`) above every other
-    // surface in the Top layer. It is full-height and can be dragged wider than its
-    // reserved exclusive zone, so it overlaps neighbouring Top surfaces (the bottom
-    // taskbar, notifications, …) — and as the focused interactive surface it must win
-    // those overlaps. It stays below the Overlay layer, which is a separate pass
-    // processed entirely before Top. The first surface yielded here renders on top,
-    // so sort the chat panel to the front; `sort_by_key` is stable, so every other
-    // Top surface keeps its relative order.
-    if layer == Layer::Top {
-        layers.sort_by_key(|(s, _)| u8::from(s.namespace() != "agentos-chat-panel"));
-    }
 
     layers.into_iter().filter_map(move |(s, loc)| {
         // Filter out workspace overview namespace
