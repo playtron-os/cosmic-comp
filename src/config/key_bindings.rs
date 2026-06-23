@@ -19,6 +19,10 @@ pub enum PrivateAction {
         shortcuts::action::ResizeEdge,
         shortcuts::State,
     ),
+    /// Capture a UI performance report to `$HOME` (Ctrl+Alt+Super+F12).
+    PerfReport,
+    /// Run the cold-start (app-launch) benchmark (Ctrl+Alt+Super+F11).
+    ColdStartBench,
 }
 
 /// Convert `cosmic_settings_config::shortcuts::State` to `smithay::backend::input::KeyState`.

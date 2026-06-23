@@ -41,6 +41,10 @@ impl XdgShellHandler for State {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
+        // Cold-start benchmark: record when the target app creates its first
+        // toplevel (before taking the shell lock, which the notify doesn't need).
+        self.coldstart_notify_toplevel_created(surface.wl_surface());
+
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
         let window = CosmicSurface::from(surface);

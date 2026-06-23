@@ -138,6 +138,7 @@ pub struct Surface {
     thread_command: Sender<ThreadCommand>,
     thread_token: RegistrationToken,
     thread: Option<JoinHandle<()>>,
+    pub perf: Arc<crate::perf::OutputPerf>,
 
     dpms: bool,
 }
@@ -154,6 +155,7 @@ pub struct SurfaceThreadState {
 
     state: QueueState,
     timings: Timings,
+    perf: Arc<crate::perf::OutputPerf>,
     frame_callback_seq: usize,
     thread_sender: Sender<SurfaceCommand>,
 
@@ -284,6 +286,8 @@ impl Surface {
 
         let active_clone = active.clone();
         let output_clone = output.clone();
+        let perf = crate::perf::OutputPerf::new();
+        let perf_clone = perf.clone();
 
         let thread = std::thread::Builder::new()
             .name(format!("surface-{}", output.name()))
@@ -298,6 +302,7 @@ impl Surface {
                     tx2,
                     rx,
                     startup_done,
+                    perf_clone,
                 ) {
                     error!("Surface thread crashed: {}", err);
                 }
@@ -374,6 +379,7 @@ impl Surface {
             thread_command: tx,
             thread_token,
             thread: Some(thread),
+            perf,
             dpms: true,
         })
     }
@@ -526,6 +532,7 @@ fn surface_thread(
     thread_sender: Sender<SurfaceCommand>,
     thread_receiver: Channel<ThreadCommand>,
     startup_done: Arc<AtomicBool>,
+    perf: Arc<crate::perf::OutputPerf>,
 ) -> Result<()> {
     let name = output.name();
     profiling::register_thread!(&format!("Surface Thread {}", name));
@@ -564,6 +571,7 @@ fn surface_thread(
 
         state: QueueState::Idle,
         timings: Timings::new(None, None, false, target_node),
+        perf,
         frame_callback_seq: 0,
         thread_sender,
 
@@ -1667,17 +1675,33 @@ impl SurfaceThreadState {
                 None => Refresh::Unknown,
             };
 
-            if let Some(last_sequence) = self.last_sequence {
-                let delta = sequence as f64 - last_sequence as f64;
+            let seq_delta = self
+                .last_sequence
+                .map(|last_sequence| sequence as i64 - last_sequence as i64);
+            if let Some(delta) = seq_delta {
                 tracy_client::Client::running()
                     .unwrap()
-                    .plot(self.sequence_delta_plot_name, delta);
+                    .plot(self.sequence_delta_plot_name, delta as f64);
             }
             self.last_sequence = Some(sequence);
 
             feedback.presented(clock, refresh, sequence as u64, flags);
 
             self.timings.presented(clock);
+
+            // Record this presented frame for the UI perf report. Uses the same
+            // hardware vblank timestamp + sequence delta the pacer just used, and
+            // pairs any pending pointer inputs with this present for input latency.
+            if let Some(frame) = self.timings.previous_frames.back() {
+                let render = frame.render_duration_elements + frame.render_duration_draw;
+                let render_start_ns = Duration::from(frame.render_start)
+                    .as_nanos()
+                    .min(u64::MAX as u128) as u64;
+                self.perf.record(clock, render, seq_delta);
+                let present_ns = Duration::from(clock).as_nanos().min(u64::MAX as u128) as u64;
+                self.perf
+                    .record_input_latencies(render_start_ns, present_ns);
+            }
 
             while let Ok(pending_image_copy_data) = frames.recv() {
                 pending_image_copy_data.send_success_when_ready(

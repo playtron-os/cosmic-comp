@@ -54,6 +54,7 @@ pub mod debug;
 pub mod hooks;
 pub mod input;
 mod logger;
+pub mod perf;
 pub mod session;
 pub mod shell;
 pub mod state;
@@ -325,13 +326,14 @@ fn init_wayland_display(
         .handle()
         .insert_source(source, |client_stream, _, state| {
             let client_state = state.new_client_state();
-            if let Err(err) = state
+            match state
                 .common
                 .display_handle
                 .insert_client(client_stream, Arc::new(client_state))
             {
-                warn!(?err, "Error adding wayland client")
-            };
+                Ok(client) => state.coldstart_notify_client_connected(&client),
+                Err(err) => warn!(?err, "Error adding wayland client"),
+            }
         })
         .with_context(|| "Failed to init the wayland socket source.")?;
     event_loop

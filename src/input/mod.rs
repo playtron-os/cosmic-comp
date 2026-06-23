@@ -479,6 +479,10 @@ impl State {
                         },
                     );
 
+                    // Record for input-latency measurement (pointer motion is the
+                    // cleanly attributable signal: it always forces a cursor redraw).
+                    self.record_pointer_latency(event.time());
+
                     if pointer_locked {
                         ptr.frame(self);
                         return;
@@ -789,6 +793,9 @@ impl State {
                         },
                     );
                     ptr.frame(self);
+
+                    // Record for input-latency measurement (see PointerMotion arm).
+                    self.record_pointer_latency(smithay::backend::input::Event::time(&event));
 
                     let shell = self.common.shell.read();
                     for session in cursor_sessions_for_output(&shell, &output) {
@@ -2532,6 +2539,39 @@ impl State {
             modifiers_queue.clear();
             seat.supressed_keys().add(&handle, None);
             return FilterResult::Intercept(None);
+        }
+
+        // UI performance report hotkey (Ctrl+Alt+Super+F12). Internal action, not
+        // user-configurable. Returned as an Action so it runs in `handle_action`
+        // after the shell write-guard held here is dropped (it reads the shell).
+        if event.state() == KeyState::Pressed
+            && modifiers.ctrl
+            && modifiers.alt
+            && modifiers.logo
+            && !modifiers.shift
+            && handle.raw_syms().contains(&Keysym::F12)
+        {
+            seat.supressed_keys().add(&handle, None);
+            return FilterResult::Intercept(Some((
+                Action::Private(PrivateAction::PerfReport),
+                shortcuts::Binding::default(),
+            )));
+        }
+
+        // Cold-start benchmark hotkey (Ctrl+Alt+Super+F11). Destructive (it
+        // relaunches the target app), hence separate from the F12 live report.
+        if event.state() == KeyState::Pressed
+            && modifiers.ctrl
+            && modifiers.alt
+            && modifiers.logo
+            && !modifiers.shift
+            && handle.raw_syms().contains(&Keysym::F11)
+        {
+            seat.supressed_keys().add(&handle, None);
+            return FilterResult::Intercept(Some((
+                Action::Private(PrivateAction::ColdStartBench),
+                shortcuts::Binding::default(),
+            )));
         }
 
         // handle the rest of the global shortcuts

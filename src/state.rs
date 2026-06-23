@@ -279,6 +279,7 @@ pub struct Common {
     pub should_stop: bool,
     pub local_offset: time::UtcOffset,
     pub gesture_state: Option<GestureState>,
+    pub coldstart: crate::perf::coldstart::ColdStart,
 
     pub kiosk_child: Option<Child>,
     pub theme: crate::comp_theme::CompTheme,
@@ -834,6 +835,7 @@ impl State {
                 startup_done: Arc::new(AtomicBool::new(false)),
                 should_stop: false,
                 gesture_state: None,
+                coldstart: Default::default(),
 
                 kiosk_child: None,
                 theme: crate::comp_theme::CompTheme::from_current(),

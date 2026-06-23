@@ -547,6 +547,10 @@ impl State {
                         std::mem::drop(shell);
                         Shell::set_focus(self, Some(&target), &seat, None, true);
                     }
+
+                    // This window just mapped its first buffer (first frame of
+                    // content) — let the cold-start benchmark record it if active.
+                    self.coldstart_notify_window_mapped(surface);
                     return true;
                 }
             }

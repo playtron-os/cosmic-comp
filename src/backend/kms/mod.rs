@@ -430,6 +430,29 @@ impl State {
 }
 
 impl KmsState {
+    /// Per-output shared performance accumulators (output name → handle), for the
+    /// UI perf report. Each is written by that output's surface thread on vblank.
+    pub fn perf_snapshots(&self) -> Vec<(String, std::sync::Arc<crate::perf::OutputPerf>)> {
+        let mut out = Vec::new();
+        for device in self.drm_devices.values() {
+            for surface in device.inner.surfaces.values() {
+                out.push((surface.output.name(), surface.perf.clone()));
+            }
+        }
+        out
+    }
+
+    /// Enqueue a pointer input's timestamps onto every output for input-latency
+    /// measurement (the input scheduled a render on all outputs). Lightweight: no
+    /// allocation, just a brief lock per output.
+    pub fn push_pointer_input(&self, hw_ns: u64, sched_ns: u64) {
+        for device in self.drm_devices.values() {
+            for surface in device.inner.surfaces.values() {
+                surface.perf.push_input(hw_ns, sched_ns);
+            }
+        }
+    }
+
     fn select_primary_gpu(&mut self, dh: &DisplayHandle) -> Result<()> {
         // We don't have to check the allow/blocklist here,
         // as any disallowed devices won't be in `self.drm_devices`.

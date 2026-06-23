@@ -84,6 +84,14 @@ impl State {
                 }
             }
 
+            Action::Private(PrivateAction::PerfReport) => {
+                self.capture_perf_report();
+            }
+
+            Action::Private(PrivateAction::ColdStartBench) => {
+                self.coldstart_bench();
+            }
+
             Action::Private(PrivateAction::Resizing(direction, edge, state)) => {
                 if state == shortcuts::State::Pressed {
                     self.common
