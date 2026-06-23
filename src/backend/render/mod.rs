@@ -1964,7 +1964,6 @@ where
                                 (corner_radius, !has_client_corner_radius)
                             };
 
-
                             let blurred_element = BlurredBackdropShader::element(
                                 renderer,
                                 &blur_info.texture,

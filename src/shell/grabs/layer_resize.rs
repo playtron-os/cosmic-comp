@@ -248,11 +248,22 @@ impl PointerGrab<State> for EdgeResizeGrab {
         );
         drop(shell);
         data.backend.schedule_render(&output);
-        // Re-establish the hover sash + cursor immediately. A no-op release (target
-        // == start width) starts no animation, so the dispatch-loop re-eval won't
-        // run; this also seeds the correct hover for the animated case. (The grab
-        // cleared edge_hover at start, and its Drop unset the cursor.)
-        data.update_edge_resize_hover(&self.seat);
+        // Re-establish the hover sash + cursor. A no-op release (target == start
+        // width) starts no animation, so the dispatch-loop re-eval won't run; this
+        // also seeds the correct hover for the animated case. (The grab cleared
+        // edge_hover at start, and its Drop unset the cursor.)
+        //
+        // MUST be deferred to an idle: `unset()` runs *inside* smithay's
+        // `PointerHandle::unset_grab`, which holds the pointer's inner `Mutex` for
+        // the whole callback. `update_edge_resize_hover` calls `pointer.is_grabbed()`
+        // / `current_location()`, which re-lock that same (non-reentrant) mutex —
+        // doing it synchronously here self-deadlocks the compositor. Running it from
+        // an idle (the same reason the grab *start* uses `insert_idle`) lets the lock
+        // release first; by then the grab is gone, so the hover re-eval sees no grab.
+        let seat = self.seat.clone();
+        data.common
+            .event_loop_handle
+            .insert_idle(move |state| state.update_edge_resize_hover(&seat));
     }
 }
 
