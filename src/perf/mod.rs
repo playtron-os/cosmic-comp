@@ -5,7 +5,7 @@
 //! This surfaces the *hardware-accurate* frame timing the compositor already
 //! computes for frame pacing (see [`crate::backend::kms::surface::timings`]) plus
 //! per-process memory, and writes a structured report to `$HOME` when the user
-//! presses the global hotkey **Ctrl+Alt+Super+F12**.
+//! presses the global hotkey **Ctrl+Alt+Super+Shift+F12**.
 //!
 //! Accuracy notes (this is for due-diligence numbers, so be precise about what
 //! each metric is):
@@ -375,7 +375,7 @@ impl State {
     }
 
     /// Capture a UI performance report, write it to `$HOME`, and reveal it in the
-    /// file manager. Invoked from the Ctrl+Alt+Super+F12 handler. Runs
+    /// file manager. Invoked from the Ctrl+Alt+Super+Shift+F12 handler. Runs
     /// synchronously on the main thread — a brief one-off cost on the key press;
     /// the frame data it reports was already collected before this point, so that
     /// cost does not affect the reported numbers.

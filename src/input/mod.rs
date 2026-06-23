@@ -2007,7 +2007,10 @@ impl State {
             "Voice key check - binding match results"
         );
 
-        if voice_config.enabled && (matches || is_f18 || is_voice_key_release) {
+        // Don't let the voice-mode Super-hold fire while the full performance
+        // hotkey chord (Ctrl+Alt+Super+Shift) is held.
+        let perf_chord_held = modifiers.ctrl && modifiers.alt && modifiers.logo && modifiers.shift;
+        if voice_config.enabled && !perf_chord_held && (matches || is_f18 || is_voice_key_release) {
             // Block voice key handling entirely during session lock (idle/login screen)
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
@@ -2464,6 +2467,34 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
+        // Performance-measurement hotkeys. Checked BEFORE the VT-switch handler
+        // below, because Ctrl+Alt+F-keys also produce XF86_Switch_VT_* keysyms —
+        // so the full chord additionally requires Shift and is consumed here so a
+        // TTY switch can't fire:
+        //   Ctrl+Alt+Super+Shift+F12 — live UI performance report
+        //   Ctrl+Alt+Super+Shift+F11 — cold-start (app-launch) benchmark
+        if event.state() == KeyState::Pressed
+            && modifiers.ctrl
+            && modifiers.alt
+            && modifiers.logo
+            && modifiers.shift
+        {
+            if handle.raw_syms().contains(&Keysym::F12) {
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(Some((
+                    Action::Private(PrivateAction::PerfReport),
+                    shortcuts::Binding::default(),
+                )));
+            }
+            if handle.raw_syms().contains(&Keysym::F11) {
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(Some((
+                    Action::Private(PrivateAction::ColdStartBench),
+                    shortcuts::Binding::default(),
+                )));
+            }
+        }
+
         // Handle VT switches (KMS backend only)
         if event.state() == KeyState::Pressed
             && (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw())
@@ -2539,39 +2570,6 @@ impl State {
             modifiers_queue.clear();
             seat.supressed_keys().add(&handle, None);
             return FilterResult::Intercept(None);
-        }
-
-        // UI performance report hotkey (Ctrl+Alt+Super+F12). Internal action, not
-        // user-configurable. Returned as an Action so it runs in `handle_action`
-        // after the shell write-guard held here is dropped (it reads the shell).
-        if event.state() == KeyState::Pressed
-            && modifiers.ctrl
-            && modifiers.alt
-            && modifiers.logo
-            && !modifiers.shift
-            && handle.raw_syms().contains(&Keysym::F12)
-        {
-            seat.supressed_keys().add(&handle, None);
-            return FilterResult::Intercept(Some((
-                Action::Private(PrivateAction::PerfReport),
-                shortcuts::Binding::default(),
-            )));
-        }
-
-        // Cold-start benchmark hotkey (Ctrl+Alt+Super+F11). Destructive (it
-        // relaunches the target app), hence separate from the F12 live report.
-        if event.state() == KeyState::Pressed
-            && modifiers.ctrl
-            && modifiers.alt
-            && modifiers.logo
-            && !modifiers.shift
-            && handle.raw_syms().contains(&Keysym::F11)
-        {
-            seat.supressed_keys().add(&handle, None);
-            return FilterResult::Intercept(Some((
-                Action::Private(PrivateAction::ColdStartBench),
-                shortcuts::Binding::default(),
-            )));
         }
 
         // handle the rest of the global shortcuts

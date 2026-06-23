@@ -4,9 +4,9 @@ This compositor can produce a **defensible UI performance report** on demand for
 due-diligence purposes. Reports are written by `src/perf/` and triggered by global
 hotkeys:
 
-- **`Ctrl+Alt+Super+F12`** — live UI report (frame rate, frametime, dropped
+- **`Ctrl+Alt+Super+Shift+F12`** — live UI report (frame rate, frametime, dropped
   frames, input latency, UI RAM).
-- **`Ctrl+Alt+Super+F11`** — cold-start (app-launch) benchmark.
+- **`Ctrl+Alt+Super+Shift+F11`** — cold-start (app-launch) benchmark.
 
 Each writes a report to `$HOME` and opens the default file manager focused on it.
 
@@ -56,7 +56,7 @@ frame stats for them. Always capture on bare metal.
 1. Boot a real HumainOS/cosmic-comp session (DRM/KMS backend).
 2. Drive the workload you want to characterize (scroll a list, animate a panel,
    move the pointer, open windows, etc.).
-3. Press **`Ctrl+Alt+Super+F12`**.
+3. Press **`Ctrl+Alt+Super+Shift+F12`**.
 4. The report is written and the file manager opens focused on
    `~/cosmic-perf-<unix>.txt`.
 

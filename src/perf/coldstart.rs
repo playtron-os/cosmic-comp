@@ -2,7 +2,7 @@
 
 //! Cold-start (app-launch) benchmark harness.
 //!
-//! Triggered by **Ctrl+Alt+Super+F11** (separate from the F12 live report,
+//! Triggered by **Ctrl+Alt+Super+Shift+F11** (separate from the F12 live report,
 //! because this is destructive — it repeatedly launches and kills the target
 //! app). For a configured target it measures **launch → first frame of content**,
 //! broken into phases:
@@ -38,17 +38,17 @@
 use std::time::Duration;
 
 use calloop::{
-    timer::{TimeoutAction, Timer},
     RegistrationToken,
+    timer::{TimeoutAction, Timer},
 };
 use smithay::{
-    reexports::wayland_server::{protocol::wl_surface::WlSurface, Client, Resource},
+    reexports::wayland_server::{Client, Resource, protocol::wl_surface::WlSurface},
     utils::{Monotonic, Time},
 };
 
 use crate::state::State;
 
-use super::{json_escape, read_comm, read_trim, Stats};
+use super::{Stats, json_escape, read_comm, read_trim};
 
 /// Delay after the initial kill before the first launch (lets the kill settle).
 const INITIAL_DELAY: Duration = Duration::from_millis(800);
@@ -397,7 +397,10 @@ fn fmt_ms(o: Option<f64>) -> String {
 }
 
 /// Collect the `Some` values of one phase across iterations into a `Stats`.
-fn phase_stats(results: &[IterationResult], pick: impl Fn(&IterationResult) -> Option<f64>) -> Stats {
+fn phase_stats(
+    results: &[IterationResult],
+    pick: impl Fn(&IterationResult) -> Option<f64>,
+) -> Stats {
     Stats::of(results.iter().filter_map(pick).collect())
 }
 
@@ -431,7 +434,10 @@ fn write_coldstart_report(run: &Run) -> std::io::Result<std::path::PathBuf> {
     j.push_str(&format!("\"unix_secs\":{unix_secs},"));
     j.push_str(&format!("\"hostname\":\"{}\",", json_escape(&hostname)));
     j.push_str(&format!("\"kernel\":\"{}\",", json_escape(&kernel)));
-    j.push_str(&format!("\"compositor_version\":\"{}\",", json_escape(version)));
+    j.push_str(&format!(
+        "\"compositor_version\":\"{}\",",
+        json_escape(version)
+    ));
     j.push_str(&format!("\"target\":\"{}\",", json_escape(&run.target_cmd)));
     j.push_str(&format!("\"iterations\":{},", run.total));
     j.push_str(&format!("\"cache_drop_effective\":{cache_drop_effective},"));
@@ -534,7 +540,8 @@ fn write_coldstart_report(run: &Run) -> std::io::Result<std::path::PathBuf> {
 }
 
 fn json_num(o: Option<f64>) -> String {
-    o.map(|m| format!("{m:.3}")).unwrap_or_else(|| "null".into())
+    o.map(|m| format!("{m:.3}"))
+        .unwrap_or_else(|| "null".into())
 }
 
 fn col(o: Option<f64>) -> String {

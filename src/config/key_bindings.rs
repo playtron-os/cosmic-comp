@@ -19,9 +19,9 @@ pub enum PrivateAction {
         shortcuts::action::ResizeEdge,
         shortcuts::State,
     ),
-    /// Capture a UI performance report to `$HOME` (Ctrl+Alt+Super+F12).
+    /// Capture a UI performance report to `$HOME` (Ctrl+Alt+Super+Shift+F12).
     PerfReport,
-    /// Run the cold-start (app-launch) benchmark (Ctrl+Alt+Super+F11).
+    /// Run the cold-start (app-launch) benchmark (Ctrl+Alt+Super+Shift+F11).
     ColdStartBench,
 }
 
