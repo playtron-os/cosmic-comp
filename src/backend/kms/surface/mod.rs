@@ -1063,6 +1063,7 @@ fn process_blur(
                                 screen_size: output_size,
                                 scale,
                                 background_state_hash: content_hash,
+                                capture_size: (window_geo.size.w, window_geo.size.h),
                             },
                         );
                     }
@@ -1183,13 +1184,24 @@ fn process_blur(
                 .collect();
             let all_cached = uncached_surfaces.is_empty();
 
+            // Did any surface change size since its texture was captured? The
+            // content hash below only tracks what's BEHIND the surface, so a resize
+            // wouldn't otherwise invalidate the cache — the stale, smaller texture
+            // would be stretched over the newly-exposed area, flashing the
+            // unblurred desktop. Force an immediate re-blur (no throttle) so the
+            // backdrop grows in lockstep with the surface.
+            let geometry_changed = surfaces.iter().any(|(surface_id, geo)| {
+                get_cached_blur_texture_for_layer(&output_name, surface_id)
+                    .is_some_and(|info| info.capture_size != (geo.size.w, geo.size.h))
+            });
+
             // EARLY THROTTLE CHECK: Skip the expensive capture + hash + blur entirely
             // if we already have cached textures and the last blur was recent enough.
             // This avoids the workspace_elements() call (~100-900us) on throttled frames.
             // Keyed per (output, layer, radius bucket) so distinct buckets in the same
             // layer don't share throttle/content-hash state.
             let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
-            if all_cached && should_throttle_layer_blur(&hash_key) {
+            if all_cached && !geometry_changed && should_throttle_layer_blur(&hash_key) {
                 tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
@@ -1239,7 +1251,7 @@ fn process_blur(
             let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
             // If content unchanged and all cached, skip
-            if !content_changed && all_cached {
+            if !content_changed && !geometry_changed && all_cached {
                 tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
@@ -1251,9 +1263,12 @@ fn process_blur(
             }
 
             // Content changed: apply throttle if we have cached textures
-            // (don't throttle when textures are missing - need first render immediately)
+            // (don't throttle when textures are missing - need first render immediately).
+            // A geometry change is never throttled — the backdrop must track the
+            // surface size exactly on the frame it resizes.
             let is_dragging = grabbed_window_key.is_some();
             let throttled = content_changed
+                && !geometry_changed
                 && all_cached
                 && !is_dragging
                 && should_throttle_layer_blur(&hash_key);
@@ -1383,7 +1398,7 @@ fn process_blur(
                         };
 
                         // Cache the SAME blurred texture for ALL surfaces in this layer
-                        for (surface_id, _geo) in &surfaces {
+                        for (surface_id, geo) in &surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
                                 surface_id.clone(),
@@ -1393,6 +1408,7 @@ fn process_blur(
                                     screen_size: output_size,
                                     scale,
                                     background_state_hash: content_hash,
+                                    capture_size: (geo.size.w, geo.size.h),
                                 },
                             );
                         }

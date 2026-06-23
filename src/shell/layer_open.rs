@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Compositor-side open animation for popover layer-shell surfaces.
+//! Compositor-side open/close animation for layer-shell surfaces — the DEFAULT
+//! show/hide transition for every surface that isn't edge-sliding (see
+//! [`super::layer_slide`] and [`super::Shell::set_surface_hidden`]).
 //!
-//! agentos-panel's popover surfaces (namespace `agentos-panel-popover`) are
-//! `Layer::Overlay`, anchored bottom, auto-sized. They should animate IN when
-//! first shown rather than appearing instantly.
+//! It first shipped for agentos-panel's popover surfaces and now applies to all
+//! fade+rise surfaces (panels, popovers, modals, notifications, the launcher…),
+//! which animate IN when shown rather than appearing instantly.
 //!
 //! The animation matches the design prototype exactly:
 //! - duration: 160ms
@@ -42,6 +44,21 @@ impl LayerOpen {
             surface_id,
             start: Instant::now(),
         }
+    }
+
+    /// Create an open whose clock is back-dated by `back_ms`, so it begins at a
+    /// non-zero progress. Used to hand off from an in-flight CLOSE seamlessly:
+    /// starting the open at linear progress `1 - p` (i.e.
+    /// `back_ms = (1 - p) * OPEN_DURATION`) makes its first frame match the
+    /// close's current alpha/scale/offset exactly — because the easing is
+    /// point-symmetric about (0.5, 0.5) — so a surface re-shown mid-dismissal
+    /// rises the rest of the way instead of snapping to fully hidden first.
+    pub fn new_backdated(surface_id: ObjectId, back_ms: u64) -> Self {
+        let now = Instant::now();
+        let start = now
+            .checked_sub(Duration::from_millis(back_ms))
+            .unwrap_or(now);
+        Self { surface_id, start }
     }
 
     /// The single eased factor `t ∈ [0,1]` that drives all three channels.
@@ -82,11 +99,11 @@ pub const CLOSE_DURATION: Duration = Duration::from_millis(160);
 
 /// Per-surface close-animation tracking: the EXACT REVERSE of [`LayerOpen`].
 ///
-/// Plays when an `agentos-panel-popover` surface is hidden via the
-/// `layer_surface_visibility` protocol (the panel sends `HideWindow`, then
-/// destroys the surface once this completes). The surface stays alive and
-/// rendered (from its last committed buffer) for the duration so it can
-/// animate OUT — the reverse of the entrance:
+/// Plays when a fade+rise surface is hidden via the `layer_surface_visibility`
+/// protocol (the client sends `HideWindow`, then typically destroys the surface
+/// once this completes). The surface stays alive and rendered (from its last
+/// committed buffer) for the duration so it can animate OUT — the reverse of the
+/// entrance:
 /// - translateY: 0 → +6px (slides DOWN, below the resting position)
 /// - scale: 1.0 → 0.97 (scales DOWN about CENTER)
 /// - opacity: 1 → 0 (fades OUT)

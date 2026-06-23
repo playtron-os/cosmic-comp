@@ -518,6 +518,12 @@ pub struct BlurredTextureInfo {
     /// Hash of background state for cache invalidation.
     /// Changes when windows below move/resize or z-order changes.
     pub background_state_hash: u64,
+    /// Logical `(w, h)` of the surface region this texture was captured for.
+    /// `background_state_hash` only tracks what's *behind* the surface, so this
+    /// is compared separately to force a re-blur when the surface itself resizes
+    /// (otherwise the stale, smaller texture is stretched over the new area,
+    /// flashing the unblurred desktop for a frame).
+    pub capture_size: (i32, i32),
 }
 
 /// Cache key combining output name and window key hash

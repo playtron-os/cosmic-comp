@@ -43,7 +43,7 @@
     5. Panel closes the popup
   </description>
 
-  <interface name="zcosmic_layer_surface_dismiss_manager_v1" version="1">
+  <interface name="zcosmic_layer_surface_dismiss_manager_v1" version="2">
     <description summary="manager for layer surface dismiss notifications">
       This interface allows layer-shell clients to register surfaces for
       dismiss notifications when interaction occurs outside them.
@@ -76,7 +76,7 @@
     </enum>
   </interface>
 
-  <interface name="zcosmic_layer_surface_dismiss_v1" version="1">
+  <interface name="zcosmic_layer_surface_dismiss_v1" version="2">
     <description summary="dismiss controller for a layer surface">
       This interface controls dismiss notifications for a specific
       layer-shell surface. When armed, the compositor will send a
@@ -134,6 +134,22 @@
         Remove a surface from this controller's dismiss group.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <request name="set_ignore_layer_clicks" since="2">
+      <description summary="don't dismiss on clicks to other layer-shell surfaces">
+        When set, the compositor will NOT send dismiss_requested for an
+        interaction that lands on another layer-shell surface (a panel, dock,
+        or other layer popup). Clicks on regular application windows or the
+        bare desktop still dismiss as usual.
+
+        This is for a surface whose open/close is driven by a panel/dock
+        button (e.g. a launcher/spotlight): a click on that controlling chrome
+        must not race the button's own toggle into a dismiss, and must let the
+        button switch between modes (e.g. spotlight → all-apps) instead of
+        closing. Off by default; once set it stays set for this controller's
+        lifetime (it is independent of arm/disarm).
+      </description>
     </request>
 
     <event name="dismiss_requested">

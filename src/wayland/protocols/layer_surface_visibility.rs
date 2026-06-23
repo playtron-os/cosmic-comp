@@ -34,14 +34,17 @@ use wayland_backend::server::ObjectId;
 
 /// Show/hide transition animation a surface requests via `set_transition`.
 ///
-/// When a surface never sends `set_transition`, the compositor falls back to
-/// its anchor-based heuristic (edge-anchored panels slide, everything else
-/// fades).  `Fade` lets an edge-anchored surface opt out of the slide.
+/// When a surface never sends `set_transition`, the compositor picks the
+/// default: a surface anchored to a single lateral edge slides in/out from that
+/// edge (with a coupled workspace push), while everything else fades + rises.
+/// `Slide` forces the edge slide (the dock); `Fade` forces the fade + rise even
+/// on an edge-anchored surface that would otherwise slide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerTransition {
-    /// Slide in/out from the anchored screen edge.
+    /// Slide the whole surface in/out from its anchored screen edge.
     Slide,
-    /// Cross-fade the surface opacity.
+    /// Fade in/out with a subtle upward slide + scale (the default for
+    /// non-edge-anchored surfaces) — the agentos-panel popover animation.
     Fade,
 }
 

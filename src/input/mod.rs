@@ -861,23 +861,38 @@ impl State {
                         let pointer_location = ptr.current_location().as_global();
                         let output = seat.active_output();
 
-                        // Get the surface under the pointer
-                        let clicked_surface_id = {
+                        // Get the surface under the pointer, plus whether it is a
+                        // layer-shell surface (panel / dock / popover chrome).
+                        let (clicked_surface_id, clicked_is_layer) = {
                             let shell = self.common.shell.read();
-                            State::surface_under(pointer_location, &output, &shell).and_then(
-                                |(target, _)| {
-                                    WaylandFocus::wl_surface(&target).map(|s| s.id().protocol_id())
-                                },
-                            )
+                            match State::surface_under(pointer_location, &output, &shell) {
+                                Some((target, _)) => {
+                                    let surface = WaylandFocus::wl_surface(&target);
+                                    let id = surface.as_ref().map(|s| s.id().protocol_id());
+                                    let is_layer = surface.as_ref().is_some_and(|s| {
+                                        smithay::desktop::layer_map_for_output(&output)
+                                            .layer_for_surface(
+                                                s,
+                                                smithay::desktop::WindowSurfaceType::ALL,
+                                            )
+                                            .is_some()
+                                    });
+                                    (id, is_layer)
+                                }
+                                None => (None, false),
+                            }
                         };
 
                         // Check dismiss even when the click landed on empty space
                         // (`clicked_surface_id == None`): bare desktop is outside
                         // every dismiss group, so it must still close armed popovers.
+                        // `clicked_is_layer` only matters to controllers that opted
+                        // into `set_ignore_layer_clicks`; all others dismiss as before.
                         {
                             let controllers = self.common.dismiss_controller_registry.get_all();
                             let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
                                 clicked_surface_id,
+                                clicked_is_layer,
                                 &controllers,
                             );
                             if !to_dismiss.is_empty() {
@@ -1575,9 +1590,17 @@ impl State {
                     let under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
 
-                    // Check for layer surface dismiss on touch down
+                    // Check for layer surface dismiss on touch down (with whether the
+                    // touch landed on layer-shell chrome, for opted-in controllers).
                     let clicked_surface_id = under.as_ref().and_then(|(target, _)| {
                         WaylandFocus::wl_surface(target).map(|s| s.id().protocol_id())
+                    });
+                    let clicked_is_layer = under.as_ref().is_some_and(|(target, _)| {
+                        WaylandFocus::wl_surface(target).is_some_and(|s| {
+                            smithay::desktop::layer_map_for_output(&output)
+                                .layer_for_surface(&s, smithay::desktop::WindowSurfaceType::ALL)
+                                .is_some()
+                        })
                     });
 
                     std::mem::drop(shell);
@@ -1588,6 +1611,7 @@ impl State {
                         let controllers = self.common.dismiss_controller_registry.get_all();
                         let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
                             clicked_surface_id,
+                            clicked_is_layer,
                             &controllers,
                         );
                         if !to_dismiss.is_empty() {

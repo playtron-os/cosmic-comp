@@ -75,8 +75,8 @@
         Selects how the compositor animates this surface when it is hidden or
         shown via set_hidden / set_visible.
       </description>
-      <entry name="slide" value="0" summary="slide in/out from the anchored screen edge"/>
-      <entry name="fade" value="1" summary="cross-fade the surface opacity"/>
+      <entry name="slide" value="0" summary="slide the whole surface in/out from its anchored screen edge"/>
+      <entry name="fade" value="1" summary="fade in/out with a subtle upward slide + scale (the default)"/>
     </enum>
 
     <request name="destroy" type="destructor">
@@ -112,9 +112,10 @@
         By default (when this request is never sent) the compositor picks an
         animation based on the surface's anchor: a layer surface anchored to a
         single lateral edge (left or right) slides in/out from that edge, while
-        all other surfaces cross-fade.  This request lets a surface override
-        that heuristic — for example a corner-anchored notification toast can
-        request "fade" so it does not slide horizontally.
+        all other surfaces fade in/out with a subtle upward slide.  This request
+        lets a surface override that default — an edge-anchored surface can
+        request "fade" so it does not slide horizontally, and a surface that
+        wants the full edge slide (e.g. the dock) can request "slide".
 
         The transition applies to subsequent set_hidden / set_visible calls and
         is remembered for the lifetime of this controller.

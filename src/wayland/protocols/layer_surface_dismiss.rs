@@ -38,6 +38,11 @@ pub struct LayerSurfaceDismissControllerData {
     pub armed: Mutex<bool>,
     /// Surfaces in the dismiss group (clicks on these won't trigger dismiss)
     pub group_surfaces: Mutex<HashSet<u32>>,
+    /// When set, interactions landing on ANY other layer-shell surface (panel,
+    /// dock, layer popup) do not dismiss this controller — only clicks on app
+    /// content or the bare desktop do. Opted into via `set_ignore_layer_clicks`
+    /// (e.g. a launcher driven by a panel button).
+    pub ignore_layer_clicks: Mutex<bool>,
 }
 
 /// State for the layer surface dismiss manager protocol
@@ -71,7 +76,7 @@ impl LayerSurfaceDismissState {
             D,
             zcosmic_layer_surface_dismiss_manager_v1::ZcosmicLayerSurfaceDismissManagerV1,
             _,
-        >(1, ());
+        >(2, ());
         LayerSurfaceDismissState { global }
     }
 
@@ -174,6 +179,7 @@ where
                     surface: surface.downgrade(),
                     armed: Mutex::new(false),
                     group_surfaces: Mutex::new(group_surfaces),
+                    ignore_layer_clicks: Mutex::new(false),
                 };
 
                 let controller = data_init.init(id, controller_data);
@@ -246,6 +252,13 @@ where
                     .unwrap()
                     .remove(&group_surface_id);
             }
+            zcosmic_layer_surface_dismiss_v1::Request::SetIgnoreLayerClicks => {
+                if let Ok(surface) = data.surface.upgrade() {
+                    let surface_id = surface.id().protocol_id();
+                    debug!(surface_id, "Dismiss controller: ignore layer-shell clicks");
+                }
+                *data.ignore_layer_clicks.lock().unwrap() = true;
+            }
         }
     }
 }
@@ -261,6 +274,7 @@ where
 /// Returns the controllers that should be dismissed.
 pub fn check_dismiss_on_click(
     clicked_surface_id: Option<u32>,
+    clicked_is_layer: bool,
     controllers: &[zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1],
 ) -> Vec<zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1> {
     let mut to_dismiss = Vec::new();
@@ -279,14 +293,21 @@ pub fn check_dismiss_on_click(
                 // In the group only if there's a clicked surface AND it's a member.
                 // A click on empty space (`None`) is never in the group → dismiss.
                 let in_group = clicked_surface_id.is_some_and(|id| group.contains(&id));
+                // Opted-in controllers ignore clicks on OTHER layer-shell chrome
+                // (panel/dock/popover): such a click neither dismisses nor counts
+                // as "outside" — the controlling button drives this surface.
+                let ignored_layer_click =
+                    clicked_is_layer && *data.ignore_layer_clicks.lock().unwrap();
                 debug!(
                     ?clicked_surface_id,
                     controlled_surface_id,
                     in_group,
+                    clicked_is_layer,
+                    ignored_layer_click,
                     group_members = ?group.iter().collect::<Vec<_>>(),
                     "Checking dismiss - clicked vs group"
                 );
-                if !in_group {
+                if !in_group && !ignored_layer_click {
                     to_dismiss.push(controller.clone());
                 }
             }

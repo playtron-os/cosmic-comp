@@ -1568,6 +1568,12 @@ where
                 // the output while the client's buffer catches up to the new width.
                 let (resize_x, resize_y) =
                     shell.get_layer_resize_offset(&surface_id, layer_geo.size.w);
+                // And the bottom-edge pin: keeps a bottom-anchored auto-size surface's
+                // bottom glued to its arranged position while its buffer height catches
+                // up to a just-requested grow/shrink (e.g. expanding the Wi-Fi list in
+                // the settings popover), so the content doesn't jump-then-settle.
+                let (pin_x, pin_y) =
+                    shell.get_layer_bottom_pin_offset(layer.wl_surface(), layer_geo.size.h);
                 // And the popover open/close animation translate + scale. The
                 // open slides UP (+6px → 0) + scales 0.97→1.0; the close is the
                 // exact reverse (0 → +6px, 1.0→0.97). Only ONE is ever active for
@@ -1586,8 +1592,8 @@ where
                 };
                 // Whether to route through the center-scale render path this frame.
                 let is_scaling = is_opening || is_closing;
-                let total_offset_x = offset_x + slide_x + anim_x + resize_x;
-                let total_offset_y = offset_y + slide_y + anim_y + resize_y;
+                let total_offset_x = offset_x + slide_x + anim_x + resize_x + pin_x;
+                let total_offset_y = offset_y + slide_y + anim_y + resize_y + pin_y;
                 let render_location = if total_offset_x != 0 || total_offset_y != 0 {
                     location + smithay::utils::Point::from((total_offset_x, total_offset_y))
                 } else {
@@ -1595,10 +1601,34 @@ where
                 };
 
                 // Compute the physical location for surface rendering
-                let surface_render_phys_loc: Point<i32, Physical> = render_location
+                let mut surface_render_phys_loc: Point<i32, Physical> = render_location
                     .to_local(output)
                     .as_logical()
                     .to_physical_precise_round(scale);
+
+                // Sub-pixel bottom pin (fractional-scale fix): a bottom-anchored
+                // surface's physical top and physical height are rounded
+                // independently, so their sum — the bottom edge — can wobble ±1px as
+                // the surface resizes (an auto-size grow/shrink animation), because
+                // round(top·s) + round(h·s) != round((top+h)·s). Pin the physical
+                // BOTTOM to the rounded arranged bottom (constant through a resize)
+                // and derive the top from the buffer's physical height, so the bottom
+                // never jitters. Skipped while the surface animates its own position
+                // (slide / open / close), which moves it on purpose.
+                //
+                // `get_layer_bottom_pin_offset` already aligned the LOGICAL bottom to
+                // the configured size via `pin_y`; this removes the residual
+                // sub-physical-pixel rounding a logical offset can't reach.
+                if !is_scaling
+                    && !shell.is_layer_sliding(&surface_id)
+                    && shell.is_layer_bottom_anchored(layer.wl_surface())
+                {
+                    let top_local = render_location.to_local(output).as_logical().y as f64;
+                    let buf_h = layer_geo.size.h as f64;
+                    let bottom_phys = ((top_local + buf_h) * scale).round() as i32;
+                    let buf_h_phys = (buf_h * scale).round() as i32;
+                    surface_render_phys_loc.y = bottom_phys - buf_h_phys;
+                }
 
                 let local_geo =
                     Rectangle::new(render_location.to_local(output), layer_geo.size.as_local());
@@ -1933,6 +1963,7 @@ where
                             } else {
                                 (corner_radius, !has_client_corner_radius)
                             };
+
 
                             let blurred_element = BlurredBackdropShader::element(
                                 renderer,
@@ -2774,7 +2805,7 @@ where
                     if blur_result.is_ok() {
                         // Cache the SAME blurred texture for ALL windows in this group
                         // Store both blur texture size and original screen size for coordinate mapping
-                        for (window_key, _geometry, _alpha, z_idx) in &group.windows {
+                        for (window_key, geometry, _alpha, z_idx) in &group.windows {
                             cache_blur_texture_for_window(
                                 &output_name,
                                 window_key,
@@ -2784,6 +2815,7 @@ where
                                     screen_size: output_size,
                                     scale,
                                     background_state_hash: content_hash,
+                                    capture_size: (geometry.size.w, geometry.size.h),
                                 },
                             );
                             tracing::trace!(
@@ -2910,11 +2942,22 @@ where
                     get_cached_blur_texture_for_layer(&output_name, surface_id).is_some()
                 });
 
+                // Did any surface change size since its texture was captured? The
+                // content hash below only tracks what's BEHIND the surface, so a
+                // resize wouldn't otherwise invalidate the cache — the stale,
+                // smaller texture would be stretched over the newly-exposed area,
+                // flashing the unblurred desktop. Force an immediate re-blur (no
+                // throttle) so the backdrop grows in lockstep with the surface.
+                let geometry_changed = surfaces.iter().any(|(surface_id, geo)| {
+                    get_cached_blur_texture_for_layer(&output_name, surface_id)
+                        .is_some_and(|info| info.capture_size != (geo.size.w, geo.size.h))
+                });
+
                 // EARLY THROTTLE CHECK: Skip capture entirely if all cached and recent.
                 // Throttle/content-hash state is keyed per (output, layer, radius bucket)
                 // so distinct buckets in the same layer don't clobber each other.
                 let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
-                if all_cached && should_throttle_layer_blur(&hash_key) {
+                if all_cached && !geometry_changed && should_throttle_layer_blur(&hash_key) {
                     any_blur_applied = true;
                     continue;
                 }
@@ -2944,7 +2987,7 @@ where
                 let stored_hash = get_layer_blur_content_hash(&hash_key);
                 let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
-                if !content_changed && all_cached {
+                if !content_changed && !geometry_changed && all_cached {
                     let layer_group_elapsed = layer_group_start.elapsed();
                     tracing::trace!(
                         layer = ?layer_type,
@@ -2957,9 +3000,12 @@ where
                     continue;
                 }
 
-                // Content changed: apply throttle if we have cached textures
+                // Content changed: apply throttle if we have cached textures. A
+                // geometry change is never throttled — the backdrop must track the
+                // surface size exactly on the frame it resizes.
                 let is_dragging = grabbed_window_key.is_some();
                 let throttled = content_changed
+                    && !geometry_changed
                     && all_cached
                     && !is_dragging
                     && should_throttle_layer_blur(&hash_key);
@@ -3095,7 +3141,7 @@ where
                         };
 
                         // Cache the SAME blurred texture for all surfaces in this group
-                        for (surface_id, _geo) in surfaces {
+                        for (surface_id, geo) in surfaces {
                             cache_blur_texture_for_layer(
                                 &output_name,
                                 surface_id.clone(),
@@ -3105,6 +3151,7 @@ where
                                     screen_size: output_size,
                                     scale,
                                     background_state_hash: content_hash,
+                                    capture_size: (geo.size.w, geo.size.h),
                                 },
                             );
                             tracing::trace!(
