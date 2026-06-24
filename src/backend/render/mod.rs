@@ -98,6 +98,7 @@ pub mod clipped_surface;
 pub mod cursor;
 pub mod element;
 pub mod gpu_profiler;
+pub mod perf_badge;
 pub mod shadow;
 pub mod voice_orb;
 use self::element::{AsGlowRenderer, CosmicElement};
@@ -1300,6 +1301,11 @@ where
             {
                 elements.push(orb_element.into());
             }
+        }
+
+        // Performance-capture badge (top-left) while an F12 capture is running.
+        if crate::perf::is_capturing() {
+            elements.extend(perf_badge::elements(renderer, output_geo));
         }
     }
 

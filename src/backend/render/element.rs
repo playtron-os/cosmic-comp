@@ -43,6 +43,8 @@ where
     BlurBackground(TextureRenderElement<GlesTexture>),
     /// Voice mode orb visual indicator
     VoiceOrb(PixelShaderElement),
+    /// Performance-capture badge (shown while an F12 capture window is active)
+    PerfBadge(PixelShaderElement),
     #[cfg(feature = "debug")]
     Egui(TextureRenderElement<GlesTexture>),
 }
@@ -63,7 +65,7 @@ where
             CosmicElement::Postprocess(elem) => elem.id(),
             CosmicElement::Zoom(elem) => elem.id(),
             CosmicElement::BlurBackground(elem) => elem.id(),
-            CosmicElement::VoiceOrb(elem) => elem.id(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.id(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.id(),
         }
@@ -79,7 +81,7 @@ where
             CosmicElement::Postprocess(elem) => elem.current_commit(),
             CosmicElement::Zoom(elem) => elem.current_commit(),
             CosmicElement::BlurBackground(elem) => elem.current_commit(),
-            CosmicElement::VoiceOrb(elem) => elem.current_commit(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.current_commit(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.current_commit(),
         }
@@ -95,7 +97,7 @@ where
             CosmicElement::Postprocess(elem) => elem.src(),
             CosmicElement::Zoom(elem) => elem.src(),
             CosmicElement::BlurBackground(elem) => elem.src(),
-            CosmicElement::VoiceOrb(elem) => elem.src(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.src(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.src(),
         }
@@ -111,7 +113,7 @@ where
             CosmicElement::Postprocess(elem) => elem.geometry(scale),
             CosmicElement::Zoom(elem) => elem.geometry(scale),
             CosmicElement::BlurBackground(elem) => elem.geometry(scale),
-            CosmicElement::VoiceOrb(elem) => elem.geometry(scale),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.geometry(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.geometry(scale),
         }
@@ -127,7 +129,7 @@ where
             CosmicElement::Postprocess(elem) => elem.location(scale),
             CosmicElement::Zoom(elem) => elem.location(scale),
             CosmicElement::BlurBackground(elem) => elem.location(scale),
-            CosmicElement::VoiceOrb(elem) => elem.location(scale),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.location(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.location(scale),
         }
@@ -143,7 +145,7 @@ where
             CosmicElement::Postprocess(elem) => elem.transform(),
             CosmicElement::Zoom(elem) => elem.transform(),
             CosmicElement::BlurBackground(elem) => elem.transform(),
-            CosmicElement::VoiceOrb(elem) => elem.transform(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.transform(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.transform(),
         }
@@ -163,7 +165,9 @@ where
             CosmicElement::Postprocess(elem) => elem.damage_since(scale, commit),
             CosmicElement::Zoom(elem) => elem.damage_since(scale, commit),
             CosmicElement::BlurBackground(elem) => elem.damage_since(scale, commit),
-            CosmicElement::VoiceOrb(elem) => elem.damage_since(scale, commit),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => {
+                elem.damage_since(scale, commit)
+            }
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.damage_since(scale, commit),
         }
@@ -179,7 +183,9 @@ where
             CosmicElement::Postprocess(elem) => elem.opaque_regions(scale),
             CosmicElement::Zoom(elem) => elem.opaque_regions(scale),
             CosmicElement::BlurBackground(elem) => elem.opaque_regions(scale),
-            CosmicElement::VoiceOrb(elem) => elem.opaque_regions(scale),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => {
+                elem.opaque_regions(scale)
+            }
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.opaque_regions(scale),
         }
@@ -195,7 +201,7 @@ where
             CosmicElement::Postprocess(elem) => elem.alpha(),
             CosmicElement::Zoom(elem) => elem.alpha(),
             CosmicElement::BlurBackground(elem) => elem.alpha(),
-            CosmicElement::VoiceOrb(elem) => elem.alpha(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.alpha(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.alpha(),
         }
@@ -211,7 +217,7 @@ where
             CosmicElement::Postprocess(elem) => elem.kind(),
             CosmicElement::Zoom(elem) => elem.kind(),
             CosmicElement::BlurBackground(elem) => elem.kind(),
-            CosmicElement::VoiceOrb(elem) => elem.kind(),
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => elem.kind(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.kind(),
         }
@@ -273,7 +279,7 @@ where
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
-            CosmicElement::VoiceOrb(elem) => {
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
                 RenderElement::<GlowRenderer>::draw(
                     elem,
@@ -319,7 +325,7 @@ where
                 let glow_renderer = renderer.glow_renderer_mut();
                 elem.underlying_storage(glow_renderer)
             }
-            CosmicElement::VoiceOrb(elem) => {
+            CosmicElement::VoiceOrb(elem) | CosmicElement::PerfBadge(elem) => {
                 let glow_renderer = renderer.glow_renderer_mut();
                 elem.underlying_storage(glow_renderer)
             }

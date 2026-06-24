@@ -280,6 +280,7 @@ pub struct Common {
     pub local_offset: time::UtcOffset,
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
+    pub loop_health: crate::perf::LoopHealth,
 
     pub kiosk_child: Option<Child>,
     pub theme: crate::comp_theme::CompTheme,
@@ -836,6 +837,7 @@ impl State {
                 should_stop: false,
                 gesture_state: None,
                 coldstart: Default::default(),
+                loop_health: Default::default(),
 
                 kiosk_child: None,
                 theme: crate::comp_theme::CompTheme::from_current(),

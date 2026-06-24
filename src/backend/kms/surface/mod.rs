@@ -1689,18 +1689,31 @@ impl SurfaceThreadState {
 
             self.timings.presented(clock);
 
-            // Record this presented frame for the UI perf report. Uses the same
-            // hardware vblank timestamp + sequence delta the pacer just used, and
-            // pairs any pending pointer inputs with this present for input latency.
-            if let Some(frame) = self.timings.previous_frames.back() {
-                let render = frame.render_duration_elements + frame.render_duration_draw;
-                let render_start_ns = Duration::from(frame.render_start)
-                    .as_nanos()
-                    .min(u64::MAX as u128) as u64;
-                self.perf.record(clock, render, seq_delta);
-                let present_ns = Duration::from(clock).as_nanos().min(u64::MAX as u128) as u64;
-                self.perf
-                    .record_input_latencies(render_start_ns, present_ns);
+            // Record this presented frame for the UI perf report — but only while
+            // a capture window is running. Off the capture path this is a single
+            // relaxed atomic load, so frame pacing pays nothing for it.
+            if crate::perf::is_capturing() {
+                let composited = self.timings.compositing();
+                if let Some(frame) = self.timings.previous_frames.back() {
+                    let render_start_ns = Duration::from(frame.render_start)
+                        .as_nanos()
+                        .min(u64::MAX as u128) as u64;
+                    let present_latency = smithay::utils::Time::elapsed(
+                        &frame.presentation_submitted,
+                        frame.presentation_presented,
+                    );
+                    self.perf.record(crate::perf::FrameRecord {
+                        present: clock,
+                        elements: frame.render_duration_elements,
+                        draw: frame.render_duration_draw,
+                        present_latency,
+                        composited,
+                        seq_delta,
+                    });
+                    let present_ns = Duration::from(clock).as_nanos().min(u64::MAX as u128) as u64;
+                    self.perf
+                        .record_input_latencies(render_start_ns, present_ns);
+                }
             }
 
             while let Ok(pending_image_copy_data) = frames.recv() {

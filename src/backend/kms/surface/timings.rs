@@ -216,6 +216,11 @@ impl Timings {
         self.compositing = compositing;
     }
 
+    /// Whether the last submitted frame was GPU-composited (vs direct scanout).
+    pub fn compositing(&self) -> bool {
+        self.compositing
+    }
+
     /// Set the game-mode frame-rate cap (0 = uncapped).
     pub fn set_fps_limit(&mut self, fps_limit: u32) {
         self.fps_limit = fps_limit;

@@ -184,6 +184,9 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
     // run the event loop
     event_loop.run(None, &mut state, |state| {
+        // Only track main-loop health during an active capture window (a single
+        // relaxed atomic load otherwise — no steady-state cost).
+        let loop_work_start = crate::perf::is_capturing().then(|| state.common.loop_health.begin());
         // shall we shut down?
         if state.common.should_stop {
             info!("Shutting down");
@@ -249,14 +252,17 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
         refresh(state);
 
-        {
+        let loop_active = {
             let shell = state.common.shell.read();
             // Only outputs hosting an animation need continuous redraws; a
             // layer slide on one output must not keep other outputs rendering.
+            let mut active = false;
             for output in shell.animating_outputs() {
+                active = true;
                 state.backend.schedule_render(&output);
             }
-        }
+            active
+        };
 
         // send out events
         let _ = state.common.display_handle.flush_clients();
@@ -282,6 +288,10 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                     process::exit(1);
                 }
             }
+        }
+
+        if let Some(work_start) = loop_work_start {
+            state.common.loop_health.end(work_start, loop_active);
         }
     })?;
 

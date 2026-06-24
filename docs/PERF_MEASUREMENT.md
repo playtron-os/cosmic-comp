@@ -35,6 +35,14 @@ Be precise about this — the whole point is numbers that survive scrutiny.
 | UI RAM (GPU) | Best-effort | DRM `fdinfo` resident memory, deduplicated by `drm-client-id` (driver-dependent) |
 | Input latency (pointer→scanout) | **Measured** (compositor pipeline) | libinput HW timestamp → DRM scanout; add a one-time HW-tester offset for end-to-end |
 | Cold-start (launch→first frame) | **Measured** (relaunch harness) | exec → first-buffer commit, phased; true cold needs a page-cache drop (root) |
+| Smoothness: jank %, 1%/0.1%-low FPS | **Ground truth** | derived from the frametime samples (jank = frames > 1.5× median) |
+| Present latency (submit→scanout) | **Ground truth** | `Timings` submit vs present timestamps |
+| Direct-scanout vs GPU-composite % | **Ground truth** | per-frame `Timings::compositing()` flag (zero-copy path rate) |
+| GPU phase breakdown (elements/draw) | **Ground truth** | per-frame element-build + GPU-draw durations |
+| Compositor CPU % + per-app CPU % | **Measured** (0.5s window) | `/proc/<pid>/stat` utime+stime delta over a sampling window |
+| Power (package/battery), energy/frame | Best-effort | RAPL `energy_uj` delta + `power_supply/power_now`; per-frame from power ÷ fps |
+| Thermal, GPU busy %, CPU freq vs max | Best-effort | `thermal_zone*/temp`, `gpu_busy_percent`, `cpufreq` (sysfs, driver-dependent) |
+| Main-loop responsiveness (freeze detection) | **Measured** (always-on) | per-iteration work time + activity-gated inter-iteration hitches >50 ms |
 
 ### Why the frame metrics are ground truth, not an approximation
 
@@ -53,17 +61,27 @@ frame stats for them. Always capture on bare metal.
 
 ## Live report — how to capture (F12)
 
-1. Boot a real HumainOS/cosmic-comp session (DRM/KMS backend).
-2. Drive the workload you want to characterize (scroll a list, animate a panel,
-   move the pointer, open windows, etc.).
-3. Press **`Ctrl+Alt+Super+Shift+F12`**.
-4. The report is written and the file manager opens focused on
-   `~/cosmic-perf-<unix>.txt`.
+Collection is an **armed capture window**, not an always-on rolling buffer — see
+"Zero steady-state cost" below.
 
-The frame history covers roughly the **last ~16 s** of presented frames per
-output (`SAMPLE_CAP = 1000`). The report is written synchronously on key press (a
-brief one-off cost); the frame data it reports was already collected before that
-point, so the cost does not affect the numbers.
+1. Boot a real HumainOS/cosmic-comp session (DRM/KMS backend).
+2. Press **`Ctrl+Alt+Super+Shift+F12`** to arm. A red "recording" badge appears
+   in the top-left of each output.
+3. While the badge is showing (an 8 s window, `CAPTURE_WINDOW_SECS`), drive the
+   workload you want to characterize — scroll a list, animate a panel, move the
+   pointer, open windows.
+4. When the window ends, the badge disappears, the report is written, and the
+   file manager opens focused on `~/cosmic-perf-<unix>.txt`.
+
+### Zero steady-state cost
+
+The frame/input/loop collectors are gated by a single relaxed atomic
+(`perf::is_capturing()`). Outside a capture window every hook is one branch-
+predicted load and then nothing — no locks, no buffer writes, no allocation — so
+the instrumentation has no measurable effect on the compositor when you're not
+measuring. Arming resets the per-output buffers, so a report reflects exactly its
+8 s window. The report itself (CPU/power sampling + file write) runs on a worker
+thread, so the capture never blocks the compositor.
 
 ### Input latency (pointer→scanout)
 
@@ -83,6 +101,28 @@ pixel-response *after* scanout — is a fixed per-hardware offset. Measure it
 store the constant, and report `end-to-end = measured + offset` with both
 components shown. This is why "100% accurate end-to-end input latency" needs the
 one-time hardware step; the compositor portion alone is exact.
+
+### Completeness metrics (also in the F12 report)
+
+Beyond the headline numbers, the live report rounds out the picture so it
+defensibly answers "fast, smooth, light, efficient, and never freezes":
+
+- **Smoothness** — `jank %` (frames slower than 1.5× the median), `1%-low` and
+  `0.1%-low` FPS (worst-case framerate). Averages hide stutter; these don't.
+- **Composition efficiency** — `direct scanout %` vs GPU composite. The zero-copy
+  direct-scanout path is lower latency and power; a low % means the compositor is
+  doing avoidable GPU work. Plus the per-frame GPU phase breakdown (elements +
+  draw) and present latency (submit→scanout).
+- **CPU** — compositor CPU % (with thread count) and per-app CPU %, sampled over a
+  0.5 s window, alongside the RAM table.
+- **Power / thermal** — package power (RAPL) and/or battery draw, energy-per-frame,
+  max temperature, GPU busy %, and current-vs-max CPU frequency (a current ≪ max
+  under load is the throttling signal). Best-effort and driver-dependent.
+- **Main-loop responsiveness (freeze detection)** — an always-on counter of the
+  main thread's per-iteration work time and activity-gated hitches >50 ms. This
+  catches the compositor-freeze class of bug (a blocked main thread drops Wayland
+  clients). The CPU/power sampling and report write happen on a worker thread, so
+  the report never perturbs this number.
 
 ## Cold-start — active relaunch harness (F11)
 
