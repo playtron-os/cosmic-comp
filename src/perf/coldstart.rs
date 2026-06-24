@@ -28,7 +28,7 @@
 //! measure, so it is intentionally not broken out here).
 //!
 //! Configuration via environment (no rebuild needed):
-//!  - `COSMIC_COLDSTART_APP`   — target command (default `agentos-mail-suite`)
+//!  - `COSMIC_COLDSTART_APP`   — target command (default `agentos-settings`)
 //!  - `COSMIC_COLDSTART_ITERS` — iteration count (default 5)
 //!
 //! Caveat: a *true* cold start requires dropping the page cache, which needs
@@ -60,7 +60,7 @@ const FINISH_DELAY: Duration = Duration::from_millis(600);
 const ITERATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 fn target_app() -> String {
-    std::env::var("COSMIC_COLDSTART_APP").unwrap_or_else(|_| "agentos-mail-suite".to_string())
+    std::env::var("COSMIC_COLDSTART_APP").unwrap_or_else(|_| "agentos-settings".to_string())
 }
 
 fn iterations() -> usize {
@@ -177,6 +177,11 @@ impl State {
             results: Vec::new(),
             timeout_token: None,
         });
+
+        // Show the on-screen badge ("Cold-start test…") for the duration.
+        crate::perf::set_coldstart(true);
+        self.perf_make_badge();
+        self.perf_schedule_render_all();
 
         self.coldstart_arm(INITIAL_DELAY, |state| state.coldstart_start_iteration());
     }
@@ -374,6 +379,11 @@ impl State {
     }
 
     fn coldstart_finish(&mut self) {
+        // Hide the badge.
+        crate::perf::set_coldstart(false);
+        self.common.shell.write().perf_badge = None;
+        self.perf_schedule_render_all();
+
         let Some(run) = self.common.coldstart.run.take() else {
             return;
         };

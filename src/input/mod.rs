@@ -2007,10 +2007,12 @@ impl State {
             "Voice key check - binding match results"
         );
 
-        // Don't let the voice-mode Super-hold fire while the full performance
-        // hotkey chord (Ctrl+Alt+Super+Shift) is held.
-        let perf_chord_held = modifiers.ctrl && modifiers.alt && modifiers.logo && modifiers.shift;
-        if voice_config.enabled && !perf_chord_held && (matches || is_f18 || is_voice_key_release) {
+        // Don't let the voice-mode Super gesture fire while the perf-capture
+        // chord modifiers (Ctrl+Alt+Shift, alongside Super) are held — pressing
+        // Ctrl+Alt+Super+Shift+F1x must not also trigger voice. (The activation
+        // hold-timer below has the same guard, to cover any key-press order.)
+        let perf_chord_mods = modifiers.ctrl && modifiers.alt && modifiers.shift;
+        if voice_config.enabled && !perf_chord_mods && (matches || is_f18 || is_voice_key_release) {
             // Block voice key handling entirely during session lock (idle/login screen)
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
@@ -2077,6 +2079,23 @@ impl State {
                     .common
                     .event_loop_handle
                     .insert_source(delay, move |_, _, state| {
+                        // If the perf-capture chord modifiers (Ctrl+Alt+Shift) are
+                        // held when the hold-timer fires, this is the F1x chord,
+                        // not a voice gesture — don't activate.
+                        let chord_held = state
+                            .common
+                            .shell
+                            .read()
+                            .seats
+                            .iter()
+                            .find(|s| s.name() == seat_name)
+                            .and_then(|s| s.get_keyboard())
+                            .map(|kb| kb.modifier_state())
+                            .map(|m| m.ctrl && m.alt && m.shift)
+                            .unwrap_or(false);
+                        if chord_held {
+                            return TimeoutAction::Drop;
+                        }
                         // Check if key is still being held (press time still recorded)
                         if state.common.voice_mode_state.should_activate_voice() {
                             tracing::debug!(

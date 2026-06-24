@@ -44,9 +44,11 @@ impl Program for PerfBadgeProgram {
         let surface = theme.surface_color();
         let divider = theme.divider_color();
         let record = Color::from_rgb(0.93, 0.22, 0.22);
-        // Phase 1 asks the user to move the mouse (so input latency is captured);
-        // phase 2 is the forced max-fps test.
-        let label = if crate::perf::is_stressing() {
+        // Cold-start (F11) shows its own label; otherwise phase 1 asks the user to
+        // move the mouse (input latency) and phase 2 is the forced max-fps test.
+        let label = if crate::perf::is_coldstart() {
+            "Cold-start test…"
+        } else if crate::perf::is_stressing() {
             "Max-fps test…"
         } else {
             "Capturing — move your mouse"
@@ -85,13 +87,13 @@ impl Program for PerfBadgeProgram {
                 ..Default::default()
             },
             shadow: Shadow {
-                offset: Vector::new(0.0, 4.0),
-                blur_radius: 18.0,
+                offset: Vector::new(0.0, 3.0),
+                blur_radius: 9.0,
                 color: Color {
                     r: 0.0,
                     g: 0.0,
                     b: 0.0,
-                    a: 0.35,
+                    a: 0.18,
                 },
                 ..Default::default()
             },
@@ -99,6 +101,10 @@ impl Program for PerfBadgeProgram {
             border_only: false,
         })
             as Box<dyn Fn(&iced_core::Theme) -> container::Style>)
+        // Transparent outer padding so the card's drop shadow isn't clipped by
+        // the element's buffer (which is otherwise sized to the card content).
+        .apply(container)
+        .padding(12)
         .into()
     }
 }
@@ -123,7 +129,9 @@ where
     R::TextureId: Send + Clone + 'static,
 {
     let scale = output.current_scale().fractional_scale();
-    let location = Point::<f64, Logical>::from((16.0, 52.0))
+    // Offset by the 12px transparent padding (shadow room) so the visible card
+    // still lands ~(16, 52) from the top-left.
+    let location = Point::<f64, Logical>::from((4.0, 40.0))
         .to_physical(scale)
         .to_i32_round();
     badge.render_elements(renderer, location, scale.into(), 1.0)
