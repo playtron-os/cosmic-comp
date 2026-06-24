@@ -677,6 +677,8 @@ pub struct Shell {
     pub active_hint: bool,
     overview_mode: OverviewMode,
     swap_indicator: Option<SwapIndicator>,
+    /// Performance-capture badge, present only while an F12 capture is running.
+    pub perf_badge: Option<crate::backend::render::perf_badge::PerfBadge>,
     resize_mode: ResizeMode,
     resize_state: Option<(
         KeyboardFocusTarget,
@@ -2179,6 +2181,7 @@ impl Shell {
             active_hint: config.cosmic_conf.active_hint,
             overview_mode: OverviewMode::None,
             swap_indicator: None,
+            perf_badge: None,
             resize_mode: ResizeMode::None,
             resize_state: None,
             resize_indicator: None,

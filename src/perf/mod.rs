@@ -35,6 +35,7 @@ use std::{
 };
 
 use calloop::timer::{TimeoutAction, Timer};
+use smithay::desktop::space::SpaceElement;
 use smithay::utils::{Monotonic, Time};
 
 use crate::state::{BackendData, State};
@@ -370,6 +371,9 @@ struct OutputFrameStats {
     frames: usize,
     window_secs: f64,
     fps: f64,
+    /// Rate while actually rendering (1000 / median frametime); compare this to
+    /// the configured refresh, not `fps` (which includes idle time).
+    active_fps: f64,
     frametime_ms: Stats,
     render_ms: Stats,
     elements_ms: Stats,
@@ -463,6 +467,16 @@ impl OutputFrameStats {
         } else {
             0.0
         };
+        // "Active" fps: the cadence while the compositor IS drawing (1000 / median
+        // frametime). cosmic-comp is damage-driven — it only renders when
+        // something changes — so `fps` (frames over the whole window) reads far
+        // below refresh whenever the window includes idle time. `active_fps` is
+        // the number to compare against the configured refresh.
+        let active_fps = if frametime_stats.p50 > 0.0 {
+            1000.0 / frametime_stats.p50
+        } else {
+            0.0
+        };
 
         // Approximate the total vblanks in the window as presented frames plus
         // skipped vblanks, so the drop percentage is relative to refresh.
@@ -486,6 +500,7 @@ impl OutputFrameStats {
             frames,
             window_secs,
             fps,
+            active_fps,
             frametime_ms: frametime_stats,
             render_ms: Stats::of(render_ms),
             elements_ms: Stats::of(elements_ms),
@@ -586,6 +601,23 @@ impl State {
         set_capturing(true);
         tracing::info!("perf: capture started ({CAPTURE_WINDOW_SECS}s window)");
 
+        // Build the on-screen capture badge and register it on each output.
+        let badge = crate::backend::render::perf_badge::badge(
+            self.common.event_loop_handle.clone(),
+            self.common.theme.clone(),
+        );
+        {
+            let shell = self.common.shell.read();
+            let size = badge.current_size();
+            for output in shell.outputs() {
+                badge.output_enter(
+                    output,
+                    smithay::utils::Rectangle::new(smithay::utils::Point::from((0, 0)), size),
+                );
+            }
+        }
+        self.common.shell.write().perf_badge = Some(badge);
+
         // Redraw so the badge appears immediately, then end the window on a timer.
         self.perf_schedule_render_all();
         self.common
@@ -608,6 +640,7 @@ impl State {
             return;
         }
         set_capturing(false);
+        self.common.shell.write().perf_badge = None;
         self.perf_schedule_render_all(); // hide the badge
 
         let (backend_label, frame_stats): (&'static str, Vec<OutputFrameStats>) =
@@ -1242,13 +1275,16 @@ fn build_txt(
     }
     for f in frame_stats {
         s.push_str(&format!(
-            "  {} — {:.2} fps over {:.1}s ({} frames)\n",
-            f.name, f.fps, f.window_secs, f.frames
+            "  {} — {:.1} fps active (avg {:.1} over {:.1}s, {} frames)\n",
+            f.name, f.active_fps, f.fps, f.window_secs, f.frames
         ));
         s.push_str(&format!(
-            "    fps          : avg {:.1}  1%-low {:.1}  0.1%-low {:.1}  jank {:.2}%\n",
-            f.fps, f.low_1pct_fps, f.low_01pct_fps, f.jank_pct,
+            "    fps          : active {:.1}  avg-over-window {:.1}  1%-low {:.1}  0.1%-low {:.1}  jank {:.2}%\n",
+            f.active_fps, f.fps, f.low_1pct_fps, f.low_01pct_fps, f.jank_pct,
         ));
+        s.push_str(
+            "                   (active = 1000/median frametime — compare to refresh;\n                    avg counts idle time, so it's low unless rendering continuously)\n",
+        );
         s.push_str(&format!(
             "    frametime ms : p50 {:.2}  p95 {:.2}  p99 {:.2}  p99.9 {:.2}  max {:.2}  (min {:.2}, mean {:.2})\n",
             f.frametime_ms.p50,

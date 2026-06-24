@@ -200,11 +200,13 @@ impl State {
         run_detached("sync; (echo 3 > /proc/sys/vm/drop_caches) 2>/dev/null || true".to_string());
 
         let cmd = run.target_cmd.clone();
+        let (iter, total) = (run.done + 1, run.total);
         run.t0 = Some(self.common.clock.now());
         run.t_connect = None;
         run.t_toplevel = None;
         run.waiting = true;
 
+        tracing::info!("coldstart: iter {iter}/{total} launching '{cmd}'");
         self.spawn_command(cmd);
 
         let token = self.coldstart_arm(ITERATION_TIMEOUT, |state| state.coldstart_timeout());
@@ -222,7 +224,10 @@ impl State {
         let Some(comm) = read_comm(pid) else {
             return false;
         };
-        !comm.is_empty() && run.target_base.starts_with(&comm)
+        // `comm` is capped at 15 chars by the kernel, so match either direction
+        // (target longer than comm, or a wrapper whose comm extends the target).
+        comm.len() >= 3
+            && (run.target_base.starts_with(&comm) || comm.starts_with(&run.target_base))
     }
 
     /// Phase 1 hook: a wayland client connected. Records `t_connect` for the
@@ -279,6 +284,19 @@ impl State {
             return;
         };
         if !self.coldstart_pid_matches(pid) {
+            // Surface a mapped-but-unmatched window so a wrong target name /
+            // comm mismatch is debuggable from the log.
+            let target = self
+                .common
+                .coldstart
+                .run
+                .as_ref()
+                .map(|r| r.target_base.clone())
+                .unwrap_or_default();
+            tracing::debug!(
+                "coldstart: ignoring mapped window pid {pid} (comm {:?}); waiting for '{target}'",
+                read_comm(pid).unwrap_or_default(),
+            );
             return;
         }
 

@@ -1304,8 +1304,12 @@ where
         }
 
         // Performance-capture badge (top-left) while an F12 capture is running.
-        if crate::perf::is_capturing() {
-            elements.extend(perf_badge::elements(renderer, output_geo));
+        if crate::perf::is_capturing()
+            && let Some(badge) = shell_guard.perf_badge.as_ref()
+        {
+            elements.extend(perf_badge::render::<R, CosmicElement<R>>(
+                badge, renderer, output,
+            ));
         }
     }
 
