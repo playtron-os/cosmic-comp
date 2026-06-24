@@ -1702,11 +1702,16 @@ impl SurfaceThreadState {
                         &frame.presentation_submitted,
                         frame.presentation_presented,
                     );
+                    let production = smithay::utils::Time::elapsed(
+                        &frame.render_start,
+                        frame.presentation_submitted,
+                    );
                     self.perf.record(crate::perf::FrameRecord {
                         present: clock,
                         elements: frame.render_duration_elements,
                         draw: frame.render_duration_draw,
                         present_latency,
+                        production,
                         composited,
                         seq_delta,
                     });
