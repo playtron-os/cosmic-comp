@@ -53,6 +53,11 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 const PHASE_IDLE_SECS: u64 = 4;
 const PHASE_LOAD_SECS: u64 = 4;
 
+/// How often to poll GPU-busy% during a capture. A single instantaneous read of
+/// a lightly-loaded GPU often catches an idle moment (reads 0), so it's averaged
+/// over many samples per phase.
+const GPU_SAMPLE_MS: u64 = 150;
+
 /// Whether a performance capture is currently running (either phase). Gates
 /// frame/input/loop collection. Read on the render and input hot paths, so kept
 /// to a single relaxed load.
@@ -88,6 +93,15 @@ pub struct CaptureState {
     m0: Mark,
     /// CPU/energy mark at the phase boundary (phase-1 end / phase-2 begin).
     m1: Mark,
+    /// GPU-busy% running sums, bucketed by phase (averaged for the report).
+    gpu_idle_sum: f64,
+    gpu_idle_n: u32,
+    gpu_load_sum: f64,
+    gpu_load_n: u32,
+}
+
+fn avg_opt(sum: f64, n: u32) -> Option<f64> {
+    (n > 0).then(|| sum / n as f64)
 }
 
 #[derive(Default, Clone, Copy, Debug)]
@@ -726,6 +740,7 @@ impl State {
 
         self.perf_make_badge();
         self.perf_schedule_render_all();
+        self.perf_schedule_gpu_sampler();
         self.common
             .event_loop_handle
             .insert_source(
@@ -733,6 +748,34 @@ impl State {
                 |_, _, state| {
                     state.perf_begin_load_phase();
                     TimeoutAction::Drop
+                },
+            )
+            .ok();
+    }
+
+    /// Poll GPU-busy% on a repeating timer for the whole capture, bucketing each
+    /// sample into the current phase (idle vs forced load) so the report can show
+    /// a representative average rather than one instantaneous (often-zero) read.
+    fn perf_schedule_gpu_sampler(&mut self) {
+        self.common
+            .event_loop_handle
+            .insert_source(
+                Timer::from_duration(Duration::from_millis(GPU_SAMPLE_MS)),
+                |_, _, state| {
+                    if !is_capturing() {
+                        return TimeoutAction::Drop;
+                    }
+                    if let Some(busy) = read_gpu_busy_pct() {
+                        let cap = &mut state.common.perf_capture;
+                        if is_stressing() {
+                            cap.gpu_load_sum += busy;
+                            cap.gpu_load_n += 1;
+                        } else {
+                            cap.gpu_idle_sum += busy;
+                            cap.gpu_idle_n += 1;
+                        }
+                    }
+                    TimeoutAction::ToDuration(Duration::from_millis(GPU_SAMPLE_MS))
                 },
             )
             .ok();
@@ -831,6 +874,10 @@ impl State {
 
         let (idle_cpu, idle_power, idle_secs) = phase_cpu_power(&cap.m0, &cap.m1);
         let (load_cpu, load_power, load_secs) = phase_cpu_power(&cap.m1, &m2);
+        // Averaged GPU busy over the phase's many samples; fall back to the
+        // boundary/finish instantaneous read if the sampler didn't run.
+        let idle_gpu = avg_opt(cap.gpu_idle_sum, cap.gpu_idle_n).or(cap.m1.gpu_busy_pct);
+        let load_gpu = avg_opt(cap.gpu_load_sum, cap.gpu_load_n).or(m2.gpu_busy_pct);
         let phases = vec![
             PhaseReport {
                 label: "Phase 1 — idle / live (current desktop)",
@@ -839,7 +886,7 @@ impl State {
                 frame_stats: cap.phase1,
                 compositor_cpu_pct: idle_cpu,
                 package_power_w: idle_power,
-                gpu_busy_pct: cap.m1.gpu_busy_pct,
+                gpu_busy_pct: idle_gpu,
             },
             PhaseReport {
                 label: "Phase 2 — max-fps (forced full-scene composite)",
@@ -848,7 +895,7 @@ impl State {
                 frame_stats: phase2,
                 compositor_cpu_pct: load_cpu,
                 package_power_w: load_power,
-                gpu_busy_pct: m2.gpu_busy_pct,
+                gpu_busy_pct: load_gpu,
             },
         ];
 
@@ -1633,7 +1680,7 @@ fn build_txt(
     s.push_str("    timestamp → DRM scanout), driven by pointer motion. For end-to-end\n");
     s.push_str("    motion-to-photon, add the one-time hardware-tester offset (USB/firmware\n");
     s.push_str("    before libinput + panel pixel-response after scanout).\n");
-    s.push_str("  * Cold-start is captured by a separate relaunch harness (next stage).\n");
+    s.push_str("  * Cold-start (app launch) is a SEPARATE test: Ctrl+Alt+Super+Shift+F11\n    (it's destructive — relaunches the target app — so it's not bundled here).\n");
     s.push_str("  * See docs/PERF_MEASUREMENT.md for methodology and cross-checks.\n");
 
     s
