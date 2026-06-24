@@ -380,9 +380,13 @@ struct OutputFrameStats {
     draw_ms: Stats,
     /// Present latency: buffer submit → scanout.
     present_latency_ms: Stats,
+    /// Dropped frames within active rendering (idle gaps excluded).
     dropped_vblanks: u64,
     drop_events: u64,
     dropped_pct: f64,
+    /// Inter-frame gaps treated as idle (compositor not rendering), excluded from
+    /// smoothness and drop stats.
+    idle_gaps: usize,
     /// Fraction of frames that hit the zero-copy direct-scanout path (vs GPU
     /// composite). Higher is better for latency and power.
     direct_scanout_pct: f64,
@@ -399,7 +403,9 @@ struct OutputFrameStats {
 
 impl OutputFrameStats {
     fn compute(name: String, perf: &OutputPerf) -> OutputFrameStats {
-        let (samples, dropped_vblanks, drop_events, latencies) = perf.snapshot();
+        // Hardware seq-delta drop counts are ignored here: they include idle
+        // vblanks. Drops are recomputed below over active frametimes only.
+        let (samples, _hw_dropped, _hw_drops, latencies) = perf.snapshot();
         let frames = samples.len();
 
         let mut frametimes = Vec::with_capacity(frames.saturating_sub(1));
@@ -433,12 +439,30 @@ impl OutputFrameStats {
             0.0
         };
 
-        let frametime_stats = Stats::of(frametimes.clone());
-        // Jank: frames slower than 1.5× the median frametime (felt stutter).
+        // Separate active rendering from idle. cosmic-comp is damage-driven, so a
+        // capture window usually contains long idle gaps (no damage → no frames).
+        // Counting those as drops / jank / slow frames is wrong, so smoothness and
+        // drops are computed over "active" frametimes only — gaps short enough to
+        // be real frame intervals, not the compositor sitting idle.
+        let frame_interval = frametimes.iter().copied().fold(f64::INFINITY, f64::min);
+        let frame_interval = if frame_interval.is_finite() && frame_interval > 0.0 {
+            frame_interval
+        } else {
+            0.0
+        };
+        let idle_threshold_ms = (frame_interval * 8.0).max(100.0);
+        let active: Vec<f64> = frametimes
+            .iter()
+            .copied()
+            .filter(|&dt| dt <= idle_threshold_ms)
+            .collect();
+        let idle_gaps = frametimes.len() - active.len();
+
+        let frametime_stats = Stats::of(active.clone());
+        // Jank: active frames slower than 1.5× the median (felt stutter).
         let jank_threshold = frametime_stats.p50 * 1.5;
-        let jank_pct = if !frametimes.is_empty() && jank_threshold > 0.0 {
-            frametimes.iter().filter(|&&dt| dt > jank_threshold).count() as f64
-                / frametimes.len() as f64
+        let jank_pct = if !active.is_empty() && jank_threshold > 0.0 {
+            active.iter().filter(|&&dt| dt > jank_threshold).count() as f64 / active.len() as f64
                 * 100.0
         } else {
             0.0
@@ -450,6 +474,13 @@ impl OutputFrameStats {
         };
         let low_01pct_fps = if frametime_stats.p999 > 0.0 {
             1000.0 / frametime_stats.p999
+        } else {
+            0.0
+        };
+        // "Active" fps: the cadence while the compositor IS drawing (1000 / median
+        // active frametime) — compare this to the configured refresh.
+        let active_fps = if frametime_stats.p50 > 0.0 {
+            1000.0 / frametime_stats.p50
         } else {
             0.0
         };
@@ -467,22 +498,23 @@ impl OutputFrameStats {
         } else {
             0.0
         };
-        // "Active" fps: the cadence while the compositor IS drawing (1000 / median
-        // frametime). cosmic-comp is damage-driven — it only renders when
-        // something changes — so `fps` (frames over the whole window) reads far
-        // below refresh whenever the window includes idle time. `active_fps` is
-        // the number to compare against the configured refresh.
-        let active_fps = if frametime_stats.p50 > 0.0 {
-            1000.0 / frametime_stats.p50
-        } else {
-            0.0
-        };
 
-        // Approximate the total vblanks in the window as presented frames plus
-        // skipped vblanks, so the drop percentage is relative to refresh.
-        let total_vblanks = frames as u64 + dropped_vblanks;
-        let dropped_pct = if total_vblanks > 0 {
-            dropped_vblanks as f64 / total_vblanks as f64 * 100.0
+        // Dropped frames within active runs: a frame that landed several vblanks
+        // late, estimated from the active frametimes (idle gaps excluded above).
+        let mut dropped_vblanks: u64 = 0;
+        let mut drop_events: u64 = 0;
+        if frame_interval > 0.0 {
+            for &dt in &active {
+                let skipped = (dt / frame_interval).round() as i64 - 1;
+                if skipped >= 1 {
+                    dropped_vblanks += skipped as u64;
+                    drop_events += 1;
+                }
+            }
+        }
+        let active_intervals = active.len() as u64;
+        let dropped_pct = if active_intervals + dropped_vblanks > 0 {
+            dropped_vblanks as f64 / (active_intervals + dropped_vblanks) as f64 * 100.0
         } else {
             0.0
         };
@@ -509,6 +541,7 @@ impl OutputFrameStats {
             dropped_vblanks,
             drop_events,
             dropped_pct,
+            idle_gaps,
             direct_scanout_pct,
             jank_pct,
             low_1pct_fps,
@@ -1168,11 +1201,12 @@ fn build_json(
             s.push(',');
         }
         s.push_str(&format!(
-            "{{\"output\":\"{}\",\"frames\":{},\"window_secs\":{:.3},\"fps\":{:.3},\"low_1pct_fps\":{:.3},\"low_0_1pct_fps\":{:.3},\"jank_pct\":{:.4},\"direct_scanout_pct\":{:.3},\"dropped_vblanks\":{},\"drop_events\":{},\"dropped_pct\":{:.4},\"frametime_ms\":{},\"render_ms\":{},\"elements_ms\":{},\"draw_ms\":{},\"present_latency_ms\":{},\"input_samples\":{},\"input_latency_ms\":{}}}",
+            "{{\"output\":\"{}\",\"frames\":{},\"window_secs\":{:.3},\"fps\":{:.3},\"active_fps\":{:.3},\"low_1pct_fps\":{:.3},\"low_0_1pct_fps\":{:.3},\"jank_pct\":{:.4},\"direct_scanout_pct\":{:.3},\"dropped_vblanks\":{},\"drop_events\":{},\"dropped_pct\":{:.4},\"idle_gaps\":{},\"frametime_ms\":{},\"render_ms\":{},\"elements_ms\":{},\"draw_ms\":{},\"present_latency_ms\":{},\"input_samples\":{},\"input_latency_ms\":{}}}",
             json_escape(&f.name),
             f.frames,
             f.window_secs,
             f.fps,
+            f.active_fps,
             f.low_1pct_fps,
             f.low_01pct_fps,
             f.jank_pct,
@@ -1180,6 +1214,7 @@ fn build_json(
             f.dropped_vblanks,
             f.drop_events,
             f.dropped_pct,
+            f.idle_gaps,
             f.frametime_ms.to_json(),
             f.render_ms.to_json(),
             f.elements_ms.to_json(),
@@ -1305,8 +1340,8 @@ fn build_txt(
             100.0 - f.direct_scanout_pct,
         ));
         s.push_str(&format!(
-            "    dropped      : {} vblanks across {} stalls ({:.3}% of refresh)\n",
-            f.dropped_vblanks, f.drop_events, f.dropped_pct,
+            "    dropped      : {} vblanks across {} stalls ({:.2}% of active refresh)  [{} idle gaps excluded — damage-driven, not drops]\n",
+            f.dropped_vblanks, f.drop_events, f.dropped_pct, f.idle_gaps,
         ));
         if f.input_samples > 0 {
             s.push_str(&format!(
