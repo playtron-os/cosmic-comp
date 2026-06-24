@@ -1,3 +1,25 @@
+# [1.25.0](https://github.com/playtron-os/cosmic-comp/compare/v1.24.0...v1.25.0) (2026-06-24)
+
+
+### Bug Fixes
+
+* airtight side-panel slide animation (blink, lag, phantom resize) ([c052f79](https://github.com/playtron-os/cosmic-comp/commit/c052f79db6d45e864ad8f2cc42bad2582e765e4e))
+* fix freezing when dragging chat panel ([5ad9949](https://github.com/playtron-os/cosmic-comp/commit/5ad99495b70f2c30ff1d25e92ae0813b82ba21f5))
+* **perf:** require Shift in hotkey chord; avoid TTY/voice conflicts ([bb1de63](https://github.com/playtron-os/cosmic-comp/commit/bb1de639641cc978b5f84ae307c9c2988121f349))
+* revert forced layer arrangement for panel ([e4b351f](https://github.com/playtron-os/cosmic-comp/commit/e4b351f3a63032a1b85263d8283a6087ddc14626))
+
+
+### Features
+
+* add support for xdg toplevel icon protocol and fix easing and duration for chat panel animation ([e935e20](https://github.com/playtron-os/cosmic-comp/commit/e935e20668461b7468dc02460804a6560bf26709))
+* fade+rise default layer transition + auto-size surface pinning ([fa808cd](https://github.com/playtron-os/cosmic-comp/commit/fa808cd8c7133de4db25ba5a3b8baa99c3f79050))
+* implement layer edge resize protocol ([779bc7f](https://github.com/playtron-os/cosmic-comp/commit/779bc7fddbe3c13a89a5d30144def9dcfadde5bb))
+* implement layer surface placement protocol and update smithay ([641d458](https://github.com/playtron-os/cosmic-comp/commit/641d458b08ffe9e5fb15bfc6f06a71eb6d5c4c56))
+* implement layer usable area protocol so clients can know what usable area inside of exclusive zones are ([b668f66](https://github.com/playtron-os/cosmic-comp/commit/b668f667f41ac1e6400615f737609e7dbefe9a38))
+* native exclusive game mode via one.playtron.GameMode ([bf51aa7](https://github.com/playtron-os/cosmic-comp/commit/bf51aa732adfe9a0f2aa2abb6f52c7c46d842c7a))
+* **perf:** completeness metrics, zero-cost armed capture, capture badge ([868061a](https://github.com/playtron-os/cosmic-comp/commit/868061a842462a9b370cf4e3cfa2d02a8d8216a0))
+* **perf:** on-demand UI performance reports via hotkeys ([957afc3](https://github.com/playtron-os/cosmic-comp/commit/957afc38a0e27f0ed6dfbe8ee3608e2ee89a1cca))
+
 # [1.24.0](https://github.com/playtron-os/cosmic-comp/compare/v1.23.0...v1.24.0) (2026-06-16)
 
 
