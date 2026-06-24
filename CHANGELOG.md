@@ -1,3 +1,18 @@
+# [1.26.0](https://github.com/playtron-os/cosmic-comp/compare/v1.25.0...v1.26.0) (2026-06-24)
+
+
+### Bug Fixes
+
+* **perf:** exclude idle gaps from drops/jank/percentiles ([239e51f](https://github.com/playtron-os/cosmic-comp/commit/239e51faa4363d62a3316009e96d4456882976cf))
+* **perf:** honest headroom (frame-production time) + per-phase gpu busy ([9d89a9d](https://github.com/playtron-os/cosmic-comp/commit/9d89a9d6561411357d33a82a1488fdd9002e9156))
+* **perf:** point cold-start note to F11; average gpu_busy over each phase ([63aefd1](https://github.com/playtron-os/cosmic-comp/commit/63aefd1df86d52ab83dfc83fb2c4ed8329d8ec03))
+
+
+### Features
+
+* **perf:** iced capture badge, active-fps metric, cold-start diagnostics ([fdfb289](https://github.com/playtron-os/cosmic-comp/commit/fdfb289b26c0a1b8acd6c728ad8cbef1e9f13c13))
+* **perf:** two-phase F12 capture (idle + forced max-fps) with sectioned report ([d8d05f5](https://github.com/playtron-os/cosmic-comp/commit/d8d05f55cfb51b2ed6b75e12cb80bc2996046186))
+
 # [1.25.0](https://github.com/playtron-os/cosmic-comp/compare/v1.24.0...v1.25.0) (2026-06-24)
 
 
