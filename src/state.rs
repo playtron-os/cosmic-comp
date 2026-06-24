@@ -281,6 +281,7 @@ pub struct Common {
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
     pub loop_health: crate::perf::LoopHealth,
+    pub perf_capture: crate::perf::CaptureState,
 
     pub kiosk_child: Option<Child>,
     pub theme: crate::comp_theme::CompTheme,
@@ -838,6 +839,7 @@ impl State {
                 gesture_state: None,
                 coldstart: Default::default(),
                 loop_health: Default::default(),
+                perf_capture: Default::default(),
 
                 kiosk_child: None,
                 theme: crate::comp_theme::CompTheme::from_current(),

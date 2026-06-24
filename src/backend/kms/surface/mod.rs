@@ -1733,7 +1733,7 @@ impl SurfaceThreadState {
             QueueState::WaitingForEstimatedVBlankAndQueued { .. } => unreachable!(),
         };
 
-        if redraw_needed || self.shell.read().animations_going() {
+        if redraw_needed || crate::perf::is_stressing() || self.shell.read().animations_going() {
             let vblank_frame = tracy_client::Client::running()
                 .unwrap()
                 .non_continuous_frame(self.vblank_frame_name);
@@ -1760,7 +1760,7 @@ impl SurfaceThreadState {
 
         self.frame_callback_seq = self.frame_callback_seq.wrapping_add(1);
 
-        if force || self.shell.read().animations_going() {
+        if force || crate::perf::is_stressing() || self.shell.read().animations_going() {
             self.queue_redraw(false);
         }
         self.send_frame_callbacks();

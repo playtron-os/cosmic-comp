@@ -1311,6 +1311,12 @@ where
                 badge, renderer, output,
             ));
         }
+        // Stress phase: force a full-output re-composite every frame (invisible)
+        // so the compositor renders the whole scene flat-out and the report
+        // measures the maximum sustainable frame rate.
+        if crate::perf::is_stressing() {
+            elements.push(DamageElement::new(output_geo).into());
+        }
     }
 
     let shell = shell.read();

@@ -48,11 +48,14 @@ pub mod coldstart;
 /// between F12 (arm) and the end of the capture window.
 static CAPTURING: AtomicBool = AtomicBool::new(false);
 
-/// Length of an F12-triggered capture window.
-const CAPTURE_WINDOW_SECS: u64 = 8;
+/// Phase 1 (idle/live): measure the desktop as-is. Phase 2 (load): force a
+/// continuous full-scene composite to measure the maximum sustainable fps.
+const PHASE_IDLE_SECS: u64 = 4;
+const PHASE_LOAD_SECS: u64 = 4;
 
-/// Whether a performance capture is currently running. Read on the render and
-/// input hot paths, so kept to a single relaxed load.
+/// Whether a performance capture is currently running (either phase). Gates
+/// frame/input/loop collection. Read on the render and input hot paths, so kept
+/// to a single relaxed load.
 #[inline]
 pub fn is_capturing() -> bool {
     CAPTURING.load(Ordering::Relaxed)
@@ -60,6 +63,71 @@ pub fn is_capturing() -> bool {
 
 fn set_capturing(on: bool) {
     CAPTURING.store(on, Ordering::Relaxed);
+}
+
+/// Whether the capture is in its forced-load phase (phase 2). Gates the
+/// continuous redraw + full-output damage that pushes the compositor to max fps.
+static STRESS: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn is_stressing() -> bool {
+    STRESS.load(Ordering::Relaxed)
+}
+
+fn set_stress(on: bool) {
+    STRESS.store(on, Ordering::Relaxed);
+}
+
+/// Cross-phase capture state, held in `Common` (main thread only). Phase-1 frame
+/// stats are stashed here at the phase boundary, plus CPU/energy marks so the
+/// report can show idle vs load compositor cost.
+#[derive(Default, Debug)]
+pub struct CaptureState {
+    phase1: Vec<OutputFrameStats>,
+    /// CPU/energy mark at capture start (phase-1 begin).
+    m0: Mark,
+    /// CPU/energy mark at the phase boundary (phase-1 end / phase-2 begin).
+    m1: Mark,
+}
+
+#[derive(Default, Clone, Copy, Debug)]
+struct Mark {
+    instant: Option<std::time::Instant>,
+    self_ticks: Option<u64>,
+    energy_uj: Option<u64>,
+}
+
+/// Sample the compositor's CPU ticks + RAPL energy now (cheap `/proc` reads).
+fn take_mark() -> Mark {
+    Mark {
+        instant: Some(std::time::Instant::now()),
+        self_ticks: read_proc_ticks("self"),
+        energy_uj: read_energy_uj(),
+    }
+}
+
+/// Compositor CPU% and package power over the interval between two marks.
+fn phase_cpu_power(a: &Mark, b: &Mark) -> (f64, Option<f64>, f64) {
+    let secs = match (a.instant, b.instant) {
+        (Some(a), Some(b)) => b.duration_since(a).as_secs_f64().max(0.001),
+        _ => 0.001,
+    };
+    let cpu = cpu_pct(a.self_ticks, b.self_ticks, secs);
+    let power = match (a.energy_uj, b.energy_uj) {
+        (Some(a), Some(b)) if b >= a => Some((b - a) as f64 / 1e6 / secs),
+        _ => None,
+    };
+    (cpu, power, secs)
+}
+
+/// One capture phase, ready for the report.
+struct PhaseReport {
+    label: &'static str,
+    note: &'static str,
+    secs: f64,
+    frame_stats: Vec<OutputFrameStats>,
+    compositor_cpu_pct: f64,
+    package_power_w: Option<f64>,
 }
 
 /// How many presented frames to retain per output. Covers an 8 s capture window
@@ -371,9 +439,12 @@ struct OutputFrameStats {
     frames: usize,
     window_secs: f64,
     fps: f64,
-    /// Rate while actually rendering (1000 / median frametime); compare this to
-    /// the configured refresh, not `fps` (which includes idle time).
+    /// Active fps (1000 / median frametime). Because the capture forces a
+    /// continuous full-scene composite, this is the maximum sustainable frame
+    /// rate, capped by the display refresh.
     active_fps: f64,
+    /// Estimated refresh interval (ms) = the fastest observed frametime.
+    refresh_ms: f64,
     frametime_ms: Stats,
     render_ms: Stats,
     elements_ms: Stats,
@@ -533,6 +604,7 @@ impl OutputFrameStats {
             window_secs,
             fps,
             active_fps,
+            refresh_ms: frame_interval,
             frametime_ms: frametime_stats,
             render_ms: Stats::of(render_ms),
             elements_ms: Stats::of(elements_ms),
@@ -575,13 +647,12 @@ struct ProcMem {
 }
 
 /// System-wide CPU / power / thermal metrics for the report.
+/// Shared (one-shot) system metrics. Per-phase compositor CPU + package power
+/// live on each [`PhaseReport`] instead (computed from the phase marks).
 #[derive(Default)]
 struct SystemMetrics {
-    compositor_cpu_pct: f64,
     compositor_threads: usize,
-    package_power_w: Option<f64>,
     battery_power_w: Option<f64>,
-    energy_per_frame_mj: Option<f64>,
     max_temp_c: Option<f64>,
     gpu_busy_pct: Option<f64>,
     cpu_freq_mhz: Option<f64>,
@@ -614,27 +685,91 @@ impl State {
         reveal_path(path, &socket);
     }
 
-    /// Arm a UI performance capture (Ctrl+Alt+Super+Shift+F12). Collection is off
-    /// until this point — so the instrumentation has no steady-state cost. This
-    /// resets the per-output buffers, flips the global `CAPTURING` gate on, shows
-    /// the on-screen capture badge, and schedules [`State::finish_capture`] after
-    /// the window. The report is built (and revealed) when the window ends.
+    /// F12 (Ctrl+Alt+Super+Shift+F12): run a two-phase capture and write a
+    /// sectioned report. Phase 1 measures the desktop as-is (the badge asks you to
+    /// move the mouse so input latency is captured); phase 2 forces a continuous
+    /// full-scene composite to measure the maximum sustainable fps. Collection is
+    /// gated off until here, so there is no steady-state cost.
     pub fn capture_perf_report(&mut self) {
         if is_capturing() {
             tracing::info!("perf: capture already running");
             return;
         }
-        // Reset buffers while the gate is still off (no surface-thread writer).
+        self.perf_reset_buffers();
+        self.common.loop_health.reset();
+        self.common.perf_capture = CaptureState {
+            m0: take_mark(),
+            ..Default::default()
+        };
+        set_capturing(true); // phase 1 (idle) — not stressing yet
+        tracing::info!(
+            "perf: capture started (phase 1 idle {PHASE_IDLE_SECS}s → phase 2 load {PHASE_LOAD_SECS}s)"
+        );
+
+        self.perf_make_badge();
+        self.perf_schedule_render_all();
+        self.common
+            .event_loop_handle
+            .insert_source(
+                Timer::from_duration(Duration::from_secs(PHASE_IDLE_SECS)),
+                |_, _, state| {
+                    state.perf_begin_load_phase();
+                    TimeoutAction::Drop
+                },
+            )
+            .ok();
+    }
+
+    /// Phase boundary: stash the idle stats + mark, reset the buffers, and turn on
+    /// the forced load for phase 2.
+    fn perf_begin_load_phase(&mut self) {
+        if !is_capturing() {
+            return;
+        }
+        self.common.perf_capture.phase1 = self.perf_compute_frame_stats();
+        self.common.perf_capture.m1 = take_mark();
+        self.perf_reset_buffers();
+        self.common.loop_health.reset();
+        set_stress(true); // phase 2 (load)
+        tracing::info!("perf: phase 2 (forced load) started");
+
+        // Re-rasterise the badge for the new phase text, then repaint.
+        if let Some(badge) = self.common.shell.read().perf_badge.as_ref() {
+            badge.force_redraw();
+        }
+        self.perf_schedule_render_all();
+        self.common
+            .event_loop_handle
+            .insert_source(
+                Timer::from_duration(Duration::from_secs(PHASE_LOAD_SECS)),
+                |_, _, state| {
+                    state.finish_capture();
+                    TimeoutAction::Drop
+                },
+            )
+            .ok();
+    }
+
+    fn perf_reset_buffers(&self) {
         if let BackendData::Kms(kms) = &self.backend {
             for (_, perf) in kms.perf_snapshots() {
                 perf.reset();
             }
         }
-        self.common.loop_health.reset();
-        set_capturing(true);
-        tracing::info!("perf: capture started ({CAPTURE_WINDOW_SECS}s window)");
+    }
 
-        // Build the on-screen capture badge and register it on each output.
+    fn perf_compute_frame_stats(&self) -> Vec<OutputFrameStats> {
+        match &self.backend {
+            BackendData::Kms(kms) => kms
+                .perf_snapshots()
+                .into_iter()
+                .map(|(name, perf)| OutputFrameStats::compute(name, &perf))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn perf_make_badge(&mut self) {
         let badge = crate::backend::render::perf_badge::badge(
             self.common.event_loop_handle.clone(),
             self.common.theme.clone(),
@@ -650,52 +785,50 @@ impl State {
             }
         }
         self.common.shell.write().perf_badge = Some(badge);
-
-        // Redraw so the badge appears immediately, then end the window on a timer.
-        self.perf_schedule_render_all();
-        self.common
-            .event_loop_handle
-            .insert_source(
-                Timer::from_duration(Duration::from_secs(CAPTURE_WINDOW_SECS)),
-                |_, _, state| {
-                    state.finish_capture();
-                    TimeoutAction::Drop
-                },
-            )
-            .ok();
     }
 
-    /// End the capture window: stop collection, hide the badge, and write +
-    /// reveal the report on a worker thread (CPU/power sampling needs a window, so
-    /// the compositor never blocks while measuring itself).
+    /// End the capture: stop collection, hide the badge, assemble both phase
+    /// sections, and write + reveal the report on a worker thread.
     fn finish_capture(&mut self) {
         if !is_capturing() {
             return;
         }
         set_capturing(false);
+        set_stress(false);
         self.common.shell.write().perf_badge = None;
-        self.perf_schedule_render_all(); // hide the badge
+        self.perf_schedule_render_all(); // hide the badge + stop forced redraws
 
-        let (backend_label, frame_stats): (&'static str, Vec<OutputFrameStats>) =
-            match &self.backend {
-                BackendData::Kms(kms) => {
-                    let stats = kms
-                        .perf_snapshots()
-                        .into_iter()
-                        .map(|(name, perf)| OutputFrameStats::compute(name, &perf))
-                        .collect();
-                    ("drm/kms", stats)
-                }
-                BackendData::Winit(_) => (
-                    "winit (nested — SYNTHETIC TIMING, NOT AUTHORITATIVE)",
-                    Vec::new(),
-                ),
-                BackendData::X11(_) => (
-                    "x11 (nested — SYNTHETIC TIMING, NOT AUTHORITATIVE)",
-                    Vec::new(),
-                ),
-                BackendData::Unset => ("unset", Vec::new()),
-            };
+        let m2 = take_mark();
+        let phase2 = self.perf_compute_frame_stats();
+        let cap = std::mem::take(&mut self.common.perf_capture);
+
+        let backend_label = match &self.backend {
+            BackendData::Kms(_) => "drm/kms",
+            BackendData::Winit(_) => "winit (nested — SYNTHETIC TIMING, NOT AUTHORITATIVE)",
+            BackendData::X11(_) => "x11 (nested — SYNTHETIC TIMING, NOT AUTHORITATIVE)",
+            BackendData::Unset => "unset",
+        };
+
+        let (idle_cpu, idle_power, idle_secs) = phase_cpu_power(&cap.m0, &cap.m1);
+        let (load_cpu, load_power, load_secs) = phase_cpu_power(&cap.m1, &m2);
+        let phases = vec![
+            PhaseReport {
+                label: "Phase 1 — idle / live (current desktop)",
+                note: "damage-driven: fps = how often content changed (move the mouse for input latency)",
+                secs: idle_secs,
+                frame_stats: cap.phase1,
+                compositor_cpu_pct: idle_cpu,
+                package_power_w: idle_power,
+            },
+            PhaseReport {
+                label: "Phase 2 — max-fps (forced full-scene composite)",
+                note: "compositor rendered flat-out: active fps = max sustainable (capped by refresh)",
+                secs: load_secs,
+                frame_stats: phase2,
+                compositor_cpu_pct: load_cpu,
+                package_power_w: load_power,
+            },
+        ];
 
         let output_modes: Vec<OutputModeInfo> = {
             let shell = self.common.shell.read();
@@ -716,15 +849,15 @@ impl State {
         let socket = self.common.socket.to_string_lossy().into_owned();
         std::thread::Builder::new()
             .name("perf-report".into())
-            .spawn(move || {
-                match write_report(backend_label, output_modes, frame_stats, loop_health) {
+            .spawn(
+                move || match write_report(backend_label, output_modes, phases, loop_health) {
                     Ok(path) => {
                         tracing::info!("UI perf report written to {}", path.display());
                         reveal_path(&path, &socket);
                     }
                     Err(err) => tracing::warn!(?err, "failed to write UI perf report"),
-                }
-            })
+                },
+            )
             .ok();
     }
 
@@ -776,21 +909,20 @@ const USER_HZ: f64 = 100.0;
 fn write_report(
     backend: &str,
     outputs: Vec<OutputModeInfo>,
-    frame_stats: Vec<OutputFrameStats>,
+    phases: Vec<PhaseReport>,
     loop_health: LoopHealthSnapshot,
 ) -> std::io::Result<std::path::PathBuf> {
-    // Sample CPU times + energy counters across a short window to get rates.
+    // Short window for per-app CPU% (the compositor's per-phase CPU comes from the
+    // phase marks instead).
     let ui_pids = scan_ui_pids();
     let cpu0 = sample_cpu(&ui_pids);
-    let energy0 = read_energy_uj();
     let clock = std::time::Instant::now();
     std::thread::sleep(Duration::from_millis(CPU_WINDOW_MS));
     let cpu1 = sample_cpu(&ui_pids);
-    let energy1 = read_energy_uj();
     let dt = clock.elapsed().as_secs_f64().max(0.001);
 
     let mem = build_proc_mem(&ui_pids, &cpu0, &cpu1, dt);
-    let system = build_system(&cpu0, &cpu1, dt, energy0, energy1, &frame_stats);
+    let system = build_system();
 
     let unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -810,7 +942,7 @@ fn write_report(
         version,
         unix_secs,
         &outputs,
-        &frame_stats,
+        &phases,
         &mem,
         &system,
         &loop_health,
@@ -824,7 +956,7 @@ fn write_report(
         version,
         unix_secs,
         &outputs,
-        &frame_stats,
+        &phases,
         &mem,
         &system,
         &loop_health,
@@ -835,10 +967,9 @@ fn write_report(
     Ok(path)
 }
 
-/// A CPU-time snapshot: total ticks (utime+stime) per UI pid, plus the compositor.
+/// A CPU-time snapshot: total ticks (utime+stime) per UI pid.
 struct CpuSample {
     per_pid: HashMap<i32, u64>,
-    compositor: Option<u64>,
 }
 
 fn sample_cpu(pids: &[(i32, String)]) -> CpuSample {
@@ -848,10 +979,7 @@ fn sample_cpu(pids: &[(i32, String)]) -> CpuSample {
             per_pid.insert(*pid, t);
         }
     }
-    CpuSample {
-        per_pid,
-        compositor: read_proc_ticks("self"),
-    }
+    CpuSample { per_pid }
 }
 
 /// utime+stime (clock ticks) from `/proc/<who>/stat`. Parsed after the last ')'
@@ -901,31 +1029,12 @@ fn build_proc_mem(
     out
 }
 
-fn build_system(
-    cpu0: &CpuSample,
-    cpu1: &CpuSample,
-    dt: f64,
-    energy0: Option<u64>,
-    energy1: Option<u64>,
-    frame_stats: &[OutputFrameStats],
-) -> SystemMetrics {
-    let package_power_w = match (energy0, energy1) {
-        (Some(a), Some(b)) if b >= a => Some((b - a) as f64 / 1e6 / dt),
-        _ => None,
-    };
-    let max_fps = frame_stats.iter().map(|f| f.fps).fold(0.0_f64, f64::max);
-    let energy_per_frame_mj = match package_power_w {
-        Some(w) if max_fps > 1.0 => Some(w / max_fps * 1000.0),
-        _ => None,
-    };
+fn build_system() -> SystemMetrics {
     SystemMetrics {
-        compositor_cpu_pct: cpu_pct(cpu0.compositor, cpu1.compositor, dt),
         compositor_threads: std::fs::read_dir("/proc/self/task")
             .map(|d| d.flatten().count())
             .unwrap_or(0),
-        package_power_w,
         battery_power_w: read_battery_power_w(),
-        energy_per_frame_mj,
         max_temp_c: read_max_temp_c(),
         gpu_busy_pct: read_gpu_busy_pct(),
         cpu_freq_mhz: read_cpu_freq_mhz("scaling_cur_freq"),
@@ -1149,6 +1258,33 @@ fn opt_json(v: Option<f64>) -> String {
         .unwrap_or_else(|| "null".into())
 }
 
+fn frame_json(f: &OutputFrameStats) -> String {
+    format!(
+        "{{\"output\":\"{}\",\"frames\":{},\"window_secs\":{:.3},\"fps\":{:.3},\"active_fps\":{:.3},\"refresh_ms\":{:.3},\"low_1pct_fps\":{:.3},\"low_0_1pct_fps\":{:.3},\"jank_pct\":{:.4},\"direct_scanout_pct\":{:.3},\"dropped_vblanks\":{},\"drop_events\":{},\"dropped_pct\":{:.4},\"idle_gaps\":{},\"frametime_ms\":{},\"render_ms\":{},\"elements_ms\":{},\"draw_ms\":{},\"present_latency_ms\":{},\"input_samples\":{},\"input_latency_ms\":{}}}",
+        json_escape(&f.name),
+        f.frames,
+        f.window_secs,
+        f.fps,
+        f.active_fps,
+        f.refresh_ms,
+        f.low_1pct_fps,
+        f.low_01pct_fps,
+        f.jank_pct,
+        f.direct_scanout_pct,
+        f.dropped_vblanks,
+        f.drop_events,
+        f.dropped_pct,
+        f.idle_gaps,
+        f.frametime_ms.to_json(),
+        f.render_ms.to_json(),
+        f.elements_ms.to_json(),
+        f.draw_ms.to_json(),
+        f.present_latency_ms.to_json(),
+        f.input_samples,
+        f.input_latency_ms.to_json(),
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_json(
     backend: &str,
@@ -1157,7 +1293,7 @@ fn build_json(
     version: &str,
     unix_secs: u64,
     outputs: &[OutputModeInfo],
-    frame_stats: &[OutputFrameStats],
+    phases: &[PhaseReport],
     mem: &[ProcMem],
     system: &SystemMetrics,
     loop_health: &LoopHealthSnapshot,
@@ -1195,34 +1331,25 @@ fn build_json(
     }
     s.push_str("],");
 
-    s.push_str("\"frame_stats\":[");
-    for (i, f) in frame_stats.iter().enumerate() {
-        if i > 0 {
+    s.push_str("\"phases\":[");
+    for (pi, ph) in phases.iter().enumerate() {
+        if pi > 0 {
             s.push(',');
         }
         s.push_str(&format!(
-            "{{\"output\":\"{}\",\"frames\":{},\"window_secs\":{:.3},\"fps\":{:.3},\"active_fps\":{:.3},\"low_1pct_fps\":{:.3},\"low_0_1pct_fps\":{:.3},\"jank_pct\":{:.4},\"direct_scanout_pct\":{:.3},\"dropped_vblanks\":{},\"drop_events\":{},\"dropped_pct\":{:.4},\"idle_gaps\":{},\"frametime_ms\":{},\"render_ms\":{},\"elements_ms\":{},\"draw_ms\":{},\"present_latency_ms\":{},\"input_samples\":{},\"input_latency_ms\":{}}}",
-            json_escape(&f.name),
-            f.frames,
-            f.window_secs,
-            f.fps,
-            f.active_fps,
-            f.low_1pct_fps,
-            f.low_01pct_fps,
-            f.jank_pct,
-            f.direct_scanout_pct,
-            f.dropped_vblanks,
-            f.drop_events,
-            f.dropped_pct,
-            f.idle_gaps,
-            f.frametime_ms.to_json(),
-            f.render_ms.to_json(),
-            f.elements_ms.to_json(),
-            f.draw_ms.to_json(),
-            f.present_latency_ms.to_json(),
-            f.input_samples,
-            f.input_latency_ms.to_json(),
+            "{{\"label\":\"{}\",\"secs\":{:.2},\"compositor_cpu_pct\":{:.2},\"package_power_w\":{},\"frame_stats\":[",
+            json_escape(ph.label),
+            ph.secs,
+            ph.compositor_cpu_pct,
+            opt_json(ph.package_power_w),
         ));
+        for (i, f) in ph.frame_stats.iter().enumerate() {
+            if i > 0 {
+                s.push(',');
+            }
+            s.push_str(&frame_json(f));
+        }
+        s.push_str("]}");
     }
     s.push_str("],");
 
@@ -1244,12 +1371,9 @@ fn build_json(
     s.push_str("],");
 
     s.push_str(&format!(
-        "\"system\":{{\"compositor_cpu_pct\":{:.2},\"compositor_threads\":{},\"package_power_w\":{},\"battery_power_w\":{},\"energy_per_frame_mj\":{},\"max_temp_c\":{},\"gpu_busy_pct\":{},\"cpu_freq_mhz\":{},\"cpu_max_freq_mhz\":{}}},",
-        system.compositor_cpu_pct,
+        "\"system\":{{\"compositor_threads\":{},\"battery_power_w\":{},\"max_temp_c\":{},\"gpu_busy_pct\":{},\"cpu_freq_mhz\":{},\"cpu_max_freq_mhz\":{}}},",
         system.compositor_threads,
-        opt_json(system.package_power_w),
         opt_json(system.battery_power_w),
-        opt_json(system.energy_per_frame_mj),
         opt_json(system.max_temp_c),
         opt_json(system.gpu_busy_pct),
         opt_json(system.cpu_freq_mhz),
@@ -1269,6 +1393,68 @@ fn build_json(
     s
 }
 
+/// One output's frame lines for the txt report.
+fn output_frame_txt(s: &mut String, f: &OutputFrameStats) {
+    s.push_str(&format!(
+        "  {} — {:.1} fps active (avg {:.1} over {:.1}s, {} frames)\n",
+        f.name, f.active_fps, f.fps, f.window_secs, f.frames
+    ));
+    s.push_str(&format!(
+        "    fps          : active {:.1}  avg-over-window {:.1}  1%-low {:.1}  0.1%-low {:.1}  jank {:.2}%\n",
+        f.active_fps, f.fps, f.low_1pct_fps, f.low_01pct_fps, f.jank_pct,
+    ));
+    s.push_str(&format!(
+        "    frametime ms : p50 {:.2}  p95 {:.2}  p99 {:.2}  p99.9 {:.2}  max {:.2}  (min {:.2}, mean {:.2})\n",
+        f.frametime_ms.p50,
+        f.frametime_ms.p95,
+        f.frametime_ms.p99,
+        f.frametime_ms.p999,
+        f.frametime_ms.max,
+        f.frametime_ms.min,
+        f.frametime_ms.mean,
+    ));
+    s.push_str(&format!(
+        "    render ms    : total p50 {:.2} (elements {:.2} + draw {:.2})  present-latency p50 {:.2}\n",
+        f.render_ms.p50, f.elements_ms.p50, f.draw_ms.p50, f.present_latency_ms.p50,
+    ));
+    let budget = if f.refresh_ms > 0.0 {
+        f.refresh_ms
+    } else {
+        6.06
+    };
+    let used_pct = f.render_ms.p50 / budget * 100.0;
+    let sustain = if f.render_ms.p50 > 0.0 {
+        (1000.0 / f.render_ms.p50).min(1000.0 / budget)
+    } else {
+        0.0
+    };
+    s.push_str(&format!(
+        "    headroom     : render {:.2}ms uses {:.0}% of the {:.2}ms refresh budget → can sustain ~{:.0} Hz at full load\n",
+        f.render_ms.p50, used_pct, budget, sustain,
+    ));
+    s.push_str(&format!(
+        "    composition  : {:.1}% direct scanout (zero-copy), {:.1}% GPU composite\n",
+        f.direct_scanout_pct,
+        100.0 - f.direct_scanout_pct,
+    ));
+    s.push_str(&format!(
+        "    dropped      : {} vblanks across {} stalls ({:.2}% of active refresh)  [{} idle gaps excluded]\n",
+        f.dropped_vblanks, f.drop_events, f.dropped_pct, f.idle_gaps,
+    ));
+    if f.input_samples > 0 {
+        s.push_str(&format!(
+            "    input→scanout: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}  ({} pointer samples; + HW offset for end-to-end)\n",
+            f.input_latency_ms.p50,
+            f.input_latency_ms.p95,
+            f.input_latency_ms.p99,
+            f.input_latency_ms.max,
+            f.input_samples,
+        ));
+    } else {
+        s.push_str("    input→scanout: (no pointer motion captured this phase)\n");
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_txt(
     backend: &str,
@@ -1277,7 +1463,7 @@ fn build_txt(
     version: &str,
     unix_secs: u64,
     outputs: &[OutputModeInfo],
-    frame_stats: &[OutputFrameStats],
+    phases: &[PhaseReport],
     mem: &[ProcMem],
     system: &SystemMetrics,
     loop_health: &LoopHealthSnapshot,
@@ -1289,7 +1475,10 @@ fn build_txt(
     s.push_str(&format!("hostname:     {hostname}\n"));
     s.push_str(&format!("kernel:       {kernel}\n"));
     s.push_str(&format!("compositor:   {version}\n"));
-    s.push_str(&format!("backend:      {backend}\n\n"));
+    s.push_str(&format!("backend:      {backend}\n"));
+    s.push_str(
+        "mode:         phased — Phase 1 measures the desktop as-is (move the mouse for\n              input latency); Phase 2 forces a full-scene composite for max fps\n\n",
+    );
 
     s.push_str("Outputs\n-------\n");
     for o in outputs {
@@ -1303,85 +1492,59 @@ fn build_txt(
     }
     s.push('\n');
 
-    s.push_str("Frame rate / frametime / dropped frames  [ground truth: DRM vblank timestamps + sequence numbers]\n");
-    s.push_str("----------------------------------------\n");
-    if frame_stats.is_empty() {
-        s.push_str("  (no per-output frame data — non-DRM backend or no frames captured)\n");
-    }
-    for f in frame_stats {
-        s.push_str(&format!(
-            "  {} — {:.1} fps active (avg {:.1} over {:.1}s, {} frames)\n",
-            f.name, f.active_fps, f.fps, f.window_secs, f.frames
-        ));
-        s.push_str(&format!(
-            "    fps          : active {:.1}  avg-over-window {:.1}  1%-low {:.1}  0.1%-low {:.1}  jank {:.2}%\n",
-            f.active_fps, f.fps, f.low_1pct_fps, f.low_01pct_fps, f.jank_pct,
-        ));
-        s.push_str(
-            "                   (active = 1000/median frametime — compare to refresh;\n                    avg counts idle time, so it's low unless rendering continuously)\n",
-        );
-        s.push_str(&format!(
-            "    frametime ms : p50 {:.2}  p95 {:.2}  p99 {:.2}  p99.9 {:.2}  max {:.2}  (min {:.2}, mean {:.2})\n",
-            f.frametime_ms.p50,
-            f.frametime_ms.p95,
-            f.frametime_ms.p99,
-            f.frametime_ms.p999,
-            f.frametime_ms.max,
-            f.frametime_ms.min,
-            f.frametime_ms.mean,
-        ));
-        s.push_str(&format!(
-            "    render ms    : total p50 {:.2} (elements {:.2} + draw {:.2})  present-latency p50 {:.2}\n",
-            f.render_ms.p50, f.elements_ms.p50, f.draw_ms.p50, f.present_latency_ms.p50,
-        ));
-        s.push_str(&format!(
-            "    composition  : {:.1}% direct scanout (zero-copy), {:.1}% GPU composite\n",
-            f.direct_scanout_pct,
-            100.0 - f.direct_scanout_pct,
-        ));
-        s.push_str(&format!(
-            "    dropped      : {} vblanks across {} stalls ({:.2}% of active refresh)  [{} idle gaps excluded — damage-driven, not drops]\n",
-            f.dropped_vblanks, f.drop_events, f.dropped_pct, f.idle_gaps,
-        ));
-        if f.input_samples > 0 {
-            s.push_str(&format!(
-                "    input→scanout: p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}  ({} pointer samples; + HW offset for end-to-end)\n",
-                f.input_latency_ms.p50,
-                f.input_latency_ms.p95,
-                f.input_latency_ms.p99,
-                f.input_latency_ms.max,
-                f.input_samples,
-            ));
-        } else {
-            s.push_str("    input→scanout: (no pointer motion captured this window)\n");
-        }
-    }
-    s.push('\n');
-
-    // System: CPU / power / thermal.
     let fmt_opt = |v: Option<f64>, unit: &str| {
         v.map(|x| format!("{x:.1}{unit}"))
             .unwrap_or_else(|| "n/a".into())
     };
-    s.push_str("System  [CPU over a 0.5s window; power/thermal best-effort from sysfs]\n");
+
+    // Per-phase frame + compositor-cost sections.
+    for ph in phases {
+        s.push_str(&format!("{}  ({:.1}s)\n", ph.label, ph.secs));
+        s.push_str(&"-".repeat(ph.label.chars().count()));
+        s.push('\n');
+        s.push_str(&format!("  {}\n", ph.note));
+        let max_active = ph
+            .frame_stats
+            .iter()
+            .map(|f| f.active_fps)
+            .fold(0.0_f64, f64::max);
+        let energy_per_frame = match ph.package_power_w {
+            Some(w) if max_active > 1.0 => Some(w / max_active * 1000.0),
+            _ => None,
+        };
+        s.push_str(&format!(
+            "  compositor CPU {:.1}%   package power {}   energy/frame {}\n",
+            ph.compositor_cpu_pct,
+            fmt_opt(ph.package_power_w, " W"),
+            fmt_opt(energy_per_frame, " mJ"),
+        ));
+        if ph.frame_stats.is_empty() {
+            s.push_str("  (no per-output frame data — non-DRM backend or no frames)\n");
+        }
+        for f in &ph.frame_stats {
+            output_frame_txt(&mut s, f);
+        }
+        s.push('\n');
+    }
+
+    // Shared system snapshot (thermal / freq / battery / threads).
+    s.push_str("System  [shared snapshot; power/thermal best-effort from sysfs]\n");
     s.push_str("------\n");
     s.push_str(&format!(
-        "  compositor CPU : {:.1}%  ({} threads)\n",
-        system.compositor_cpu_pct, system.compositor_threads,
+        "  compositor threads : {}\n",
+        system.compositor_threads
     ));
     s.push_str(&format!(
-        "  package power  : {}   battery draw: {}   energy/frame: {}\n",
-        fmt_opt(system.package_power_w, " W"),
+        "  battery draw       : {}\n",
         fmt_opt(system.battery_power_w, " W"),
-        fmt_opt(system.energy_per_frame_mj, " mJ"),
     ));
     s.push_str(&format!(
-        "  thermal        : max {}   gpu busy: {}\n",
+        "  thermal            : max {}   gpu busy: {}\n",
         fmt_opt(system.max_temp_c, " °C"),
         fmt_opt(system.gpu_busy_pct, "%"),
     ));
     s.push_str(&format!(
-        "  cpu freq       : {} of {} (throttling if current ≪ max under load)\n",
+        "  cpu freq           : {} of {} (throttling if current ≪ max under load)\n",
         fmt_opt(system.cpu_freq_mhz, " MHz"),
         fmt_opt(system.cpu_max_freq_mhz, " MHz"),
     ));

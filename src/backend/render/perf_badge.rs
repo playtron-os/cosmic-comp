@@ -44,6 +44,13 @@ impl Program for PerfBadgeProgram {
         let surface = theme.surface_color();
         let divider = theme.divider_color();
         let record = Color::from_rgb(0.93, 0.22, 0.22);
+        // Phase 1 asks the user to move the mouse (so input latency is captured);
+        // phase 2 is the forced max-fps test.
+        let label = if crate::perf::is_stressing() {
+            "Max-fps test…"
+        } else {
+            "Capturing — move your mouse"
+        };
 
         // Red record dot.
         let dot = Space::new()
@@ -63,11 +70,7 @@ impl Program for PerfBadgeProgram {
         row![
             dot,
             Space::new().width(10.0).height(Length::Shrink),
-            styled_text(
-                "Capturing performance…",
-                theme.text_styles().body(),
-                text_color,
-            ),
+            styled_text(label, theme.text_styles().body(), text_color),
         ]
         .align_y(Alignment::Center)
         .apply(container)
