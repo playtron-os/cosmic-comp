@@ -83,6 +83,19 @@ fn set_stress(on: bool) {
     STRESS.store(on, Ordering::Relaxed);
 }
 
+/// Whether the cold-start (F11) benchmark is running. Used to show the badge
+/// during cold-start too (it doesn't go through the F12 capture path).
+static COLDSTART: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+pub fn is_coldstart() -> bool {
+    COLDSTART.load(Ordering::Relaxed)
+}
+
+pub(crate) fn set_coldstart(on: bool) {
+    COLDSTART.store(on, Ordering::Relaxed);
+}
+
 /// Cross-phase capture state, held in `Common` (main thread only). Phase-1 frame
 /// stats are stashed here at the phase boundary, plus CPU/energy marks so the
 /// report can show idle vs load compositor cost.
@@ -830,7 +843,7 @@ impl State {
         }
     }
 
-    fn perf_make_badge(&mut self) {
+    pub(crate) fn perf_make_badge(&mut self) {
         let badge = crate::backend::render::perf_badge::badge(
             self.common.event_loop_handle.clone(),
             self.common.theme.clone(),
@@ -930,7 +943,7 @@ impl State {
             .ok();
     }
 
-    fn perf_schedule_render_all(&mut self) {
+    pub(crate) fn perf_schedule_render_all(&mut self) {
         let outputs: Vec<_> = self.common.shell.read().outputs().cloned().collect();
         for output in outputs {
             self.backend.schedule_render(&output);
