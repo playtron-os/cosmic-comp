@@ -115,6 +115,7 @@ impl State {
             &self.common.display_handle,
             None,
             std::iter::empty::<(OsString, OsString)>(),
+            std::iter::empty::<String>(),
             true,
             Stdio::null(),
             Stdio::null(),
@@ -575,16 +576,15 @@ impl Common {
                                         .filter(|(i, _)| *i != set.active),
                                 )
                                 .flat_map(|(_, workspace)| {
+                                    let focus_last =
+                                        workspace.focus_stack.get(seat).last().cloned();
                                     workspace
-                                        .get_fullscreen()
+                                        .get_fullscreen_surfaces()
                                         .filter(|f| {
-                                            workspace
-                                                .focus_stack
-                                                .get(seat)
-                                                .last()
-                                                .is_some_and(|t| &t == f)
+                                            focus_last.as_ref().is_some_and(|t| t == &f.surface)
                                         })
-                                        .cloned()
+                                        .map(|f| f.surface.clone())
+                                        .collect::<Vec<_>>()
                                         .into_iter()
                                         .chain(workspace.mapped().flat_map(|mapped| {
                                             let active = mapped.active_window();
@@ -603,15 +603,14 @@ impl Common {
                                         }))
                                         .chain(
                                             workspace
-                                                .get_fullscreen()
+                                                .get_fullscreen_surfaces()
                                                 .filter(|f| {
-                                                    workspace
-                                                        .focus_stack
-                                                        .get(seat)
-                                                        .last()
-                                                        .is_none_or(|t| &t != f)
+                                                    focus_last
+                                                        .as_ref()
+                                                        .is_none_or(|t| t != &f.surface)
                                                 })
-                                                .cloned()
+                                                .map(|f| f.surface.clone())
+                                                .collect::<Vec<_>>()
                                                 .into_iter(),
                                         )
                                         .chain(
@@ -689,7 +688,7 @@ impl Common {
                             ),
                             (
                                 "Gdk/WindowScalingFactor".into(),
-                                (new_scale.round() as i32).into(),
+                                (new_scale.floor() as i32).into(),
                             ),
                             (
                                 "Gtk/CursorThemeSize".into(),
@@ -809,14 +808,18 @@ impl XwmHandler for State {
                 *context,
             );
         }
-
-        let surface = CosmicSurface::from(window);
-        shell.pending_windows.push(PendingWindow {
-            surface,
-            seat,
-            fullscreen: None,
-            maximized: false,
-        });
+        if !shell.pending_windows.iter().any(|w| w.surface == window) {
+            let fullscreen = window.is_fullscreen().then(|| seat.active_output());
+            let maximized = window.is_maximized();
+            let surface = CosmicSurface::from(window);
+            shell.pending_windows.push(PendingWindow {
+                surface,
+                seat,
+                fullscreen,
+                maximized,
+                sticky: false,
+            })
+        }
     }
 
     fn map_window_notify(&mut self, _xwm: XwmId, surface: X11Surface) {
@@ -890,6 +893,10 @@ impl XwmHandler for State {
             let seat = shell.seats.last_active().clone();
             if let Some(pending) =
                 shell.unmap_surface(&window, &seat, &mut self.common.toplevel_info_state)
+                && !shell
+                    .pending_windows
+                    .iter()
+                    .any(|w| w.surface == pending.surface)
             {
                 shell.pending_windows.push(pending);
             }
@@ -927,7 +934,11 @@ impl XwmHandler for State {
         // Exception: X11 transient children can also reposition themselves (to follow parent).
         let mut shell = self.common.shell.write();
 
-        // TODO: Fullscreen
+        if window.is_fullscreen() {
+            let _ = window.configure(None);
+            return;
+        }
+
         if let Some(mapped) = shell
             .element_for_surface(&window)
             .filter(|mapped| !mapped.is_minimized())
@@ -1215,6 +1226,28 @@ impl XwmHandler for State {
             .find(|pending| pending.surface.x11_surface() == Some(&window))
         {
             pending.fullscreen.take();
+        }
+    }
+
+    fn stick_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let mut shell = self.common.shell.write();
+        if let Some(pending) = shell
+            .pending_windows
+            .iter_mut()
+            .find(|pending| pending.surface.x11_surface() == Some(&window))
+        {
+            pending.sticky = true;
+        }
+    }
+
+    fn unstick_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        let mut shell = self.common.shell.write();
+        if let Some(pending) = shell
+            .pending_windows
+            .iter_mut()
+            .find(|pending| pending.surface.x11_surface() == Some(&window))
+        {
+            pending.sticky = false;
         }
     }
 

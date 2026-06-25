@@ -432,6 +432,7 @@ impl FloatingLayout {
         for mapped in self
             .space
             .elements()
+            .filter(|w| w.alive())
             .cloned()
             .collect::<Vec<_>>()
             .into_iter()
@@ -446,7 +447,10 @@ impl FloatingLayout {
                     None,
                 );
             } else {
-                let geometry = self.space.element_geometry(&mapped).unwrap().to_f64();
+                let Some(geometry) = self.space.element_geometry(&mapped) else {
+                    continue;
+                };
+                let geometry = geometry.to_f64();
                 let new_loc = (
                     ((geometry.loc.x - old_output_geometry.loc.x).max(0.)
                         / old_output_geometry.size.w
@@ -998,11 +1002,18 @@ impl FloatingLayout {
 
         mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
-        if mapped.floating_tiled.lock().unwrap().take().is_some()
+        // If this window was snapped to a corner before being maximized, record both the
+        // pre-snap geometry and the snapped corner so unmaximize can restore the snap.
+        let snapped = mapped.floating_tiled.lock().unwrap().take();
+        if let Some(snapped) = snapped
             && let Some(state) = mapped.maximized_state.lock().unwrap().as_mut()
-            && let Some(real_old_geo) = *mapped.last_geometry.lock().unwrap()
         {
-            state.original_geometry = real_old_geo;
+            if let Some(real_old_geo) = *mapped.last_geometry.lock().unwrap() {
+                state.original_geometry = real_old_geo;
+            }
+            if state.original_snapped.is_none() {
+                state.original_snapped = Some(snapped);
+            }
         };
         self.space
             .map_element(mapped, target_geometry.loc.as_logical(), true);
@@ -1253,6 +1264,10 @@ impl FloatingLayout {
         from: Rectangle<i32, Local>,
         position: Point<i32, Local>,
     ) {
+        if !mapped.alive() {
+            return;
+        }
+
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let geometry = layers.non_exclusive_zone().as_local();
@@ -1322,6 +1337,8 @@ impl FloatingLayout {
                 && let Some(pending_size) = window.pending_size()
             {
                 mapped_geometry.size = pending_size.as_local();
+            } else if let Some(server_size) = window.last_server_size() {
+                mapped_geometry.size = server_size.as_local();
             }
             *window.last_geometry.lock().unwrap() = Some(mapped_geometry);
         }
@@ -1472,9 +1489,13 @@ impl FloatingLayout {
             .and_then(|e| e.active_window().wl_surface().map(|s| s.id().to_string()))
     }
 
-    pub fn popup_element_under(&self, location: Point<f64, Local>) -> Option<KeyboardFocusTarget> {
+    pub fn popup_element_under(
+        &self,
+        location: Point<f64, Local>,
+        seat: &Seat<State>,
+    ) -> Option<KeyboardFocusTarget> {
         // First check popups for embedded windows - they render on top of their embedded position
-        if let Some(target) = self.embedded_popup_element_under(location) {
+        if let Some(target) = self.embedded_popup_element_under(location, seat) {
             return Some(target);
         }
 
@@ -1500,6 +1521,7 @@ impl FloatingLayout {
                 if e.focus_under(
                     point.as_logical(),
                     WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 )
                 .is_some()
                 {
@@ -1518,6 +1540,7 @@ impl FloatingLayout {
     fn embedded_popup_element_under(
         &self,
         location: Point<f64, Local>,
+        seat: &Seat<State>,
     ) -> Option<KeyboardFocusTarget> {
         // Find the topmost non-embedded window at this location for z-order checking
         let topmost_surface_id = self.topmost_parent_surface_id_at(location);
@@ -1569,6 +1592,7 @@ impl FloatingLayout {
                     .focus_under(
                         point.as_logical(),
                         WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                        seat,
                     )
                     .is_some()
                 {
@@ -1583,6 +1607,7 @@ impl FloatingLayout {
     pub fn toplevel_element_under(
         &self,
         location: Point<f64, Local>,
+        seat: &Seat<State>,
     ) -> Option<KeyboardFocusTarget> {
         // First check embedded windows - they render on top and should get keyboard focus priority
         if let Some((elem, render_location)) = self.embedded_element_under(location) {
@@ -1595,6 +1620,7 @@ impl FloatingLayout {
                 .focus_under(
                     point.as_logical(),
                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 )
                 .is_some()
             {
@@ -1624,6 +1650,7 @@ impl FloatingLayout {
                 if e.focus_under(
                     point.as_logical(),
                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 )
                 .is_some()
                 {
@@ -1637,9 +1664,10 @@ impl FloatingLayout {
     pub fn popup_surface_under(
         &self,
         location: Point<f64, Local>,
+        seat: &Seat<State>,
     ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
         // First check popups for embedded windows
-        if let Some(result) = self.embedded_popup_surface_under(location) {
+        if let Some(result) = self.embedded_popup_surface_under(location, seat) {
             return Some(result);
         }
 
@@ -1665,6 +1693,7 @@ impl FloatingLayout {
                 e.focus_under(
                     point.as_logical(),
                     WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 )
                 .map(|(surface, surface_offset)| {
                     (surface, render_location + surface_offset.as_local())
@@ -1679,6 +1708,7 @@ impl FloatingLayout {
     fn embedded_popup_surface_under(
         &self,
         location: Point<f64, Local>,
+        seat: &Seat<State>,
     ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
         // Find the topmost non-embedded window at this location for z-order checking
         let topmost_surface_id = self.topmost_parent_surface_id_at(location);
@@ -1733,6 +1763,7 @@ impl FloatingLayout {
                 if let Some((surface, surface_offset)) = embedded_elem.focus_under(
                     point.as_logical(),
                     WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 ) {
                     return Some((surface, render_location_f64 + surface_offset.as_local()));
                 }
@@ -1745,6 +1776,7 @@ impl FloatingLayout {
     pub fn toplevel_surface_under(
         &self,
         location: Point<f64, Local>,
+        seat: &Seat<State>,
     ) -> Option<(PointerFocusTarget, Point<f64, Local>)> {
         // First check embedded windows - they render on top and should get priority
         if let Some((elem, render_location)) = self.embedded_element_under(location) {
@@ -1756,6 +1788,7 @@ impl FloatingLayout {
             if let Some((surface, surface_offset)) = elem.focus_under(
                 point.as_logical(),
                 WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                seat,
             ) {
                 return Some((surface, render_location_local + surface_offset.as_local()));
             }
@@ -1783,6 +1816,7 @@ impl FloatingLayout {
                 e.focus_under(
                     point.as_logical(),
                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                    seat,
                 )
                 .map(|(surface, surface_offset)| {
                     (surface, render_location + surface_offset.as_local())
@@ -2135,6 +2169,7 @@ impl FloatingLayout {
                         *maximized_state = Some(MaximizedState {
                             original_geometry: start_rectangle,
                             original_layer: layer,
+                            original_snapped: None,
                         });
                         std::mem::drop(maximized_state);
 
@@ -2216,7 +2251,7 @@ impl FloatingLayout {
         let Some(focused) = (match target {
             KeyboardFocusTarget::Popup(popup) => {
                 let Some(toplevel_surface) = (match popup {
-                    PopupKind::Xdg(xdg) => get_popup_toplevel(&xdg),
+                    PopupKind::Xdg(_) => get_popup_toplevel(&popup),
                     PopupKind::InputMethod(_) => unreachable!(),
                 }) else {
                     return MoveResult::None;
@@ -3144,7 +3179,7 @@ impl FloatingLayout {
         alpha: f32,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+        R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
         CosmicMappedRenderElement<R>: RenderElement<R>,
         CosmicWindowRenderElement<R>: RenderElement<R>,
@@ -3295,7 +3330,7 @@ impl FloatingLayout {
         attached_orb_state: Option<&VoiceOrbState>,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+        R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
         CosmicMappedRenderElement<R>: RenderElement<R>,
         CosmicWindowRenderElement<R>: RenderElement<R>,
@@ -4201,6 +4236,23 @@ impl FloatingLayout {
         }
 
         elements
+    }
+
+    pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
+        *mapped.floating_tiled.lock().unwrap() = Some(*corners);
+        mapped.set_tiled(true);
+        let snapped_geo = self.snapped_geometry(corners);
+        let output = self.space.outputs().next().unwrap();
+        mapped.set_geometry(snapped_geo.to_global(output));
+        mapped.configure();
+    }
+
+    fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
+        let output = self.space.outputs().next().unwrap().clone();
+        let layers = layer_map_for_output(&output);
+        let non_exclusive = layers.non_exclusive_zone();
+        std::mem::drop(layers);
+        corners.relative_geometry(non_exclusive, self.gaps())
     }
 
     fn gaps(&self) -> (i32, i32) {

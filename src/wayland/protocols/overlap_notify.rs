@@ -80,6 +80,8 @@ impl OverlapNotifyState {
     pub fn refresh<D, W>(state: &mut D)
     where
         D: GlobalDispatch<ZcosmicOverlapNotifyV1, OverlapNotifyGlobalData>
+            + GlobalDispatch<ExtForeignToplevelListV1, ForeignToplevelListGlobalData>
+            + Dispatch<ExtForeignToplevelHandleV1, ForeignToplevelHandle>
             + Dispatch<ZcosmicOverlapNotifyV1, ()>
             + Dispatch<ZcosmicOverlapNotificationV1, ()>
             + OverlapNotifyHandler

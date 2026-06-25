@@ -31,7 +31,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::Resource,
-    utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
+    utils::{IsAlive, Logical, Point, Rectangle, Size},
     wayland::seat::WaylandFocus,
 };
 use tracing::debug;
@@ -420,23 +420,16 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
-        handle.down(data, None, event, seq)
+        handle.down(data, None, event)
     }
 
-    fn up(
-        &mut self,
-        data: &mut State,
-        handle: &mut TouchInnerHandle<'_, State>,
-        event: &UpEvent,
-        seq: Serial,
-    ) {
+    fn up(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, event: &UpEvent) {
         if event.slot == <Self as TouchGrab<State>>::start_data(self).slot {
             handle.unset_grab(self, data);
         }
 
-        handle.up(data, event, seq);
+        handle.up(data, event);
     }
 
     fn motion(
@@ -445,7 +438,6 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
         if event.slot == <Self as TouchGrab<State>>::start_data(self).slot {
             match self.update_location(event.location.as_global()) {
@@ -482,14 +474,14 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
             }
         }
 
-        handle.motion(data, None, event, seq);
+        handle.motion(data, None, event);
     }
 
-    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
-        handle.frame(data, seq)
+    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
+        handle.frame(data)
     }
 
-    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, _seq: Serial) {
+    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
         handle.unset_grab(self, data);
     }
 
@@ -498,9 +490,8 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq)
+        handle.shape(data, event)
     }
 
     fn orientation(
@@ -508,9 +499,8 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq)
+        handle.orientation(data, event)
     }
 
     fn start_data(&self) -> &TouchGrabStartData<State> {
@@ -662,7 +652,7 @@ impl ResizeSurfaceGrab {
                             );
                         }
                         WindowSurface::X11(surface) => {
-                            let mut geometry = surface.geometry();
+                            let mut geometry = surface.last_configure();
                             geometry.loc += (location - new_location).as_logical();
                             let _ = surface.configure(geometry);
                         }

@@ -46,8 +46,8 @@ pub mod voice;
 use crate::toolkit_config::{ToolkitConfig, icon_theme_default, icon_theme_set_default};
 pub use cosmic_comp_config::EdidProduct;
 use cosmic_comp_config::{
-    AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior, XkbConfig, XwaylandDescaling,
-    XwaylandEavesdropping, ZoomConfig,
+    ActivationPolicy, AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior, XkbConfig,
+    XwaylandDescaling, XwaylandEavesdropping, ZoomConfig,
     input::{DeviceState as InputDeviceState, InputConfig, TouchpadOverride},
     output::comp::{
         OutputConfig, OutputInfo, OutputState, OutputsConfig, TransformDef, load_outputs,
@@ -492,8 +492,7 @@ impl Config {
                 .collect::<Vec<_>>();
 
             let mut found_outputs = Vec::new();
-            for (name, output_config) in infos.iter().map(|o| &o.connector).zip(configs.into_iter())
-            {
+            for (name, output_config) in infos.iter().map(|o| &o.connector).zip(configs) {
                 let output = outputs.iter().find(|o| &o.name() == name).unwrap().clone();
                 let enabled = output_config.enabled.clone();
                 *output
@@ -517,11 +516,7 @@ impl Config {
             ) {
                 warn!(?err, "Failed to set new config.");
                 found_outputs.clear();
-                for (output, output_config) in outputs
-                    .clone()
-                    .into_iter()
-                    .zip(known_good_configs.into_iter())
-                {
+                for (output, output_config) in outputs.clone().into_iter().zip(known_good_configs) {
                     let enabled = output_config.enabled.clone();
                     *output
                         .user_data()
@@ -1039,6 +1034,31 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     for output in state.common.shell.read().outputs() {
                         state.backend.schedule_render(output);
                     }
+                }
+            }
+            "cursor_hide_timeout" => {
+                let new = get_config::<Option<u32>>(&config, "cursor_hide_timeout");
+                if new != state.common.config.cosmic_conf.cursor_hide_timeout {
+                    state.common.config.cosmic_conf.cursor_hide_timeout = new;
+                    let seats: Vec<_> = state.common.shell.read().seats.iter().cloned().collect();
+                    let mut needs_render = false;
+                    for seat in seats {
+                        needs_render |=
+                            crate::backend::render::cursor::notify_cursor_activity(state, &seat);
+                    }
+                    if needs_render {
+                        let outputs: Vec<_> =
+                            state.common.shell.read().outputs().cloned().collect();
+                        for output in outputs {
+                            state.backend.schedule_render(&output);
+                        }
+                    }
+                }
+            }
+            "activation_policy" => {
+                let new = get_config::<ActivationPolicy>(&config, "activation_policy");
+                if new != state.common.config.cosmic_conf.activation_policy {
+                    state.common.config.cosmic_conf.activation_policy = new;
                 }
             }
             _ => {}

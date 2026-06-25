@@ -5,15 +5,19 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use cgmath::{Matrix3, Vector2};
-use smithay::backend::renderer::{
-    ImportAll, ImportMem, Renderer,
-    element::{
-        Element, Id, Kind, RenderElement, UnderlyingStorage, surface::WaylandSurfaceRenderElement,
-    },
-    gles::{GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformValue},
-    utils::{CommitCounter, DamageSet, OpaqueRegions},
-};
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::{
+    backend::renderer::{
+        ImportAll, ImportMem, Renderer,
+        element::{
+            Element, Id, Kind, RenderElement, UnderlyingStorage,
+            surface::WaylandSurfaceRenderElement,
+        },
+        gles::{GlesFrame, GlesRenderer, GlesTexProgram, Uniform, UniformValue},
+        utils::{CommitCounter, DamageSet, OpaqueRegions},
+    },
+    utils::user_data::UserDataMap,
+};
 
 use crate::backend::render::element::AsGlowRenderer;
 
@@ -285,12 +289,12 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
-        _cache: Option<&smithay::utils::user_data::UserDataMap>,
+        cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
         BorrowMut::<GlesFrame>::borrow_mut(<R as AsGlowRenderer>::glow_frame_mut(frame))
             .override_default_tex_program(self.program.clone(), self.uniforms.clone());
         self.inner
-            .draw(frame, src, dst, damage, opaque_regions, None)?;
+            .draw(frame, src, dst, damage, opaque_regions, cache)?;
         BorrowMut::<GlesFrame>::borrow_mut(<R as AsGlowRenderer>::glow_frame_mut(frame))
             .clear_tex_program_override();
         Ok(())

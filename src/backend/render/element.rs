@@ -1,30 +1,35 @@
 use crate::shell::{CosmicMappedRenderElement, WorkspaceRenderElement};
 
-use smithay::backend::renderer::{element::texture::TextureRenderElement, gles::GlesTexture};
+use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::{
-    backend::renderer::{
-        ImportAll, ImportMem, Renderer,
-        element::{
-            Element, Id, Kind, RenderElement, UnderlyingStorage,
-            memory::MemoryRenderBufferRenderElement,
-            surface::WaylandSurfaceRenderElement,
-            utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
+    backend::{
+        allocator::dmabuf::Dmabuf,
+        renderer::{
+            Bind, Blit, ExportMem, ImportAll, ImportMem, Offscreen, Renderer,
+            element::{
+                Element, Id, Kind, RenderElement, UnderlyingStorage,
+                memory::MemoryRenderBufferRenderElement,
+                surface::WaylandSurfaceRenderElement,
+                utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
+            },
+            gles::{
+                GlesError, GlesRenderbuffer, GlesTexture,
+                element::{PixelShaderElement, TextureShaderElement},
+            },
+            glow::{GlowFrame, GlowRenderer},
+            utils::{CommitCounter, DamageSet, OpaqueRegions},
         },
-        gles::{
-            GlesError,
-            element::{PixelShaderElement, TextureShaderElement},
-        },
-        glow::{GlowFrame, GlowRenderer},
-        utils::{CommitCounter, DamageSet, OpaqueRegions},
     },
-    utils::{Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale},
+    utils::{
+        Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, user_data::UserDataMap,
+    },
 };
 
 use super::{GlMultiRenderer, cursor::CursorRenderElement};
 
 pub enum CosmicElement<R>
 where
-    R: AsGlowRenderer + Renderer + ImportAll + ImportMem,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -49,7 +54,7 @@ where
 
 impl<R> Element for CosmicElement<R>
 where
-    R: AsGlowRenderer + Renderer + ImportAll + ImportMem,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -216,11 +221,27 @@ where
             CosmicElement::Egui(elem) => elem.kind(),
         }
     }
+
+    fn is_framebuffer_effect(&self) -> bool {
+        match self {
+            CosmicElement::Workspace(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::Cursor(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::Dnd(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::MoveGrab(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::AdditionalDamage(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::Postprocess(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::Zoom(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::BlurBackground(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::VoiceOrb(elem) => elem.is_framebuffer_effect(),
+            #[cfg(feature = "debug")]
+            CosmicElement::Egui(elem) => elem.is_framebuffer_effect(),
+        }
+    }
 }
 
 impl<R> RenderElement<R> for CosmicElement<R>
 where
-    R: AsGlowRenderer + Renderer + ImportAll + ImportMem,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     R::Error: FromGlesError,
     CosmicMappedRenderElement<R>: RenderElement<R>,
@@ -232,19 +253,21 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
-        _cache: Option<&smithay::utils::user_data::UserDataMap>,
+        cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
         match self {
             CosmicElement::Workspace(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions, None)
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
-            CosmicElement::Cursor(elem) => elem.draw(frame, src, dst, damage, opaque_regions, None),
-            CosmicElement::Dnd(elem) => elem.draw(frame, src, dst, damage, opaque_regions, None),
+            CosmicElement::Cursor(elem) => {
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
+            }
+            CosmicElement::Dnd(elem) => elem.draw(frame, src, dst, damage, opaque_regions, cache),
             CosmicElement::MoveGrab(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions, None)
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
             CosmicElement::AdditionalDamage(elem) => {
-                RenderElement::<R>::draw(elem, frame, src, dst, damage, opaque_regions, None)
+                RenderElement::<R>::draw(elem, frame, src, dst, damage, opaque_regions, cache)
             }
             CosmicElement::Postprocess(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
@@ -255,11 +278,11 @@ where
                     dst,
                     damage,
                     opaque_regions,
-                    None,
+                    cache,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
-            CosmicElement::Zoom(elem) => elem.draw(frame, src, dst, damage, opaque_regions, None),
+            CosmicElement::Zoom(elem) => elem.draw(frame, src, dst, damage, opaque_regions, cache),
             CosmicElement::BlurBackground(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
                 RenderElement::<GlowRenderer>::draw(
@@ -269,7 +292,7 @@ where
                     dst,
                     damage,
                     opaque_regions,
-                    None,
+                    cache,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
@@ -282,7 +305,7 @@ where
                     dst,
                     damage,
                     opaque_regions,
-                    None,
+                    cache,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
@@ -296,7 +319,7 @@ where
                     dst,
                     damage,
                     opaque_regions,
-                    None,
+                    cache,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
@@ -330,12 +353,60 @@ where
             }
         }
     }
+
+    fn capture_framebuffer(
+        &self,
+        frame: &mut <R>::Frame<'_, '_>,
+        src: Rectangle<f64, BufferCoords>,
+        dst: Rectangle<i32, Physical>,
+        cache: &UserDataMap,
+    ) -> Result<(), <R>::Error> {
+        match self {
+            CosmicElement::Workspace(elem) => elem.capture_framebuffer(frame, src, dst, cache),
+            CosmicElement::Cursor(elem) => elem.capture_framebuffer(frame, src, dst, cache),
+            CosmicElement::Dnd(elem) => elem.capture_framebuffer(frame, src, dst, cache),
+            CosmicElement::MoveGrab(elem) => elem.capture_framebuffer(frame, src, dst, cache),
+            CosmicElement::AdditionalDamage(elem) => {
+                RenderElement::<R>::capture_framebuffer(elem, frame, src, dst, cache)
+            }
+            CosmicElement::Postprocess(elem) => {
+                let glow_frame = R::glow_frame_mut(frame);
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem, glow_frame, src, dst, cache,
+                )
+                .map_err(FromGlesError::from_gles_error)
+            }
+            CosmicElement::Zoom(elem) => elem.capture_framebuffer(frame, src, dst, cache),
+            CosmicElement::BlurBackground(elem) => {
+                let glow_frame = R::glow_frame_mut(frame);
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem, glow_frame, src, dst, cache,
+                )
+                .map_err(FromGlesError::from_gles_error)
+            }
+            CosmicElement::VoiceOrb(elem) => {
+                let glow_frame = R::glow_frame_mut(frame);
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem, glow_frame, src, dst, cache,
+                )
+                .map_err(FromGlesError::from_gles_error)
+            }
+            #[cfg(feature = "debug")]
+            CosmicElement::Egui(elem) => {
+                let glow_frame = R::glow_frame_mut(frame);
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem, glow_frame, src, dst, cache,
+                )
+                .map_err(FromGlesError::from_gles_error)
+            }
+        }
+    }
 }
 
 impl<R> From<CropRenderElement<RescaleRenderElement<WorkspaceRenderElement<R>>>>
     for CosmicElement<R>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -348,20 +419,9 @@ where
     }
 }
 
-impl<R> From<DamageElement> for CosmicElement<R>
-where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
-    R::TextureId: 'static,
-    CosmicMappedRenderElement<R>: RenderElement<R>,
-{
-    fn from(elem: DamageElement) -> Self {
-        Self::AdditionalDamage(elem)
-    }
-}
-
 impl<R> From<MemoryRenderBufferRenderElement<R>> for CosmicElement<R>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -384,7 +444,7 @@ where
 #[cfg(feature = "debug")]
 impl<R> From<TextureRenderElement<GlesTexture>> for CosmicElement<R>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -393,9 +453,26 @@ where
     }
 }
 
-pub trait AsGlowRenderer
+impl<R> From<DamageElement> for CosmicElement<R>
 where
-    Self: Renderer,
+    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R::TextureId: 'static,
+    CosmicMappedRenderElement<R>: RenderElement<R>,
+{
+    fn from(elem: DamageElement) -> Self {
+        Self::AdditionalDamage(elem)
+    }
+}
+
+pub trait AsGlowRenderer:
+    Renderer
+    + Offscreen<GlesTexture>
+    + Offscreen<GlesRenderbuffer>
+    + ImportAll
+    + ImportMem
+    + ExportMem
+    + Bind<Dmabuf>
+    + Blit
 {
     fn glow_renderer(&self) -> &GlowRenderer;
     fn glow_renderer_mut(&mut self) -> &mut GlowRenderer;
@@ -493,7 +570,7 @@ impl<R: Renderer> RenderElement<R> for DamageElement {
         _dst: Rectangle<i32, Physical>,
         _damage: &[Rectangle<i32, Physical>],
         _opaque_regions: &[Rectangle<i32, Physical>],
-        _cache: Option<&smithay::utils::user_data::UserDataMap>,
+        _cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
         Ok(())
     }

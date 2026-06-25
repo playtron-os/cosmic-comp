@@ -83,7 +83,6 @@ fn xdg_popup_ensure_initial_configure(popup: &PopupKind) {
 
 fn layer_surface_check_inital_configure(surface: &LayerSurface) -> bool {
     // send the initial configure if relevant
-
     with_states(surface.wl_surface(), |states| {
         states
             .data_map
@@ -292,6 +291,10 @@ impl CompositorHandler for State {
 
         if let Some(popup) = self.common.popups.find_popup(surface) {
             xdg_popup_ensure_initial_configure(&popup);
+            // The IME popup need to be repositioned when the size changed
+            if let PopupKind::InputMethod(_) = popup {
+                shell.unconstrain_popup(&popup);
+            }
             return;
         }
 

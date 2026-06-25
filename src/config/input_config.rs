@@ -210,6 +210,9 @@ pub fn update_device(
         if let Err(err) = device.config_tap_set_drag_enabled(tap.drag) {
             config_set_error(device, "tap-drag", tap.drag, err, is_default);
         }
+        // TODO: Use `DragLockState::EnabledStick` by default on libinput 1.27.0+, but
+        // make it configurable:
+        // https://lore.freedesktop.org/wayland-devel/20241119043937.GA2118681@quokka
         let drag_lock_state = if tap.drag_lock {
             DragLockState::EnabledTimeout
         } else {

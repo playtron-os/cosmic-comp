@@ -10,9 +10,9 @@ rust-version = "1.90"
 members = ["cosmic-comp-config"]
 
 [dependencies]
-anyhow = { version = "1.0.100", features = ["backtrace"] }
-bitflags = "2.9.4"
-calloop = { version = "0.14.3", features = ["executor"] }
+anyhow = { version = "1.0.102", features = ["backtrace"] }
+bitflags = "2.11.0"
+calloop = { version = "0.14.4", features = ["executor", "stream"] }
 cosmic-comp-config = { path = "cosmic-comp-config", features = [
     "libdisplay-info",
     "output",
@@ -21,7 +21,7 @@ cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git", features
     "calloop",
     "macro",
 ] }
-cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "d0e95be", default-features = false, features = [
+cosmic-protocols = { git = "https://github.com/pop-os/cosmic-protocols", rev = "160b086", default-features = false, features = [
     "server",
 ] }
 cosmic-settings-config = { git = "https://github.com/pop-os/cosmic-settings-daemon" }
@@ -48,7 +48,7 @@ iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["sv
 icetron = { git = "ssh://git@github.com/playtron-os/icetron.git", default-features = false, features = ["images", "icons", "buttons", "dividers", "desktop-utils", "menus"] }
 icetron-themes = { git = "ssh://git@github.com/playtron-os/icetron-themes.git", features = ["dynamic", "color-mode"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-indexmap = "2.11"
+indexmap = "2.13"
 keyframe = "1.1.1"
 libc = "0.2.177"
 libsystemd = { version = "0.7", optional = true }
@@ -57,46 +57,41 @@ notify = "8"
 ordered-float = "5.1"
 png = "0.18"
 regex = "1"
-ron = "0.11"
-rust-embed = { version = "8.7", features = ["debug-embed"] }
+ron = "0.12"
+rust-embed = { version = "8.11", features = ["debug-embed"] }
 sanitize-filename = "0.6.0"
-sendfd = "0.4.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2.0.17"
-time = { version = "0.3.44", features = [
-    "macros",
-    "formatting",
-    "local-offset",
-] }
+thiserror = "2.0.18"
+jiff = "0.2"
 tiny-skia = "0.11"
-tracing = { version = "0.1.41", features = [
+tracing = { version = "0.1.44", features = [
     "max_level_debug",
     "release_max_level_info",
 ] }
-tracing-journald = "0.3.1"
-tracing-subscriber = { version = "0.3.20", features = [
+tracing-journald = "0.3.2"
+tracing-subscriber = { version = "0.3.22", features = [
     "env-filter",
     "tracing-log",
 ] }
-tracy-client = { version = "0.18.2", default-features = false }
-wayland-backend = "0.3.11"
-wayland-scanner = "0.31.7"
+tracy-client = { version = "0.18.4", default-features = false }
+wayland-backend = "0.3.12"
+wayland-scanner = "0.31.8"
 xcursor = "0.3.10"
 xdg = "^3.0"
 xdg-user = "0.2.1"
 xkbcommon = "0.9"
-zbus = "5.12.0"
+zbus = "5.14.0"
 memmap2 = "0.9"
 profiling = { version = "1.0" }
-rustix = { version = "1.1.2", features = ["process"] }
-rand = "0.9.2"
+rustix = { version = "1.1.4", features = ["process"] }
+rand = "0.10"
 # CLI arguments
-clap_lex = "0.7"
+clap_lex = "1.0"
 parking_lot = "0.12.5"
 logind-zbus = { version = "5.3.2", optional = true }
-futures-executor = { version = "0.3.31", features = ["thread-pool"] }
-futures-util = "0.3.31"
+futures-executor = { version = "0.3.32" }
+futures-util = "0.3.32"
 cgmath = "0.18.0"
 
 [dependencies.id_tree]
@@ -133,8 +128,10 @@ optional = true
 debug = ["egui", "egui_plot", "smithay-egui", "anyhow/backtrace"]
 default = ["systemd"]
 stacking = []
-systemd = ["libsystemd", "logind-zbus"]
+logind = ["logind-zbus"]
+systemd = ["libsystemd", "logind"]
 profile-with-tracy = ["profiling/profile-with-tracy", "tracy-client/default"]
+profile-with-tracy-gpu = ["profile-with-tracy", "smithay/tracy_gpu_profiling"]
 
 [profile.dev.package.tiny-skia]
 opt-level = 2

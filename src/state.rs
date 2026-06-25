@@ -8,14 +8,14 @@ use crate::{
         x11::X11State,
     },
     config::{CompOutputConfig, Config, ScreenFilter},
-    dbus::a11y_keyboard_monitor::A11yKeyboardMonitorState,
+    dbus::DBusState,
     input::{PointerFocusState, gestures::GestureState},
     shell::{CosmicSurface, SeatExt, Shell, grabs::SeatMoveGrabState},
     utils::prelude::OutputExt,
     wayland::{
         handlers::{
-            data_device::get_dnd_icon, layer_surface_dismiss::DismissControllerRegistry,
-            screencopy::SessionHolder,
+            data_device::get_dnd_icon, image_copy_capture::SessionHolder,
+            layer_surface_dismiss::DismissControllerRegistry,
         },
         protocols::{
             a11y::A11yState,
@@ -26,7 +26,7 @@ use crate::{
             drm::WlDrmState,
             exclusive_mode::ExclusiveModeState,
             home_visibility::HomeVisibilityState,
-            image_capture_source::ImageCaptureSourceState,
+            image_capture_source::CosmicImageCaptureSourceState,
             layer_auto_hide::LayerAutoHideState,
             layer_corner_radius::LayerCornerRadiusState,
             layer_edge_resize::EdgeResizeState,
@@ -38,7 +38,6 @@ use crate::{
             output_configuration::OutputConfigurationState,
             output_power::OutputPowerState,
             overlap_notify::OverlapNotifyState,
-            screencopy::ScreencopyState,
             surface_embed::SurfaceEmbedManagerState,
             tooltip::TooltipManagerState,
             toplevel_info::ToplevelInfoState,
@@ -52,7 +51,6 @@ use crate::{
 use anyhow::Context;
 use calloop::RegistrationToken;
 use cosmic_comp_config::output::comp::{OutputConfig, OutputState};
-use futures_executor::ThreadPool;
 use i18n_embed::{
     DesktopLanguageRequester,
     fluent::{FluentLanguageLoader, fluent_language_loader},
@@ -98,14 +96,18 @@ use smithay::{
         },
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufFeedback, DmabufGlobal, DmabufState},
+        fixes::FixesState,
         fractional_scale::{FractionalScaleManagerState, with_fractional_scale},
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
+        image_capture_source::{OutputCaptureSourceState, ToplevelCaptureSourceState},
+        image_copy_capture::ImageCopyCaptureState,
         input_method::InputMethodManagerState,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
+        pointer_warp::PointerWarpManager,
         presentation::PresentationState,
         seat::WaylandFocus,
         security_context::{SecurityContext, SecurityContextState},
@@ -135,10 +137,10 @@ use smithay::{
     },
     xwayland::XWaylandClientData,
 };
-use time::UtcOffset;
+use futures_executor::ThreadPool;
 use tracing::{error, warn};
 
-#[cfg(feature = "systemd")]
+#[cfg(feature = "logind")]
 use std::os::fd::OwnedFd;
 
 use std::{
@@ -260,6 +262,7 @@ pub struct State {
     pub ready: Once,
     pub last_refresh: LastRefresh,
 }
+smithay::delegate_dispatch2!(State);
 
 #[derive(Debug)]
 pub struct Common {
@@ -269,7 +272,6 @@ pub struct Common {
     pub display_handle: DisplayHandle,
     pub event_loop_handle: LoopHandle<'static, State>,
     pub event_loop_signal: LoopSignal,
-    pub async_executor: ThreadPool,
 
     pub popups: PopupManager,
     pub shell: Arc<parking_lot::RwLock<Shell>>,
@@ -277,7 +279,7 @@ pub struct Common {
     pub clock: Clock<Monotonic>,
     pub startup_done: Arc<AtomicBool>,
     pub should_stop: bool,
-    pub local_offset: time::UtcOffset,
+
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
     pub loop_health: crate::perf::LoopHealth,
@@ -316,8 +318,10 @@ pub struct Common {
     pub primary_selection_state: PrimarySelectionState,
     pub ext_data_control_state: ExtDataControlState,
     pub wlr_data_control_state: WlrDataControlState,
-    pub image_capture_source_state: ImageCaptureSourceState,
-    pub screencopy_state: ScreencopyState,
+    pub cosmic_image_capture_source_state: CosmicImageCaptureSourceState,
+    pub output_capture_source_state: OutputCaptureSourceState,
+    pub toplevel_capture_source_state: ToplevelCaptureSourceState,
+    pub image_copy_capture_state: ImageCopyCaptureState,
     pub surface_embed_state: SurfaceEmbedManagerState,
     /// Pending PID-based embed requests waiting for matching toplevels
     pub pending_pid_embeds: std::collections::HashMap<u32, Vec<crate::wayland::protocols::surface_embed::zcosmic_embedded_surface_v1::ZcosmicEmbeddedSurfaceV1>>,
@@ -336,8 +340,8 @@ pub struct Common {
     pub xdg_decoration_state: XdgDecorationState,
     pub overlap_notify_state: OverlapNotifyState,
     pub a11y_state: A11yState,
-    pub a11y_keyboard_monitor_state: A11yKeyboardMonitorState,
     pub game_mode_bridge: crate::dbus::game_mode::GameModeBridge,
+    pub dbus_state: DBusState,
 
     // shell-related wayland state
     pub xdg_shell_state: XdgShellState,
@@ -353,11 +357,14 @@ pub struct Common {
     pub xwayland_shell_state: XWaylandShellState,
     pub pointer_focus_state: Option<PointerFocusState>,
 
-    #[cfg(feature = "systemd")]
+    #[cfg(feature = "logind")]
     pub inhibit_lid_fd: Option<OwnedFd>,
+
+    pub with_xwayland: bool,
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum BackendData {
     X11(X11State),
     Winit(WinitState),
@@ -685,13 +692,13 @@ impl State {
         socket: OsString,
         handle: LoopHandle<'static, State>,
         signal: LoopSignal,
+        with_xwayland: bool,
     ) -> State {
         let requested_languages = DesktopLanguageRequester::requested_languages();
         i18n_embed::select(&*LANG_LOADER, &Localizations, &requested_languages)
             .with_context(|| "Failed to load languages")
             .unwrap();
 
-        let local_offset = UtcOffset::current_local_offset().expect("No yet multithreaded");
         let clock = Clock::new();
         let config = Config::load(&handle);
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
@@ -724,9 +731,14 @@ impl State {
             OverlapNotifyState::new::<Self, _>(dh, client_has_no_security_context);
         let presentation_state = PresentationState::new::<Self>(dh, clock.id() as u32);
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
-        let image_capture_source_state =
-            ImageCaptureSourceState::new::<Self, _>(dh, client_not_sandboxed);
-        let screencopy_state = ScreencopyState::new::<Self, _>(dh, client_not_sandboxed);
+        let cosmic_image_capture_source_state =
+            CosmicImageCaptureSourceState::new::<Self, _>(dh, client_not_sandboxed);
+        let output_capture_source_state =
+            OutputCaptureSourceState::new_with_filter::<State, _>(dh, client_not_sandboxed);
+        let toplevel_capture_source_state =
+            ToplevelCaptureSourceState::new_with_filter::<State, _>(dh, client_not_sandboxed);
+        let image_copy_capture_state =
+            ImageCopyCaptureState::new_with_filter::<Self, _>(dh, client_not_sandboxed);
         let surface_embed_state = SurfaceEmbedManagerState::new_with_filter::<Self, CosmicSurface, _>(
             dh,
             client_not_sandboxed,
@@ -744,6 +756,7 @@ impl State {
         XWaylandKeyboardGrabState::new::<Self>(dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(dh);
         PointerConstraintsState::new::<Self>(dh);
+        PointerWarpManager::new::<Self>(dh);
         PointerGesturesState::new::<Self>(dh);
         TabletManagerState::new::<Self>(dh);
         SecurityContextState::new::<Self, _>(dh, client_has_no_security_context);
@@ -752,6 +765,7 @@ impl State {
         VirtualKeyboardManagerState::new::<State, _>(dh, client_not_sandboxed);
         AlphaModifierState::new::<Self>(dh);
         SinglePixelBufferState::new::<Self>(dh);
+        FixesState::new::<Self>(dh);
 
         let idle_notifier_state = IdleNotifierState::<Self>::new(dh, handle.clone());
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<State>(dh);
@@ -804,16 +818,11 @@ impl State {
         );
         let workspace_state = WorkspaceState::new(dh, client_not_sandboxed);
 
-        let async_executor = ThreadPool::builder().pool_size(1).create().unwrap();
-
-        if let Err(err) = crate::dbus::init(&handle, &async_executor) {
-            tracing::warn!(?err, "Failed to initialize dbus handlers");
-        }
-
         let a11y_state = A11yState::new::<State, _>(dh, client_not_sandboxed);
 
-        let a11y_keyboard_monitor_state = A11yKeyboardMonitorState::new(&async_executor);
+        let dbus_state = DBusState::init(&handle);
 
+        let async_executor = ThreadPool::builder().pool_size(1).create().unwrap();
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
         // live values to the game-mode `AppFrametimeNs` reader.
@@ -826,12 +835,9 @@ impl State {
                 display_handle: dh.clone(),
                 event_loop_handle: handle,
                 event_loop_signal: signal,
-                async_executor,
 
                 popups: PopupManager::default(),
                 shell,
-
-                local_offset,
 
                 clock,
                 startup_done: Arc::new(AtomicBool::new(false)),
@@ -868,8 +874,10 @@ impl State {
                 idle_notifier_state,
                 idle_inhibit_manager_state,
                 idle_inhibiting_surfaces,
-                image_capture_source_state,
-                screencopy_state,
+                cosmic_image_capture_source_state,
+                output_capture_source_state,
+                toplevel_capture_source_state,
+                image_copy_capture_state,
                 surface_embed_state,
                 pending_pid_embeds: std::collections::HashMap::new(),
                 embedded_surfaces: std::collections::HashMap::new(),
@@ -899,15 +907,17 @@ impl State {
                 xdg_toplevel_icon_manager,
                 workspace_state,
                 a11y_state,
-                a11y_keyboard_monitor_state,
                 game_mode_bridge,
                 xwayland_scale: None,
                 xwayland_state: None,
                 xwayland_shell_state,
                 pointer_focus_state: None,
+                dbus_state,
 
-                #[cfg(feature = "systemd")]
+                #[cfg(feature = "logind")]
                 inhibit_lid_fd: None,
+
+                with_xwayland,
             },
             backend: BackendData::Unset,
             ready: Once::new(),
@@ -929,7 +939,7 @@ impl State {
     }
 
     fn update_inhibitor_locks(&mut self) {
-        #[cfg(feature = "systemd")]
+        #[cfg(feature = "logind")]
         {
             use smithay::backend::session::Session;
             use tracing::{debug, error, warn};
@@ -945,7 +955,7 @@ impl State {
 
             if should_handle_lid {
                 if self.common.inhibit_lid_fd.is_none() {
-                    match crate::dbus::logind::inhibit_lid() {
+                    match crate::dbus::logind::inhibit_lid(&self.common) {
                         Ok(fd) => {
                             debug!("Inhibiting lid switch");
                             self.common.inhibit_lid_fd = Some(fd);
@@ -956,7 +966,8 @@ impl State {
                                 .iter()
                                 .find(|o| o.is_internal())
                                 .cloned();
-                            let closed = crate::dbus::logind::lid_closed().unwrap_or(false);
+                            let closed =
+                                crate::dbus::logind::lid_closed(&self.common).unwrap_or(false);
 
                             if closed {
                                 backend.disable_internal_output(
@@ -1100,8 +1111,8 @@ impl Common {
 
         // normal windows
         for space in shell.workspaces.spaces() {
-            if let Some(window) = space.get_fullscreen() {
-                window.with_surfaces(processor);
+            if let Some(fs) = space.get_fullscreen(shell.seats.last_active()) {
+                fs.surface.with_surfaces(processor);
             }
             space.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
@@ -1165,10 +1176,10 @@ impl Common {
         }
 
         for space in shell.workspaces.spaces() {
-            if let Some(window) = space.get_fullscreen()
-                && let Some(surface) = window.wl_surface()
-            {
-                propagate_subsurface_scale(&surface);
+            for window in &space.fullscreen_surfaces {
+                if let Some(surface) = window.surface.wl_surface() {
+                    propagate_subsurface_scale(&surface);
+                }
             }
             space.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
@@ -1321,15 +1332,16 @@ impl Common {
             });
 
         if let Some(active) = shell.active_space(output) {
-            if let Some(window) = active.get_fullscreen()
-                && let Some(feedback) = window
+            if let Some(fs) = active.get_fullscreen(shell.seats.last_active())
+                && let Some(feedback) = fs
+                    .surface
                     .wl_surface()
                     .and_then(|wl_surface| {
                         advertised_node_for_surface(&wl_surface, &self.display_handle)
                     })
                     .and_then(&mut dmabuf_feedback)
             {
-                window.send_dmabuf_feedback(
+                fs.surface.send_dmabuf_feedback(
                     output,
                     &feedback,
                     render_element_states,
@@ -1521,8 +1533,9 @@ impl Common {
             });
 
         if let Some(active) = shell.active_space(output) {
-            if let Some(window) = active.get_fullscreen() {
-                window.send_frame(output, time, throttle(window), should_send);
+            if let Some(fs) = active.get_fullscreen(shell.seats.last_active()) {
+                fs.surface
+                    .send_frame(output, time, throttle(&fs.surface), should_send);
             }
             active.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
@@ -1542,9 +1555,9 @@ impl Common {
                 .spaces_for_output(output)
                 .filter(|w| w.handle != active.handle)
             {
-                if let Some(window) = space.get_fullscreen() {
-                    let throttle = min(throttle(space), throttle(window));
-                    window.send_frame(output, time, throttle, |_, _| None);
+                if let Some(fs) = space.get_fullscreen(shell.seats.last_active()) {
+                    let throttle = min(throttle(space), throttle(&fs.surface));
+                    fs.surface.send_frame(output, time, throttle, |_, _| None);
                 }
                 space.mapped().for_each(|mapped| {
                     for (window, _) in mapped.windows() {

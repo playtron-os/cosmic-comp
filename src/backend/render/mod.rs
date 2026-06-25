@@ -36,7 +36,7 @@ use crate::{
         handlers::{
             compositor::FRAME_TIME_FILTER,
             data_device::get_dnd_icon,
-            screencopy::{FrameHolder, SessionData, render_session},
+            image_copy_capture::{FrameHolder, SessionData, render_session},
         },
         protocols::{
             blur::{
@@ -54,11 +54,10 @@ use crate::comp_theme::CompTheme;
 use element::FromGlesError;
 use smithay::{
     backend::{
-        allocator::{Fourcc, dmabuf::Dmabuf},
+        allocator::Fourcc,
         drm::{DrmDeviceFd, DrmNode},
         renderer::{
-            Bind, Blit, Color32F, ExportMem, ImportAll, ImportMem, Offscreen, Renderer, Texture,
-            TextureFilter,
+            Color32F, ImportAll, Offscreen, Renderer, Texture, TextureFilter,
             damage::{Error as RenderError, OutputDamageTracker, RenderOutputResult},
             element::{
                 Element, Id, Kind, RenderElement, WeakId,
@@ -768,7 +767,7 @@ pub fn cursor_elements<'a, 'frame, R>(
     attached_orb_state: Option<&voice_orb::VoiceOrbState>,
 ) -> Vec<CosmicElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
@@ -1074,7 +1073,7 @@ pub fn output_elements<R>(
     _fps: Option<(&EguiState, &Timings)>,
 ) -> Result<Vec<CosmicElement<R>>, RenderError<R::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     R::Error: FromGlesError,
     CosmicMappedRenderElement<R>: RenderElement<R>,
@@ -1172,7 +1171,7 @@ pub fn workspace_elements<R>(
     element_filter: &ElementFilter,
 ) -> Result<Vec<CosmicElement<R>>, RenderError<R::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     R::Error: FromGlesError,
     CosmicMappedRenderElement<R>: RenderElement<R>,
@@ -2239,7 +2238,7 @@ pub struct PostprocessState {
 }
 
 impl PostprocessState {
-    pub fn new_with_renderer<R: AsGlowRenderer + Offscreen<GlesTexture>>(
+    pub fn new_with_renderer<R: AsGlowRenderer>(
         renderer: &mut R,
         format: Fourcc,
         output_config: PostprocessOutputConfig,
@@ -2270,7 +2269,7 @@ impl PostprocessState {
         })
     }
 
-    pub fn track_cursor<R: AsGlowRenderer + Offscreen<GlesTexture>>(
+    pub fn track_cursor<R: AsGlowRenderer>(
         &mut self,
         renderer: &mut R,
         format: Fourcc,
@@ -2372,14 +2371,7 @@ pub fn render_output<'d, R>(
     blur_state: &mut BlurRenderState,
 ) -> Result<RenderOutputResult<'d>, RenderError<R::Error>>
 where
-    R: Renderer
-        + ImportAll
-        + ImportMem
-        + ExportMem
-        + Bind<Dmabuf>
-        + Offscreen<GlesTexture>
-        + Blit
-        + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     R::Error: FromGlesError,
     CosmicElement<R>: RenderElement<R>,
@@ -3251,7 +3243,7 @@ where
     match result {
         Ok((res, mut elements)) => {
             for (session, frame) in output.take_pending_frames() {
-                if let Some(pending_image_copy_data) = render_session::<_, _, GlesTexture>(
+                if let Some(pending_image_copy_data) = render_session(
                     renderer,
                     session.user_data().get::<SessionData>().unwrap(),
                     frame,
@@ -3271,21 +3263,20 @@ where
                                 )?;
 
                             let old_len = elements.len();
-                            elements.extend(
-                                additional_damage
-                                    .into_iter()
-                                    .map(|rect| {
-                                        rect.to_f64()
-                                            .to_logical(
-                                                output.current_scale().fractional_scale(),
-                                                output.current_transform(),
-                                                &area,
-                                            )
-                                            .to_i32_round()
-                                    })
-                                    .map(DamageElement::new)
-                                    .map(Into::into),
-                            );
+                            let additional_damage_elements: Vec<_> = additional_damage
+                                .into_iter()
+                                .map(|rect| {
+                                    rect.to_f64()
+                                        .to_logical(
+                                            output.current_scale().fractional_scale(),
+                                            output.current_transform(),
+                                            &area,
+                                        )
+                                        .to_i32_round()
+                                })
+                                .map(DamageElement::new)
+                                .collect();
+                            dt.damage_output(age, &additional_damage_elements)?;
 
                             Some(old_len)
                         } else {
@@ -3384,14 +3375,14 @@ pub fn render_workspace<'d, R>(
     element_filter: ElementFilter,
 ) -> Result<(RenderOutputResult<'d>, Vec<CosmicElement<R>>), RenderError<R::Error>>
 where
-    R: Renderer + ImportAll + ImportMem + ExportMem + Bind<Dmabuf> + AsGlowRenderer,
+    R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     R::Error: FromGlesError,
     CosmicElement<R>: RenderElement<R>,
     CosmicMappedRenderElement<R>: RenderElement<R>,
     WorkspaceRenderElement<R>: RenderElement<R>,
 {
-    let mut elements: Vec<CosmicElement<R>> = workspace_elements(
+    let elements: Vec<CosmicElement<R>> = workspace_elements(
         gpu,
         renderer,
         shell,
@@ -3406,13 +3397,12 @@ where
 
     if let Some(additional_damage) = additional_damage {
         let output_geo = output.geometry().to_local(output).as_logical();
-        elements.extend(
-            additional_damage
-                .into_iter()
-                .filter_map(|rect| rect.intersection(output_geo))
-                .map(DamageElement::new)
-                .map(Into::<CosmicElement<R>>::into),
-        );
+        let additional_damage_elements: Vec<_> = additional_damage
+            .into_iter()
+            .filter_map(|rect| rect.intersection(output_geo))
+            .map(DamageElement::new)
+            .collect();
+        damage_tracker.damage_output(age, &additional_damage_elements)?;
     }
 
     let res = damage_tracker.render_output(

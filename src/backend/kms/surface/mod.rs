@@ -18,14 +18,9 @@ use crate::{
     shell::{Shell, grabs::SeatMoveGrabState},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
-    wayland::{
-        handlers::{
-            compositor::recursive_frame_time_estimation,
-            screencopy::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
-        },
-        protocols::screencopy::{
-            FailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
-        },
+    wayland::handlers::{
+        compositor::recursive_frame_time_estimation,
+        image_copy_capture::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
     },
 };
 
@@ -91,6 +86,9 @@ use smithay::{
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, get_dmabuf},
+        image_copy_capture::{
+            CaptureFailureReason, Frame as ScreencopyFrame, SessionRef as ScreencopySessionRef,
+        },
         presentation::Refresh,
         seat::WaylandFocus,
         shm::{shm_format_to_fourcc, with_buffer_contents},
@@ -474,6 +472,7 @@ impl Surface {
         self.overlay_plane_formats = overlay_plane_formats;
         self.feedback.clear();
         self.active.store(true, Ordering::SeqCst);
+        self.dpms = true;
 
         let _ = self
             .thread_command
@@ -497,7 +496,7 @@ impl Surface {
 
     pub fn drop_and_join(mut self) {
         let thread = self.thread.take();
-        let _ = self;
+        std::mem::drop(self);
         if let Some(thread) = thread {
             let name = thread.thread().name().unwrap().to_string();
             let _ = thread.join();
@@ -546,8 +545,10 @@ fn surface_thread(
     let egui = {
         let state =
             smithay_egui::EguiState::new(smithay::utils::Rectangle::from_size((400, 800).into()));
-        let mut visuals: egui::style::Visuals = Default::default();
-        visuals.window_shadow = egui::Shadow::NONE;
+        let visuals = egui::style::Visuals {
+            window_shadow: egui::Shadow::NONE,
+            ..Default::default()
+        };
         state.context().set_visuals(visuals);
         state
     };
@@ -1928,16 +1929,18 @@ impl SurfaceThreadState {
             let game_mode_vrr = shell.game_mode_vrr;
             let output = self.mirroring.as_ref().unwrap_or(&self.output);
             if let Some((_, workspace)) = shell.workspaces.active(output) {
-                if let Some(fullscreen_surface) = workspace.get_fullscreen() {
+                let seat = shell.seats.last_active();
+                if let Some(fullscreen_surface) = workspace.get_fullscreen(seat) {
                     const _30_FPS: Duration = Duration::from_nanos(1_000_000_000 / 30);
-                    let wl = fullscreen_surface.wl_surface();
-                    let wl = wl.as_deref();
                     (
                         true,
-                        wl.is_some_and(|surface| {
-                            recursive_frame_time_estimation(&self.clock, surface)
-                                .is_some_and(|dur| dur <= _30_FPS)
-                        }),
+                        fullscreen_surface
+                            .surface
+                            .wl_surface()
+                            .is_some_and(|surface| {
+                                recursive_frame_time_estimation(&self.clock, &surface)
+                                    .is_some_and(|dur| dur <= _30_FPS)
+                            }),
                         animations_going,
                         game_mode_tearing,
                         fps_limit,
@@ -2103,7 +2106,7 @@ impl SurfaceThreadState {
         // so let's collect everything we need for screencopy now
         let mut has_cursor_mode_none = false;
         let frames = if self.mirroring.is_none() {
-            take_screencopy_frames(&self.output, &mut elements, &mut has_cursor_mode_none)
+            take_screencopy_frames(&self.output, &elements, &mut has_cursor_mode_none)
         } else {
             Default::default()
         };
@@ -2501,13 +2504,6 @@ impl SurfaceThreadState {
                                 (&session, frame, res),
                                 now.into(),
                             ) {
-                                session
-                                    .user_data()
-                                    .get::<SessionData>()
-                                    .unwrap()
-                                    .lock()
-                                    .unwrap()
-                                    .reset();
                                 tracing::warn!(?err, "Failed to screencopy");
                             }
                         }
@@ -2536,15 +2532,8 @@ impl SurfaceThreadState {
                         }
                     }
                     Err(err) => {
-                        for (session, frame, _) in frames {
-                            session
-                                .user_data()
-                                .get::<SessionData>()
-                                .unwrap()
-                                .lock()
-                                .unwrap()
-                                .reset();
-                            frame.fail(FailureReason::Unknown);
+                        for (_session, frame, _) in frames {
+                            frame.fail(CaptureFailureReason::Unknown);
                         }
                         // Cleanup texture cache even on error to prevent dmabuf leaks
                         if let Ok(devices) = self.api.devices_mut() {
@@ -2670,18 +2659,21 @@ fn render_node_for_output(
     let Some(workspace) = shell.active_space(output) else {
         return *target_node;
     };
-    let nodes = workspace
-        .get_fullscreen()
-        .map(|w| vec![w.clone()])
-        .unwrap_or_else(|| {
-            workspace
-                .mapped()
-                .map(|mapped| mapped.active_window())
-                .collect::<Vec<_>>()
-        })
-        .into_iter()
-        .flat_map(|w| w.wl_surface().and_then(|s| source_node_for_surface(&s)))
-        .collect::<Vec<_>>();
+    let fullscreens: Vec<_> = workspace
+        .get_fullscreen_surfaces()
+        .map(|f| f.surface.clone())
+        .collect();
+    let nodes = if !fullscreens.is_empty() {
+        fullscreens
+    } else {
+        workspace
+            .mapped()
+            .map(|mapped| mapped.active_window())
+            .collect::<Vec<_>>()
+    }
+    .into_iter()
+    .flat_map(|w| w.wl_surface().and_then(|s| source_node_for_surface(&s)))
+    .collect::<Vec<_>>();
 
     if nodes.contains(target_node) || nodes.is_empty() {
         *target_node
@@ -2774,10 +2766,9 @@ fn get_surface_dmabuf_feedback(
     }
 }
 
-// TODO: Don't mutate `elements`
 fn take_screencopy_frames(
     output: &Output,
-    elements: &mut Vec<CosmicElement<GlMultiRenderer>>,
+    elements: &[CosmicElement<GlMultiRenderer>],
     has_cursor_mode_none: &mut bool,
 ) -> Vec<(
     ScreencopySessionRef,
@@ -2792,7 +2783,15 @@ fn take_screencopy_frames(
             let session_data = session.user_data().get::<SessionData>().unwrap();
             let mut damage_tracking = session_data.lock().unwrap();
 
-            let old_len = if !additional_damage.is_empty() {
+            let buffer = frame.buffer();
+            let age = if matches!(buffer_type(&buffer), Some(BufferType::Shm)) {
+                // TODO re-use offscreen buffer to damage track screencopy to shm
+                0
+            } else {
+                1
+            };
+
+            if !additional_damage.is_empty() {
                 let area = output
                     .current_mode()
                     .unwrap()
@@ -2802,40 +2801,25 @@ fn take_screencopy_frames(
                     .to_buffer(1, Transform::Normal)
                     .to_f64();
 
-                let old_len = elements.len();
-                elements.extend(
-                    additional_damage
-                        .into_iter()
-                        .map(|rect| {
-                            rect.to_f64()
-                                .to_logical(
-                                    output.current_scale().fractional_scale(),
-                                    output.current_transform(),
-                                    &area,
-                                )
-                                .to_i32_round()
-                        })
-                        .map(DamageElement::new)
-                        .map(Into::into),
-                );
-
-                Some(old_len)
-            } else {
-                None
+                let additional_damage_elements: Vec<_> = additional_damage
+                    .into_iter()
+                    .map(|rect| {
+                        rect.to_f64()
+                            .to_logical(
+                                output.current_scale().fractional_scale(),
+                                output.current_transform(),
+                                &area,
+                            )
+                            .to_i32_round()
+                    })
+                    .map(DamageElement::new)
+                    .collect();
+                let _ = damage_tracking
+                    .dt
+                    .damage_output(age, &additional_damage_elements);
             };
 
-            let buffer = frame.buffer();
-            let age = if matches!(buffer_type(&frame.buffer()), Some(BufferType::Shm)) {
-                // TODO re-use offscreen buffer to damage track screencopy to shm
-                0
-            } else {
-                damage_tracking.age_for_buffer(&buffer)
-            };
             let res = damage_tracking.dt.damage_output(age, elements);
-
-            if let Some(old_len) = old_len {
-                elements.truncate(old_len);
-            }
 
             if !session.draw_cursor() {
                 *has_cursor_mode_none = true;

@@ -12,7 +12,7 @@ use crate::{
         zoom::ZoomFocusTarget,
     },
     utils::prelude::*,
-    wayland::handlers::{screencopy::SessionHolder, xdg_shell::popup::get_popup_toplevel},
+    wayland::handlers::{image_copy_capture::SessionHolder, xdg_shell::popup::get_popup_toplevel},
 };
 use id_tree::NodeId;
 use smithay::{
@@ -29,15 +29,18 @@ use smithay::{
             MotionEvent as PointerMotionEvent, PointerTarget, RelativeMotionEvent,
         },
         touch::{
-            DownEvent, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent, TouchTarget,
-            UpEvent,
+            DownEvent, FrameMarker, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent,
+            TouchTarget, UpEvent,
         },
     },
     reexports::wayland_server::{
         Client, DisplayHandle, Resource, backend::ObjectId, protocol::wl_surface::WlSurface,
     },
     utils::{IsAlive, Logical, Point, Serial, Transform},
-    wayland::{seat::WaylandFocus, selection::data_device::WlOfferData, session_lock::LockSurface},
+    wayland::{
+        compositor::with_states, seat::WaylandFocus, selection::data_device::WlOfferData,
+        session_lock::LockSurface, shell::xdg::SurfaceCachedState,
+    },
     xwayland::{
         X11Surface,
         xwm::{XwmId, XwmOfferData},
@@ -61,6 +64,7 @@ pub enum PointerFocusTarget {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum PointerFocusToplevel {
     Surface(CosmicSurface),
     Popup(PopupKind),
@@ -196,7 +200,7 @@ impl PointerFocusTarget {
             PointerFocusTarget::WlSurface {
                 toplevel: Some(PointerFocusToplevel::Popup(PopupKind::Xdg(popup))),
                 ..
-            } => get_popup_toplevel(popup)
+            } => get_popup_toplevel(&PopupKind::Xdg(popup.clone()))
                 .and_then(|s| shell.element_for_surface(&s).map(|mapped| (mapped, s)))
                 .and_then(|(m, s)| {
                     m.windows()
@@ -224,6 +228,63 @@ impl PointerFocusTarget {
             _ => false,
         }
     }
+
+    // Update image copy cursor position/hotspot for enter/motion event
+    fn update_image_copy_cursor_position(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &PointerMotionEvent,
+    ) {
+        let Some(toplevel) = self.toplevel(&data.common.shell.read()) else {
+            return;
+        };
+        let cursor_sessions = toplevel.cursor_sessions();
+        if cursor_sessions.is_empty() {
+            return;
+        }
+
+        let cursor_pos = if let Some(wl_surface) = self.wl_surface() {
+            let surface_offset = toplevel
+                .surface_offset(&wl_surface)
+                .unwrap_or(Point::from((0, 0)))
+                .to_f64();
+            let geometry_loc = toplevel
+                .wl_surface()
+                .and_then(|s| {
+                    with_states(&s, |states| {
+                        states
+                            .cached_state
+                            .get::<SurfaceCachedState>()
+                            .current()
+                            .geometry
+                            .map(|g| g.loc.to_f64())
+                    })
+                })
+                .unwrap_or_default();
+            Some(
+                (event.location - geometry_loc + surface_offset)
+                    .to_buffer(1.0, Transform::Normal, &toplevel.geometry().size.to_f64())
+                    .to_i32_round(),
+            )
+        } else {
+            // If cursor is in SSD, instead of a `wl_surface`, it is outside the captured bounds
+            None
+        };
+
+        let cursor_hotspot = if let Some((_, hotspot)) =
+            seat.cursor_geometry((0.0, 0.0), Duration::from_millis(event.time as u64).into())
+        {
+            hotspot
+        } else {
+            Point::from((0, 0))
+        };
+
+        for session in cursor_sessions {
+            session.set_cursor_pos(cursor_pos);
+            session.set_cursor_hotspot(cursor_hotspot);
+        }
+    }
 }
 
 impl KeyboardFocusTarget {
@@ -242,7 +303,7 @@ impl KeyboardFocusTarget {
         match self {
             KeyboardFocusTarget::Element(mapped) => mapped.wl_surface(),
             KeyboardFocusTarget::Popup(PopupKind::Xdg(xdg)) => {
-                get_popup_toplevel(xdg).map(Cow::Owned)
+                get_popup_toplevel(&PopupKind::Xdg(xdg.clone())).map(Cow::Owned)
             }
             _ => None,
         }
@@ -276,6 +337,18 @@ impl KeyboardFocusTarget {
     pub fn is_xwm(&self, xwm: XwmId) -> bool {
         if let Some(surface) = self.x11_surface() {
             surface.xwm_id().unwrap() == xwm
+        } else {
+            false
+        }
+    }
+
+    pub fn has_surface(&self, shell: &Shell, surface: &WlSurface) -> bool {
+        if let Some(fe) = shell.focused_element(self) {
+            fe.has_surface(surface, WindowSurfaceType::ALL)
+        } else if let KeyboardFocusTarget::Fullscreen(s) = self {
+            s.has_surface(surface, WindowSurfaceType::ALL)
+        } else if let Some(root) = WaylandFocus::wl_surface(self) {
+            CosmicSurface::surface_tree_offset(&root, surface).is_some()
         } else {
             false
         }
@@ -324,47 +397,11 @@ impl IsAlive for KeyboardFocusTarget {
 
 impl PointerTarget<State> for PointerFocusTarget {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
-        let toplevel = self.toplevel(&data.common.shell.read());
-        if let Some(element) = toplevel {
-            for session in element.cursor_sessions() {
-                session.set_cursor_pos(Some(
-                    event
-                        .location
-                        .to_buffer(1.0, Transform::Normal, &element.geometry().size.to_f64())
-                        .to_i32_round(),
-                ));
-                if let Some((_, hotspot)) = seat
-                    .cursor_geometry((0.0, 0.0), Duration::from_millis(event.time as u64).into())
-                {
-                    session.set_cursor_hotspot(hotspot);
-                } else {
-                    session.set_cursor_hotspot((0, 0));
-                }
-            }
-        }
-
+        self.update_image_copy_cursor_position(seat, data, event);
         self.inner_pointer_target().enter(seat, data, event);
     }
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
-        let toplevel = self.toplevel(&data.common.shell.read());
-        if let Some(element) = toplevel {
-            for session in element.cursor_sessions() {
-                session.set_cursor_pos(Some(
-                    event
-                        .location
-                        .to_buffer(1.0, Transform::Normal, &element.geometry().size.to_f64())
-                        .to_i32_round(),
-                ));
-                if let Some((_, hotspot)) = seat
-                    .cursor_geometry((0.0, 0.0), Duration::from_millis(event.time as u64).into())
-                {
-                    session.set_cursor_hotspot(hotspot);
-                } else {
-                    session.set_cursor_hotspot((0, 0));
-                }
-            }
-        }
-
+        self.update_image_copy_cursor_position(seat, data, event);
         self.inner_pointer_target().motion(seat, data, event);
     }
     fn relative_motion(&self, seat: &Seat<State>, data: &mut State, event: &RelativeMotionEvent) {
@@ -461,39 +498,36 @@ impl PointerTarget<State> for PointerFocusTarget {
 }
 
 impl TouchTarget<State> for PointerFocusTarget {
-    fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent, seq: Serial) {
-        self.inner_touch_target().down(seat, data, event, seq);
+    fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent) {
+        self.inner_touch_target().down(seat, data, event);
     }
 
-    fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent, seq: Serial) {
-        self.inner_touch_target().up(seat, data, event, seq);
+    fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent) {
+        self.inner_touch_target().up(seat, data, event);
     }
 
-    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent, seq: Serial) {
-        self.inner_touch_target().motion(seat, data, event, seq);
+    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent) {
+        self.inner_touch_target().motion(seat, data, event);
     }
 
-    fn frame(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        self.inner_touch_target().frame(seat, data, seq);
+    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
+        self.inner_touch_target().frame(seat, data, marker);
     }
 
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        self.inner_touch_target().cancel(seat, data, seq);
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
+        self.inner_touch_target().cancel(seat, data, marker);
     }
 
-    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent, seq: Serial) {
-        self.inner_touch_target().shape(seat, data, event, seq);
+    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent) {
+        self.inner_touch_target().shape(seat, data, event);
     }
 
-    fn orientation(
-        &self,
-        seat: &Seat<State>,
-        data: &mut State,
-        event: &OrientationEvent,
-        seq: Serial,
-    ) {
-        self.inner_touch_target()
-            .orientation(seat, data, event, seq);
+    fn orientation(&self, seat: &Seat<State>, data: &mut State, event: &OrientationEvent) {
+        self.inner_touch_target().orientation(seat, data, event);
+    }
+
+    fn last_frame(&self, seat: &Seat<State>, data: &mut State) -> Option<FrameMarker> {
+        self.inner_touch_target().last_frame(seat, data)
     }
 }
 

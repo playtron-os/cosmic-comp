@@ -3,6 +3,8 @@
 #![allow(
     clippy::too_many_arguments,
     clippy::type_complexity,
+    clippy::len_without_is_empty,
+    clippy::collapsible_match,
     clippy::large_enum_variant,
     clippy::wrong_self_convention,
     clippy::mutable_key_type,
@@ -10,7 +12,6 @@
     clippy::single_match,
     clippy::unnecessary_get_then_check,
     clippy::needless_range_loop,
-    clippy::len_without_is_empty,
     clippy::missing_safety_doc,
     clippy::match_like_matches_macro,
     clippy::field_reassign_with_default
@@ -66,8 +67,6 @@ pub mod utils;
 pub mod wayland;
 pub mod xwayland;
 
-smithay::delegate_dispatch2!(State);
-
 #[cfg(feature = "profile-with-tracy")]
 #[global_allocator]
 static GLOBAL: profiling::tracy_client::ProfiledAllocator<std::alloc::System> =
@@ -90,7 +89,7 @@ impl State {
 
             // potentially tell the session we are setup now
             if let Err(err) =
-                session::setup_socket(self.common.event_loop_handle.clone(), &self.common)
+                session::run_socket(self.common.event_loop_handle.clone(), &self.common)
             {
                 warn!(?err, "Failed to setup cosmic-session communication");
             }
@@ -131,12 +130,17 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     let mut cursor = raw_args.cursor();
     let git_hash = option_env!("GIT_HASH").unwrap_or("unknown");
 
+    let mut with_xwayland = true;
     // Parse the arguments
     while let Some(arg) = raw_args.next_os(&mut cursor) {
         match arg.to_str() {
             Some("--help") | Some("-h") => {
                 print_help(env!("CARGO_PKG_VERSION"), git_hash);
                 return Ok(());
+            }
+            Some("--no-xwayland") => {
+                tracing::info!("Running without Xwayland");
+                with_xwayland = false;
             }
             Some("--version") | Some("-V") => {
                 println!(
@@ -159,6 +163,11 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
     tracy_client::Client::start();
 
     utils::rlimit::increase_nofile_limit();
+    // This needs to be done before any potential program launches
+    // (e.g. Xwayland) as it handles passed file descriptors.
+    if let Err(err) = session::setup_socket() {
+        warn!("Session error: {:?}", err);
+    };
 
     // init hook globals
     hooks::HOOKS.set(hooks)
@@ -174,6 +183,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         socket,
         event_loop.handle(),
         event_loop.get_signal(),
+        with_xwayland,
     );
     // init backend
     backend::init_backend_auto(&display, &mut event_loop, &mut state)?;
@@ -317,8 +327,9 @@ Designed for the COSMIC™ desktop environment, cosmic-comp is a Wayland Composi
 Project home page: https://github.com/pop-os/cosmic-comp
 
 Options:
-  -h, --help     Show this message
-  -v, --version  Show the version of cosmic-comp"#
+  -h, --help          Show this message
+  --no-xwayland       Run without Xwayland
+  -v, --version       Show the version of cosmic-comp"#
     );
 }
 

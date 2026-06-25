@@ -63,13 +63,16 @@ use smithay::{
             PointerTarget, RelativeMotionEvent,
         },
         touch::{
-            DownEvent, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent, TouchTarget,
-            UpEvent,
+            DownEvent, FrameMarker, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent,
+            TouchTarget, UpEvent,
         },
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Buffer, IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size, Transform},
+    utils::{
+        Buffer, IsAlive, Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial, Size,
+        Transform, user_data::UserDataMap,
+    },
     wayland::seat::WaylandFocus,
 };
 use std::{
@@ -260,6 +263,10 @@ impl CosmicStack {
             window.set_tiled(false);
 
             p.active.fetch_min(windows.len() - 1, Ordering::SeqCst);
+            p.previous_index
+                .lock()
+                .unwrap()
+                .take_if(|(_, idx)| *idx >= windows.len());
         });
         self.0.resize(Size::from((
             self.active().geometry().size.w,
@@ -289,6 +296,10 @@ impl CosmicStack {
             window.set_tiled(false);
 
             p.active.fetch_min(windows.len() - 1, Ordering::SeqCst);
+            p.previous_index
+                .lock()
+                .unwrap()
+                .take_if(|(_, idx)| *idx >= windows.len());
 
             Some(window)
         });
@@ -595,6 +606,13 @@ impl CosmicStack {
             .with_program(|p| (*p.geometry.lock().unwrap()).map(|geo| geo.size.as_logical()))
     }
 
+    pub fn last_server_size(&self) -> Option<Size<i32, Logical>> {
+        let mut size = self.active().last_server_size()?;
+        // if stacked the window doesn't have SSD, instead it has a tab
+        size.h += self.tab_height();
+        Some(size)
+    }
+
     pub fn set_geometry(&self, geo: Rectangle<i32, Global>) {
         self.0.with_program(|p| {
             let loc = (geo.loc.x, geo.loc.y + p.tab_height());
@@ -665,7 +683,7 @@ impl CosmicStack {
         alpha: f32,
     ) -> Vec<C>
     where
-        R: Renderer + AsGlowRenderer + ImportAll + ImportMem,
+        R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
         C: From<CosmicStackRenderElement<R>>,
     {
@@ -694,7 +712,7 @@ impl CosmicStack {
         alpha: f32,
     ) -> Option<C>
     where
-        R: Renderer + AsGlowRenderer + ImportAll + ImportMem,
+        R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
         C: From<CosmicStackRenderElement<R>>,
     {
@@ -784,7 +802,7 @@ impl CosmicStack {
         scanout_override: Option<bool>,
     ) -> Vec<C>
     where
-        R: Renderer + AsGlowRenderer + ImportAll + ImportMem,
+        R: AsGlowRenderer,
         R::TextureId: Send + Clone + 'static,
         C: From<CosmicStackRenderElement<R>>,
     {
@@ -1202,6 +1220,7 @@ impl Program for CosmicStackInternal {
                                     .to_i32_round();
                                 cursor.y -= tab_h;
                                 let res = shell.menu_request(
+                                    false,
                                     &surface,
                                     &seat,
                                     serial,
@@ -1246,6 +1265,7 @@ impl Program for CosmicStackInternal {
                                 .to_i32_round();
                             cursor.y -= tab_h;
                             let res = shell.menu_request(
+                                false,
                                 &surface,
                                 &seat,
                                 serial,
@@ -1962,55 +1982,52 @@ impl PointerTarget<State> for CosmicStack {
 }
 
 impl TouchTarget<State> for CosmicStack {
-    fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent, seq: Serial) {
+    fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent) {
         let mut event = event.clone();
         let active_window_geo = self.0.with_program(|p| {
             p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)].geometry()
         });
         event.location -= active_window_geo.loc.to_f64();
-        TouchTarget::down(&self.0, seat, data, &event, seq)
+        TouchTarget::down(&self.0, seat, data, &event)
     }
 
-    fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent, seq: Serial) {
-        TouchTarget::up(&self.0, seat, data, event, seq)
+    fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent) {
+        TouchTarget::up(&self.0, seat, data, event)
     }
 
-    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent, seq: Serial) {
+    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent) {
         let mut event = event.clone();
         let active_window_geo = self.0.with_program(|p| {
             p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)].geometry()
         });
         event.location -= active_window_geo.loc.to_f64();
-        TouchTarget::motion(&self.0, seat, data, &event, seq);
+        TouchTarget::motion(&self.0, seat, data, &event);
 
         if event.location.y < 0.0
             || event.location.y > self.tab_height() as f64
             || event.location.x < 64.0
             || event.location.x > (active_window_geo.size.w as f64 - 64.0)
         {
-            self.start_drag(data, seat, seq);
+            self.start_drag(data, seat, SERIAL_COUNTER.next_serial());
         }
     }
 
-    fn frame(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        TouchTarget::frame(&self.0, seat, data, seq)
+    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
+        TouchTarget::frame(&self.0, seat, data, marker)
     }
 
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        TouchTarget::cancel(&self.0, seat, data, seq)
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
+        TouchTarget::cancel(&self.0, seat, data, marker)
     }
 
-    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent, seq: Serial) {
-        TouchTarget::shape(&self.0, seat, data, event, seq)
+    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent) {
+        TouchTarget::shape(&self.0, seat, data, event)
     }
 
-    fn orientation(
-        &self,
-        _seat: &Seat<State>,
-        _data: &mut State,
-        _event: &OrientationEvent,
-        _seq: Serial,
-    ) {
+    fn orientation(&self, _seat: &Seat<State>, _data: &mut State, _event: &OrientationEvent) {}
+
+    fn last_frame(&self, seat: &Seat<State>, data: &mut State) -> Option<FrameMarker> {
+        TouchTarget::last_frame(&self.0, seat, data)
     }
 }
 
@@ -2153,11 +2170,21 @@ where
             CosmicStackRenderElement::Clipped(elem) => elem.kind(),
         }
     }
+
+    fn is_framebuffer_effect(&self) -> bool {
+        match self {
+            CosmicStackRenderElement::Header(elem) => elem.is_framebuffer_effect(),
+            CosmicStackRenderElement::Shadow(elem) => elem.is_framebuffer_effect(),
+            CosmicStackRenderElement::Border(elem) => elem.is_framebuffer_effect(),
+            CosmicStackRenderElement::Window(elem) => elem.is_framebuffer_effect(),
+            CosmicStackRenderElement::Clipped(elem) => elem.is_framebuffer_effect(),
+        }
+    }
 }
 
 impl<R> RenderElement<R> for CosmicStackRenderElement<R>
 where
-    R: Renderer + AsGlowRenderer + ImportAll + ImportMem,
+    R: AsGlowRenderer,
     R::TextureId: 'static,
     R::Error: FromGlesError,
 {
@@ -2168,11 +2195,11 @@ where
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
-        _cache: Option<&smithay::utils::user_data::UserDataMap>,
+        cache: Option<&UserDataMap>,
     ) -> Result<(), <R>::Error> {
         match self {
             CosmicStackRenderElement::Header(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions, None)
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
             CosmicStackRenderElement::Shadow(elem) | CosmicStackRenderElement::Border(elem) => {
                 RenderElement::<GlowRenderer>::draw(
@@ -2182,15 +2209,15 @@ where
                     dst,
                     damage,
                     opaque_regions,
-                    None,
+                    cache,
                 )
                 .map_err(FromGlesError::from_gles_error)
             }
             CosmicStackRenderElement::Window(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions, None)
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
             CosmicStackRenderElement::Clipped(elem) => {
-                elem.draw(frame, src, dst, damage, opaque_regions, None)
+                elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
         }
     }
@@ -2203,6 +2230,36 @@ where
             }
             CosmicStackRenderElement::Window(elem) => elem.underlying_storage(renderer),
             CosmicStackRenderElement::Clipped(elem) => elem.underlying_storage(renderer),
+        }
+    }
+
+    fn capture_framebuffer(
+        &self,
+        frame: &mut R::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        cache: &UserDataMap,
+    ) -> Result<(), <R>::Error> {
+        match self {
+            CosmicStackRenderElement::Header(elem) => {
+                elem.capture_framebuffer(frame, src, dst, cache)
+            }
+            CosmicStackRenderElement::Shadow(elem) | CosmicStackRenderElement::Border(elem) => {
+                RenderElement::<GlowRenderer>::capture_framebuffer(
+                    elem,
+                    R::glow_frame_mut(frame),
+                    src,
+                    dst,
+                    cache,
+                )
+                .map_err(FromGlesError::from_gles_error)
+            }
+            CosmicStackRenderElement::Window(elem) => {
+                elem.capture_framebuffer(frame, src, dst, cache)
+            }
+            CosmicStackRenderElement::Clipped(elem) => {
+                elem.capture_framebuffer(frame, src, dst, cache)
+            }
         }
     }
 }

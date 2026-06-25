@@ -44,6 +44,7 @@ use tracing::{debug, error, info, warn};
 use super::render::{ScreenFilterStorage, init_shaders};
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Allocator {
     Gbm(GbmAllocator<DrmDeviceFd>),
     Vulkan(PhysicalDevice),
@@ -387,7 +388,12 @@ pub fn init_backend(
         }
         state.common.refresh();
     }
-    state.launch_xwayland(None);
+
+    if state.common.with_xwayland {
+        state.launch_xwayland(None);
+    } else {
+        state.notify_ready();
+    }
 
     event_loop
         .handle()

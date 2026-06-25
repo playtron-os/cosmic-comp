@@ -64,8 +64,8 @@ use smithay::{
             PointerTarget, RelativeMotionEvent,
         },
         touch::{
-            DownEvent, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent, TouchTarget,
-            UpEvent,
+            DownEvent, FrameMarker, MotionEvent as TouchMotionEvent, OrientationEvent, ShapeEvent,
+            TouchTarget, UpEvent,
         },
     },
     output::Output,
@@ -760,7 +760,6 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         event: &DownEvent,
-        seq: Serial,
     ) {
         let mut internal = self.0.lock().unwrap();
         let id = Finger(i32::from(event.slot) as u64);
@@ -771,7 +770,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
             .push(Event::Touch(TouchEvent::FingerPressed { id, position }));
         internal.touch_map.insert(id, position);
         internal.cursor_pos = Some(event_location);
-        *internal.last_seat.lock().unwrap() = Some((seat.clone(), seq));
+        *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
         internal.update(UpdateSource::Input);
     }
 
@@ -780,12 +779,11 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         event: &UpEvent,
-        seq: Serial,
     ) {
         let mut internal = self.0.lock().unwrap();
         let id = Finger(i32::from(event.slot) as u64);
         if let Some(position) = internal.touch_map.remove(&id) {
-            *internal.last_seat.lock().unwrap() = Some((seat.clone(), seq));
+            *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
             internal
                 .event_queue
                 .push(Event::Touch(TouchEvent::FingerLifted { id, position }));
@@ -795,16 +793,14 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
 
     fn motion(
         &self,
-        seat: &Seat<crate::state::State>,
+        _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
         let mut internal = self.0.lock().unwrap();
         let id = Finger(i32::from(event.slot) as u64);
         let event_location = event.location.downscale(internal.additional_scale);
         let position = IcedPoint::new(event_location.x as f32, event_location.y as f32);
-        *internal.last_seat.lock().unwrap() = Some((seat.clone(), seq));
         internal
             .event_queue
             .push(Event::Touch(TouchEvent::FingerMoved { id, position }));
@@ -817,7 +813,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         &self,
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
-        _seq: Serial,
+        _marker: FrameMarker,
     ) {
     }
 
@@ -825,7 +821,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         &self,
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
-        _seq: Serial,
+        _marker: FrameMarker,
     ) {
         let mut internal = self.0.lock().unwrap();
         for (id, position) in std::mem::take(&mut internal.touch_map) {
@@ -841,7 +837,6 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         _event: &ShapeEvent,
-        _seq: Serial,
     ) {
     }
 
@@ -850,8 +845,15 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         _event: &OrientationEvent,
-        _seq: Serial,
     ) {
+    }
+
+    fn last_frame(
+        &self,
+        _seat: &Seat<crate::state::State>,
+        _data: &mut crate::state::State,
+    ) -> Option<FrameMarker> {
+        None
     }
 }
 

@@ -786,7 +786,6 @@ impl TouchGrab<State> for MenuGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
         {
             let mut guard = self.elements.lock().unwrap();
@@ -821,21 +820,15 @@ impl TouchGrab<State> for MenuGrab {
                     time: event.time,
                 };
                 if element.touch_entered.is_none() {
-                    TouchTarget::down(&element.iced, &self.seat, data, &new_event, seq);
+                    TouchTarget::down(&element.iced, &self.seat, data, &new_event);
                     element.touch_entered = Some(event.slot);
                 }
             }
         }
-        handle.down(data, None, event, seq);
+        handle.down(data, None, event);
     }
 
-    fn up(
-        &mut self,
-        data: &mut State,
-        handle: &mut TouchInnerHandle<'_, State>,
-        event: &UpEvent,
-        seq: Serial,
-    ) {
+    fn up(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, event: &UpEvent) {
         {
             let elements = self.elements.lock().unwrap();
             for element in elements.iter().filter(|elem| {
@@ -843,7 +836,7 @@ impl TouchGrab<State> for MenuGrab {
                     .as_ref()
                     .is_some_and(|slot| *slot == event.slot)
             }) {
-                TouchTarget::up(&element.iced, &self.seat, data, event, seq);
+                TouchTarget::up(&element.iced, &self.seat, data, event);
             }
         }
         handle.unset_grab(self, data);
@@ -855,7 +848,6 @@ impl TouchGrab<State> for MenuGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
         {
             let elements = self.elements.lock().unwrap();
@@ -864,24 +856,24 @@ impl TouchGrab<State> for MenuGrab {
                     .as_ref()
                     .is_some_and(|slot| *slot == event.slot)
             }) {
-                TouchTarget::motion(&element.iced, &self.seat, data, event, seq);
+                TouchTarget::motion(&element.iced, &self.seat, data, event);
             }
         }
-        handle.motion(data, None, event, seq);
+        handle.motion(data, None, event);
     }
 
-    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
-        handle.frame(data, seq);
+    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
+        handle.frame(data);
     }
 
-    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
+    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
         {
             let mut elements = self.elements.lock().unwrap();
             for element in elements.iter_mut() {
                 let _ = element.touch_entered.take();
             }
         }
-        handle.cancel(data, seq);
+        handle.cancel(data);
     }
 
     fn shape(
@@ -889,9 +881,8 @@ impl TouchGrab<State> for MenuGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &smithay::input::touch::ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq);
+        handle.shape(data, event);
     }
 
     fn orientation(
@@ -899,9 +890,8 @@ impl TouchGrab<State> for MenuGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &smithay::input::touch::OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq);
+        handle.orientation(data, event);
     }
 
     fn start_data(&self) -> &TouchGrabStartData<State> {

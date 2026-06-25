@@ -5,6 +5,7 @@ use crate::{
     shell::Shell,
     state::BackendData,
     utils::{env::dev_var, prelude::*},
+    wayland::protocols::output_power::OutputPowerState,
 };
 
 use anyhow::{Context, Result};
@@ -14,7 +15,7 @@ use indexmap::IndexMap;
 use render::gles::GbmGlowBackend;
 use smithay::{
     backend::{
-        allocator::{dmabuf::Dmabuf, format::FormatSet},
+        allocator::{Buffer, dmabuf::Dmabuf, format::FormatSet},
         drm::{DrmDeviceFd, DrmNode, NodeType, VrrSupport, output::DrmOutputRenderElements},
         egl::{EGLContext, EGLDevice, EGLDisplay},
         input::InputEvent,
@@ -168,9 +169,13 @@ pub fn init_backend(
         }
     }
 
-    // start x11
-    let primary = *state.backend.kms().primary_node.read().unwrap();
-    state.launch_xwayland(primary);
+    if state.common.with_xwayland {
+        // start x11
+        let primary = *state.backend.kms().primary_node.read().unwrap();
+        state.launch_xwayland(primary);
+    } else {
+        state.notify_ready();
+    }
 
     Ok(())
 }
@@ -353,6 +358,14 @@ impl State {
     ) {
         let backend = self.backend.kms();
 
+        // recreate all graphics contexts
+        backend
+            .clear_used_devices()
+            .expect("This should never fail");
+        if let Err(err) = backend.refresh_used_devices() {
+            warn!(?err, "Failed to re-create graphics contexts");
+        }
+
         // resume input
         if let Err(err) = backend.libinput.resume() {
             error!(?err, "Failed to resume libinput context.");
@@ -361,6 +374,7 @@ impl State {
         for device in backend.drm_devices.values_mut() {
             if let Err(err) = device.drm.lock().activate(true) {
                 error!(?err, "Failed to resume drm device");
+                continue;
             }
             if let Some(lease_state) = device.inner.leasing_global.as_mut() {
                 lease_state.resume::<State>();
@@ -381,15 +395,37 @@ impl State {
                         continue;
                     }
                 };
+                let dh = state.common.display_handle.clone();
+
                 if state.backend.kms().drm_devices.contains_key(&drm_node) {
                     match state.device_changed(dev) {
                         Ok(outputs) => added.extend(outputs),
                         Err(err) => {
-                            error!(?err, "Failed to update drm device {}.", path.display(),)
+                            error!(
+                                ?err,
+                                "Failed to update drm device {}. Re-opening",
+                                path.display(),
+                            );
+                            match state.reopen_device(dev, path, &dh) {
+                                Ok(outputs) => added.extend(outputs),
+                                Err(err) => {
+                                    error!(
+                                        ?err,
+                                        "Failed to re-open drm device {}. Device lost",
+                                        path.display(),
+                                    );
+                                    if let Err(err) = state.device_removed(dev, &dh) {
+                                        error!(
+                                            ?err,
+                                            "Failed to close drm device {}.",
+                                            path.display(),
+                                        );
+                                    };
+                                }
+                            }
                         }
                     }
                 } else {
-                    let dh = state.common.display_handle.clone();
                     match state.device_added(dev, path, &dh) {
                         Ok(outputs) => added.extend(outputs),
                         Err(err) => error!(?err, "Failed to add drm device {}.", path.display(),),
@@ -409,6 +445,8 @@ impl State {
                     }
                 }
             }
+
+            OutputPowerState::refresh(state);
             state.common.refresh();
         });
         loop_signal.wakeup();
@@ -511,7 +549,7 @@ impl KmsState {
         global: &DmabufGlobal,
         dmabuf: Dmabuf,
     ) -> Result<DrmNode> {
-        let device = self
+        let mut device = self
             .drm_devices
             .values_mut()
             .find(|device| {
@@ -522,6 +560,21 @@ impl KmsState {
                     .unwrap_or(false)
             })
             .context("Couldn't find gpu for dmabuf global")?;
+
+        // If device advertised to client doesn't support format/modifier, select
+        // first device that does. This is needed for image-copy from
+        // output/toplevel on a different node.
+        //
+        // TODO: After
+        // https://gitlab.freedesktop.org/wayland/wayland-protocols/-/merge_requests/268,
+        // only try the device specified explicitly by the client, if set.
+        if !device.texture_formats.contains(&dmabuf.format()) {
+            device = self
+                .drm_devices
+                .values_mut()
+                .find(|device| device.texture_formats.contains(&dmabuf.format()))
+                .context("Dmabuf cannot be imported on any gpu")?;
+        }
 
         let new_client = if let Some(client) = client {
             let new = device.inner.active_clients.insert(client.id());
@@ -589,6 +642,25 @@ impl KmsState {
         // that might not be available for any filters we currently expose.
         //
         // But we might conditionally fail here in the future.
+        Ok(())
+    }
+
+    fn clear_used_devices(&mut self) -> Result<()> {
+        let primary_node = self.primary_node.read().unwrap();
+        let empty_devices = HashSet::new();
+
+        for device in self.drm_devices.values_mut() {
+            if device.inner.egl.take().is_some() {
+                self.api.as_mut().remove_node(&device.inner.render_node);
+                device.inner.update_surface_nodes(&empty_devices, &[])?;
+            }
+        }
+
+        // trigger re-evaluation... urgh
+        if let Some(primary_node) = primary_node.as_ref() {
+            let _ = self.api.single_renderer(primary_node);
+        }
+
         Ok(())
     }
 
@@ -751,7 +823,7 @@ impl KmsGuard<'_> {
                 .crtcs()
                 .iter()
                 .filter(|crtc| {
-                    device.inner.surfaces.get(crtc).is_none()
+                    !device.inner.surfaces.contains_key(crtc)
                     // TODO: We can't do this. See https://github.com/Smithay/smithay/pull/1820
                     //.is_some_and(|surface| surface.output.is_enabled())
                 })

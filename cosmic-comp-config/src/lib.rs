@@ -107,6 +107,9 @@ pub struct CosmicCompConfig {
     pub blur_enabled: bool,
     /// Blur intensity (0.0 = no blur, 1.0 = maximum blur)
     pub blur_intensity: f32,
+    /// Hide the cursor after this many seconds of pointer inactivity (None disables)
+    pub cursor_hide_timeout: Option<u32>,
+    pub activation_policy: ActivationPolicy,
 }
 
 impl Default for CosmicCompConfig {
@@ -147,6 +150,8 @@ impl Default for CosmicCompConfig {
             night_shift: 0,
             blur_enabled: true,
             blur_intensity: 0.55,
+            cursor_hide_timeout: None,
+            activation_policy: ActivationPolicy::default(),
         }
     }
 }
@@ -234,6 +239,14 @@ pub enum EavesdroppingKeyboardMode {
     Modifiers,
     Combinations,
     All,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ActivationPolicy {
+    #[default]
+    Focus,
+    FocusIfActiveWorkspace,
+    Urgent,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]

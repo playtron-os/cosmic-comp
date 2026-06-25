@@ -47,13 +47,17 @@ impl XdgShellHandler for State {
 
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
-        let window = CosmicSurface::from(surface);
-        shell.pending_windows.push(PendingWindow {
-            surface: window,
-            seat,
-            fullscreen: None,
-            maximized: false,
-        });
+
+        if !shell.pending_windows.iter().any(|w| w.surface == surface) {
+            let surface = CosmicSurface::from(surface);
+            shell.pending_windows.push(PendingWindow {
+                surface,
+                seat,
+                fullscreen: None,
+                maximized: false,
+                sticky: false,
+            })
+        }
         // We will position the window after the first commit, when we know its size hints
     }
 
@@ -65,7 +69,10 @@ impl XdgShellHandler for State {
 
         if surface.get_parent_surface().is_some() {
             // let other shells deal with their popups
-            self.common.shell.read().unconstrain_popup(&surface);
+            self.common
+                .shell
+                .read()
+                .unconstrain_popup(&PopupKind::from(surface.clone()));
 
             if let Err(err) = surface.send_configure() {
                 warn!("Unable to configure popup. {err:?}",);
@@ -165,14 +172,11 @@ impl XdgShellHandler for State {
             state.positioner = positioner;
         });
 
-        self.common.shell.read().unconstrain_popup(&surface);
+        self.common
+            .shell
+            .read()
+            .unconstrain_popup(&PopupKind::from(surface.clone()));
         surface.send_repositioned(token);
-        if let Err(err) = surface.send_configure() {
-            warn!(
-                ?err,
-                "Client bug: Unable to re-configure repositioned popup.",
-            );
-        }
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: WlSeat, serial: Serial) {
@@ -329,6 +333,11 @@ impl XdgShellHandler for State {
             let mut shell = self.common.shell.write();
             let seat = shell.seats.last_active().clone();
 
+            // Clean up pending_windows for surfaces that were never mapped.
+            shell
+                .pending_windows
+                .retain(|pending| pending.surface != surface);
+
             let output = shell
                 .visible_output_for_surface(surface.wl_surface())
                 .cloned();
@@ -377,6 +386,7 @@ impl XdgShellHandler for State {
 
         let shell = self.common.shell.read();
         let res = shell.menu_request(
+            true,
             surface.wl_surface(),
             &seat,
             serial,

@@ -43,7 +43,7 @@ impl ToplevelManagementHandler for State {
                 .spaces_for_output(output)
                 .enumerate()
                 .find(|(_, w)| {
-                    w.get_fullscreen().is_some_and(|f| f == window)
+                    w.get_fullscreen_surfaces().any(|f| &f.surface == window)
                         || w.mapped()
                             .flat_map(|m| m.windows().map(|(s, _)| s))
                             .any(|w| &w == window)
@@ -111,9 +111,9 @@ impl ToplevelManagementHandler for State {
 
             std::mem::drop(shell);
 
-            if seat.active_output() != *output
-                && let Some(new_pos) = new_pos
-            {
+            // move pointer to window if it’s on a different monitor/output
+            let switching_output = seat.active_output() != *output;
+            if switching_output && let Some(new_pos) = new_pos {
                 seat.set_active_output(output);
                 if let Some(ptr) = seat.get_pointer() {
                     let serial = SERIAL_COUNTER.next_serial();

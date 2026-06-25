@@ -56,7 +56,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::Resource,
-    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial, Size},
+    utils::{IsAlive, Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size},
     wayland::seat::WaylandFocus,
 };
 use std::{
@@ -990,9 +990,8 @@ impl TouchGrab<State> for MoveGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &touch::DownEvent,
-        seq: Serial,
     ) {
-        handle.down(data, None, event, seq)
+        handle.down(data, None, event)
     }
 
     fn up(
@@ -1000,13 +999,12 @@ impl TouchGrab<State> for MoveGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &touch::UpEvent,
-        seq: Serial,
     ) {
         if event.slot == <Self as TouchGrab<State>>::start_data(self).slot {
             handle.unset_grab(self, data);
         }
 
-        handle.up(data, event, seq);
+        handle.up(data, event);
     }
 
     fn motion(
@@ -1015,20 +1013,19 @@ impl TouchGrab<State> for MoveGrab {
         handle: &mut TouchInnerHandle<'_, State>,
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &touch::MotionEvent,
-        seq: Serial,
     ) {
         if event.slot == <Self as TouchGrab<State>>::start_data(self).slot {
             self.update_location(data, event.location);
         }
 
-        handle.motion(data, None, event, seq);
+        handle.motion(data, None, event);
     }
 
-    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
-        handle.frame(data, seq)
+    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
+        handle.frame(data)
     }
 
-    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, _seq: Serial) {
+    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
         handle.unset_grab(self, data);
     }
 
@@ -1037,9 +1034,8 @@ impl TouchGrab<State> for MoveGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &touch::ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq)
+        handle.shape(data, event)
     }
 
     fn orientation(
@@ -1047,9 +1043,8 @@ impl TouchGrab<State> for MoveGrab {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &touch::OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq)
+        handle.orientation(data, event)
     }
 
     fn start_data(&self) -> &TouchGrabStartData<State> {
@@ -1077,6 +1072,8 @@ impl MoveGrab {
         transient_children: Vec<(CosmicMapped, Point<i32, Logical>)>,
         target_size: Option<Size<i32, Logical>>,
     ) -> MoveGrab {
+        // false-positive: `Output`s hash is based on it's inner ptr
+        #[allow(clippy::mutable_key_type)]
         let mut outputs = HashSet::new();
         outputs.insert(cursor_output.clone());
         window.output_enter(&cursor_output, window.geometry()); // not accurate but...
@@ -1151,6 +1148,8 @@ impl Drop for MoveGrab {
         // No more buttons are pressed, release the grab.
         let output = self.cursor_output.clone();
         let seat = self.seat.clone();
+        // false-positive: `Output`s hash is based on it's inner ptr
+        #[allow(clippy::mutable_key_type)]
         let window_outputs = self.window_outputs.drain().collect::<HashSet<_>>();
         let previous = self.previous;
         let window = self.window.clone();
@@ -1238,12 +1237,22 @@ impl Drop for MoveGrab {
                             if matches!(previous, ManagedLayer::Floating)
                                 && let Some(sz) = grab_state.snapping_zone
                             {
+                                // `last_geometry` was set to the pre-drag geometry(in FloatingLayout::unmap).
+                                // Snapshot it here and restore it after so "restore-to-floating" goes back to where the user had the window.
+                                let pre_drag_geometry = *window.last_geometry.lock().unwrap();
+
                                 if sz == SnappingZone::Maximize {
                                     shell.maximize_toggle(
                                         &window,
                                         &seat,
                                         &state.common.event_loop_handle,
                                     );
+                                    if let Some(geo) = pre_drag_geometry
+                                        && let Some(state) =
+                                            window.maximized_state.lock().unwrap().as_mut()
+                                    {
+                                        state.original_geometry = geo;
+                                    }
                                 } else {
                                     let directions = match sz {
                                         SnappingZone::Maximize => vec![],
@@ -1272,6 +1281,9 @@ impl Drop for MoveGrab {
                                             &theme,
                                             &window,
                                         );
+                                    }
+                                    if let Some(geo) = pre_drag_geometry {
+                                        *window.last_geometry.lock().unwrap() = Some(geo);
                                     }
                                 }
                             }
@@ -1377,6 +1389,16 @@ impl Drop for MoveGrab {
                 }
             }
 
+            let mut shell = state.common.shell.write();
+            shell
+                .workspaces
+                .active_mut(&cursor_output)
+                .unwrap()
+                .tiling_layer
+                .cleanup_drag();
+            shell.set_overview_mode(None, state.common.event_loop_handle.clone());
+            drop(shell);
+
             {
                 let cursor_state = seat.user_data().get::<CursorState>().unwrap();
                 cursor_state.lock().unwrap().unset_shape();
@@ -1391,6 +1413,7 @@ impl Drop for MoveGrab {
                     if let Some((target, offset)) = mapped.focus_under(
                         current_location - position.as_logical().to_f64(),
                         WindowSurfaceType::ALL,
+                        &seat,
                     ) {
                         pointer.motion(
                             state,

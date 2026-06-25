@@ -202,9 +202,8 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         handle: &mut TouchInnerHandle<'_, State>,
         focus: Option<(<State as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &DownEvent,
-        seq: Serial,
     ) {
-        handle.down(data, focus, event, seq);
+        handle.down(data, focus, event);
     }
 
     fn up(
@@ -212,9 +211,8 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &UpEvent,
-        seq: Serial,
     ) {
-        handle.up(data, event, seq);
+        handle.up(data, event);
 
         if event.slot == TouchGrab::start_data(self).slot {
             handle.unset_grab(self, data);
@@ -227,9 +225,8 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         handle: &mut TouchInnerHandle<'_, State>,
         focus: Option<(<State as SeatHandler>::TouchFocus, Point<f64, Logical>)>,
         event: &TouchMotionEvent,
-        seq: Serial,
     ) {
-        handle.motion(data, focus, event, seq);
+        handle.motion(data, focus, event);
 
         let distance = self.start_data.distance(event.location);
         if distance >= 1.
@@ -245,12 +242,12 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         }
     }
 
-    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
-        handle.frame(data, seq)
+    fn frame(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
+        handle.frame(data)
     }
 
-    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, seq: Serial) {
-        handle.cancel(data, seq);
+    fn cancel(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>) {
+        handle.cancel(data);
         handle.unset_grab(self, data);
     }
 
@@ -259,9 +256,8 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &ShapeEvent,
-        seq: Serial,
     ) {
-        handle.shape(data, event, seq)
+        handle.shape(data, event)
     }
 
     fn orientation(
@@ -269,9 +265,8 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         data: &mut State,
         handle: &mut TouchInnerHandle<'_, State>,
         event: &OrientationEvent,
-        seq: Serial,
     ) {
-        handle.orientation(data, event, seq);
+        handle.orientation(data, event);
     }
 
     fn start_data(&self) -> &TouchGrabStartData<State> {
