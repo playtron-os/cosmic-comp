@@ -1988,9 +1988,35 @@ impl SurfaceThreadState {
                 .store(self.timings.recent_frametime_ns(30), Ordering::Relaxed);
         }
 
-        if has_active_fullscreen || animations_going {
+        if has_active_fullscreen || animations_going || render_node != self.target_node {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
+        }
+
+        if render_node != self.target_node {
+            // Cross-GPU: this surface is composited by blitting `render_node` ->
+            // `target_node` through the GlMultiRenderer, and the realized buffer
+            // lives on `target_node`. A client window's buffer, however, lives on
+            // `render_node`. smithay's framebuffer exporter is bound to
+            // `render_node` (device.rs `GbmFramebufferExporter::new(.., render_node)`),
+            // so `can_add_framebuffer` accepts that foreign buffer and smithay will
+            // direct-scan-out the client's `render_node` buffer onto a DRM plane on
+            // `target_node` — bypassing the blit. The result is an unsynchronized,
+            // foreign-GPU buffer on the display plane: hover-tint blink and black
+            // squares / wrong textures on the physical display.
+            //
+            // The overlay path is already gated above. Also gate BOTH primary-plane
+            // paths so no client buffer can reach any plane cross-GPU:
+            //   - ALLOW_PRIMARY_PLANE_SCANOUT promotes the sole full-output element
+            //     (the "one window dominates the output" residual);
+            //   - ALLOW_PRIMARY_PLANE_SCANOUT_ANY only loosens the swapchain-format
+            //     match, widening that promotion to foreign-format buffers, so it
+            //     must go too.
+            // Keep ALLOW_CURSOR_PLANE_SCANOUT: the cursor plane composites into its
+            // own `target_node`-local allocator buffer (never a client buffer), so it
+            // is safe cross-GPU and dropping it would only cost cursor performance.
+            remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
+                | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
         }
 
         let mut vrr = matches!(self.vrr_mode, AdaptiveSync::Force);
