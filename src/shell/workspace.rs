@@ -488,6 +488,18 @@ impl Workspace {
         result
     }
 
+    /// SSD-only subset of [`Self::has_blur_windows`]: server-side-decorated windows
+    /// with header-bar blur but no client blur, whose header backdrop lives in the
+    /// primary FB and so must be kept off overlay planes.
+    pub fn has_ssd_blur_windows(&self, ssd_blur: bool) -> bool {
+        ssd_blur
+            && (self.floating_layer.has_ssd_windows()
+                || self
+                    .tiling_layer
+                    .mapped()
+                    .any(|(m, _)| m.has_ssd() && !m.has_blur()))
+    }
+
     /// Get blur windows in Z-order (bottom to top) with their keys
     /// Returns (window_key, geometry, alpha, global_z_index) tuples
     /// global_z_index is the position among ALL windows (not just blur windows)

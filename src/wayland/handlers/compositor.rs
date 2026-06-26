@@ -159,7 +159,25 @@ pub fn recursive_frame_time_estimation(
     overall_estimate
 }
 
+/// True when this surface requests client blur (`org_kde_kwin_blur`).
+fn surface_is_blur_backed(states: &SurfaceData) -> bool {
+    use crate::wayland::protocols::blur::CacheableBlurState;
+    states.cached_state.has::<CacheableBlurState>()
+        && states
+            .cached_state
+            .get::<CacheableBlurState>()
+            .current()
+            .enabled
+}
+
 pub fn frame_time_filter_fn(states: &SurfaceData) -> Kind {
+    // Keep blur-backed surfaces off overlay planes: their backdrop is composited into
+    // the primary FB, so promoting the surface mid-stream leaves it one frame stale
+    // (the #113 idle->scroll blink). Other high-FPS surfaces stay overlay-eligible.
+    if surface_is_blur_backed(states) {
+        return Kind::Unspecified;
+    }
+
     let clock = Clock::<Monotonic>::new();
     const _20_FPS: Duration = Duration::from_nanos(1_000_000_000 / 20);
 

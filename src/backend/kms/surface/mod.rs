@@ -1917,6 +1917,7 @@ impl SurfaceThreadState {
             game_mode_fps_limit,
             game_mode_active,
             game_mode_vrr,
+            has_ssd_blur_windows,
         ) = {
             let shell = self.shell.read();
             let animations_going = shell.animations_going();
@@ -1928,8 +1929,12 @@ impl SurfaceThreadState {
             let game_mode_active = shell.game_mode.active;
             let game_mode_vrr = shell.game_mode_vrr;
             let output = self.mirroring.as_ref().unwrap_or(&self.output);
+            // SSD header blur isn't visible to frame_time_filter_fn; detect it here
+            // for the frame-flags gate below.
+            let ssd_blur = shell.theme().header_backdrop_blur();
             if let Some((_, workspace)) = shell.workspaces.active(output) {
                 let seat = shell.seats.last_active();
+                let has_ssd_blur_windows = workspace.has_ssd_blur_windows(ssd_blur);
                 if let Some(fullscreen_surface) = workspace.get_fullscreen(seat) {
                     const _30_FPS: Duration = Duration::from_nanos(1_000_000_000 / 30);
                     (
@@ -1946,6 +1951,7 @@ impl SurfaceThreadState {
                         fps_limit,
                         game_mode_active,
                         game_mode_vrr,
+                        has_ssd_blur_windows,
                     )
                 } else {
                     (
@@ -1956,6 +1962,7 @@ impl SurfaceThreadState {
                         fps_limit,
                         game_mode_active,
                         game_mode_vrr,
+                        has_ssd_blur_windows,
                     )
                 }
             } else {
@@ -1967,6 +1974,7 @@ impl SurfaceThreadState {
                     fps_limit,
                     game_mode_active,
                     game_mode_vrr,
+                    false,
                 )
             }
         };
@@ -1993,28 +2001,15 @@ impl SurfaceThreadState {
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
         }
 
+        if has_ssd_blur_windows {
+            // Frame-level counterpart of the per-surface blur gate, for SSD header
+            // blur (no client flag for frame_time_filter_fn to see).
+            remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
+        }
+
         if render_node != self.target_node {
-            // Cross-GPU: this surface is composited by blitting `render_node` ->
-            // `target_node` through the GlMultiRenderer, and the realized buffer
-            // lives on `target_node`. A client window's buffer, however, lives on
-            // `render_node`. smithay's framebuffer exporter is bound to
-            // `render_node` (device.rs `GbmFramebufferExporter::new(.., render_node)`),
-            // so `can_add_framebuffer` accepts that foreign buffer and smithay will
-            // direct-scan-out the client's `render_node` buffer onto a DRM plane on
-            // `target_node` — bypassing the blit. The result is an unsynchronized,
-            // foreign-GPU buffer on the display plane: hover-tint blink and black
-            // squares / wrong textures on the physical display.
-            //
-            // The overlay path is already gated above. Also gate BOTH primary-plane
-            // paths so no client buffer can reach any plane cross-GPU:
-            //   - ALLOW_PRIMARY_PLANE_SCANOUT promotes the sole full-output element
-            //     (the "one window dominates the output" residual);
-            //   - ALLOW_PRIMARY_PLANE_SCANOUT_ANY only loosens the swapchain-format
-            //     match, widening that promotion to foreign-format buffers, so it
-            //     must go too.
-            // Keep ALLOW_CURSOR_PLANE_SCANOUT: the cursor plane composites into its
-            // own `target_node`-local allocator buffer (never a client buffer), so it
-            // is safe cross-GPU and dropping it would only cost cursor performance.
+            // Cross-GPU: also gate primary-plane scanout so no render_node client
+            // buffer is handed to a target_node plane.
             remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
                 | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
         }
