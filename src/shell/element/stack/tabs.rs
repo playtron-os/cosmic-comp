@@ -12,7 +12,7 @@ use iced_core::{
 
 use crate::comp_theme::CompTheme;
 use crate::utils::iced::CompElement;
-use icetron::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source};
+use icetron_p::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source};
 
 use keyframe::{ease, functions::EaseInOutCubic};
 use std::time::{Duration, Instant};

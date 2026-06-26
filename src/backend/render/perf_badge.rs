@@ -12,7 +12,7 @@
 use calloop::LoopHandle;
 use iced_core::{Alignment, Background, Border, Color, Length, Shadow, Vector};
 use iced_widget::{Space, container, row};
-use icetron::prelude::styled_text;
+use icetron_p::prelude::styled_text;
 use smithay::{
     backend::renderer::{ImportMem, Renderer, element::AsRenderElements},
     output::Output,

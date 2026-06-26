@@ -520,7 +520,7 @@ fn parse_desktop_override(path: &std::path::Path, app_id: &str) -> Option<Deskto
 impl CosmicWindowInternal {
     /// SSD header height derived from the current theme's window control style.
     fn ssd_height(&self) -> i32 {
-        icetron::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+        icetron_p::prelude::header_height(&**self.theme.lock().unwrap()) as i32
     }
 
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
@@ -658,7 +658,7 @@ impl CosmicWindow {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, icetron::prelude::header_height(&*theme) as i32),
+            (width, icetron_p::prelude::header_height(&*theme) as i32),
             handle.clone(),
             theme,
         ));

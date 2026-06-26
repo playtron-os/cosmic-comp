@@ -45,7 +45,7 @@ iced_graphics = { git = "https://github.com/playtron-os/iced.git" }
 iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
 iced_tiny_skia = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image"] }
 iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image", "advanced"] }
-icetron = { git = "ssh://git@github.com/playtron-os/icetron.git", default-features = false, features = ["images", "icons", "buttons", "dividers", "desktop-utils", "menus"] }
+icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git" }
 icetron-themes = { git = "ssh://git@github.com/playtron-os/icetron-themes.git", features = ["dynamic", "color-mode"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"

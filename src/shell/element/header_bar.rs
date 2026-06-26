@@ -7,7 +7,7 @@
 use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, container, row, svg};
-use icetron::prelude::{animated_opacity, app_header, header_height, styled_text};
+use icetron_p::prelude::{animated_opacity, app_header, header_height, styled_text};
 
 use crate::comp_theme::CompTheme;
 

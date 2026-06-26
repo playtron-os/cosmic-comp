@@ -172,7 +172,7 @@ impl TabState {
         let icon_handle = crate::utils::xdg_icon::icon_handle(app_id);
 
         let close_handle =
-            iced_core::svg::Handle::from_memory(icetron::icetron_assets::icons::system::CLOSE_LINE);
+            iced_core::svg::Handle::from_memory(icetron_themes::icons::X.bytes);
 
         let content_hash = Self::compute_hash(title, active);
 

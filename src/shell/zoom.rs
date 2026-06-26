@@ -7,11 +7,15 @@ use iced_core::{Alignment, Length, alignment::Vertical};
 use iced_runtime;
 use iced_widget::svg::{self, Svg};
 use iced_widget::{self, button, container, row};
-use icetron::components::divider::vertical_divider;
-use icetron::icetron_assets::icons::system::{
-    ADD_LINE, CHEVRONDOWN, CLOSE_LINE, MORE_LINE, SUBTRACT_LINE,
-};
-use icetron::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source, styled_text};
+use icetron_p::components::divider::vertical_divider;
+
+const ADD_LINE: &[u8] = icetron_themes::icons::PLUS.bytes;
+const CHEVRONDOWN: &[u8] = icetron_themes::icons::CHEVRON_DOWN.bytes;
+const CLOSE_LINE: &[u8] = icetron_themes::icons::X.bytes;
+const MORE_LINE: &[u8] = icetron_themes::icons::ELLIPSIS.bytes;
+const SUBTRACT_LINE: &[u8] = icetron_themes::icons::MINUS.bytes;
+
+use icetron_p::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source, styled_text};
 use keyframe::{ease, functions::Linear};
 use smithay::{
     backend::renderer::{ImportMem, Renderer, element::AsRenderElements},

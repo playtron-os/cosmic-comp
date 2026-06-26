@@ -130,7 +130,7 @@ pub struct CosmicStackInternal {
 impl CosmicStackInternal {
     /// Tab bar height derived from the current theme's window control style.
     fn tab_height(&self) -> i32 {
-        icetron::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+        icetron_p::prelude::header_height(&**self.theme.lock().unwrap()) as i32
     }
 
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
@@ -192,7 +192,7 @@ impl CosmicStack {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, icetron::prelude::header_height(&*theme) as i32),
+            (width, icetron_p::prelude::header_height(&*theme) as i32),
             handle,
             theme,
         ))
@@ -1383,8 +1383,10 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
         );
 
         // Window control buttons using icetron styling
-        use icetron::icetron_assets::icons::brand_humain::{CLOSE, MAXIMIZE, MINIMIZE, UNMAXIMIZE};
-        use icetron::prelude::{ghost_button_style, icon_svg};
+        use icetron_themes::icons::{
+            COPY as UNMAXIMIZE, MINUS as MINIMIZE, SQUARE as MAXIMIZE, X as CLOSE,
+        };
+        use icetron_p::prelude::{ghost_button_style, icon_svg};
 
         let icon_size = theme.ui_size_icon_2xs();
         let btn_size = theme.ui_size_icon_2md();

@@ -280,7 +280,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         static FONTS_LOADED: std::sync::Once = std::sync::Once::new();
         FONTS_LOADED.call_once(|| {
             let mut fs = font_system().write().expect("Write font system");
-            for font_data in icetron::icetron_assets::fonts::ALL {
+            for font_data in icetron_themes::fonts::ALL {
                 fs.load_font(std::borrow::Cow::Borrowed(*font_data));
             }
         });

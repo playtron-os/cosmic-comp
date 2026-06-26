@@ -523,7 +523,7 @@ impl State {
                     let zone = layer_map_for_output(&active_output).non_exclusive_zone();
                     let has_ssd = !pending.surface.is_decorated(true);
                     let ssd_h = if has_ssd {
-                        icetron::prelude::header_height(&**shell.theme()) as i32
+                        icetron_p::prelude::header_height(&**shell.theme()) as i32
                     } else {
                         0
                     };

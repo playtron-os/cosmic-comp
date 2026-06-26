@@ -5422,7 +5422,7 @@ where
     {
         let window_geo = window.geometry();
         let origin = {
-            let tab_height = icetron::prelude::header_height(&**theme) as i32;
+            let tab_height = icetron_p::prelude::header_height(&**theme) as i32;
             let mut geo = focused_geo;
             geo.loc.x += tab_height;
             geo.size.h -= tab_height;

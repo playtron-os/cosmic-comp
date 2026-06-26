@@ -16,7 +16,7 @@ static ICON_HANDLE_CACHE: LazyLock<Mutex<HashMap<String, Option<svg::Handle>>>> 
 
 /// Resolve a symbolic icon name to a filesystem path (cached inside `lookup_icon`).
 pub fn resolve_icon_path(name: &str, size: f32) -> Option<std::path::PathBuf> {
-    icetron::icetron_utils::icons::lookup_icon(name, size)
+    icetron_p::utils::icons::lookup_icon(name, size)
 }
 
 /// Create an SVG handle for a named icon (cached).
@@ -25,7 +25,7 @@ pub fn icon_handle(name: &str) -> Option<svg::Handle> {
     if let Some(cached) = cache.get(name) {
         return cached.clone();
     }
-    let handle = icetron::icetron_utils::icons::lookup_icon(name, 48.0).map(svg::Handle::from_path);
+    let handle = icetron_p::utils::icons::lookup_icon(name, 48.0).map(svg::Handle::from_path);
     cache.insert(name.to_string(), handle.clone());
     handle
 }

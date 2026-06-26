@@ -17,7 +17,7 @@ use cosmic_settings_config::shortcuts::action::{Action, ResizeDirection};
 use iced_core::{Alignment, Background, Border, Color, Element, Length};
 use iced_widget::container::Container;
 use iced_widget::{Space, column, container, row};
-use icetron::prelude::styled_text;
+use icetron_p::prelude::styled_text;
 use smithay::utils::Size;
 
 use crate::utils::iced::CompElement;

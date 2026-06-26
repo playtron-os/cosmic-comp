@@ -11,7 +11,7 @@ use crate::{
 use calloop::LoopHandle;
 use iced_core::{Alignment, Length};
 use iced_widget::{Space, container, row};
-use icetron::prelude::styled_text;
+use icetron_p::prelude::styled_text;
 use smithay::utils::{Logical, Size};
 
 use crate::utils::iced::CompElement;

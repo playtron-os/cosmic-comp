@@ -10,8 +10,11 @@ use calloop::LoopHandle;
 use iced_core::{Alignment, Length, Rectangle as IcedRectangle, alignment::Horizontal};
 use iced_runtime::Task;
 use iced_widget::{self, Column, Row, Space, button, container, svg::Svg};
-use icetron::icetron_assets::icons::system::{ARROW_RIGHT_S_LINE, CHECK_LINE};
-use icetron::prelude::styled_text;
+
+const ARROW_RIGHT_S_LINE: &[u8] = icetron_themes::icons::CHEVRON_RIGHT.bytes;
+const CHECK_LINE: &[u8] = icetron_themes::icons::CHECK.bytes;
+
+use icetron_p::prelude::styled_text;
 use smithay::{
     backend::{
         input::{ButtonState, TouchSlot},
