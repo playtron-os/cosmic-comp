@@ -1046,9 +1046,16 @@ impl SurfaceThreadState {
             }
         };
 
-        if has_active_fullscreen || animations_going {
+        if has_active_fullscreen || animations_going || render_node != self.target_node {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
+        }
+
+        if render_node != self.target_node {
+            // Cross-GPU: also gate primary-plane scanout so no render_node client
+            // buffer is handed to a target_node plane.
+            remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
+                | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
         }
 
         let mut vrr = matches!(self.vrr_mode, AdaptiveSync::Force);
