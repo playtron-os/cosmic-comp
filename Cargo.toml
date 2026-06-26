@@ -161,6 +161,8 @@ iced_graphics = { git = "https://github.com/playtron-os/iced.git" }
 iced_renderer = { git = "https://github.com/playtron-os/iced.git" }
 iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
 iced_widget = { git = "https://github.com/playtron-os/iced.git" }
+[patch."https://github.com/pop-os/cosmic-settings-daemon"]
+cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings-daemon" }
 [patch.crates-io]
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
 smithay = { git = "https://github.com/playtron-os/smithay.git" }
