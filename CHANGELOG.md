@@ -1,3 +1,61 @@
+# [1.27.0](https://github.com/playtron-os/cosmic-comp/compare/v1.26.0...v1.27.0) (2026-06-26)
+
+
+### Bug Fixes
+
+* add git hash to .cargo/config when vendoring ([8f5f7c8](https://github.com/playtron-os/cosmic-comp/commit/8f5f7c897deaf0fac947ed1295692a35f318c8e6))
+* break from loop instead of unwrapping ([1dab42e](https://github.com/playtron-os/cosmic-comp/commit/1dab42ed566cbfba617cc764c6f1d1ad4a5160c7))
+* clean up pending_windows for surfaces that were never mapped ([3e84968](https://github.com/playtron-os/cosmic-comp/commit/3e84968dacb6a50a82ef5e35c0ac373c38172681))
+* consider SSD/tab height when calculating last server size ([fdf015c](https://github.com/playtron-os/cosmic-comp/commit/fdf015cbcf4f71c1a08d3158aa94c49b4ce37592))
+* **dbus:** Block on creation of zbus connection to avoid deadlock ([5153d49](https://github.com/playtron-os/cosmic-comp/commit/5153d497e78c8e16ce8689eb7f03d2b4d0b250fd))
+* debug build pinning panic ([52b3f93](https://github.com/playtron-os/cosmic-comp/commit/52b3f930a88db6cdde73dbdd65a056cdc0efa40f))
+* draw the focused window border for the current window only ([0312f9a](https://github.com/playtron-os/cosmic-comp/commit/0312f9a2017de92abf82386c979bee74d7a0255d))
+* Ellipsize tab_text and use text widget instead of custom impl ([01f1785](https://github.com/playtron-os/cosmic-comp/commit/01f1785af51b47c3fd5051f5f5c5b3e4c4ab26cd))
+* **floating:** allow remapping minimized windows ([aff506b](https://github.com/playtron-os/cosmic-comp/commit/aff506bb7bab5d3280b1c910c096b3dd1bf3098c))
+* follow the focus after alt+tab to another output ([56f84fb](https://github.com/playtron-os/cosmic-comp/commit/56f84fba2dc0ff7de191e48e56f29d92ba50e668))
+* Fullscreen request unreachable code crash ([09bca7a](https://github.com/playtron-os/cosmic-comp/commit/09bca7a5752908cefb71b85e0e720994173ad3ed))
+* fullscreen x11 games opening as floating/tiled windows ([200074e](https://github.com/playtron-os/cosmic-comp/commit/200074e580cbefadf20d5ee9d492846ab0d8e498))
+* **headerbar:** double click handling & resize only on press ([b28a435](https://github.com/playtron-os/cosmic-comp/commit/b28a435b18a3c1a8dfb8dbf781b40610aca03604))
+* iced widget event handling ([2e08a87](https://github.com/playtron-os/cosmic-comp/commit/2e08a871bebfdeaef175c9371fd66029a0e01ecb))
+* ignore configure requests from fullscreen windows ([451b831](https://github.com/playtron-os/cosmic-comp/commit/451b8319d633e50d729c60a6719a4dd57d751574))
+* **keyboard:** Fix keyboard shortcuts for non-Latin layouts ([110c11e](https://github.com/playtron-os/cosmic-comp/commit/110c11eff95c317f8295c8acdaab8e367941bbb9))
+* **kms:** don't direct-scanout client buffers across GPUs ([a834229](https://github.com/playtron-os/cosmic-comp/commit/a834229f59efaeaebcf220941aea1a821c9d6c8b))
+* **kms:** keep blur-backed surfaces off overlay planes (idle->scroll blink) ([96f56e0](https://github.com/playtron-os/cosmic-comp/commit/96f56e0f29bed5a79633a68a92d77c732ed6bdcb)), closes [hi#FPS](https://github.com/hi/issues/FPS)
+* **license:** link public icetron-p instead of proprietary icetron ([c23299e](https://github.com/playtron-os/cosmic-comp/commit/c23299e5dc7511e94b5d07a22e898da2ae7699a7))
+* **magnifier:** smooth mouse wheel zoom and respect natural scroll direction ([92fcceb](https://github.com/playtron-os/cosmic-comp/commit/92fcceba54cb1a8ce76ab5a62a6a4602b185580b))
+* only move the grabbed window if a new zone is chosen ([1dfc948](https://github.com/playtron-os/cosmic-comp/commit/1dfc948f1ebf2995fcbf9efe570103f9a46cf7e4))
+* pass the full window size to xwayland ([51dd3bc](https://github.com/playtron-os/cosmic-comp/commit/51dd3bc66fe8d189264062d1e350abb96c1021d6))
+* **perf:** cold-start badge, softer un-clipped badge shadow, voice-chord guard, default target ([673b940](https://github.com/playtron-os/cosmic-comp/commit/673b940a91f196cdcc9f0cd8c30d4afe362a002d))
+* Prevent system hang on double Caps Lock press ([21679f2](https://github.com/playtron-os/cosmic-comp/commit/21679f215acfa7ae86072362c5d91b0cc4ed1fcd))
+* Remove redundant configure in popup reposition_request ([f865ad7](https://github.com/playtron-os/cosmic-comp/commit/f865ad7241a772a62b558866ab2dc87e99eb6383))
+* restore snapped windows as snapped after maximize/minimize ([b5186ef](https://github.com/playtron-os/cosmic-comp/commit/b5186ef21a74f9399714d2bac03ca016cd5820b2))
+* restore the window to where it was before the drag ([7c02df2](https://github.com/playtron-os/cosmic-comp/commit/7c02df250e8f17afd406dbc1460d131fb2b13777))
+* set_rectangle leak ([aac1e19](https://github.com/playtron-os/cosmic-comp/commit/aac1e19f08a016ade349569fbf8c0305761de20b))
+* skip dead windows in floating set_output ([31f317d](https://github.com/playtron-os/cosmic-comp/commit/31f317d16bcbe7cf81b185392d9bde4c1430669b))
+* text position in stack ([ba84ee9](https://github.com/playtron-os/cosmic-comp/commit/ba84ee9324fc113b85dece30f2c6d113fe0a50b4))
+* update deps ([5f53b14](https://github.com/playtron-os/cosmic-comp/commit/5f53b144027cb17d83294a225dcb5e6b524f2e93))
+* update deps ([4189719](https://github.com/playtron-os/cosmic-comp/commit/4189719b249750e699531833f726e0f2f406869a))
+* update test ([ab53861](https://github.com/playtron-os/cosmic-comp/commit/ab538615da46274a7b1fda8ca17f589e9d5786c9))
+* windows are clipped in overview mode causing visual artifact ([a623f18](https://github.com/playtron-os/cosmic-comp/commit/a623f18c25471922fdb991c69bf3d7c46c42075b))
+
+
+### Features
+
+* add --no-xwayland argument for running without Xwayland ([98cca4f](https://github.com/playtron-os/cosmic-comp/commit/98cca4f3b7e18e55e1d64537bc9782e259e10f8c))
+* add chatpanel system action and spotlight ([9bec9c4](https://github.com/playtron-os/cosmic-comp/commit/9bec9c4738df11e2e98bd1d50e99a908b22c2acb))
+* add config option for xdg activation behavior ([2f7c34f](https://github.com/playtron-os/cosmic-comp/commit/2f7c34f29ae8d1d5b7d147bdb69ae443bd630e98))
+* allow naming pinned workspaces ([db0b1af](https://github.com/playtron-os/cosmic-comp/commit/db0b1afeb5405d67c2993c5e5c4d15d82a120cb4))
+* **input:** bind XF86LaunchA to workspace overview ([d70d2a7](https://github.com/playtron-os/cosmic-comp/commit/d70d2a7be946dd2a192ed5dc7b35e5939eeb90d0))
+* separate logind feature from systemd ([821b431](https://github.com/playtron-os/cosmic-comp/commit/821b431973fbc1ce2fae1c2a347eadbbae833246)), closes [#2473](https://github.com/playtron-os/cosmic-comp/issues/2473)
+* support multiple fullscreen windows per workspace ([28ef6bd](https://github.com/playtron-os/cosmic-comp/commit/28ef6bdbc8f5a9040346a1a8f7293cbbdb2943bc))
+* **tiling-exceptions:** add exception for Slack huddle preview ([5ca8cc2](https://github.com/playtron-os/cosmic-comp/commit/5ca8cc2cdf7c753580a686a58092eb497f326a6f))
+* **tiling-exceptions:** add exception for Thunderbird message compose dialog ([f95b626](https://github.com/playtron-os/cosmic-comp/commit/f95b62635d65aacfe56b46de4e028cc77c0ab507))
+
+
+### Performance Improvements
+
+* **toplevel_info:** optimize send_toplevel_to_client ([d4c5714](https://github.com/playtron-os/cosmic-comp/commit/d4c5714c108aef348da66a8a0175c42898eb643e))
+
 # [1.26.0](https://github.com/playtron-os/cosmic-comp/compare/v1.25.0...v1.26.0) (2026-06-24)
 
 
