@@ -8,6 +8,8 @@ License:        GPL-3.0-only
 URL:            https://github.com/pop-os/cosmic-comp
 Source0:        %{name}.tar.gz
 
+%global debug_package %{nil}
+
 # Runtime dependencies (from upstream cosmic-comp)
 # Pin cosmic-icon-theme to 1.0.x series
 Requires:       (cosmic-icon-theme >= 1.0.0 with cosmic-icon-theme < 1.1.0)
