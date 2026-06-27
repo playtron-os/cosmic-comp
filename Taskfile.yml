@@ -134,6 +134,17 @@ tasks:
       - sed -i '0,/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"$/s//version = "{{.VERSION}}"/' Cargo.toml
       - "sed -i 's/^Version: .*/Version: {{.VERSION}}/' pkg/rpm/cosmic-comp.spec"
 
+  release:build:
+    desc: "Build the release RPMs for all arches (skipped when SKIP_BUILD=true; used by the release prepare step)"
+    cmds:
+      # SKIP_BUILD=true is set by the CI publish job, which reuses RPMs already
+      # built by the parallel matrix jobs. Local/standalone runs build normally.
+      - |
+        if [ "${SKIP_BUILD:-}" != "true" ]; then
+          task docker:run TARGET=dist:all ARCH=x86_64 TARGET_ARCH=x86_64-unknown-linux-gnu
+          task docker:run TARGET=dist:all ARCH=aarch64 TARGET_ARCH=aarch64-unknown-linux-gnu
+        fi
+
   release:
     desc: Publish a new release
     preconditions:

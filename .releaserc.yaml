@@ -25,15 +25,12 @@ plugins:
   # The replace plugin would replace ALL matches including dependency versions
   - - "@semantic-release/exec"
     - shell: true
+      # NOTE: this string is run through a lodash template by @semantic-release/exec,
+      # so ${...} is interpolated as JS. Only ${nextRelease.version} is allowed here;
+      # any shell ${VAR} expansion must live in the Taskfile (see release:build).
       prepareCmd: |
         task version:set VERSION=${nextRelease.version}
-        # In CI the RPMs are built ahead of time by the parallel matrix jobs and
-        # placed in dist/, so the publish job sets SKIP_BUILD=true to avoid a
-        # redundant (and slow/fragile) rebuild here. Local/standalone runs still build.
-        if [ "${SKIP_BUILD:-}" != "true" ]; then
-          task docker:run TARGET=dist:all ARCH=x86_64 TARGET_ARCH=x86_64-unknown-linux-gnu
-          task docker:run TARGET=dist:all ARCH=aarch64 TARGET_ARCH=aarch64-unknown-linux-gnu
-        fi
+        task release:build
 
   # Commit the following changes to git after other plugins have run
   - - "@semantic-release/git"
