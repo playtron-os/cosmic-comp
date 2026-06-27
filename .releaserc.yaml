@@ -26,10 +26,14 @@ plugins:
   - - "@semantic-release/exec"
     - shell: true
       prepareCmd: |
-        sed -i '0,/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"$/s//version = "${nextRelease.version}"/' Cargo.toml
-        sed -i 's/^Version: .*/Version: ${nextRelease.version}/' pkg/rpm/cosmic-comp.spec
-        task docker:run TARGET=dist:all ARCH=x86_64 TARGET_ARCH=x86_64-unknown-linux-gnu
-        task docker:run TARGET=dist:all ARCH=aarch64 TARGET_ARCH=aarch64-unknown-linux-gnu
+        task version:set VERSION=${nextRelease.version}
+        # In CI the RPMs are built ahead of time by the parallel matrix jobs and
+        # placed in dist/, so the publish job sets SKIP_BUILD=true to avoid a
+        # redundant (and slow/fragile) rebuild here. Local/standalone runs still build.
+        if [ "${SKIP_BUILD:-}" != "true" ]; then
+          task docker:run TARGET=dist:all ARCH=x86_64 TARGET_ARCH=x86_64-unknown-linux-gnu
+          task docker:run TARGET=dist:all ARCH=aarch64 TARGET_ARCH=aarch64-unknown-linux-gnu
+        fi
 
   # Commit the following changes to git after other plugins have run
   - - "@semantic-release/git"

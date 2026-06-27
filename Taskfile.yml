@@ -124,6 +124,16 @@ tasks:
       - task: dist:archive
       - task: dist:rpm
 
+  version:set:
+    desc: "Set the package version in Cargo.toml and the rpm spec - E.g. go-task version:set VERSION=1.2.3"
+    requires:
+      vars:
+        - VERSION
+    cmds:
+      # Only replace the FIRST version match (the package version), not dependency versions
+      - sed -i '0,/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"$/s//version = "{{.VERSION}}"/' Cargo.toml
+      - "sed -i 's/^Version: .*/Version: {{.VERSION}}/' pkg/rpm/cosmic-comp.spec"
+
   release:
     desc: Publish a new release
     preconditions:
