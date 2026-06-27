@@ -107,7 +107,7 @@
     (modifiers: [Super], key: "c"): System(ChatPanel),
     (modifiers: [Super], key: "w"): System(WorkspaceOverview),
     (modifiers: [Super], key: "slash"): System(Launcher),
-    (modifiers: [Super]): System(Launcher),
+    (modifiers: [Super]): System(StartMenu),
     (modifiers: [Alt], key: "Tab"): System(WindowSwitcher),
     (modifiers: [Alt, Shift], key: "Tab"): System(WindowSwitcherPrevious),
     (modifiers: [Super], key: "Tab"): System(WindowSwitcher),
