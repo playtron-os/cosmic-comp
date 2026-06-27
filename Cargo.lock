@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "cosmic-text"
 version = "0.19.0"
-source = "git+https://github.com/pop-os/cosmic-text.git#c24886c2471e5606587c46090cd25dbbf209186b"
+source = "git+https://github.com/pop-os/cosmic-text.git#4fe1195e6451d6aaa3dc383895d6fd366ea9fc7b"
 dependencies = [
  "bitflags 2.13.0",
  "fontdb",
@@ -2920,8 +2920,8 @@ dependencies = [
 
 [[package]]
 name = "icetron-themes"
-version = "1.25.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#2f56c022bff44610756e27278f86302a33335c18"
+version = "1.26.0"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#7357ed238a4c2c48674907d4c520cf242e66121f"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",

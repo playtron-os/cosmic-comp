@@ -51,6 +51,7 @@ use crate::{
 use anyhow::Context;
 use calloop::RegistrationToken;
 use cosmic_comp_config::output::comp::{OutputConfig, OutputState};
+use futures_executor::ThreadPool;
 use i18n_embed::{
     DesktopLanguageRequester,
     fluent::{FluentLanguageLoader, fluent_language_loader},
@@ -137,7 +138,6 @@ use smithay::{
     },
     xwayland::XWaylandClientData,
 };
-use futures_executor::ThreadPool;
 use tracing::{error, warn};
 
 #[cfg(feature = "logind")]

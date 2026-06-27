@@ -1383,10 +1383,10 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
         );
 
         // Window control buttons using icetron styling
+        use icetron_p::prelude::{ghost_button_style, icon_svg};
         use icetron_themes::icons::{
             COPY as UNMAXIMIZE, MINUS as MINIMIZE, SQUARE as MAXIMIZE, X as CLOSE,
         };
-        use icetron_p::prelude::{ghost_button_style, icon_svg};
 
         let icon_size = theme.ui_size_icon_2xs();
         let btn_size = theme.ui_size_icon_2md();

@@ -206,12 +206,7 @@ impl<G: TouchGrab<State>> TouchGrab<State> for DelayGrab<G> {
         handle.down(data, focus, event);
     }
 
-    fn up(
-        &mut self,
-        data: &mut State,
-        handle: &mut TouchInnerHandle<'_, State>,
-        event: &UpEvent,
-    ) {
+    fn up(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, event: &UpEvent) {
         handle.up(data, event);
 
         if event.slot == TouchGrab::start_data(self).slot {

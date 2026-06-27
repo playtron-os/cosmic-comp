@@ -396,12 +396,7 @@ impl TouchGrab<State> for ResizeGrab {
         }
     }
 
-    fn up(
-        &mut self,
-        data: &mut State,
-        handle: &mut TouchInnerHandle<'_, State>,
-        event: &UpEvent,
-    ) {
+    fn up(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, event: &UpEvent) {
         match self {
             ResizeGrab::Floating(grab) => TouchGrab::up(grab, data, handle, event),
             ResizeGrab::Tiling(grab) => TouchGrab::up(grab, data, handle, event),
@@ -737,12 +732,7 @@ impl TouchGrab<State> for MoveGrab {
         }
     }
 
-    fn up(
-        &mut self,
-        data: &mut State,
-        handle: &mut TouchInnerHandle<'_, State>,
-        event: &UpEvent,
-    ) {
+    fn up(&mut self, data: &mut State, handle: &mut TouchInnerHandle<'_, State>, event: &UpEvent) {
         match self {
             MoveGrab::Move(grab) => TouchGrab::up(grab, data, handle, event),
             MoveGrab::Delayed(grab) => TouchGrab::up(grab, data, handle, event),
