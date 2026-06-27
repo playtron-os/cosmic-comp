@@ -1,3 +1,10 @@
+## [1.27.2](https://github.com/playtron-os/cosmic-comp/compare/v1.27.1...v1.27.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* update deps ([10058f4](https://github.com/playtron-os/cosmic-comp/commit/10058f4340c926aa8c9ceb6cafb1135a51581322))
+
 ## [1.27.1](https://github.com/playtron-os/cosmic-comp/compare/v1.27.0...v1.27.1) (2026-06-27)
 
 
