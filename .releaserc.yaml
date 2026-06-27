@@ -46,5 +46,5 @@ plugins:
           label: "RPM (x86_64)"
         - path: "dist/*aarch64*.rpm"
           label: "RPM (aarch64)"
-    - successComment: false
+      successComment: false
       failComment: false
