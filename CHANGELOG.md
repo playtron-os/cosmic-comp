@@ -1,3 +1,14 @@
+## [1.27.1](https://github.com/playtron-os/cosmic-comp/compare/v1.27.0...v1.27.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* change default Super binding to StartMenu ([9b7f8a5](https://github.com/playtron-os/cosmic-comp/commit/9b7f8a5e7b51c38c89a41b040813fd2f233c24b6))
+* fix local RPM build and update deps ([a8f2cac](https://github.com/playtron-os/cosmic-comp/commit/a8f2cac579d8f41b8d65b20e9689ab92b4c153fb))
+* **kms:** clear stale blur textures on session resume (VT-switch flicker) ([1148303](https://github.com/playtron-os/cosmic-comp/commit/114830358442f17918beee7cf570f725a334a210))
+* run fmt and also fix the double pointer speed issue ([c459c1e](https://github.com/playtron-os/cosmic-comp/commit/c459c1e336e650ccd9aaa679e2c7ba5d00f07b84))
+* update dependencies to add System action ([5242e77](https://github.com/playtron-os/cosmic-comp/commit/5242e7766ae0b1386f4de96f1c6d2a84f82c78ff))
+
 # [1.27.0](https://github.com/playtron-os/cosmic-comp/compare/v1.26.0...v1.27.0) (2026-06-26)
 
 
