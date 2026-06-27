@@ -1566,6 +1566,10 @@ impl SurfaceThreadState {
         self.api.as_mut().remove_node(&node);
         // force enumeration
         let _ = self.api.devices();
+        // Drop GL handles tied to the removed renderer so they reallocate on the
+        // new context after resume (ensure_textures skips same-size recreation).
+        self.blur_state = BlurRenderState::default();
+        self.postprocess_textures.clear();
     }
 
     #[profiling::function]

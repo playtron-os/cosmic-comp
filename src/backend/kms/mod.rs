@@ -365,6 +365,7 @@ impl State {
         if let Err(err) = backend.refresh_used_devices() {
             warn!(?err, "Failed to re-create graphics contexts");
         }
+        crate::backend::render::blur::invalidate_all_blur_caches();
 
         // resume input
         if let Err(err) = backend.libinput.resume() {
