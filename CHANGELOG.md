@@ -1,3 +1,11 @@
+# [1.28.0](https://github.com/playtron-os/cosmic-comp/compare/v1.27.2...v1.28.0) (2026-06-28)
+
+
+### Features
+
+* per-app and per-window Steam atom integration for game mode ([abdc090](https://github.com/playtron-os/cosmic-comp/commit/abdc090a27612774d39ef51647a8b6b4b87c6760))
+* remove libdisplay-info dynamic lib requirement to make it compatible with fedora 44 ([436ad2e](https://github.com/playtron-os/cosmic-comp/commit/436ad2e8f6747657a20b42a75f0b973bb4e2891a))
+
 ## [1.27.2](https://github.com/playtron-os/cosmic-comp/compare/v1.27.1...v1.27.2) (2026-06-27)
 
 
