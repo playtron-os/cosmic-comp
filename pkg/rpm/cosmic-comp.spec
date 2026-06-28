@@ -19,7 +19,7 @@ Requires:       libinput
 Requires:       libseat
 Requires:       libxkbcommon
 Requires:       mesa-libgbm
-Requires:       libdisplay-info
+# libdisplay-info is statically linked into the binary (see Dockerfile); no runtime dep.
 Requires:       pixman
 Requires:       systemd-udev
 
