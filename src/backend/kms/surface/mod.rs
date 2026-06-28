@@ -1926,9 +1926,12 @@ impl SurfaceThreadState {
             let shell = self.shell.read();
             let animations_going = shell.animations_going();
             // Tearing is allowed for an exclusive fullscreen game when the
-            // game-mode `SetTearing` flag is on. The scanout/VRR/compositing
+            // game-mode `SetTearing` flag is on — but NOT while an overlay is up
+            // (the overlay must composite above the game, which rules out the
+            // single-plane tearing/scanout fast path). The scanout/VRR/compositing
             // checks happen below.
-            let game_mode_tearing = shell.game_mode.active && shell.tearing_allowed;
+            let game_mode_tearing =
+                shell.game_mode.active && shell.tearing_allowed && !shell.game_mode.overlay_active;
             let fps_limit = shell.game_mode_fps_limit;
             let game_mode_active = shell.game_mode.active;
             let game_mode_vrr = shell.game_mode_vrr;

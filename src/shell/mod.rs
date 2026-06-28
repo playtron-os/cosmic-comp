@@ -653,15 +653,30 @@ pub enum EdgeIndicator {
 #[derive(Debug, Default)]
 pub struct GameMode {
     pub active: bool,
-    /// The app id currently in game mode.
+    /// The Steam app id (`STEAM_GAME`) currently in game mode.
     pub app_id: Option<u32>,
     /// The game surface we fullscreened, so we can un-fullscreen it on exit.
     pub game_surface: Option<CosmicSurface>,
     /// Windows we minimized on entry, restored verbatim on exit.
     pub minimized: Vec<CosmicSurface>,
-    /// Set when entry was requested but no game window was focused/mapped yet;
-    /// retried from `refresh_game_mode_state` once a game window appears.
+    /// Set when entry was requested but no window carrying that app id was mapped
+    /// yet; resolved by `try_resolve_pending_game_mode` (the refresh tick and the
+    /// `STEAM_GAME` property hook) once a matching window appears.
     pub pending_app_id: Option<u32>,
+    /// Whether a gaming overlay is currently up over the game — either a real
+    /// overlay window (`STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY`) or a client
+    /// `SetOverlay(true)` assertion. Maintained by `refresh_overlay_visible`;
+    /// read by the render path to drop the tearing/scanout fast path so the
+    /// overlay composites cleanly.
+    pub overlay_active: bool,
+    /// The last `SetOverlay(visible)` assertion from a D-Bus client (the native
+    /// QAM, which can't set the X11 overlay marker). OR'd with real overlay
+    /// presence into `overlay_active`.
+    pub overlay_asserted: bool,
+    /// The window currently holding the input grab over the game (via
+    /// `STEAM_INPUT_FOCUS` or `SetOverlay(blocking)`), so it can be released
+    /// cleanly. Reset by `GameMode::default()` on exit.
+    pub input_grab: Option<CosmicSurface>,
 }
 
 #[derive(Debug)]

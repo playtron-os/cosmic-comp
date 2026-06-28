@@ -202,9 +202,9 @@ dependencies = [
 
 [[package]]
 name = "arc-swap"
-version = "1.9.1"
+version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
 dependencies = [
  "rustversion",
 ]
@@ -6296,7 +6296,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/playtron-os/smithay.git#204470a3901cf9b603a0f70c73873d61bd690ab4"
+source = "git+https://github.com/playtron-os/smithay.git#5891cf2ee3e0f0d47d763b4b53242a58154bfae2"
 dependencies = [
  "aliasable",
  "appendlist",

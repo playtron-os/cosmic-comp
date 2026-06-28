@@ -188,6 +188,48 @@ impl CosmicSurface {
         }
     }
 
+    /// Steam app id (`STEAM_GAME` X11 property) for this surface, if set. Only
+    /// XWayland windows carry it; native Wayland toplevels return `None`.
+    pub fn steam_appid(&self) -> Option<u32> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.steam_game(),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// Whether this is a Steam or external gaming overlay (`STEAM_OVERLAY` /
+    /// `GAMESCOPE_EXTERNAL_OVERLAY` — e.g. the Steam overlay or MangoHud). These
+    /// must survive game mode (not minimized) and sit above the game. Only
+    /// XWayland windows carry the markers.
+    pub fn is_overlay(&self) -> bool {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => {
+                surface.steam_overlay().is_some_and(|v| v != 0)
+                    || surface.external_overlay().is_some_and(|v| v != 0)
+            }
+            WindowSurface::Wayland(_) => false,
+        }
+    }
+
+    /// The `STEAM_INPUT_FOCUS` mode for this surface, if set (non-zero = this
+    /// window grabs keyboard/pointer input over the game). `None` for native
+    /// Wayland toplevels.
+    pub fn steam_input_focus(&self) -> Option<u32> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.steam_input_focus(),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// Whether this is the Steam client / Big Picture window (`STEAM_BIGPICTURE`),
+    /// which game mode treats as the base-layer launcher.
+    pub fn is_steam_client(&self) -> bool {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.steam_bigpicture().is_some_and(|v| v != 0),
+            WindowSurface::Wayland(_) => false,
+        }
+    }
+
     pub fn pending_size(&self) -> Option<Size<i32, Logical>> {
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => toplevel.with_pending_state(|state| state.size),

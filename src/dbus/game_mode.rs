@@ -19,15 +19,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use calloop::{LoopHandle, channel::Sender};
 use futures_executor::ThreadPool;
-use smithay::input::Seat;
 use smithay::output::Output;
+use smithay::xwayland::X11Surface;
 use tracing::{debug, info, warn};
 use zbus::{interface, object_server::SignalEmitter};
 
 use crate::logger::GAMING_TARGET;
+use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::shell::{CosmicSurface, GameMode, Shell};
 use crate::state::{Common, State};
-use crate::utils::prelude::{OutputExt, SeatExt};
+use crate::utils::prelude::OutputExt;
 
 /// Well-known bus name cosmic-comp owns for gaming control.
 const BUS_NAME: &str = "one.playtron.GameMode";
@@ -36,10 +37,18 @@ const OBJECT_PATH: &str = "/one/playtron/GameMode";
 
 /// App id the launcher shell presents as. `FocusedAppId == LAUNCHER_APP_ID`
 /// means the launcher is in focus (i.e. not in a game).
+///
+/// A game window reports this via its own `STEAM_GAME` atom. The launcher,
+/// however, is a native Wayland toplevel and can't carry an X11 atom, so it is
+/// instead recognized by its Wayland `app_id` (see [`LAUNCHER_APP_IDS`]).
 pub const LAUNCHER_APP_ID: u32 = 769;
 
-/// Window title/class cosmic-comp treats as the launcher shell.
-const LAUNCHER_WINDOW_NAME: &str = "grid";
+/// Wayland `app_id`s (xdg_toplevel app_id, or X11 WM_CLASS) recognized as the
+/// launcher shell, matched case-insensitively as a fallback when a focused
+/// window has no `STEAM_GAME` atom. This keeps `FocusedAppId == LAUNCHER_APP_ID`
+/// working for a native-Wayland launcher (which can't carry `STEAM_GAME`).
+/// Add the launcher's `app_id` here if it ships under a different one.
+const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
 
 /// Variable-refresh-rate policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -632,10 +641,18 @@ impl State {
                 bridge.notify_tunables_changed();
             }
             GameModeCommand::SetOverlay { visible, blocking } => {
-                bridge.shared().lock().unwrap().overlay_visible = visible;
-                // TODO(gaming, PLAN.md Phase 2): render-focus vs input-focus split.
+                // The native QAM can't set the X11 overlay marker, so it asserts
+                // visibility over D-Bus; OR'd with real overlay-window presence.
+                self.common.shell.write().game_mode.overlay_asserted = visible;
+                self.refresh_overlay_visible();
+                // `blocking` routes input to the QAM over the game (best-effort:
+                // grab a present overlay/launcher window; restore on release).
+                if visible && blocking {
+                    self.grab_overlay_input();
+                } else {
+                    self.release_game_mode_input_grab();
+                }
                 debug!(visible, blocking, "game-mode: set overlay");
-                bridge.notify_focus_changed();
             }
         }
     }
@@ -649,8 +666,8 @@ impl State {
         let active = shell.game_mode.active;
         let active_app_id = shell.game_mode.app_id.unwrap_or(0);
 
-        // Focused app id, via the focused window (heuristic until a real app-id
-        // signal lands — PLAN.md §4.3).
+        // Focused app id: the `STEAM_GAME` app id of the focused window (0 if it
+        // is untagged — e.g. a native Wayland toplevel; see `LAUNCHER_APP_ID`).
         let focused_app_id = shell
             .seats
             .last_active()
@@ -702,46 +719,87 @@ impl State {
         if caps_changed {
             bridge.notify_capabilities_changed();
         }
+
+        // Safety-net retry for a deferred enter (e.g. the game window mapped
+        // since the last tick).
+        self.try_resolve_pending_game_mode();
+
+        // Safety net for overlay presence (an overlay window mapped/unmapped) and
+        // for an input grab whose window has gone away — the low-latency paths are
+        // the property/map hooks, this catches anything they miss.
+        self.refresh_overlay_visible();
+        let stale_grab = {
+            let shell = self.common.shell.read();
+            shell.game_mode.input_grab.as_ref().is_some_and(|w| {
+                !shell
+                    .workspaces
+                    .spaces()
+                    .flat_map(|ws| ws.mapped())
+                    .any(|m| m.windows().any(|(s, _)| s == *w))
+            })
+        };
+        if stale_grab {
+            self.release_game_mode_input_grab();
+        }
     }
 
-    /// Enter exclusive gaming mode for `app_id`: make the game an exclusive
-    /// fullscreen surface (which engages the VRR/direct-scanout/tearing fast
-    /// path) and minimize everything else. If no game window is focused/mapped
-    /// yet, the request is deferred and retried from `refresh_game_mode_state`.
+    /// Enter exclusive gaming mode for `app_id`: fullscreen the window tagged
+    /// with that `STEAM_GAME` app id (which engages the VRR/direct-scanout/
+    /// tearing fast path) and minimize everything else on its workspace. If no
+    /// mapped window carries the app id yet, the request is deferred and resolved
+    /// once one appears (see `try_resolve_pending_game_mode`).
     pub fn enter_game_mode(&mut self, app_id: u32) {
         let loop_handle = self.common.event_loop_handle.clone();
-        let mut shell = self.common.shell.write();
+        // Preserve any client overlay assertion across a cross-app rebuild (the
+        // GameMode literal below would otherwise reset it via `..Default`).
+        let prev_overlay_asserted = self.common.shell.read().game_mode.overlay_asserted;
 
-        if shell.game_mode.active {
-            // Already in game mode — just retarget the appid.
-            shell.game_mode.app_id = Some(app_id);
-            shell.game_mode.pending_app_id = None;
-            return;
+        // Handle the already-active cases up front, keyed on the app id — NOT on a
+        // resolved surface. The active game lives in `fullscreen_surfaces` and its
+        // peers in `minimized_windows`, both of which `find_game_surface` (which
+        // scans only `mapped()`) cannot see. So we must decide before resolving:
+        //   * same app id  → relabel no-op.
+        //   * different app → exit first, which un-minimizes the old game's peers
+        //     (including the new target if it was a minimized peer) back into
+        //     `mapped()` so `find_game_surface` can then see it.
+        {
+            let shell = self.common.shell.read();
+            let active = shell.game_mode.active;
+            let same_app = shell.game_mode.app_id == Some(app_id);
+            drop(shell);
+            if active && same_app {
+                let mut shell = self.common.shell.write();
+                shell.game_mode.app_id = Some(app_id);
+                shell.game_mode.pending_app_id = None;
+                return;
+            }
+            if active {
+                self.exit_game_mode();
+            }
         }
 
-        let seat = shell.seats.last_active().clone();
-        let output = seat.active_output();
+        // Resolve the window tagged with this app id, anywhere. Strict: if no
+        // mapped window carries the app id yet, defer until one appears or is
+        // tagged (resolved from the refresh tick / property hook).
+        let target = {
+            let shell = self.common.shell.read();
+            find_game_surface(&shell, app_id)
+        };
 
-        let Some(game) = game_target_surface(&shell, &seat, &output) else {
-            shell.game_mode.pending_app_id = Some(app_id);
-            debug!(app_id, "game mode deferred: no game window yet");
+        let Some((game, output, others)) = target else {
+            // Only mark it pending — leave `app_id`/`ActiveAppId` untouched so a
+            // not-yet-entered game isn't reported as active.
+            self.common.shell.write().game_mode.pending_app_id = Some(app_id);
+            info!(target: GAMING_TARGET, app_id, "game mode deferred: no window with this app id yet");
             return;
         };
 
-        // Everything else mapped on the active workspace gets minimized.
-        let others: Vec<CosmicSurface> = shell
-            .active_space(&output)
-            .map(|ws| {
-                ws.mapped()
-                    .map(|mapped| mapped.active_window())
-                    .filter(|surface| surface != &game)
-                    .collect()
-            })
-            .unwrap_or_default();
-
+        let mut shell = self.common.shell.write();
+        let seat = shell.seats.last_active().clone();
         info!(target: GAMING_TARGET, app_id, minimized = others.len(), "entering game mode");
 
-        // Fullscreen the game first — this is what turns on the gaming fast path.
+        // Fullscreen the game on ITS output — this is what turns on the gaming
+        // fast path. Then minimize that workspace's peers.
         let focus = shell.fullscreen_request(&game, output.clone(), &loop_handle);
         for surface in &others {
             shell.minimize_request(surface);
@@ -753,12 +811,34 @@ impl State {
             game_surface: Some(game),
             minimized: others,
             pending_app_id: None,
+            overlay_asserted: prev_overlay_asserted,
+            ..Default::default()
         };
         drop(shell);
 
         // Give the game keyboard focus so it receives input immediately.
         if let Some(target) = focus {
             Shell::set_focus(self, Some(&target), &seat, None, true);
+        }
+    }
+
+    /// If a deferred [`State::enter_game_mode`] is pending and a window tagged
+    /// with that app id now exists, enter game mode for it. Called from the
+    /// refresh tick, `map_window_notify`, and the `STEAM_GAME` property hook —
+    /// this is what turns the deferred request live.
+    pub fn try_resolve_pending_game_mode(&mut self) {
+        let pending = self.common.shell.read().game_mode.pending_app_id;
+        if let Some(app_id) = pending {
+            let found = {
+                let shell = self.common.shell.read();
+                find_game_surface(&shell, app_id).is_some()
+            };
+            if found {
+                self.enter_game_mode(app_id);
+                // Reconcile overlay_active + the D-Bus OverlayVisible mirror now,
+                // matching the explicit Enter-command path (which refreshes after).
+                self.refresh_overlay_visible();
+            }
         }
     }
 
@@ -774,60 +854,216 @@ impl State {
         let game_mode = std::mem::take(&mut shell.game_mode);
         let seat = shell.seats.last_active().clone();
 
-        if let Some(game) = &game_mode.game_surface {
-            shell.unfullscreen_request(game, &loop_handle);
-        }
+        // Un-fullscreen returns the focus target for the restored game window —
+        // taking `game_mode` cleared any input grab, so restore focus explicitly
+        // (otherwise keyboard focus is left parked on a now-gone grab/game state).
+        let restored = if let Some(game) = &game_mode.game_surface {
+            shell.unfullscreen_request(game, &loop_handle)
+        } else {
+            None
+        };
         for surface in &game_mode.minimized {
             shell.unminimize_request(surface, &seat, &loop_handle);
         }
+        drop(shell);
+        Shell::set_focus(self, restored.as_ref(), &seat, None, true);
         info!(target: GAMING_TARGET, "exited game mode");
     }
+
+    /// Recompute whether a gaming overlay is up over the game — a real
+    /// `STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY` window or a client
+    /// `SetOverlay(true)` assertion. Updates the render-path flag
+    /// (`game_mode.overlay_active`, which drops the tearing/scanout fast path so
+    /// the overlay composites) and the D-Bus `OverlayVisible`/`FocusChanged`.
+    pub fn refresh_overlay_visible(&mut self) {
+        let bridge = self.common.game_mode_bridge.clone();
+        let overlay_active = {
+            let mut shell = self.common.shell.write();
+            let active = shell.game_mode.active
+                && (overlay_window_present(&shell) || shell.game_mode.overlay_asserted);
+            shell.game_mode.overlay_active = active;
+            active
+        };
+        let changed = {
+            let mut s = bridge.shared().lock().unwrap();
+            let changed = s.overlay_visible != overlay_active;
+            s.overlay_visible = overlay_active;
+            changed
+        };
+        if changed {
+            bridge.notify_focus_changed();
+        }
+    }
+
+    /// Grant or release the per-window input grab from `window`'s
+    /// `STEAM_INPUT_FOCUS` (non-zero = grab). Only redirects seat focus — never
+    /// changes fullscreen/minimize, so the scanout/VRR fast path stays engaged.
+    /// Override-redirect overlays (which can't be element-focused) are left to
+    /// grab input themselves; this is a no-op for them.
+    pub fn update_game_mode_input_grab(&mut self, x11: &X11Surface) {
+        if !self.common.shell.read().game_mode.active {
+            return;
+        }
+        // Resolve the CANONICAL mapped surface for this X11 window (stable Window
+        // id — building a fresh `CosmicSurface::from` would never compare equal).
+        // `None` for override-redirect windows: they aren't in the workspace and
+        // self-grab via X, so there is nothing for the compositor to do.
+        let canonical = {
+            let shell = self.common.shell.read();
+            shell
+                .element_for_x11_window_id(x11.window_id())
+                .map(|m| m.active_window())
+        };
+        let Some(window) = canonical else { return };
+        if x11.steam_input_focus().is_some_and(|v| v != 0) {
+            self.set_game_mode_input_grab(Some(window));
+        } else if self.common.shell.read().game_mode.input_grab.as_ref() == Some(&window) {
+            self.set_game_mode_input_grab(None);
+        }
+    }
+
+    /// Release any active input grab (restore focus to the game). Called on exit
+    /// and when the grab window goes away.
+    pub fn release_game_mode_input_grab(&mut self) {
+        if self.common.shell.read().game_mode.input_grab.is_some() {
+            self.set_game_mode_input_grab(None);
+        }
+    }
+
+    /// Best-effort input grab for the native QAM (`SetOverlay(blocking)`): route
+    /// focus to a present overlay window, else the launcher.
+    fn grab_overlay_input(&mut self) {
+        if !self.common.shell.read().game_mode.active {
+            return;
+        }
+        let target = {
+            let shell = self.common.shell.read();
+            shell
+                .workspaces
+                .spaces()
+                .flat_map(|ws| ws.mapped())
+                .flat_map(|m| m.windows().map(|(s, _)| s))
+                .find(|w| {
+                    w.is_overlay() || LAUNCHER_APP_IDS.contains(&w.app_id().to_lowercase().as_str())
+                })
+        };
+        if let Some(window) = target {
+            self.set_game_mode_input_grab(Some(window));
+        }
+    }
+
+    /// Redirect seat keyboard focus to `target` over the game (or back to the
+    /// game when `None`), tracking it in `game_mode.input_grab`. Only records a
+    /// grab for a window the compositor can actually focus — override-redirect
+    /// overlays self-grab via X and are left untouched (no grab recorded), so the
+    /// stale-grab tick never thrashes them.
+    fn set_game_mode_input_grab(&mut self, target: Option<CosmicSurface>) {
+        let seat = self.common.shell.read().seats.last_active().clone();
+        // (store, do_focus, focus_arg): `do_focus=false` means leave focus alone
+        // (an override-redirect grab); `focus_arg=None` with `do_focus=true` means
+        // let normal focus management re-derive a target.
+        let (store, do_focus, focus_arg): (
+            Option<CosmicSurface>,
+            bool,
+            Option<KeyboardFocusTarget>,
+        ) = {
+            let shell = self.common.shell.read();
+            match &target {
+                Some(window) => match focus_target_for(&shell, window) {
+                    Some(f) => (target.clone(), true, Some(f)),
+                    None => (None, false, None),
+                },
+                None => (
+                    None,
+                    true,
+                    shell
+                        .game_mode
+                        .game_surface
+                        .clone()
+                        .map(KeyboardFocusTarget::Fullscreen),
+                ),
+            }
+        };
+        self.common.shell.write().game_mode.input_grab = store;
+        if do_focus {
+            Shell::set_focus(self, focus_arg.as_ref(), &seat, None, true);
+        }
+    }
 }
 
-/// Whether a surface is the launcher shell (heuristic, pending a real
-/// app-id signal — see PLAN.md §4.3).
-fn is_launcher_surface(surface: &CosmicSurface) -> bool {
-    surface
-        .title()
-        .to_lowercase()
-        .contains(LAUNCHER_WINDOW_NAME)
-        || surface
-            .app_id()
-            .to_lowercase()
-            .contains(LAUNCHER_WINDOW_NAME)
-}
-
-/// Best-effort numeric app id for a surface (launcher → 769, else a numeric class).
+/// App id for a surface: its `STEAM_GAME` atom if tagged (games carry their own),
+/// else the launcher id if its Wayland `app_id` is a known launcher (see
+/// [`LAUNCHER_APP_IDS`] — the launcher is native Wayland and can't carry the X11
+/// atom), else 0.
 fn app_id_of(surface: &CosmicSurface) -> u32 {
-    if is_launcher_surface(surface) {
-        LAUNCHER_APP_ID
-    } else {
-        surface.app_id().parse::<u32>().unwrap_or(0)
+    if let Some(appid) = surface.steam_appid() {
+        return appid;
     }
+    // Steam Big Picture (a Steam client window with no game appid) is the
+    // base-layer launcher, like the desktop launcher shell.
+    if surface.is_steam_client() {
+        return LAUNCHER_APP_ID;
+    }
+    let app_id = surface.app_id().to_lowercase();
+    if LAUNCHER_APP_IDS.contains(&app_id.as_str()) {
+        return LAUNCHER_APP_ID;
+    }
+    0
 }
 
-/// The window game mode should fullscreen: the focused non-shell toplevel, else
-/// the topmost non-shell window on the active workspace.
-fn game_target_surface(
+/// Find the mapped window tagged with `app_id` (`STEAM_GAME`), searching every
+/// workspace on every output. Returns the window, the output it currently lives
+/// on, and its co-workspace peers (everything else on that workspace, to be
+/// minimized). `None` if no mapped window carries that app id yet.
+fn find_game_surface(
     shell: &Shell,
-    seat: &Seat<State>,
-    output: &Output,
-) -> Option<CosmicSurface> {
-    if let Some(focused) = seat
-        .get_keyboard()
-        .and_then(|kbd| kbd.current_focus())
-        .and_then(|target| shell.focused_element(&target))
-        .map(|mapped| mapped.active_window())
-        && !is_launcher_surface(&focused)
-    {
-        return Some(focused);
-    }
+    app_id: u32,
+) -> Option<(CosmicSurface, Output, Vec<CosmicSurface>)> {
+    shell.workspaces.spaces().find_map(|ws| {
+        let windows: Vec<CosmicSurface> =
+            ws.mapped().map(|mapped| mapped.active_window()).collect();
+        let game = windows
+            .iter()
+            .find(|surface| surface.steam_appid() == Some(app_id))?
+            .clone();
+        // Peers to minimize on entry. The real overlays (Steam overlay, MangoHud)
+        // are override-redirect — never in `mapped()`, so never in this list — and
+        // already render above the game via `Stage::OverrideRedirect`. A non-OR
+        // overlay/Big-Picture toplevel can't render above a fullscreen game anyway,
+        // so minimizing it (and restoring on exit) is cleaner than leaving an
+        // invisible un-minimized window behind the game.
+        let peers: Vec<CosmicSurface> = windows
+            .into_iter()
+            .filter(|surface| surface != &game)
+            .collect();
+        Some((game, ws.output().clone(), peers))
+    })
+}
 
+/// Whether any `STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY` window is currently
+/// mapped — a normal toplevel or an override-redirect window (the Steam overlay
+/// is typically override-redirect).
+fn overlay_window_present(shell: &Shell) -> bool {
     shell
-        .active_space(output)?
-        .mapped()
-        .map(|mapped| mapped.active_window())
-        .find(|surface| !is_launcher_surface(surface))
+        .workspaces
+        .spaces()
+        .any(|ws| ws.mapped().any(|m| m.active_window().is_overlay()))
+        || shell.override_redirect_windows.iter().any(|s| {
+            s.steam_overlay().is_some_and(|v| v != 0)
+                || s.external_overlay().is_some_and(|v| v != 0)
+        })
+}
+
+/// The keyboard-focus target for `window` if it is a mapped element. Returns
+/// `None` for override-redirect windows (which grab input themselves and can't
+/// be element-focused).
+fn focus_target_for(shell: &Shell, window: &CosmicSurface) -> Option<KeyboardFocusTarget> {
+    shell
+        .workspaces
+        .spaces()
+        .flat_map(|ws| ws.mapped())
+        .find(|m| m.windows().any(|(s, _)| s == *window))
+        .map(|m| KeyboardFocusTarget::from(m.clone()))
 }
 
 /// Update display-capability fields that depend on a specific output (called

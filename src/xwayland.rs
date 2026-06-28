@@ -53,7 +53,7 @@ use smithay::{
     },
     xwayland::{
         X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
-        xwm::{Reorder, XwmId},
+        xwm::{Reorder, WmWindowProperty, XwmId},
     },
 };
 use tracing::{error, trace, warn};
@@ -782,6 +782,25 @@ impl XwmHandler for State {
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
     fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
 
+    fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
+        // Live Steam window-role changes drive game mode. These run with no shell
+        // lock held (XWM dispatch), so the handlers can take their own.
+        match property {
+            // STEAM_GAME changed — a deferred game-mode enter may now resolve to it
+            // (e.g. the launcher tags the game window after it maps).
+            WmWindowProperty::SteamGame => self.try_resolve_pending_game_mode(),
+            // An overlay marker toggled — recompute overlay-visible + the fast-path gate.
+            WmWindowProperty::SteamOverlay | WmWindowProperty::ExternalOverlay => {
+                self.refresh_overlay_visible();
+            }
+            // STEAM_INPUT_FOCUS toggled — grant/release the input grab over the game.
+            WmWindowProperty::SteamInputFocus => {
+                self.update_game_mode_input_grab(&window);
+            }
+            _ => {}
+        }
+    }
+
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
         if let Err(err) = window.set_mapped(true) {
             warn!(?window, ?err, "Failed to send Xwayland Mapped-Event",);
@@ -869,6 +888,12 @@ impl XwmHandler for State {
                 let seat = shell.seats.last_active().clone();
                 std::mem::drop(shell);
                 Shell::set_focus(self, Some(&target), &seat, None, false);
+            }
+
+            // A window that maps already carrying STEAM_INPUT_FOCUS grabs input now
+            // (the value was bulk-loaded on map, so no property_notify fires for it).
+            if let Some(x11) = window.x11_surface().cloned() {
+                self.update_game_mode_input_grab(&x11);
             }
         }
     }
