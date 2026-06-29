@@ -1,3 +1,10 @@
+## [1.28.1](https://github.com/playtron-os/cosmic-comp/compare/v1.28.0...v1.28.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **kms:** gate overlay scanout per-element by buffer GPU node ([ad63a76](https://github.com/playtron-os/cosmic-comp/commit/ad63a76714787cab0ba2e91c76a2d5ab7a6f53f0))
+
 # [1.28.0](https://github.com/playtron-os/cosmic-comp/compare/v1.27.2...v1.28.0) (2026-06-28)
 
 
