@@ -1682,7 +1682,7 @@ where
                     let mut bar_geo = local_geo;
                     bar_geo.loc.x = edge_x - bar_w / 2;
                     bar_geo.size.w = bar_w;
-                    let c = theme.os_accent();
+                    let c = theme.primary();
                     let bar_alpha = alpha * if dragging { 1.0 } else { 0.6 };
                     let bar_element = BackdropShader::element(
                         renderer,
