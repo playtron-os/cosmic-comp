@@ -1,3 +1,10 @@
+## [1.28.4](https://github.com/playtron-os/cosmic-comp/compare/v1.28.3...v1.28.4) (2026-06-29)
+
+
+### Bug Fixes
+
+* correctly scale blur regions during animation ([dc3c957](https://github.com/playtron-os/cosmic-comp/commit/dc3c957b00a7380c39d8b3d067495b7838feea02))
+
 ## [1.28.3](https://github.com/playtron-os/cosmic-comp/compare/v1.28.2...v1.28.3) (2026-06-29)
 
 
