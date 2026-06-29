@@ -8,7 +8,7 @@ use crate::{
         init_shaders, output_elements,
     },
     config::ScreenFilter,
-    shell::Shell,
+    shell::{Shell, element::surface::set_scanout_target_node},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
     wayland::handlers::{
@@ -1046,17 +1046,12 @@ impl SurfaceThreadState {
             }
         };
 
-        if has_active_fullscreen || animations_going || render_node != self.target_node {
+        if has_active_fullscreen || animations_going {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
         }
 
-        if render_node != self.target_node {
-            // Cross-GPU: also gate primary-plane scanout so no render_node client
-            // buffer is handed to a target_node plane.
-            remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
-                | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
-        }
+        set_scanout_target_node(Some(self.target_node));
 
         let mut vrr = matches!(self.vrr_mode, AdaptiveSync::Force);
 
