@@ -1,3 +1,10 @@
+## [1.28.2](https://github.com/playtron-os/cosmic-comp/compare/v1.28.1...v1.28.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* make chat panel drag sash use primary theme color ([e23861b](https://github.com/playtron-os/cosmic-comp/commit/e23861b6856c530a8fccdb81cefd4cfe1c828af8))
+
 ## [1.28.1](https://github.com/playtron-os/cosmic-comp/compare/v1.28.0...v1.28.1) (2026-06-29)
 
 
