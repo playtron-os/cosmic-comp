@@ -15,7 +15,7 @@ use crate::{
         store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
-    shell::{Shell, grabs::SeatMoveGrabState},
+    shell::{Shell, element::surface::set_scanout_target_node, grabs::SeatMoveGrabState},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
     wayland::handlers::{
@@ -2003,23 +2003,12 @@ impl SurfaceThreadState {
                 .store(self.timings.recent_frametime_ns(30), Ordering::Relaxed);
         }
 
-        if has_active_fullscreen || animations_going || render_node != self.target_node {
+        if has_active_fullscreen || animations_going {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
         }
 
-        if has_ssd_blur_windows {
-            // Frame-level counterpart of the per-surface blur gate, for SSD header
-            // blur (no client flag for frame_time_filter_fn to see).
-            remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
-        }
-
-        if render_node != self.target_node {
-            // Cross-GPU: also gate primary-plane scanout so no render_node client
-            // buffer is handed to a target_node plane.
-            remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
-                | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
-        }
+        set_scanout_target_node(Some(self.target_node));
 
         let mut vrr = matches!(self.vrr_mode, AdaptiveSync::Force);
 
