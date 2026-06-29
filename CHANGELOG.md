@@ -1,3 +1,10 @@
+## [1.28.3](https://github.com/playtron-os/cosmic-comp/compare/v1.28.2...v1.28.3) (2026-06-29)
+
+
+### Bug Fixes
+
+* lighten requires on rpm spec ([e057355](https://github.com/playtron-os/cosmic-comp/commit/e05735590d513babf6760fc871ef0a7b3d9a0902))
+
 ## [1.28.2](https://github.com/playtron-os/cosmic-comp/compare/v1.28.1...v1.28.2) (2026-06-29)
 
 
