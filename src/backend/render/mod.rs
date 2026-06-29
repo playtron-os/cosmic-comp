@@ -1832,6 +1832,13 @@ where
                 // For a neighbor squish, scale the backdrop WIDTH about the left edge
                 // by the same x-factor so the blur/shadow right edge tracks the
                 // squished content's right edge (no backdrop overhang at the seam).
+                //
+                // Keep the PRE-scale geometry too: per-region (custom-rect) blur
+                // positions its rects in this UNSCALED surface space and scales each
+                // about the surface center itself (see the blur block below). The
+                // single full-surface rect can be scaled about its own center; a
+                // region can't, so it must be re-derived from the unscaled frame.
+                let unscaled_geo = local_geo;
                 let local_geo = if is_scaling && anim_scale != 1.0 {
                     scale_rect_about_center(local_geo, anim_scale)
                 } else if let Some(ns) = neighbor_scale {
@@ -1919,23 +1926,47 @@ where
                         );
 
                         let has_per_region_blur = blur_regions.is_some();
+                        // During the open/close animation the content scales about
+                        // the surface CENTER (integer floor-division, matching
+                        // `open_origin_phys`). Each per-region rect lives in the
+                        // surface's UNSCALED space, so scale it about that SAME
+                        // center; the full-surface rect below instead rides the
+                        // already-scaled `local_geo`.
+                        let region_scale_cx = (unscaled_geo.loc.x + unscaled_geo.size.w / 2) as f32;
+                        let region_scale_cy = (unscaled_geo.loc.y + unscaled_geo.size.h / 2) as f32;
                         let blur_geos: Vec<Rectangle<i32, Local>> =
                             if let Some(regions) = blur_regions {
                                 regions
                                     .iter()
                                     .filter_map(|region| {
+                                        // While scaling (open/close), place + clamp
+                                        // the rect in the UNSCALED surface space, then
+                                        // scale it about the surface center so it
+                                        // tracks the shrinking/growing card instead of
+                                        // keeping its full resting size and clipping.
+                                        // Otherwise use the resting / neighbour-scaled
+                                        // `local_geo` exactly as before.
+                                        let scaling = is_scaling && anim_scale != 1.0;
+                                        let base = if scaling { unscaled_geo } else { local_geo };
                                         let geo = Rectangle::new(
-                                            (
-                                                local_geo.loc.x + region.loc.x,
-                                                local_geo.loc.y + region.loc.y,
-                                            )
+                                            (base.loc.x + region.loc.x, base.loc.y + region.loc.y)
                                                 .into(),
                                             region.size.as_local(),
                                         );
                                         // Clamp blur rect to surface bounds so
                                         // rects that arrive before a pending resize
                                         // never overflow the current buffer.
-                                        let geo = geo.intersection(local_geo)?;
+                                        let geo = geo.intersection(base)?;
+                                        let geo = if scaling {
+                                            scale_rect_about_point(
+                                                geo,
+                                                region_scale_cx,
+                                                region_scale_cy,
+                                                anim_scale,
+                                            )
+                                        } else {
+                                            geo
+                                        };
                                         tracing::trace!(
                                             surface_id = layer.wl_surface().id().protocol_id(),
                                             region_loc_x = region.loc.x,
@@ -1946,10 +1977,10 @@ where
                                             final_y = geo.loc.y,
                                             final_w = geo.size.w,
                                             final_h = geo.size.h,
-                                            surface_x = local_geo.loc.x,
-                                            surface_y = local_geo.loc.y,
-                                            surface_w = local_geo.size.w,
-                                            surface_h = local_geo.size.h,
+                                            surface_x = base.loc.x,
+                                            surface_y = base.loc.y,
+                                            surface_w = base.size.w,
+                                            surface_h = base.size.h,
                                             blur_alpha,
                                             "Layer blur: per-region rect"
                                         );
@@ -2180,6 +2211,25 @@ where
     }
 
     Ok(elements)
+}
+
+/// Scale a logical-`Local` rectangle by `scale` about an arbitrary point
+/// `(cx, cy)`. Per-region blur rects scale about the SURFACE center (shared by
+/// every region of a surface) — not each rect's own center — so the custom-rect
+/// backdrop tracks a surface rendered with the same center-scale during the
+/// open/close animation. Pass the integer floor-division surface center used by
+/// `open_origin_phys` so the blur lands exactly on the scaled content.
+fn scale_rect_about_point(
+    rect: Rectangle<i32, Local>,
+    cx: f32,
+    cy: f32,
+    scale: f32,
+) -> Rectangle<i32, Local> {
+    let new_w = (rect.size.w as f32 * scale).round() as i32;
+    let new_h = (rect.size.h as f32 * scale).round() as i32;
+    let new_x = (cx + (rect.loc.x as f32 - cx) * scale).round() as i32;
+    let new_y = (cy + (rect.loc.y as f32 - cy) * scale).round() as i32;
+    Rectangle::new(Point::from((new_x, new_y)), Size::from((new_w, new_h)))
 }
 
 /// Scale a logical-`Local` rectangle by `scale` about its own center, so a
