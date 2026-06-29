@@ -11,8 +11,9 @@ Source0:        %{name}.tar.gz
 %global debug_package %{nil}
 
 # Runtime dependencies (from upstream cosmic-comp)
-# Pin cosmic-icon-theme to 1.0.x series
-Requires:       (cosmic-icon-theme >= 1.0.0 with cosmic-icon-theme < 1.1.0)
+# cosmic-icon-theme is noarch icon assets with no ABI coupling — bind to COSMIC 1.x
+# (< 2.0.0), not a single minor, so a Fedora icon-theme bump can't downgrade this fork.
+Requires:       (cosmic-icon-theme >= 1.0.0 with cosmic-icon-theme < 2.0.0)
 Requires:       mesa-libEGL
 Requires:       libwayland-server
 Requires:       libinput
