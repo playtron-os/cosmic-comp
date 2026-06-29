@@ -15,7 +15,7 @@ use crate::{
         store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
-    shell::{Shell, grabs::SeatMoveGrabState},
+    shell::{Shell, element::surface::ScanoutTargetNodeGuard, grabs::SeatMoveGrabState},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
     wayland::handlers::{
@@ -2003,7 +2003,7 @@ impl SurfaceThreadState {
                 .store(self.timings.recent_frametime_ns(30), Ordering::Relaxed);
         }
 
-        if has_active_fullscreen || animations_going || render_node != self.target_node {
+        if has_active_fullscreen || animations_going {
             // skip overlay plane assign if we have a fullscreen surface or dynamic contents to save on tests
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
         }
@@ -2012,13 +2012,6 @@ impl SurfaceThreadState {
             // Frame-level counterpart of the per-surface blur gate, for SSD header
             // blur (no client flag for frame_time_filter_fn to see).
             remove_frame_flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
-        }
-
-        if render_node != self.target_node {
-            // Cross-GPU: also gate primary-plane scanout so no render_node client
-            // buffer is handed to a target_node plane.
-            remove_frame_flags |= FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT
-                | FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY;
         }
 
         let mut vrr = matches!(self.vrr_mode, AdaptiveSync::Force);
@@ -2081,21 +2074,24 @@ impl SurfaceThreadState {
         }
 
         let elements_phase_start = std::time::Instant::now();
-        let mut elements = output_elements(
-            Some(&render_node),
-            &mut renderer,
-            &self.shell,
-            self.clock.now(),
-            self.mirroring.as_ref().unwrap_or(&self.output),
-            CursorMode::All,
-            #[cfg(not(feature = "debug"))]
-            None,
-            #[cfg(feature = "debug")]
-            Some((&self.egui, &self.timings)),
-        )
-        .map_err(|err| {
-            anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
-        })?;
+        let mut elements = {
+            let _scanout_node = ScanoutTargetNodeGuard::new(Some(self.target_node));
+            output_elements(
+                Some(&render_node),
+                &mut renderer,
+                &self.shell,
+                self.clock.now(),
+                self.mirroring.as_ref().unwrap_or(&self.output),
+                CursorMode::All,
+                #[cfg(not(feature = "debug"))]
+                None,
+                #[cfg(feature = "debug")]
+                Some((&self.egui, &self.timings)),
+            )
+            .map_err(|err| {
+                anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
+            })?
+        };
         profile.elements_duration = elements_phase_start.elapsed();
         profile.element_count = elements.len();
 
