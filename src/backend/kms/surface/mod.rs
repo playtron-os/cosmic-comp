@@ -15,11 +15,7 @@ use crate::{
         store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
-    shell::{
-        Shell,
-        element::surface::{ScanoutTargetNodeGuard, set_scanout_target_node},
-        grabs::SeatMoveGrabState,
-    },
+    shell::{Shell, element::surface::ScanoutTargetNodeGuard, grabs::SeatMoveGrabState},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
     wayland::handlers::{
