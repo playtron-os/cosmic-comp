@@ -81,9 +81,21 @@ thread_local! {
     static SCANOUT_TARGET_NODE: Cell<Option<DrmNode>> = const { Cell::new(None) };
 }
 
-/// Set the scan-out target node for the current thread. See [`SCANOUT_TARGET_NODE`].
-pub fn set_scanout_target_node(node: Option<DrmNode>) {
-    SCANOUT_TARGET_NODE.with(|n| n.set(node));
+/// RAII guard that sets the current thread's scan-out target node and restores the previous value
+/// on drop. Hold it only across render-element accumulation so the gate can't outlive a render pass.
+/// See [`SCANOUT_TARGET_NODE`].
+pub struct ScanoutTargetNodeGuard(Option<DrmNode>);
+
+impl ScanoutTargetNodeGuard {
+    pub fn new(node: Option<DrmNode>) -> Self {
+        ScanoutTargetNodeGuard(SCANOUT_TARGET_NODE.with(|n| n.replace(node)))
+    }
+}
+
+impl Drop for ScanoutTargetNodeGuard {
+    fn drop(&mut self) {
+        SCANOUT_TARGET_NODE.with(|n| n.set(self.0));
+    }
 }
 
 /// The [`DrmNode`] the surface's currently committed buffer was allocated on, if it is a dmabuf.
@@ -893,7 +905,7 @@ impl CosmicSurface {
                             location + offset,
                             scale,
                             alpha,
-                            FRAME_TIME_FILTER,
+                            scanout_kind_eval(None),
                         )
                     })
                     .collect()
