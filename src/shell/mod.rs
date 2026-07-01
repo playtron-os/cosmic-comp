@@ -763,6 +763,19 @@ pub struct Shell {
     /// When the animation completes, moved to `hidden_surfaces`.
     layer_fade_out: std::collections::HashMap<ObjectId, Instant>,
 
+    /// Fullscreen `Layer::Overlay` surfaces that were mapped before any
+    /// workspace window or desktop-layer surface appeared on the output. These
+    /// are the login greeter surfaces. When the first non-Overlay layer surface
+    /// or any workspace window maps on the same output, the compositor sends
+    /// `layer_surface.closed` to each entry here, triggering the greeter's
+    /// fade-out at exactly the right moment.
+    greeter_overlay_surfaces:
+        std::collections::HashMap<smithay::output::Output, Vec<smithay::desktop::LayerSurface>>,
+    /// Outputs where at least one workspace window or non-Overlay layer surface
+    /// has mapped. Used to gate `greeter_overlay_surfaces` registration so only
+    /// pre-desktop surfaces are registered, never post-login popups.
+    outputs_with_desktop_content: std::collections::HashSet<smithay::output::Output>,
+
     /// Layer surfaces created without a specific wl_output.
     /// When these become visible via the visibility protocol, the compositor
     /// moves them to the output where the cursor currently is.
@@ -2322,6 +2335,10 @@ impl Shell {
             layer_fade_in: std::collections::HashMap::new(),
             pending_layer_fade_in: std::collections::HashSet::new(),
             layer_fade_out: std::collections::HashMap::new(),
+
+            // Greeter-transition state
+            greeter_overlay_surfaces: std::collections::HashMap::new(),
+            outputs_with_desktop_content: std::collections::HashSet::new(),
 
             // Layer surfaces that follow the cursor to whichever output
             output_agnostic_layers: std::collections::HashSet::new(),
@@ -5364,6 +5381,26 @@ impl Shell {
         self.layer_fade_out.remove(surface_id);
     }
 
+    /// Called when a non-Overlay layer surface or a workspace window first maps
+    /// on `output`. Sends `layer_surface.closed` to any fullscreen Overlay
+    /// surfaces registered as greeter surfaces for that output, so the greeter
+    /// knows the desktop has content and can begin its fade-out.
+    pub fn notify_desktop_content_ready(&mut self, output: &smithay::output::Output) {
+        if self.outputs_with_desktop_content.contains(output) {
+            return;
+        }
+        self.outputs_with_desktop_content.insert(output.clone());
+        if let Some(surfaces) = self.greeter_overlay_surfaces.remove(output) {
+            for surface in surfaces {
+                tracing::info!(
+                    output = output.name(),
+                    "desktop content ready — dismissing greeter overlay surface"
+                );
+                surface.layer_surface().send_close();
+            }
+        }
+    }
+
     /// Activate a pending fade-in for a surface.
     /// Called from the compositor `commit()` handler when a layer surface commits
     /// a buffer.  If the surface has a pending fade-in (was just un-hidden),
@@ -6310,6 +6347,24 @@ impl Shell {
         let mut workspace_state = workspace_state.update();
 
         let workspace_output = workspace.output.clone();
+        // First workspace window on this output — dismiss any waiting greeter surfaces.
+        // Inlined to avoid borrowing &mut self while `workspace` (&mut WorkspaceData) is live.
+        if !self
+            .outputs_with_desktop_content
+            .contains(&workspace_output)
+        {
+            self.outputs_with_desktop_content
+                .insert(workspace_output.clone());
+            if let Some(surfaces) = self.greeter_overlay_surfaces.remove(&workspace_output) {
+                for surface in &surfaces {
+                    tracing::info!(
+                        output = workspace_output.name(),
+                        "desktop content ready — dismissing greeter overlay surface"
+                    );
+                    surface.layer_surface().send_close();
+                }
+            }
+        }
         let was_activated = workspace_handle.is_some()
             && (workspace_output != seat.active_output() || active_handle != workspace.handle);
         let workspace_handle = workspace.handle;
@@ -6794,6 +6849,39 @@ impl Shell {
         {
             let mut map = layer_map_for_output(&pending.output);
             map.map_layer(&pending.surface).unwrap();
+        }
+
+        // Greeter transition: classify this surface and update the two-state machine.
+        //
+        // If it is a fullscreen Overlay (all 4 edges anchored, Layer::Overlay) AND
+        // no desktop content has appeared on its output yet, register it as a greeter
+        // surface so we can send it `closed` when the desktop is ready.
+        //
+        // If it is anything else (Background/Bottom/Top layer, or a non-fullscreen
+        // Overlay), that is desktop content — fire the dismissal of any waiting
+        // greeter surfaces immediately.
+        {
+            let all_edges = Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+            let is_fullscreen_overlay = with_states(pending.surface.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                let current = cached.current();
+                current.layer == Layer::Overlay && current.anchor == all_edges
+            });
+
+            if is_fullscreen_overlay && !self.outputs_with_desktop_content.contains(&pending.output)
+            {
+                tracing::debug!(
+                    output = pending.output.name(),
+                    "registering fullscreen Overlay as greeter surface"
+                );
+                self.greeter_overlay_surfaces
+                    .entry(pending.output.clone())
+                    .or_default()
+                    .push(pending.surface.clone());
+            } else if !is_fullscreen_overlay {
+                // A non-greeter layer surface just mapped — the desktop is here.
+                self.notify_desktop_content_ready(&pending.output.clone());
+            }
         }
 
         // Pick the entrance animation for a freshly-mapped, visible surface.
