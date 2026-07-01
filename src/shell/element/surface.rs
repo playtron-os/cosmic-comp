@@ -6,7 +6,6 @@ use crate::{
 };
 use std::{
     borrow::Cow,
-    cell::Cell,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -76,29 +75,6 @@ use crate::{
     },
 };
 
-thread_local! {
-    /// The scan-out target [`DrmNode`] of the surface thread that is currently accumulating
-    /// render elements, if any.
-    static SCANOUT_TARGET_NODE: Cell<Option<DrmNode>> = const { Cell::new(None) };
-}
-
-/// RAII guard that sets the current thread's scan-out target node and restores the previous value
-/// on drop. Hold it only across render-element accumulation so the gate can't outlive a render pass.
-/// See [`SCANOUT_TARGET_NODE`].
-pub struct ScanoutTargetNodeGuard(Option<DrmNode>);
-
-impl ScanoutTargetNodeGuard {
-    pub fn new(node: Option<DrmNode>) -> Self {
-        ScanoutTargetNodeGuard(SCANOUT_TARGET_NODE.with(|n| n.replace(node)))
-    }
-}
-
-impl Drop for ScanoutTargetNodeGuard {
-    fn drop(&mut self) {
-        SCANOUT_TARGET_NODE.with(|n| n.set(self.0));
-    }
-}
-
 /// The [`DrmNode`] the surface's currently committed buffer was allocated on, if it is a dmabuf.
 fn buffer_node(data: &SurfaceData) -> Option<DrmNode> {
     let surface_state = data.data_map.get::<RendererSurfaceStateUserData>()?;
@@ -110,8 +86,15 @@ fn buffer_node(data: &SurfaceData) -> Option<DrmNode> {
 }
 
 /// Build the [`KindEvaluation`] for a window's surface tree.
-fn scanout_kind_eval(scanout_override: Option<bool>) -> KindEvaluation {
-    match (scanout_override, SCANOUT_TARGET_NODE.with(|n| n.get())) {
+///
+/// `scanout_node`, when set, is the scan-out target [`DrmNode`] of the output currently being
+/// rendered: only buffers allocated on that node may be promoted to overlay scan-out candidates.
+/// It is `None` for render passes that never scan out to a plane (e.g. screen-copy).
+fn scanout_kind_eval(
+    scanout_override: Option<bool>,
+    scanout_node: Option<DrmNode>,
+) -> KindEvaluation {
+    match (scanout_override, scanout_node) {
         // Forced off.
         (Some(false), _) => Kind::Unspecified.into(),
         // No node restriction: preserve the previous behaviour exactly.
@@ -979,6 +962,7 @@ impl CosmicSurface {
         location: Point<i32, Physical>,
         scale: Scale<f64>,
         alpha: f32,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: Renderer + ImportAll,
@@ -1054,7 +1038,7 @@ impl CosmicSurface {
                             render_pos,
                             scale,
                             alpha,
-                            scanout_kind_eval(None),
+                            scanout_kind_eval(None, scanout_node),
                         )
                     })
                     .collect()
@@ -1070,6 +1054,7 @@ impl CosmicSurface {
         scale: Scale<f64>,
         alpha: f32,
         scanout_override: Option<bool>,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: Renderer + ImportAll,
@@ -1086,7 +1071,7 @@ impl CosmicSurface {
                     location,
                     scale,
                     alpha,
-                    scanout_kind_eval(scanout_override),
+                    scanout_kind_eval(scanout_override, scanout_node),
                 )
             }
             WindowSurface::X11(surface) => {
@@ -1100,7 +1085,7 @@ impl CosmicSurface {
                     location,
                     scale,
                     alpha,
-                    scanout_kind_eval(scanout_override),
+                    scanout_kind_eval(scanout_override, scanout_node),
                 )
             }
         }

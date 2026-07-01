@@ -11,6 +11,7 @@ use cosmic_comp_config::AppearanceConfig;
 use id_tree::NodeId;
 use smithay::{
     backend::{
+        drm::DrmNode,
         input::KeyState,
         renderer::{
             element::{
@@ -627,6 +628,7 @@ impl CosmicMapped {
         location: smithay::utils::Point<i32, smithay::utils::Physical>,
         scale: smithay::utils::Scale<f64>,
         alpha: f32,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: AsGlowRenderer,
@@ -637,11 +639,19 @@ impl CosmicMapped {
         match &self.element {
             CosmicMappedInternal::Stack(s) => s
                 .popup_render_elements::<R, CosmicMappedRenderElement<R>>(
-                    renderer, location, scale, alpha,
+                    renderer,
+                    location,
+                    scale,
+                    alpha,
+                    scanout_node,
                 ),
             CosmicMappedInternal::Window(w) => w
                 .popup_render_elements::<R, CosmicMappedRenderElement<R>>(
-                    renderer, location, scale, alpha,
+                    renderer,
+                    location,
+                    scale,
+                    alpha,
+                    scanout_node,
                 ),
             _ => unreachable!(),
         }
@@ -702,6 +712,7 @@ impl CosmicMapped {
         scale: smithay::utils::Scale<f64>,
         alpha: f32,
         scanout_override: Option<bool>,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: AsGlowRenderer,
@@ -892,6 +903,7 @@ impl CosmicMapped {
                 scale,
                 alpha,
                 scanout_override,
+                scanout_node,
             ),
             CosmicMappedInternal::Window(w) => w
                 .render_elements::<R, CosmicMappedRenderElement<R>>(
@@ -901,6 +913,7 @@ impl CosmicMapped {
                     scale,
                     alpha,
                     scanout_override,
+                    scanout_node,
                 ),
             _ => unreachable!(),
         });

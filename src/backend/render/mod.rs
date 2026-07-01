@@ -765,6 +765,7 @@ pub fn cursor_elements<'a, 'frame, R>(
         crate::wayland::handlers::surface_embed::EmbedRenderInfo,
     )],
     attached_orb_state: Option<&voice_orb::VoiceOrbState>,
+    scanout_node: Option<DrmNode>,
 ) -> Vec<CosmicElement<R>>
 where
     R: AsGlowRenderer,
@@ -849,6 +850,7 @@ where
                         theme,
                         embedded_children_for_grabbed,
                         attached_orb_state,
+                        scanout_node,
                     )
                 })
         {
@@ -1071,6 +1073,7 @@ pub fn output_elements<R>(
     output: &Output,
     cursor_mode: CursorMode,
     _fps: Option<(&EguiState, &Timings)>,
+    scanout_node: Option<DrmNode>,
 ) -> Result<Vec<CosmicElement<R>>, RenderError<R::Error>>
 where
     R: AsGlowRenderer,
@@ -1146,6 +1149,7 @@ where
         workspace,
         cursor_mode,
         &element_filter,
+        scanout_node,
     )?;
 
     #[cfg(feature = "debug")]
@@ -1169,6 +1173,7 @@ pub fn workspace_elements<R>(
     current: (WorkspaceHandle, usize),
     cursor_mode: CursorMode,
     element_filter: &ElementFilter,
+    scanout_node: Option<DrmNode>,
 ) -> Result<Vec<CosmicElement<R>>, RenderError<R::Error>>
 where
     R: AsGlowRenderer,
@@ -1272,6 +1277,7 @@ where
         skip_move_grab,
         &embedded_children_for_grabbed,
         grabbed_orb_state.as_ref(),
+        scanout_node,
     ));
 
     // Render voice orb - either globally (floating) or defer to window level (attached)
@@ -2075,7 +2081,7 @@ where
 
                 elements.extend(
                     layout
-                        .render_popups(renderer, alpha)
+                        .render_popups(renderer, alpha, scanout_node)
                         .into_iter()
                         .map(Into::into)
                         .flat_map(crop_to_output)
@@ -2121,6 +2127,7 @@ where
                             &theme,
                             element_filter.clone(),
                             None, // No attached orb for sticky layer
+                            scanout_node,
                         )
                         .into_iter()
                         .map(Into::into)
@@ -2136,6 +2143,7 @@ where
                         !move_active && is_active_space,
                         overview.clone(),
                         &theme,
+                        scanout_node,
                     ) {
                         Ok(elements) => {
                             elements
@@ -2168,6 +2176,7 @@ where
                         element_filter.clone(),
                         voice_mode_alpha,
                         attached_orb_state.as_ref(),
+                        scanout_node,
                     ) {
                         Ok(elements) => {
                             elements
@@ -3443,6 +3452,7 @@ where
         current,
         cursor_mode,
         &element_filter,
+        None,
     )?;
 
     if let Some(additional_damage) = additional_damage {

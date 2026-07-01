@@ -25,6 +25,7 @@ use iced_core::{Color, mouse::Interaction as MouseInteraction};
 use iced_runtime::Task;
 use smithay::{
     backend::{
+        drm::DrmNode,
         input::KeyState,
         renderer::{
             ImportAll, ImportMem, Renderer,
@@ -847,6 +848,7 @@ impl CosmicWindow {
         location: Point<i32, Physical>,
         scale: Scale<f64>,
         alpha: f32,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: Renderer + ImportAll + ImportMem,
@@ -864,7 +866,11 @@ impl CosmicWindow {
         self.0.with_program(|p| {
             p.window
                 .popup_render_elements::<R, CosmicWindowRenderElement<R>>(
-                    renderer, window_loc, scale, alpha,
+                    renderer,
+                    window_loc,
+                    scale,
+                    alpha,
+                    scanout_node,
                 )
                 .into_iter()
                 .map(C::from)
@@ -989,6 +995,7 @@ impl CosmicWindow {
         scale: Scale<f64>,
         alpha: f32,
         scanout_override: Option<bool>,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<C>
     where
         R: AsGlowRenderer,
@@ -1082,6 +1089,7 @@ impl CosmicWindow {
                     scale,
                     alpha,
                     scanout_override,
+                    scanout_node,
                 )
         });
         if window_elements.is_empty() {

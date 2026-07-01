@@ -15,7 +15,7 @@ use crate::{
         store_layer_blur_last_update, workspace_elements,
     },
     config::ScreenFilter,
-    shell::{Shell, element::surface::ScanoutTargetNodeGuard, grabs::SeatMoveGrabState},
+    shell::{Shell, grabs::SeatMoveGrabState},
     state::SurfaceDmabufFeedback,
     utils::prelude::*,
     wayland::handlers::{
@@ -2074,24 +2074,22 @@ impl SurfaceThreadState {
         }
 
         let elements_phase_start = std::time::Instant::now();
-        let mut elements = {
-            let _scanout_node = ScanoutTargetNodeGuard::new(Some(self.target_node));
-            output_elements(
-                Some(&render_node),
-                &mut renderer,
-                &self.shell,
-                self.clock.now(),
-                self.mirroring.as_ref().unwrap_or(&self.output),
-                CursorMode::All,
-                #[cfg(not(feature = "debug"))]
-                None,
-                #[cfg(feature = "debug")]
-                Some((&self.egui, &self.timings)),
-            )
-            .map_err(|err| {
-                anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
-            })?
-        };
+        let mut elements = output_elements(
+            Some(&render_node),
+            &mut renderer,
+            &self.shell,
+            self.clock.now(),
+            self.mirroring.as_ref().unwrap_or(&self.output),
+            CursorMode::All,
+            #[cfg(not(feature = "debug"))]
+            None,
+            #[cfg(feature = "debug")]
+            Some((&self.egui, &self.timings)),
+            Some(self.target_node),
+        )
+        .map_err(|err| {
+            anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
+        })?;
         profile.elements_duration = elements_phase_start.elapsed();
         profile.element_count = elements.len();
 

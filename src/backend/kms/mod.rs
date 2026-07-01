@@ -990,6 +990,7 @@ impl KmsGuard<'_> {
                                     output,
                                     CursorMode::All,
                                     None,
+                                    None,
                                 )
                                 .with_context(|| "Failed to render outputs")?;
 
@@ -1100,6 +1101,7 @@ impl KmsGuard<'_> {
                                 output,
                                 CursorMode::All,
                                 None,
+                                None,
                             )
                             .with_context(|| "Failed to render outputs")?;
 
@@ -1143,6 +1145,7 @@ impl KmsGuard<'_> {
                         now,
                         output,
                         CursorMode::All,
+                        None,
                         None,
                     )
                     .with_context(|| "Failed to render outputs")?;

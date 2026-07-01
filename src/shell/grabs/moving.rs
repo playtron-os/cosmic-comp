@@ -36,6 +36,7 @@ use crate::comp_theme::CompTheme;
 use calloop::LoopHandle;
 use smithay::{
     backend::{
+        drm::DrmNode,
         input::ButtonState,
         renderer::{
             ImportAll, ImportMem, Renderer,
@@ -100,6 +101,7 @@ impl MoveGrabState {
         theme: &CompTheme,
         embedded_children: &[(CosmicMapped, EmbedRenderInfo)],
         attached_orb_state: Option<&VoiceOrbState>,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<I>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -418,6 +420,7 @@ impl MoveGrabState {
                 output_scale,
                 alpha,
                 Some(false),
+                scanout_node,
             );
         let p_elements = self
             .window
@@ -427,6 +430,7 @@ impl MoveGrabState {
                     .to_physical_precise_round(output_scale),
                 output_scale,
                 alpha,
+                scanout_node,
             );
         let shadow_element = self.window.shadow_render_element(
             renderer,

@@ -15,6 +15,7 @@ use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::{
     backend::{
         allocator::Fourcc,
+        drm::DrmNode,
         renderer::{
             Bind, Color32F, ImportAll, ImportMem, Offscreen, Renderer,
             element::{
@@ -641,6 +642,7 @@ impl FloatingLayout {
         embedded_elem: &CosmicMapped,
         output_scale: f64,
         alpha: f32,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
         R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
@@ -705,6 +707,7 @@ impl FloatingLayout {
             popup_render_offset.to_physical_precise_round(output_scale),
             output_scale.into(),
             alpha,
+            scanout_node,
         ));
 
         popup_elements
@@ -3177,6 +3180,7 @@ impl FloatingLayout {
         &self,
         renderer: &mut R,
         alpha: f32,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
         R: AsGlowRenderer,
@@ -3206,7 +3210,7 @@ impl FloatingLayout {
                 // For embedded windows, we need to render popups at the embedded position
                 // (inside the parent window), not at the embedded window's workspace position
                 let embedded_popup_elements =
-                    self.render_embedded_popups(renderer, elem, output_scale, alpha);
+                    self.render_embedded_popups(renderer, elem, output_scale, alpha, scanout_node);
                 elements.extend(embedded_popup_elements);
             } else {
                 // Normal window - render popups at workspace position
@@ -3227,6 +3231,7 @@ impl FloatingLayout {
                             .to_physical_precise_round(output_scale),
                         output_scale.into(),
                         alpha,
+                        scanout_node,
                     ),
                 );
             }
@@ -3328,6 +3333,7 @@ impl FloatingLayout {
         theme: &crate::comp_theme::CompTheme,
         element_filter: ElementFilter,
         attached_orb_state: Option<&VoiceOrbState>,
+        scanout_node: Option<DrmNode>,
     ) -> Vec<CosmicMappedRenderElement<R>>
     where
         R: AsGlowRenderer,
@@ -3562,6 +3568,7 @@ impl FloatingLayout {
                 output_scale.into(),
                 alpha,
                 None,
+                scanout_node,
             );
             window_elements.extend(
                 elem.shadow_render_element(
