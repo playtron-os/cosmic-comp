@@ -628,6 +628,7 @@ impl FloatingLayout {
                 output_scale.into(),
                 alpha,
                 None,
+                None,
             );
             embedded_elements.extend(elements);
         }
@@ -3271,7 +3272,7 @@ impl FloatingLayout {
 
         let glow = renderer.glow_renderer_mut();
         let elements: Vec<CosmicMappedRenderElement<GlowRenderer>> =
-            mapped.render_elements(glow, location, None, output_scale.into(), 1.0, None);
+            mapped.render_elements(glow, location, None, output_scale.into(), 1.0, None, None);
         if elements.is_empty() {
             return None;
         }

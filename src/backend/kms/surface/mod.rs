@@ -884,6 +884,7 @@ fn process_blur(
                 workspace,
                 CursorMode::None,
                 &capture_filter,
+                None,
             )
         };
         let capture_elapsed = capture_start.elapsed();
@@ -1238,6 +1239,7 @@ fn process_blur(
                     workspace,
                     CursorMode::None,
                     &capture_filter,
+                    None,
                 )
             };
             let capture_elapsed = capture_start.elapsed();

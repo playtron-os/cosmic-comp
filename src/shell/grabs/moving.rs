@@ -465,6 +465,7 @@ impl MoveGrabState {
                     output_scale,
                     alpha,
                     None,
+                    None,
                 )
             })
             .collect();
@@ -534,6 +535,7 @@ impl MoveGrabState {
                     output_scale,
                     alpha,
                     Some(false),
+                    None,
                 )
             })
             .collect();

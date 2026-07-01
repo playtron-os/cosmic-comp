@@ -2741,6 +2741,7 @@ where
                 workspace,
                 cursor_mode,
                 &capture_filter,
+                None,
             )?;
             let capture_elapsed = capture_start.elapsed();
 
@@ -3043,6 +3044,7 @@ where
                     workspace,
                     CursorMode::None, // No cursor for blur capture
                     &capture_filter,
+                    None,
                 )?;
                 let capture_elapsed = capture_start.elapsed();
 
@@ -3268,6 +3270,7 @@ where
             workspace,
             cursor_mode,
             &element_filter,
+            None,
         )?;
 
         // Render final scene with blur backdrops to actual target
