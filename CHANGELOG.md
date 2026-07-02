@@ -1,3 +1,20 @@
+## [1.28.5](https://github.com/playtron-os/cosmic-comp/compare/v1.28.4...v1.28.5) (2026-07-02)
+
+
+### Bug Fixes
+
+* correctly unmap x11 windows instead of re-queueing them ([2995f38](https://github.com/playtron-os/cosmic-comp/commit/2995f3819006cc48c29c1c7879c4186a70ec966e))
+* guard against zombie x11 windows mapping ([1495b39](https://github.com/playtron-os/cosmic-comp/commit/1495b39ecfe6d6d27cc278e51c46a22f728f863d))
+* internal laptop screen stuck on vendor logo with external monitor ([a9f2427](https://github.com/playtron-os/cosmic-comp/commit/a9f2427c00dddbd78ddc3990c84751d6993c3f8d))
+* keep windows visible until overview commits a buffer ([6507682](https://github.com/playtron-os/cosmic-comp/commit/650768211fbfa3bcde7f7b52c152cc630dbe6404))
+* merge conflict fixes from last commit ([562f299](https://github.com/playtron-os/cosmic-comp/commit/562f2997048ac6127a13f0b70ed5784d3add8158))
+* **xwayland:** eliminate black-frame flash by mapping X11 windows on first rendered frame ([3adfa23](https://github.com/playtron-os/cosmic-comp/commit/3adfa230926a0cbb9ea169df5db7f2df21055e35))
+
+
+### Reverts
+
+* "fix: follow the focus after alt+tab to another output" ([9d52653](https://github.com/playtron-os/cosmic-comp/commit/9d52653d5c9d45716dbc333f99f5ef7e25549bf8))
+
 ## [1.28.4](https://github.com/playtron-os/cosmic-comp/compare/v1.28.3...v1.28.4) (2026-06-29)
 
 
