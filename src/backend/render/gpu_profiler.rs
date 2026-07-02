@@ -512,8 +512,11 @@ pub fn effective_blur_downsample_factor() -> i32 {
 // =============================================================================
 
 /// Check if performance logging is enabled via COSMIC_PERF_LOG.
-/// Disabled by default. Set COSMIC_PERF_LOG=1 to enable.
+/// Always on in debug builds; in release builds set COSMIC_PERF_LOG=1 to enable.
 pub fn perf_logging_enabled() -> bool {
+    if cfg!(debug_assertions) {
+        return true;
+    }
     static ENABLED: LazyLock<bool> =
         LazyLock::new(|| crate::utils::env::bool_var("COSMIC_PERF_LOG").unwrap_or(false));
     *ENABLED

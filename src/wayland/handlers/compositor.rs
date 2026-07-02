@@ -33,6 +33,7 @@ use smithay::{
                 ToplevelSurface, XdgPopupSurfaceRoleAttributes, XdgToplevelSurfaceRoleAttributes,
             },
         },
+        xwayland_shell::PhantomXWaylandSurface,
     },
     xwayland::XWaylandClientData,
 };
@@ -287,6 +288,13 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        if with_states(surface, |s| {
+            s.data_map.get::<PhantomXWaylandSurface>().is_some()
+        }) {
+            on_commit_buffer_handler::<Self>(surface);
+            return;
+        }
+
         // first load the buffer for various smithay helper functions (which also initializes the RendererSurfaceState)
         on_commit_buffer_handler::<Self>(surface);
 
@@ -574,6 +582,60 @@ impl State {
                     self.coldstart_notify_window_mapped(surface);
                     return true;
                 }
+            }
+        }
+
+        // X11 toplevel path: no XDG configure/ack cycle. We wait for the first
+        // non-empty buffer commit after MapNotify (frame_notified=true) so the
+        // window never appears as a black rectangle.
+        {
+            let shell = self.common.shell.write();
+            let maybe_x11_window = shell
+                .pending_windows
+                .iter()
+                .find(|p| {
+                    p.frame_notified
+                        && p.surface.wl_surface().as_deref() == Some(surface)
+                        && p.surface.x11_surface().is_some()
+                })
+                .map(|p| p.surface.clone());
+
+            if let Some(window) = maybe_x11_window {
+                let has_buffer =
+                    with_renderer_surface_state(surface, |state| state.buffer().is_some())
+                        .unwrap_or(false);
+                if has_buffer {
+                    window.on_commit();
+                    std::mem::drop(shell);
+
+                    self.check_pending_pid_embeds_for_window(&window);
+
+                    let mut shell = self.common.shell.write();
+                    let res = shell.map_window(
+                        &window,
+                        &mut self.common.toplevel_info_state,
+                        &mut self.common.workspace_state,
+                        &self.common.event_loop_handle,
+                    );
+                    std::mem::drop(shell);
+
+                    self.ensure_embedded_on_parent_output(&window);
+
+                    if let Some(target) = res {
+                        let shell = self.common.shell.read();
+                        let seat = shell.seats.last_active().clone();
+                        std::mem::drop(shell);
+                        Shell::set_focus(self, Some(&target), &seat, None, false);
+                    }
+
+                    if let Some(x11) = window.x11_surface().cloned() {
+                        self.update_game_mode_input_grab(&x11);
+                    }
+
+                    self.coldstart_notify_window_mapped(surface);
+                    return true;
+                }
+                std::mem::drop(shell);
             }
         }
 

@@ -552,6 +552,7 @@ pub struct PendingWindow {
     pub fullscreen: Option<Output>,
     pub maximized: bool,
     pub sticky: bool,
+    pub frame_notified: bool,
 }
 
 #[derive(Debug)]
@@ -6124,6 +6125,7 @@ impl Shell {
             fullscreen: output,
             maximized: should_be_maximized,
             sticky: mut should_be_sticky,
+            ..
         } = self.pending_windows.remove(pos);
 
         // Check if this window is embedded - if so, we need to place it on the same
@@ -6936,6 +6938,7 @@ impl Shell {
                     fullscreen: None,
                     maximized: false,
                     sticky: false,
+                    frame_notified: false,
                 });
             }
         }

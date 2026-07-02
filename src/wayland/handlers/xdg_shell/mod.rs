@@ -56,6 +56,7 @@ impl XdgShellHandler for State {
                 fullscreen: None,
                 maximized: false,
                 sticky: false,
+                frame_notified: false,
             })
         }
         // We will position the window after the first commit, when we know its size hints

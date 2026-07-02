@@ -28,7 +28,7 @@ use smithay::{
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
             pixman::{PixmanError, PixmanRenderer},
-            utils::draw_render_elements,
+            utils::{draw_render_elements, with_renderer_surface_state},
         },
     },
     desktop::space::SpaceElement,
@@ -780,7 +780,27 @@ impl XwmHandler for State {
 
     fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
-    fn destroyed_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        let mut shell = self.common.shell.write();
+        shell
+            .pending_windows
+            .retain(|p| p.surface.x11_surface() != Some(&window));
+
+        let seat = shell.seats.last_active().clone();
+        if shell
+            .unmap_surface(&window, &seat, &mut self.common.toplevel_info_state)
+            .is_some()
+        {
+            let outputs: Vec<_> = shell.outputs().cloned().collect();
+            for output in &outputs {
+                shell.refresh_active_space(output);
+            }
+            drop(shell);
+            for output in &outputs {
+                self.backend.schedule_render(output);
+            }
+        }
+    }
 
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
         // Live Steam window-role changes drive game mode. These run with no shell
@@ -837,77 +857,156 @@ impl XwmHandler for State {
                 fullscreen,
                 maximized,
                 sticky: false,
+                frame_notified: false,
             })
         }
     }
 
     fn map_window_notify(&mut self, _xwm: XwmId, surface: X11Surface) {
-        let mut shell = self.common.shell.write();
-        if let Some(window) = shell
-            .pending_windows
-            .iter()
-            .find(|pending| pending.surface.x11_surface() == Some(&surface))
-            .map(|pending| pending.surface.clone())
-        {
-            if let std::collections::hash_map::Entry::Vacant(e) = shell
-                .pending_activations
-                .entry(crate::shell::ActivationKey::X11(surface.window_id()))
-                && let Some(startup_id) = window.x11_surface().and_then(|x| x.startup_id())
-                && let Some(context) = self
-                    .common
-                    .xdg_activation_state
-                    .data_for_token(&XdgActivationToken::from(startup_id))
-                    .and_then(|data| data.user_data.get::<ActivationContext>())
+        let startup_id_opt = {
+            let shell = self.common.shell.read();
+            if !shell
+                .pending_windows
+                .iter()
+                .any(|p| p.surface.x11_surface() == Some(&surface))
             {
-                e.insert(*context);
+                return; // Not a managed pending window — nothing to do.
             }
+            shell
+                .pending_windows
+                .iter()
+                .find(|p| p.surface.x11_surface() == Some(&surface))
+                .and_then(|p| p.surface.x11_surface().and_then(|x| x.startup_id()))
+        };
 
-            // Check if this window matches any pending PID-based embed requests
-            // BEFORE mapping, so the surface is marked as embedded before rendering.
-            // This prevents the window from appearing as a separate window for a few frames.
-            // Drop shell lock first as check_pending_pid_embeds_for_window needs &mut self
-            std::mem::drop(shell);
-            self.check_pending_pid_embeds_for_window(&window);
+        let mut shell = self.common.shell.write();
 
-            // Re-acquire shell lock for map_window
-            let mut shell = self.common.shell.write();
-            let res = shell.map_window(
-                &window,
-                &mut self.common.toplevel_info_state,
-                &mut self.common.workspace_state,
-                &self.common.event_loop_handle,
-            );
-            std::mem::drop(shell);
+        // Insert activation context if not already present.
+        if let std::collections::hash_map::Entry::Vacant(e) = shell
+            .pending_activations
+            .entry(crate::shell::ActivationKey::X11(surface.window_id()))
+            && let Some(startup_id) = startup_id_opt
+            && let Some(context) = self
+                .common
+                .xdg_activation_state
+                .data_for_token(&XdgActivationToken::from(startup_id))
+                .and_then(|data| data.user_data.get::<ActivationContext>())
+        {
+            e.insert(*context);
+        }
 
-            // After mapping, if this window is an embedded child, ensure it's
-            // on the same output as its parent.
-            self.ensure_embedded_on_parent_output(&window);
+        std::mem::drop(shell);
 
-            if let Some(target) = res {
-                let shell = self.common.shell.read();
-                let seat = shell.seats.last_active().clone();
-                std::mem::drop(shell);
-                Shell::set_focus(self, Some(&target), &seat, None, false);
-            }
+        // If the surface supports _NET_WM_SYNC_REQUEST, send a forced sync request
+        // using the current geometry (no actual resize). The client will render its
+        // first frame and increment the counter; sync_request_acked fires and maps.
+        // This eliminates the black-frame flash even when the first committed buffer
+        // would otherwise be all-black (e.g. Zoom's OpenGL init clear).
+        let geo = surface.geometry();
+        let sync_supported = surface.sync_request_supported();
+        if sync_supported {
+            let _ = surface.configure_with_forced_sync(geo, None);
+            // Sync pending: sync_request_acked / sync_request_timeout will map.
+            return;
+        }
 
-            // A window that maps already carrying STEAM_INPUT_FOCUS grabs input now
-            // (the value was bulk-loaded on map, so no property_notify fires for it).
-            if let Some(x11) = window.x11_surface().cloned() {
-                self.update_game_mode_input_grab(&x11);
-            }
+        // No sync support: fall back to frame_notified + commit-handler approach.
+        let mut shell = self.common.shell.write();
+        if let Some(pending) = shell
+            .pending_windows
+            .iter_mut()
+            .find(|p| p.surface.x11_surface() == Some(&surface))
+        {
+            pending.frame_notified = true;
+        }
+
+        // Case B fallback: buffer already committed, map immediately.
+        let has_buffer = surface
+            .wl_surface()
+            .as_ref()
+            .and_then(|wl| with_renderer_surface_state(wl, |s| s.buffer().is_some()))
+            .unwrap_or(false);
+
+        let window = if has_buffer {
+            shell
+                .pending_windows
+                .iter()
+                .find(|p| p.surface.x11_surface() == Some(&surface))
+                .map(|p| p.surface.clone())
+        } else {
+            None
+        };
+        std::mem::drop(shell);
+
+        if let Some(window) = window {
+            self.map_x11_window_now(&window);
         }
     }
 
-    fn mapped_override_redirect_window(&mut self, _xwm: XwmId, window: X11Surface) {
+    fn sync_request_acked(&mut self, _xwm: XwmId, surface: X11Surface) {
+        // Client finished rendering its first frame (or a resize). For pending windows
+        // this is our signal to show the window — no black flash.
+        let shell = self.common.shell.read();
+        let window = shell
+            .pending_windows
+            .iter()
+            .find(|p| p.surface.x11_surface() == Some(&surface))
+            .map(|p| p.surface.clone());
+        std::mem::drop(shell);
+
+        if let Some(window) = window {
+            let mut shell = self.common.shell.write();
+            if let Some(pending) = shell
+                .pending_windows
+                .iter_mut()
+                .find(|p| p.surface.x11_surface() == Some(&surface))
+            {
+                pending.frame_notified = true;
+            }
+            std::mem::drop(shell);
+            self.map_x11_window_now(&window);
+        }
+    }
+
+    fn sync_request_timeout(&mut self, _xwm: XwmId, surface: X11Surface) {
+        // Client didn't ack within the timeout — map it anyway so it's not stuck forever.
+        let shell = self.common.shell.read();
+        let window = shell
+            .pending_windows
+            .iter()
+            .find(|p| p.surface.x11_surface() == Some(&surface))
+            .map(|p| p.surface.clone());
+        std::mem::drop(shell);
+
+        if let Some(window) = window {
+            let mut shell = self.common.shell.write();
+            if let Some(pending) = shell
+                .pending_windows
+                .iter_mut()
+                .find(|p| p.surface.x11_surface() == Some(&surface))
+            {
+                pending.frame_notified = true;
+            }
+            std::mem::drop(shell);
+            self.map_x11_window_now(&window);
+        }
+    }
+
+    fn mapped_override_redirect_window(&mut self, xwm: XwmId, window: X11Surface) {
         let mut shell = self.common.shell.write();
-        if shell
+        let already_present = shell
             .override_redirect_windows
             .iter()
-            .any(|or| or == &window)
-        {
+            .any(|or| or == &window);
+        if already_present {
             return;
         }
-        shell.map_override_redirect(window)
+        shell.map_override_redirect(window.clone());
+        drop(shell);
+
+        // Retry any wl_surface association that was deferred because the OR window was
+        // not yet mapped when WL_SURFACE_SERIAL arrived (Wayland-first race).
+        smithay::wayland::xwayland_shell::try_associate_or_surface(self, xwm, &window);
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -1367,5 +1466,33 @@ impl XwmHandler for State {
     fn disconnected(&mut self, _xwm: XwmId) {
         let xwayland_state = self.common.xwayland_state.as_mut().unwrap();
         xwayland_state.xwm = None;
+    }
+}
+
+impl State {
+    pub(crate) fn map_x11_window_now(&mut self, window: &CosmicSurface) {
+        self.check_pending_pid_embeds_for_window(window);
+
+        let mut shell = self.common.shell.write();
+        let res = shell.map_window(
+            window,
+            &mut self.common.toplevel_info_state,
+            &mut self.common.workspace_state,
+            &self.common.event_loop_handle,
+        );
+        std::mem::drop(shell);
+
+        self.ensure_embedded_on_parent_output(window);
+
+        if let Some(target) = res {
+            let shell = self.common.shell.read();
+            let seat = shell.seats.last_active().clone();
+            std::mem::drop(shell);
+            Shell::set_focus(self, Some(&target), &seat, None, false);
+        }
+
+        if let Some(x11) = window.x11_surface().cloned() {
+            self.update_game_mode_input_grab(&x11);
+        }
     }
 }
