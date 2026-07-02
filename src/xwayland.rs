@@ -1463,6 +1463,18 @@ impl XwmHandler for State {
 
 impl State {
     pub(crate) fn map_x11_window_now(&mut self, window: &CosmicSurface) {
+        // Guard against zombie maps: an X11 window can be unmapped/destroyed while
+        // we wait for its _NET_WM_SYNC_REQUEST ack.
+        if let Some(x11) = window.x11_surface()
+            && (!x11.alive() || x11.mapped_window_id().is_none())
+        {
+            let win_id = x11.window_id();
+            let mut shell = self.common.shell.write();
+            shell
+                .pending_windows
+                .retain(|p| p.surface.x11_surface().map(|s| s.window_id()) != Some(win_id));
+            return;
+        }
         self.check_pending_pid_embeds_for_window(window);
 
         let mut shell = self.common.shell.write();
