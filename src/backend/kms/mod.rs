@@ -876,11 +876,23 @@ impl KmsGuard<'_> {
 
             // first drop old surfaces
             if !test_only {
-                for output in outputs.iter().filter(|o| !o.is_enabled()) {
-                    device
-                        .inner
-                        .surfaces
-                        .retain(|_, surface| surface.output != *output);
+                let mut disabled_crtcs = Vec::new();
+                device.inner.surfaces.retain(|crtc, surface| {
+                    if outputs
+                        .iter()
+                        .any(|o| !o.is_enabled() && surface.output == *o)
+                    {
+                        disabled_crtcs.push(*crtc);
+                        false
+                    } else {
+                        true
+                    }
+                });
+
+                if let Err(err) =
+                    drm_helpers::disable_crtcs(device.drm.device_mut(), &disabled_crtcs)
+                {
+                    warn!("Failed to disable crtcs for disabled outputs: {err}");
                 }
             }
 

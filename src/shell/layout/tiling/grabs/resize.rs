@@ -160,8 +160,8 @@ impl TouchTarget<State> for ResizeForkTarget {
 
     fn up(&self, _seat: &Seat<State>, _data: &mut State, _event: &UpEvent) {}
     fn motion(&self, _seat: &Seat<State>, _data: &mut State, _event: &TouchMotionEvent) {}
-    fn frame(&self, _seat: &Seat<State>, _data: &mut State, _marker: FrameMarker) {}
-    fn cancel(&self, _seat: &Seat<State>, _data: &mut State, _marker: FrameMarker) {}
+    fn frame(&self, _seat: &Seat<State>, _data: &mut State, _frame: FrameMarker) {}
+    fn cancel(&self, _seat: &Seat<State>, _data: &mut State, _frame: FrameMarker) {}
     fn shape(&self, _seat: &Seat<State>, _data: &mut State, _event: &ShapeEvent) {}
     fn orientation(&self, _seat: &Seat<State>, _data: &mut State, _event: &OrientationEvent) {}
     fn last_frame(&self, _seat: &Seat<State>, _data: &mut State) -> Option<FrameMarker> {

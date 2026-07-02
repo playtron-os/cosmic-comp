@@ -1849,19 +1849,21 @@ impl TouchTarget<State> for CosmicWindow {
         TouchTarget::motion(&self.0, seat, data, &event)
     }
 
-    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        TouchTarget::frame(&self.0, seat, data, marker)
+    fn frame(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        TouchTarget::frame(&self.0, seat, data, frame)
     }
 
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        TouchTarget::cancel(&self.0, seat, data, marker)
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        TouchTarget::cancel(&self.0, seat, data, frame)
     }
 
     fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent) {
         TouchTarget::shape(&self.0, seat, data, event)
     }
 
-    fn orientation(&self, _seat: &Seat<State>, _data: &mut State, _event: &OrientationEvent) {}
+    fn orientation(&self, seat: &Seat<State>, data: &mut State, event: &OrientationEvent) {
+        TouchTarget::orientation(&self.0, seat, data, event)
+    }
 
     fn last_frame(&self, seat: &Seat<State>, data: &mut State) -> Option<FrameMarker> {
         TouchTarget::last_frame(&self.0, seat, data)

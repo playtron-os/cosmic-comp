@@ -71,8 +71,8 @@ use smithay::{
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{
-        Buffer, IsAlive, Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Serial, Size,
-        Transform, user_data::UserDataMap,
+        Buffer, IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size, Transform,
+        user_data::UserDataMap,
     },
     wayland::seat::WaylandFocus,
 };
@@ -82,7 +82,7 @@ use std::{
     hash::Hash,
     sync::{
         Arc, LazyLock, Mutex,
-        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicUsize, Ordering},
     },
 };
 
@@ -117,6 +117,7 @@ pub struct CosmicStackInternal {
     scroll_to_focus: AtomicBool,
     previous_keyboard: AtomicUsize,
     pointer_entered: AtomicU8,
+    touch_serial: AtomicU32,
     reenter: AtomicBool,
     potential_drag: Mutex<Option<usize>>,
     override_alive: AtomicBool,
@@ -183,6 +184,7 @@ impl CosmicStack {
                 scroll_to_focus: AtomicBool::new(false),
                 previous_keyboard: AtomicUsize::new(0),
                 pointer_entered: AtomicU8::new(0),
+                touch_serial: AtomicU32::new(0),
                 reenter: AtomicBool::new(false),
                 potential_drag: Mutex::new(None),
                 override_alive: AtomicBool::new(true),
@@ -1998,6 +2000,8 @@ impl TouchTarget<State> for CosmicStack {
             p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)].geometry()
         });
         event.location -= active_window_geo.loc.to_f64();
+        self.0
+            .with_program(|p| p.touch_serial.store(event.serial.into(), Ordering::Release));
         TouchTarget::down(&self.0, seat, data, &event)
     }
 
@@ -2018,23 +2022,31 @@ impl TouchTarget<State> for CosmicStack {
             || event.location.x < 64.0
             || event.location.x > (active_window_geo.size.w as f64 - 64.0)
         {
-            self.start_drag(data, seat, SERIAL_COUNTER.next_serial());
+            self.start_drag(
+                data,
+                seat,
+                self.0
+                    .with_program(|p| p.touch_serial.load(Ordering::Acquire))
+                    .into(),
+            );
         }
     }
 
-    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        TouchTarget::frame(&self.0, seat, data, marker)
+    fn frame(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        TouchTarget::frame(&self.0, seat, data, frame)
     }
 
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        TouchTarget::cancel(&self.0, seat, data, marker)
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        TouchTarget::cancel(&self.0, seat, data, frame)
     }
 
     fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent) {
         TouchTarget::shape(&self.0, seat, data, event)
     }
 
-    fn orientation(&self, _seat: &Seat<State>, _data: &mut State, _event: &OrientationEvent) {}
+    fn orientation(&self, seat: &Seat<State>, data: &mut State, event: &OrientationEvent) {
+        TouchTarget::orientation(&self.0, seat, data, event)
+    }
 
     fn last_frame(&self, seat: &Seat<State>, data: &mut State) -> Option<FrameMarker> {
         TouchTarget::last_frame(&self.0, seat, data)

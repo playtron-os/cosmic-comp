@@ -69,8 +69,7 @@ use smithay::{
         },
     },
     output::Output,
-    reexports::calloop::RegistrationToken,
-    reexports::calloop::{self, LoopHandle, futures::Scheduler},
+    reexports::calloop::{self, LoopHandle, RegistrationToken, futures::Scheduler},
     utils::{
         Buffer as BufferCoords, IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size,
         Transform,
@@ -171,6 +170,8 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     last_seat: Arc<Mutex<Option<(Seat<crate::state::State>, Serial)>>>,
     cursor_pos: Option<Point<f64, Logical>>,
     touch_map: HashMap<Finger, IcedPoint>,
+    last_touch_frame: Option<FrameMarker>,
+    last_touch_serial: Option<Serial>,
 
     // iced 0.15: UserInterface cache + manual event queue (replaces State<ProgramWrapper>)
     theme: CompTheme,
@@ -213,6 +214,8 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             last_seat: self.last_seat.clone(),
             cursor_pos: self.cursor_pos,
             touch_map: self.touch_map.clone(),
+            last_touch_frame: None,
+            last_touch_serial: None,
             theme: self.theme.clone(),
             iced_theme: self.theme.to_iced_theme(),
             renderer,
@@ -243,6 +246,8 @@ impl<P: Program + Send + 'static> fmt::Debug for IcedElementInternal<P> {
             .field("last_seat", &self.last_seat)
             .field("cursor_pos", &self.cursor_pos)
             .field("touch_map", &self.touch_map)
+            .field("last_touch_frame", &self.last_touch_frame)
+            .field("last_touch_serial", &self.last_touch_serial)
             .field("theme", &"...")
             .field("renderer", &"...")
             .field("cache", &"...")
@@ -303,6 +308,8 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             last_seat,
             touch_map: HashMap::new(),
             iced_theme: theme.to_iced_theme(),
+            last_touch_frame: None,
+            last_touch_serial: None,
             theme,
             renderer,
             cache: user_interface::Cache::new(),
@@ -770,6 +777,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
             .push(Event::Touch(TouchEvent::FingerPressed { id, position }));
         internal.touch_map.insert(id, position);
         internal.cursor_pos = Some(event_location);
+        internal.last_touch_serial = Some(event.serial);
         *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
         internal.update(UpdateSource::Input);
     }
@@ -783,7 +791,8 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         let mut internal = self.0.lock().unwrap();
         let id = Finger(i32::from(event.slot) as u64);
         if let Some(position) = internal.touch_map.remove(&id) {
-            *internal.last_seat.lock().unwrap() = Some((seat.clone(), event.serial));
+            *internal.last_seat.lock().unwrap() =
+                Some((seat.clone(), internal.last_touch_serial.unwrap()));
             internal
                 .event_queue
                 .push(Event::Touch(TouchEvent::FingerLifted { id, position }));
@@ -793,7 +802,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
 
     fn motion(
         &self,
-        _seat: &Seat<crate::state::State>,
+        seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
         event: &TouchMotionEvent,
     ) {
@@ -801,6 +810,8 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         let id = Finger(i32::from(event.slot) as u64);
         let event_location = event.location.downscale(internal.additional_scale);
         let position = IcedPoint::new(event_location.x as f32, event_location.y as f32);
+        *internal.last_seat.lock().unwrap() =
+            Some((seat.clone(), internal.last_touch_serial.unwrap()));
         internal
             .event_queue
             .push(Event::Touch(TouchEvent::FingerMoved { id, position }));
@@ -813,17 +824,19 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         &self,
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
-        _marker: FrameMarker,
+        frame: FrameMarker,
     ) {
+        self.0.lock().unwrap().last_touch_frame = Some(frame);
     }
 
     fn cancel(
         &self,
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
-        _marker: FrameMarker,
+        frame: FrameMarker,
     ) {
         let mut internal = self.0.lock().unwrap();
+        internal.last_touch_frame = Some(frame);
         for (id, position) in std::mem::take(&mut internal.touch_map) {
             internal
                 .event_queue
@@ -853,7 +866,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
     ) -> Option<FrameMarker> {
-        None
+        self.0.lock().unwrap().last_touch_frame
     }
 }
 

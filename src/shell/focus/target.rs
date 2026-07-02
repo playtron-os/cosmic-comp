@@ -510,12 +510,12 @@ impl TouchTarget<State> for PointerFocusTarget {
         self.inner_touch_target().motion(seat, data, event);
     }
 
-    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        self.inner_touch_target().frame(seat, data, marker);
+    fn frame(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        self.inner_touch_target().frame(seat, data, frame);
     }
 
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: FrameMarker) {
-        self.inner_touch_target().cancel(seat, data, marker);
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {
+        self.inner_touch_target().cancel(seat, data, frame);
     }
 
     fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent) {
