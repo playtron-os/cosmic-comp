@@ -160,12 +160,18 @@ tasks:
       BUCKET: playtron-dev2-global-os-public
       BUCKET_PATH: repos/playtron-app/{{.ARCH}}
       FILE: "dist/{{.NAME}}-{{.VERSION}}-1.{{.ARCH}}.rpm"
+      REPO_NAME: playtron
     preconditions:
       - sh: ls {{.FILE}}
         msg: "File to upload does not exist: {{.FILE}}"
+      - sh: env | grep -q '^PACKAGES_UPLOAD_TOKEN='
+        msg: "PACKAGES_UPLOAD_TOKEN environment variable is not set"
     cmds:
+      # TODO: Remove S3 uploads after repository switch
       - echo "Uploading {{.FILE}} to s3://{{.BUCKET}}/{{.BUCKET_PATH}}/$(basename {{.FILE}})"
       - aws s3 cp {{.FILE}} s3://{{.BUCKET}}/{{.BUCKET_PATH}}/$(basename "{{.FILE}}")
+      - echo "Publishing {{.FILE}} to 'https://packages.playtron.one/rpm/{{.REPO_NAME}}/packages/{{.NAME}}-{{.VERSION}}-1.{{.ARCH}}.rpm'"
+      - "curl -H 'Authorization: Bearer {{.PACKAGES_UPLOAD_TOKEN}}' -T {{.FILE}} 'https://packages.playtron.one/rpm/{{.REPO_NAME}}/packages/{{.NAME}}-{{.VERSION}}-1.{{.ARCH}}.rpm'"
 
   test:all:
     desc: Run all tests
