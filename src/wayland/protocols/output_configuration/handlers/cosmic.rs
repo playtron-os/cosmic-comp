@@ -80,6 +80,7 @@ where
         match request {
             zcosmic_output_manager_v1::Request::GetHead { extended, head } => {
                 let inner = state.output_configuration_state();
+                let serial = inner.serial_counter;
                 if let Some(mngr) = inner
                     .instances
                     .iter_mut()
@@ -95,9 +96,7 @@ where
                     let output = head_data.output.clone();
 
                     send_head_to_client::<D>(dh, mngr, &output);
-                    for manager in inner.instances.iter() {
-                        manager.obj.done(inner.serial_counter);
-                    }
+                    mngr.obj.done(serial);
                 }
             }
             zcosmic_output_manager_v1::Request::GetConfiguration { extended, config } => {
