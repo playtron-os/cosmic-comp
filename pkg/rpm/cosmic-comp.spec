@@ -73,6 +73,9 @@ if command -v checkmodule >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1
     semodule_package -o "$d/agentos_greeter_compositor.pp" -m "$d/agentos_greeter_compositor.mod" -f "$d/agentos_greeter_compositor.fc" >/dev/null 2>&1 &&
     semodule -i "$d/agentos_greeter_compositor.pp" >/dev/null 2>&1 || :
     rm -f "$d/agentos_greeter_compositor.mod" "$d/agentos_greeter_compositor.pp"
+    # Apply the cosmic_comp_exec_t label so the binary triggers the domain transition
+    # (the runtime dir is labeled by systemd's RuntimeDirectory at boot).
+    restorecon -F /usr/bin/cosmic-comp >/dev/null 2>&1 || :
 fi
 
 %files

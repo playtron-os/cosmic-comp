@@ -2,3 +2,6 @@
 # creates the RuntimeDirectory (/run/cosmic-comp); the socket + lock inside get the type
 # via the type_transitions in agentos_greeter_compositor.te.
 /run/cosmic-comp(/.*)?    system_u:object_r:cosmic_comp_runtime_t:s0
+
+# The compositor binary — entrypoint that triggers the transition into cosmic_comp_t.
+/usr/bin/cosmic-comp      --      system_u:object_r:cosmic_comp_exec_t:s0

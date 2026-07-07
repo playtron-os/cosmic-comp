@@ -1,5 +1,10 @@
-// 50-agentos-desktop.rules — polkit authorization for the
-// persistent-compositor login model.
+// 50-agentos-desktop.rules — polkit authorization for the persistent-compositor login model.
+//
+// The desktop is a Wayland client of the persistent compositor, so its logind session is
+// `active` but has NO seat → polkit treats it as non-local and evaluates every action at the
+// `allow_any` tier, not `allow_active`. Actions a normal desktop allows silently regress to
+// an admin prompt (or denial). We restore them by granting the appliance-relevant namespaces
+// to the single trusted operator (wheel), independent of seat/active state.
 
 polkit.addRule(function(action, subject) {
     if (!subject.isInGroup("wheel")) {
@@ -11,10 +16,7 @@ polkit.addRule(function(action, subject) {
         "org.freedesktop.ModemManager1.",
         "org.freedesktop.udisks2.",
         "org.freedesktop.UPower.",
-        "org.freedesktop.login1.power-off",
-        "org.freedesktop.login1.reboot",
-        "org.freedesktop.login1.suspend",
-        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.",           // power + inhibitors + chvt + reboot-to-firmware
         "org.freedesktop.timedate1.",
         "org.freedesktop.locale1.",
         "org.freedesktop.hostname1.",
@@ -22,7 +24,12 @@ polkit.addRule(function(action, subject) {
         "org.freedesktop.RealtimeKit1.",
         "org.freedesktop.packagekit.",
         "net.reactivated.fprint.",
-        "com.system76."
+        "com.system76.",
+        "one.playtron.",                     // own services (mail / accounts / settings)
+        "org.projectatomic.rpmostree1.",     // OS updates
+        "org.freedesktop.Flatpak.",          // app updates
+        "org.freedesktop.fwupd.",            // firmware updates
+        "org.shadowblip."                    // InputPlumber gamepad control (any=no otherwise)
     ];
 
     for (var i = 0; i < granted.length; i++) {

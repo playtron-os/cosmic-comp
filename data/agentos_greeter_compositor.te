@@ -1,4 +1,4 @@
-module agentos_greeter_compositor 1.1;
+module agentos_greeter_compositor 1.2;
 
 # Lets greetd's greeter (xdm_t) reach the persistent cosmic-comp wayland socket in
 # /run/cosmic-comp so the global-compositor login works in ENFORCING — but ONLY that
@@ -47,3 +47,44 @@ type_transition unconfined_t         cosmic_comp_runtime_t:file cosmic_comp_runt
 allow xdm_t cosmic_comp_runtime_t:dir search;
 allow xdm_t cosmic_comp_runtime_t:sock_file { getattr write };
 allow xdm_t cosmic_comp_runtime_t:file { getattr map read write };
+
+# ==========================================================================================
+# Confined domain for the compositor process itself (was: unconfined_t).
+#
+# PERMISSIVE-FIRST: shipped `permissive`, so denials are LOGGED not enforced. This first pass
+# only makes the domain ENTER correctly; the full allow set (DRM/KMS, input, dbus/logind,
+# udev, shm, …) is harvested on-device via `ausearch -m avc -c cosmic-comp | audit2allow`,
+# added below, then `cosmic_comp_t` is flipped to enforcing (the rest of the OS can stay as-is).
+#
+# Entry path: the unit runs `PAMName=login`, so pam_selinux lands the ExecStart shell in
+# unconfined_t; that `/bin/sh -c '… exec /usr/bin/cosmic-comp'` execs the labeled binary, and
+# the type_transition below moves the process into cosmic_comp_t (verify: `ps -eZ | grep cosmic-comp`).
+# ==========================================================================================
+
+require {
+	attribute domain;
+	attribute exec_type;
+	role unconfined_r;
+	class process transition;
+	class file { entrypoint execute open };
+}
+
+# The compositor's own domain + the label for /usr/bin/cosmic-comp (see .fc).
+type cosmic_comp_t;
+type cosmic_comp_exec_t;
+typeattribute cosmic_comp_t domain;
+typeattribute cosmic_comp_exec_t exec_type, file_type;
+
+# Enter cosmic_comp_t when the unconfined_t launch shell execs the labeled binary. The role
+# carries over from the launcher (unconfined_r), so authorize that role to hold the type.
+type_transition unconfined_t cosmic_comp_exec_t:process cosmic_comp_t;
+allow unconfined_t cosmic_comp_t:process transition;
+allow cosmic_comp_t cosmic_comp_exec_t:file { entrypoint read execute open getattr map };
+role unconfined_r types cosmic_comp_t;
+
+# The socket + lock the confined compositor creates in its runtime dir keep the private type.
+type_transition cosmic_comp_t cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition cosmic_comp_t cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+
+# Log, don't block, until the harvested allow set (above note) is complete.
+permissive cosmic_comp_t;
