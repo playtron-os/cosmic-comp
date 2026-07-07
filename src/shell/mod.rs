@@ -5690,11 +5690,9 @@ impl Shell {
         })
     }
 
-    /// True if `output` has a greeter (`GREETER_NAMESPACE`) layer surface that has painted a
-    /// buffer. Unlike [`any_greeter_mapped`], this excludes a greeter that is in the layer map
-    /// but has not yet committed content (its composite is still the black CLEAR_COLOR) — so a
-    /// login-cover snapshot taken under this gate is always a real, opaque greeter frame on the
-    /// very output being faded, never a bufferless black one. Mirrors `output_has_painted_wallpaper`.
+    /// True if `output` has a greeter layer surface that has painted a buffer. Unlike
+    /// [`any_greeter_mapped`], excludes a mapped-but-uncommitted greeter (still black
+    /// CLEAR_COLOR), so a snapshot gated on this is always a real opaque cover on this output.
     pub fn output_has_painted_greeter(&self, output: &Output) -> bool {
         layer_map_for_output(output).layers().any(|l| {
             l.namespace() == crate::utils::quirks::GREETER_NAMESPACE
@@ -5706,11 +5704,8 @@ impl Shell {
         })
     }
 
-    /// Drop the captured login cover for a single `output`. Used on the abnormal
-    /// greeter-departure path (crash / timeout / greetd overlap alarm) where `login_hold`
-    /// handles the gap and no `dismiss_greeter` crossfade will run — so `cleanup_login_fade`
-    /// (which only fires while a fade is in flight) never frees this output's texture. Mirrors
-    /// how the logout side frees `logout_snapshot` via `clear_greeter_fade_in` on abnormal teardown.
+    /// Drop the captured login cover for one `output`, on the abnormal greeter-departure path
+    /// where `login_hold` (not a crossfade) handles the gap, so `cleanup_login_fade` never frees it.
     pub fn drop_login_snapshot(&self, output: &Output) {
         self.login_snapshot.lock().unwrap().remove(output);
     }

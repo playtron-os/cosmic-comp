@@ -700,11 +700,8 @@ impl State {
         {
             let mut shell = self.common.shell.write();
             shell.clear_greeter_fade_in();
-            // Begin the compositor-owned LOGIN crossfade: hold the captured greeter frame
-            // fully opaque (masking cosmic-bg's first not-yet-real frame / the CLEAR_COLOR
-            // reveal gap), then fade it out over the wallpaper. The greeter hard-exits on the
-            // `send_close` below, so this snapshot is what carries the transition. No-op (and
-            // no regression — instant reveal) if no greeter cover was captured.
+            // Compositor-owned login crossfade: hold the captured greeter cover opaque (masking
+            // cosmic-bg's first not-yet-real frame), then fade it out. No-op if nothing captured.
             shell.start_login_fade();
         }
         tracing::info!(
@@ -835,10 +832,8 @@ impl State {
             if !shell.login_hold.insert(output.clone()) {
                 return;
             }
-            // Abnormal greeter departure (crash / timeout / greetd overlap alarm): login_hold
-            // carries this output's transition, NOT a dismiss_greeter crossfade — so
-            // cleanup_login_fade (fade-in-flight only) will never free the cover we rolled into
-            // login_snapshot. Drop it now so a captured greeter texture can't linger the session.
+            // Abnormal departure (no crossfade will run), so cleanup_login_fade won't free the
+            // captured cover — drop it here so the texture can't linger the session.
             shell.drop_login_snapshot(output);
         }
         tracing::info!("login handoff: greeter left before wallpaper, holding its last frame");
