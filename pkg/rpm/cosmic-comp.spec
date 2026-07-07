@@ -68,14 +68,23 @@ install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.fc"     "
 # systemd-sysusers + the SELinux build tools are present; guarded so a bare install is safe.
 systemd-sysusers /usr/lib/sysusers.d/agentos-compositor.conf >/dev/null 2>&1 || :
 if command -v checkmodule >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1; then
-    d=/usr/share/selinux/packages
-    checkmodule -M -m -o "$d/agentos_greeter_compositor.mod" "$d/agentos_greeter_compositor.te" >/dev/null 2>&1 &&
-    semodule_package -o "$d/agentos_greeter_compositor.pp" -m "$d/agentos_greeter_compositor.mod" -f "$d/agentos_greeter_compositor.fc" >/dev/null 2>&1 &&
-    semodule -i "$d/agentos_greeter_compositor.pp" >/dev/null 2>&1 || :
-    rm -f "$d/agentos_greeter_compositor.mod" "$d/agentos_greeter_compositor.pp"
-    # Apply the cosmic_comp_exec_t label so the binary triggers the domain transition
-    # (the runtime dir is labeled by systemd's RuntimeDirectory at boot).
-    restorecon -F /usr/bin/cosmic-comp >/dev/null 2>&1 || :
+    m=/usr/share/selinux/packages/agentos_greeter_compositor
+    # Non-fatal (image build must not abort), but NOT silenced: a silent module/relabel failure
+    # ships fake confinement (compositor keeps running unconfined_t while looking hardened).
+    if checkmodule -M -m -o "$m.mod" "$m.te" && \
+       semodule_package -o "$m.pp" -m "$m.mod" -f "$m.fc" && \
+       semodule -i "$m.pp"; then
+        # Apply cosmic_comp_exec_t so the binary triggers the transition into cosmic_comp_t
+        # (the runtime dir is labeled by systemd's RuntimeDirectory at boot).
+        restorecon -F /usr/bin/cosmic-comp || :
+        semodule -l | grep -q agentos_greeter_compositor || \
+            echo "WARNING: agentos_greeter_compositor SELinux module did not load" >&2
+        matchpathcon /usr/bin/cosmic-comp 2>/dev/null | grep -q cosmic_comp_exec_t || \
+            echo "WARNING: /usr/bin/cosmic-comp fcontext is not cosmic_comp_exec_t" >&2
+    else
+        echo "WARNING: failed to build/load agentos_greeter_compositor SELinux module" >&2
+    fi
+    rm -f "$m.mod" "$m.pp"
 fi
 
 %files

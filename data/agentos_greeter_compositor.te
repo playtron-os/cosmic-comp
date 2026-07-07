@@ -51,14 +51,21 @@ allow xdm_t cosmic_comp_runtime_t:file { getattr map read write };
 # ==========================================================================================
 # Confined domain for the compositor process itself (was: unconfined_t).
 #
-# PERMISSIVE-FIRST: shipped `permissive`, so denials are LOGGED not enforced. This first pass
-# only makes the domain ENTER correctly; the full allow set (DRM/KMS, input, dbus/logind,
-# udev, shm, …) is harvested on-device via `ausearch -m avc -c cosmic-comp | audit2allow`,
-# added below, then `cosmic_comp_t` is flipped to enforcing (the rest of the OS can stay as-is).
+# PERMISSIVE-FIRST: shipped `permissive` — denials are LOGGED, not enforced. This pass only
+# makes the domain ENTER; harvest the full allow set (DRM/KMS, input, dbus/logind, udev, shm…)
+# on-device, then flip to enforcing:
+#   semodule -DB                                   # disable dontaudit, else suppressed denials hide
+#   (exercise login / logout / lock / launch apps)
+#   ausearch -m avc -c cosmic-comp | audit2allow   # -> paste the rules below
+#   semodule -B                                    # restore dontaudit
+# Verify entry: `ps -eZ | grep cosmic-comp` must show cosmic_comp_t (not unconfined_t).
 #
-# Entry path: the unit runs `PAMName=login`, so pam_selinux lands the ExecStart shell in
-# unconfined_t; that `/bin/sh -c '… exec /usr/bin/cosmic-comp'` execs the labeled binary, and
-# the type_transition below moves the process into cosmic_comp_t (verify: `ps -eZ | grep cosmic-comp`).
+# Entry path: `PAMName=login` lands the ExecStart shell in unconfined_t (agentos-display maps
+# via __default__ -> unconfined_u); its `sh -c 'exec /usr/bin/cosmic-comp'` execs the labeled
+# binary and the type_transition below enters cosmic_comp_t. INVARIANT: keyed to unconfined_t /
+# unconfined_r. If agentos-display is ever remapped to a confined seuser, add the parallel
+# type_transition + `role <r> types cosmic_comp_t` for that source, or the transition silently
+# stops (or computes an invalid context that fails exec).
 # ==========================================================================================
 
 require {

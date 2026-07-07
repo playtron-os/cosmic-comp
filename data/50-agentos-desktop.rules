@@ -7,7 +7,10 @@
 // to the single trusted operator (wheel), independent of seat/active state.
 
 polkit.addRule(function(action, subject) {
-    if (!subject.isInGroup("wheel")) {
+    // Require an ACTIVE session — the seatless desktop is active=true, but non-interactive
+    // wheel contexts (SSH, cron, system services) are active=false and must NOT get these
+    // grants. We drop only the `local` check (which the seatless session fails), not `active`.
+    if (!subject.isInGroup("wheel") || !subject.active) {
         return polkit.Result.NOT_HANDLED;
     }
 
