@@ -285,6 +285,7 @@ impl WlrLayerShellHandler for State {
 
         let torn_output = maybe_output.clone();
         let mut torn_was_background = false;
+        let mut torn_was_greeter = false;
 
         if let Some(output) = maybe_output {
             {
@@ -294,6 +295,7 @@ impl WlrLayerShellHandler for State {
                     .unwrap()
                     .clone();
                 torn_was_background = matches!(layer.layer(), Layer::Background);
+                torn_was_greeter = layer.namespace() == crate::utils::quirks::GREETER_NAMESPACE;
                 map.unmap_layer(&layer);
             }
 
@@ -321,11 +323,15 @@ impl WlrLayerShellHandler for State {
             self.common.greeter_present = false;
         }
 
-        // If the greeter was torn down while a LOGOUT crossfade latch was still set
-        // (greeter crash / timeout, never the normal login handoff which clears it in
-        // `dismiss_greeter`), drop the latch + captured snapshot so a later logout starts
-        // clean and no stale fade lingers. Idempotent no-op when nothing is armed.
-        if shell.greeter_logout_return()
+        // If the GREETER was torn down while a LOGOUT crossfade latch was still set (greeter
+        // crash / its own timeout — never the normal login handoff, which clears it in
+        // `dismiss_greeter`), drop the latch + captured snapshot so a later logout starts clean.
+        //
+        // MUST gate on `torn_was_greeter`: during a NORMAL logout the desktop surfaces tear down
+        // in a cascade — the wallpaper (Background) destroys first and arms the latch, then the
+        // panel/home/etc.
+        if torn_was_greeter
+            && shell.greeter_logout_return()
             && !shell.outputs().any(|o| {
                 layer_map_for_output(o)
                     .layers()
@@ -335,10 +341,12 @@ impl WlrLayerShellHandler for State {
             shell.clear_greeter_fade_in();
         }
 
-        // Logout handoff START
+        // Login / logout handoff START.
         std::mem::drop(shell);
         if let Some(output) = torn_output {
-            if torn_was_background {
+            if torn_was_greeter {
+                self.note_possible_login_gap(&output);
+            } else if torn_was_background {
                 self.arm_logout_hold(&output);
             } else {
                 self.note_possible_logout(&output);

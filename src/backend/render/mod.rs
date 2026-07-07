@@ -2262,6 +2262,29 @@ where
         }
     }
 
+    // Compositor-owned LOGIN greeter crossfade
+    if let Some(alpha) = shell.login_fade_alpha() {
+        let fade_elem = shell.with_login_snapshot(output, |snapshot| {
+            TextureRenderElement::from_texture_render_buffer(
+                (0.0, 0.0),
+                &snapshot.texture,
+                Some(alpha),
+                // Explicit full-texture src so the overlay SCALES to the output rect.
+                Some(Rectangle::from_size(snapshot.src_size)),
+                Some(output.geometry().size.as_logical()),
+                Kind::Unspecified,
+            )
+        });
+        if let Some(fade_elem) = fade_elem {
+            let wre: WorkspaceRenderElement<R> = fade_elem.into();
+            if let Some(cropped) = crop_to_output(wre) {
+                // Front of the list = topmost, so the greeter cover sits over everything
+                // until it fades away — matching the full-screen greeter it replaces.
+                elements.insert(0, cropped.into());
+            }
+        }
+    }
+
     // Compositor-owned LOCK fade-IN (desktop → lock). While a fresh lock ramps in,
     // `focus/order.rs` suppresses its lock short-circuit (see `lock_fade_in_alpha`),
     // so the LIVE desktop composited below. Here we draw the live lock cover ON TOP

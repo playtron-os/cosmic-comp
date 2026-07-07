@@ -135,6 +135,13 @@ const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(100);
 /// Compositor-owned ext-session-lock UNLOCK fade-out
 const UNLOCK_FADE_DURATION: Duration = Duration::from_millis(250);
+
+/// Login greeter crossfade — after `dismiss_greeter` the greeter hard-exits, and the
+/// compositor holds its captured last frame fully OPAQUE for this window, masking cosmic-bg's
+/// first (not-yet-real) frame and the greeter→desktop reveal gap where CLEAR_COLOR would show...
+const LOGIN_FADE_HOLD: Duration = Duration::from_millis(200);
+/// ...then fades that captured frame out over this duration to reveal the now-painted wallpaper.
+const LOGIN_FADE_DURATION: Duration = Duration::from_millis(300);
 /// Compositor-owned ext-session-lock LOCK fade-IN
 const LOCK_FADE_IN_DURATION: Duration = Duration::from_millis(250);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
@@ -707,6 +714,11 @@ pub struct Shell {
     logout_snapshot: Mutex<HashMap<Output, crate::backend::render::UnlockSnapshot>>,
     /// True from logout-hold arm until the greeter fade-in completes
     greeter_logout_return: bool,
+    /// Rolling per-output capture of the LOGIN greeter cover, taken (throttled) while the
+    /// greeter is up, so `dismiss_greeter` can hold+fade it over the wallpaper (mask the gap).
+    login_snapshot: Mutex<HashMap<Output, crate::backend::render::UnlockSnapshot>>,
+    /// Start instant of the compositor-owned LOGIN greeter crossfade (hold then fade-out).
+    login_fade: Option<Instant>,
     /// Start instant of the LOGOUT greeter crossfade — drives the `logout_snapshot`
     /// compositing-beneath and keeps `animations_going` alive for the ramp.
     greeter_fade_in: Option<Instant>,
@@ -782,6 +794,23 @@ pub struct Shell {
     /// black flash. Set in `note_possible_logout`, cleared when the greeter paints
     /// (`commit`) or by a safety timeout. See `redraw()` in backend/kms/surface.
     pub logout_hold: bool,
+
+    /// Persistent-compositor LOGIN handoff — the login mirror of `logout_hold`, but tracked
+    /// PER-OUTPUT (a set of held outputs) rather than as one global flag. An output is held
+    /// when its login greeter departs via a NON-dismiss path (its own timeout, greetd's
+    /// overlap alarm, or a crash) BEFORE that output's wallpaper has painted its first
+    /// frame, which would otherwise expose a bare black (CLEAR_COLOR) frame. While an output
+    /// is in the set, its render thread presents nothing so the greeter's last frame stays
+    /// latched on the CRTC until that output's wallpaper paints (removed in `commit`) or a
+    /// per-output safety timeout fires. Per-output — unlike the globally-coordinated
+    /// `logout_hold` greeter crossfade — because each output's wallpaper comes up
+    /// independently and there is no coordinated login crossfade to keep in sync (so an
+    /// early-departing output is held the moment it loses its greeter, and each output
+    /// reveals as soon as ITS own wallpaper paints). Armed in `arm_login_hold` (via
+    /// `note_possible_login_gap`); see `redraw()` in backend/kms/surface. The NORMAL login
+    /// path never enters here — the wallpaper-gated `dismiss_greeter`/`send_close` crossfade
+    /// leaves a painted wallpaper on the output.
+    pub login_hold: std::collections::HashSet<Output>,
 
     /// Layer surfaces currently fading in (surface ObjectId -> map instant)
     layer_fade_in: std::collections::HashMap<ObjectId, Instant>,
@@ -2319,6 +2348,8 @@ impl Shell {
             lock_fade_in_started: false,
             logout_snapshot: Mutex::new(HashMap::new()),
             greeter_logout_return: false,
+            login_snapshot: Mutex::new(HashMap::new()),
+            login_fade: None,
             greeter_fade_in: None,
             previous_workspace_idx: None,
             xwayland_keyboard_grab: None,
@@ -2355,6 +2386,7 @@ impl Shell {
             voice_mode: VoiceMode::None,
             voice_orb_state: Default::default(),
             logout_hold: false,
+            login_hold: std::collections::HashSet::new(),
 
             // Layer surface fade-in tracking
             layer_fade_in: std::collections::HashMap::new(),
@@ -3211,6 +3243,7 @@ impl Shell {
         let unlock_fade = self.any_unlock_fade_in_flight();
         let lock_fade_in = self.any_lock_fade_in_in_flight();
         let greeter_fade_in = self.any_greeter_fade_in_flight();
+        let login_fade = self.any_login_fade_in_flight();
         let layer_resize = self
             .active_layer_resize_anim
             .as_ref()
@@ -3234,6 +3267,7 @@ impl Shell {
             || unlock_fade
             || lock_fade_in
             || greeter_fade_in
+            || login_fade
             || layer_resize
     }
 
@@ -3314,6 +3348,8 @@ impl Shell {
         let completed_fade_outs = self.cleanup_layer_fade_outs();
         // Finish the compositor-owned unlock fade-out + drop its snapshot textures
         self.cleanup_unlock_fade();
+        // Finish the compositor-owned LOGIN greeter crossfade + drop its snapshot textures
+        self.cleanup_login_fade();
         // Finish the compositor-owned lock fade-IN once the cover is fully opaque
         // (order.rs then resumes the lock-only short-circuit).
         self.cleanup_lock_fade_in();
@@ -5471,6 +5507,81 @@ impl Shell {
     }
 
     // -----------------------------------------------------------------------
+    // Compositor-owned LOGIN greeter crossfade
+    // -----------------------------------------------------------------------
+
+    /// Store/refresh the rolling greeter-cover snapshot for `output` (from the render path
+    /// while the greeter is up, hence `&self` + interior `Mutex`).
+    pub fn set_login_snapshot(
+        &self,
+        output: &Output,
+        snapshot: crate::backend::render::UnlockSnapshot,
+    ) {
+        self.login_snapshot
+            .lock()
+            .unwrap()
+            .insert(output.clone(), snapshot);
+    }
+
+    /// Run `f` with the current greeter-cover snapshot for `output`, if one exists.
+    pub fn with_login_snapshot<T>(
+        &self,
+        output: &Output,
+        f: impl FnOnce(&crate::backend::render::UnlockSnapshot) -> T,
+    ) -> Option<T> {
+        self.login_snapshot.lock().unwrap().get(output).map(f)
+    }
+
+    /// Begin the login greeter crossfade — only if a greeter cover was captured for at
+    /// least one output; otherwise the desktop is revealed instantly (no regression).
+    /// Called from `dismiss_greeter`.
+    pub fn start_login_fade(&mut self) {
+        if !self.login_snapshot.lock().unwrap().is_empty() {
+            self.login_fade = Some(Instant::now());
+        }
+    }
+
+    /// Alpha for the login greeter overlay: `1.0` (fully covering) during the HOLD window
+    /// that masks cosmic-bg's first not-yet-real frame, then eased `1.0 → 0.0` over the fade.
+    /// `None` once the hold+fade has fully elapsed.
+    pub fn login_fade_alpha(&self) -> Option<f32> {
+        let start = self.login_fade?;
+        let elapsed = start.elapsed();
+        if elapsed < LOGIN_FADE_HOLD {
+            return Some(1.0);
+        }
+        let progress = ((elapsed - LOGIN_FADE_HOLD).as_secs_f32()
+            / LOGIN_FADE_DURATION.as_secs_f32())
+        .clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            None
+        } else {
+            Some(1.0 - progress.powi(3))
+        }
+    }
+
+    /// Whether a login greeter crossfade is running (drives `animations_going`).
+    pub fn any_login_fade_in_flight(&self) -> bool {
+        self.login_fade.is_some()
+    }
+
+    /// Drop the login fade + all captured greeter snapshots (their `GlesTexture`s).
+    pub fn clear_login_fade(&mut self) {
+        self.login_fade = None;
+        self.login_snapshot.lock().unwrap().clear();
+    }
+
+    /// Finish the login greeter crossfade once the hold+fade has run its course, freeing
+    /// the snapshot textures so we don't leak a `GlesTexture` per output per login.
+    fn cleanup_login_fade(&mut self) {
+        if let Some(start) = self.login_fade
+            && start.elapsed() >= LOGIN_FADE_HOLD + LOGIN_FADE_DURATION
+        {
+            self.clear_login_fade();
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Compositor-owned LOCK fade-IN (desktop → lock).
     // -----------------------------------------------------------------------
 
@@ -5577,6 +5688,31 @@ impl Shell {
                 .layers()
                 .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
         })
+    }
+
+    /// True if `output` has a greeter (`GREETER_NAMESPACE`) layer surface that has painted a
+    /// buffer. Unlike [`any_greeter_mapped`], this excludes a greeter that is in the layer map
+    /// but has not yet committed content (its composite is still the black CLEAR_COLOR) — so a
+    /// login-cover snapshot taken under this gate is always a real, opaque greeter frame on the
+    /// very output being faded, never a bufferless black one. Mirrors `output_has_painted_wallpaper`.
+    pub fn output_has_painted_greeter(&self, output: &Output) -> bool {
+        layer_map_for_output(output).layers().any(|l| {
+            l.namespace() == crate::utils::quirks::GREETER_NAMESPACE
+                && smithay::backend::renderer::utils::with_renderer_surface_state(
+                    l.wl_surface(),
+                    |s| s.buffer().is_some(),
+                )
+                .unwrap_or(false)
+        })
+    }
+
+    /// Drop the captured login cover for a single `output`. Used on the abnormal
+    /// greeter-departure path (crash / timeout / greetd overlap alarm) where `login_hold`
+    /// handles the gap and no `dismiss_greeter` crossfade will run — so `cleanup_login_fade`
+    /// (which only fires while a fade is in flight) never frees this output's texture. Mirrors
+    /// how the logout side frees `logout_snapshot` via `clear_greeter_fade_in` on abnormal teardown.
+    pub fn drop_login_snapshot(&self, output: &Output) {
+        self.login_snapshot.lock().unwrap().remove(output);
     }
 
     /// The logout-vs-login discriminator. Set when the logout hold is

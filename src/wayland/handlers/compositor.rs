@@ -421,6 +421,9 @@ impl CompositorHandler for State {
         // Deferred (logout handoff): set when the fresh greeter paints over the held
         // desktop frame, so we can resume rendering after the shell guard is dropped.
         let mut release_logout_hold = false;
+        // Deferred (login handoff): set when the desktop wallpaper paints over a held
+        // greeter frame (`login_hold`), so we can resume rendering after the guard drop.
+        let mut release_login_hold = false;
 
         if let Some(ref output) = layer_output {
             // Record the exclusive zone this client just committed (cached
@@ -503,6 +506,25 @@ impl CompositorHandler for State {
                     shell.logout_hold = false;
                     release_logout_hold = true;
                     shell.set_greeter_logout_return(false);
+                }
+            }
+
+            // Login handoff RELEASE: the greeter left before the wallpaper painted, so
+            // `login_hold` latched its last frame. Resume rendering the instant a desktop
+            // wallpaper (Background) surface paints its first frame.
+            if shell.login_hold.contains(output) {
+                let committing_is_wallpaper = layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .map(|l| matches!(l.layer(), Layer::Background))
+                    .unwrap_or(false);
+                let surface_has_buffer =
+                    with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+                // Per-output release: drop THIS output's hold the instant ITS own wallpaper
+                // paints a real frame, independent of every other output — so no output is
+                // ever revealed black while waiting on another to catch up.
+                if committing_is_wallpaper && surface_has_buffer {
+                    shell.login_hold.remove(output);
+                    release_login_hold = true;
                 }
             }
 
@@ -593,6 +615,13 @@ impl CompositorHandler for State {
                 self.backend.schedule_render(output);
             }
         }
+
+        if release_login_hold {
+            let shell = self.common.shell.read();
+            for output in shell.outputs() {
+                self.backend.schedule_render(output);
+            }
+        }
     }
 }
 
@@ -646,21 +675,55 @@ fn every_greeter_output_has_painted(shell: &Shell) -> bool {
     })
 }
 
+/// True if `output` has a Background (wallpaper) layer surface that has painted a buffer.
+/// Distinguishes a MAPPED-but-unpainted (black) wallpaper from one with real content — only
+/// the latter means the login gap is over and the frame hold can release.
+fn output_has_painted_wallpaper(output: &smithay::output::Output) -> bool {
+    layer_map_for_output(output).layers().any(|l| {
+        matches!(l.layer(), Layer::Background)
+            && with_renderer_surface_state(l.wl_surface(), |s| s.buffer().is_some())
+                .unwrap_or(false)
+    })
+}
+
+/// True if `output` still has any greeter layer surface mapped.
+fn output_has_greeter(output: &smithay::output::Output) -> bool {
+    layer_map_for_output(output)
+        .layers()
+        .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+}
+
 impl State {
     /// Close the login greeter's layer surface(s) so it crossfades out.
     fn dismiss_greeter(&mut self) {
         self.common.greeter_present = false;
-        self.common.shell.write().clear_greeter_fade_in();
+        {
+            let mut shell = self.common.shell.write();
+            shell.clear_greeter_fade_in();
+            // Begin the compositor-owned LOGIN crossfade: hold the captured greeter frame
+            // fully opaque (masking cosmic-bg's first not-yet-real frame / the CLEAR_COLOR
+            // reveal gap), then fade it out over the wallpaper. The greeter hard-exits on the
+            // `send_close` below, so this snapshot is what carries the transition. No-op (and
+            // no regression — instant reveal) if no greeter cover was captured.
+            shell.start_login_fade();
+        }
         tracing::info!(
             "login handoff: desktop wallpaper painted, closing greeter layer surface (crossfade)"
         );
-        let shell = self.common.shell.read();
-        for output in shell.outputs() {
-            for surface in layer_map_for_output(output).layers() {
-                if surface.namespace() == crate::utils::quirks::GREETER_NAMESPACE {
-                    surface.layer_surface().send_close();
+        let outputs = {
+            let shell = self.common.shell.read();
+            for output in shell.outputs() {
+                for surface in layer_map_for_output(output).layers() {
+                    if surface.namespace() == crate::utils::quirks::GREETER_NAMESPACE {
+                        surface.layer_surface().send_close();
+                    }
                 }
             }
+            shell.outputs().cloned().collect::<Vec<_>>()
+        };
+        // Drive the crossfade (the render loop parks otherwise).
+        for output in &outputs {
+            self.backend.schedule_render(output);
         }
     }
 
@@ -751,6 +814,71 @@ impl State {
         };
         if empty {
             self.arm_logout_hold(output);
+        }
+    }
+
+    /// Persistent-compositor LOGIN handoff — arm `login_hold` for `output` so its surface
+    /// render thread stops presenting new (black) frames: the greeter's last frame stays
+    /// latched on the CRTC until the desktop wallpaper paints (released in `commit`). The
+    /// mirror of `arm_logout_hold`.
+    pub(crate) fn arm_login_hold(&mut self, output: &smithay::output::Output) {
+        if self.common.should_stop {
+            return;
+        }
+        if !self.common.shell.read().outputs().any(|o| o == output) {
+            return;
+        }
+        {
+            let mut shell = self.common.shell.write();
+            // insert() returns false if this output was already held — its safety timer is
+            // already pending, so don't arm a second one.
+            if !shell.login_hold.insert(output.clone()) {
+                return;
+            }
+            // Abnormal greeter departure (crash / timeout / greetd overlap alarm): login_hold
+            // carries this output's transition, NOT a dismiss_greeter crossfade — so
+            // cleanup_login_fade (fade-in-flight only) will never free the cover we rolled into
+            // login_snapshot. Drop it now so a captured greeter texture can't linger the session.
+            shell.drop_login_snapshot(output);
+        }
+        tracing::info!("login handoff: greeter left before wallpaper, holding its last frame");
+        self.backend.schedule_render(output);
+        // Safety net: force-release THIS output if its wallpaper never paints, so it can't
+        // freeze on the stale greeter frame. The wallpaper normally paints within ~1-2s.
+        let hold_output = output.clone();
+        let _ = self.common.event_loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(5)),
+            move |_now, _, state: &mut State| {
+                if state.common.shell.read().login_hold.contains(&hold_output) {
+                    tracing::warn!(
+                        "login handoff: wallpaper did not paint within timeout, releasing hold"
+                    );
+                    state.common.shell.write().login_hold.remove(&hold_output);
+                    state.backend.schedule_render(&hold_output);
+                }
+                TimeoutAction::Drop
+            },
+        );
+    }
+
+    /// Persistent-compositor LOGIN handoff fallback
+    pub(crate) fn note_possible_login_gap(&mut self, output: &smithay::output::Output) {
+        if self.common.should_stop {
+            return;
+        }
+        let should_arm = {
+            let shell = self.common.shell.read();
+            if !shell.outputs().any(|o| o == output) {
+                return;
+            }
+            // Arm only when the greeter has FULLY left this output (no greeter layer surface
+            // remains — so a transient greeter surface tearing down while the greeter is
+            // still up cannot false-arm and freeze a live output) AND its wallpaper has not
+            // painted yet (which excludes the normal compositor-driven dismiss).
+            !output_has_greeter(output) && !output_has_painted_wallpaper(output)
+        };
+        if should_arm {
+            self.arm_login_hold(output);
         }
     }
 
