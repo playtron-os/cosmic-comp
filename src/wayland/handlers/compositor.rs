@@ -5,6 +5,7 @@ use crate::{
     utils::prelude::*,
 };
 use calloop::Interest;
+use calloop::timer::{TimeoutAction, Timer};
 use smithay::{
     backend::renderer::{
         element::{Kind, surface::KindEvaluation},
@@ -311,6 +312,19 @@ impl CompositorHandler for State {
             self.backend.schedule_render(output);
         }
 
+        // Compositor-owned LOCK fade-IN: the moment the ext-session-lock cover surface
+        // first presents a buffer, begin fading it in over the still-live desktop
+        // (`focus/order.rs` suppresses its lock short-circuit until the fade completes).
+        // Latched per-lock so a later redraw commit won't restart the ramp. Kick a
+        // render on every output so the fade actually advances (the lock surface may
+        // not resolve to a single visible output above).
+        if shell.note_lock_surface_first_buffer(surface) {
+            let outputs = shell.outputs().cloned().collect::<Vec<_>>();
+            for output in &outputs {
+                self.backend.schedule_render(output);
+            }
+        }
+
         if mapped {
             return;
         }
@@ -401,6 +415,13 @@ impl CompositorHandler for State {
             })
             .cloned();
 
+        // Deferred: set when the desktop wallpaper paints its first frame behind a
+        // covering login greeter.
+        let mut should_dismiss_greeter = false;
+        // Deferred (logout handoff): set when the fresh greeter paints over the held
+        // desktop frame, so we can resume rendering after the shell guard is dropped.
+        let mut release_logout_hold = false;
+
         if let Some(ref output) = layer_output {
             // Record the exclusive zone this client just committed (cached
             // state is fresh from the commit here). The slide animation
@@ -418,6 +439,71 @@ impl CompositorHandler for State {
                         .exclusive_zone
                 });
                 shell.record_client_exclusive_zone(surface.id(), client_zone);
+            }
+
+            // Persistent-compositor login handoff
+            let is_wallpaper_first_frame = self.common.greeter_present
+                && layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .map(|l| matches!(l.layer(), Layer::Background))
+                    .unwrap_or(false)
+                && with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+            if is_wallpaper_first_frame && every_greeter_output_has_wallpaper(&shell) {
+                should_dismiss_greeter = true;
+            }
+
+            let committing_is_greeter = layer_map_for_output(output)
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .map(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+                .unwrap_or(false);
+
+            // Logout handoff RELEASE. Drop the hold and resume rendering when the held
+            // frame has real content to give way to. Two release paths:
+            //  (a) the fresh greeter painted its first frame over the held desktop frame
+            //      (the real logout case) — gated on every greeter-covered output, like
+            //      the login handoff;
+            //  (b) a fresh WALLPAPER (Background) surface painted — this self-heals a
+            //      FALSE arm from a wallpaper CHANGE, where cosmic-bg destroys+recreates
+            //      its Background surface (which arms the hold in `layer_destroyed`) and
+            //      no greeter ever comes. On a real logout cosmic-bg has exited, so no
+            //      wallpaper repaints and only (a) fires — flash-free logout preserved.
+            // Not latency-critical: the painting surface already covers the held frame
+            // the instant it paints, so releasing a frame late only resumes compositing.
+            if shell.logout_hold {
+                let surface_has_buffer =
+                    with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
+                let committing_is_wallpaper = layer_map_for_output(output)
+                    .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                    .map(|l| matches!(l.layer(), Layer::Background))
+                    .unwrap_or(false);
+                let greeter_painted = surface_has_buffer
+                    && committing_is_greeter
+                    && every_greeter_output_has_painted(&shell);
+                let wallpaper_repainted = surface_has_buffer && committing_is_wallpaper;
+                if greeter_painted && shell.greeter_logout_return() && shell.any_logout_snapshot() {
+                    // LOGOUT crossfade
+                    let mut greeter_ids = Vec::new();
+                    let outputs = shell.outputs().cloned().collect::<Vec<_>>();
+                    for o in &outputs {
+                        for l in layer_map_for_output(o).layers() {
+                            if l.namespace() == crate::utils::quirks::GREETER_NAMESPACE {
+                                greeter_ids.push(l.wl_surface().id());
+                            }
+                        }
+                    }
+                    for id in &greeter_ids {
+                        shell.activate_pending_fade_in(id);
+                    }
+                    shell.start_greeter_fade_in();
+                    shell.logout_hold = false;
+                    release_logout_hold = true;
+                } else if greeter_painted || wallpaper_repainted {
+                    // No captured snapshot (or the self-heal wallpaper-repaint path):
+                    // instant reveal, exactly as before.
+                    shell.logout_hold = false;
+                    release_logout_hold = true;
+                    shell.set_greeter_logout_return(false);
+                }
             }
 
             // Override exclusive zones for sliding/hidden surfaces BEFORE
@@ -443,7 +529,11 @@ impl CompositorHandler for State {
             // start the blur animation now that the client has committed
             // a fresh buffer with actual content.
             let surface_id = surface.id();
-            shell.activate_pending_fade_in(&surface_id);
+            // ...but NOT the greeter during a logout crossfade: it's held at alpha 0 until
+            // EVERY greeter output has painted.
+            if !(committing_is_greeter && shell.greeter_logout_return()) {
+                shell.activate_pending_fade_in(&surface_id);
+            }
 
             // Update layer blur cache when layer surfaces are committed
             // (blur protocol state may have changed)
@@ -491,10 +581,179 @@ impl CompositorHandler for State {
         if let Some((target, seat)) = layer_focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, false);
         }
+
+        if should_dismiss_greeter {
+            self.dismiss_greeter();
+        }
+
+        if release_logout_hold {
+            tracing::info!("logout handoff: greeter painted, resuming rendering");
+            let shell = self.common.shell.read();
+            for output in shell.outputs() {
+                self.backend.schedule_render(output);
+            }
+        }
     }
 }
 
+/// True when every output that currently shows a login greeter also has a wallpaper
+fn every_greeter_output_has_wallpaper(shell: &Shell) -> bool {
+    shell.outputs().all(|output| {
+        let map = layer_map_for_output(output);
+        let has_greeter = map
+            .layers()
+            .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE);
+        if !has_greeter {
+            return true; // outputs without a greeter don't gate the handoff
+        }
+        map.layers().any(|l| {
+            matches!(l.layer(), Layer::Background)
+                && with_renderer_surface_state(l.wl_surface(), |s| s.buffer().is_some())
+                    .unwrap_or(false)
+        })
+    })
+}
+
+/// True if `output` still shows any desktop-session content
+fn output_has_desktop_content(shell: &Shell, output: &smithay::output::Output) -> bool {
+    let has_layer = layer_map_for_output(output)
+        .layers()
+        .any(|l| l.namespace() != crate::utils::quirks::GREETER_NAMESPACE);
+    let has_window = shell
+        .active_space(output)
+        .map(|w| w.mapped().next().is_some())
+        .unwrap_or(false);
+    has_layer || has_window
+}
+
+/// True when every output that currently shows a greeter has painted its first greeter
+/// frame
+fn every_greeter_output_has_painted(shell: &Shell) -> bool {
+    shell.outputs().all(|output| {
+        let map = layer_map_for_output(output);
+        let has_greeter = map
+            .layers()
+            .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE);
+        if !has_greeter {
+            return true; // outputs without a greeter don't gate the release
+        }
+        map.layers()
+            .filter(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+            .any(|l| {
+                with_renderer_surface_state(l.wl_surface(), |s| s.buffer().is_some())
+                    .unwrap_or(false)
+            })
+    })
+}
+
 impl State {
+    /// Close the login greeter's layer surface(s) so it crossfades out.
+    fn dismiss_greeter(&mut self) {
+        self.common.greeter_present = false;
+        self.common.shell.write().clear_greeter_fade_in();
+        tracing::info!(
+            "login handoff: desktop wallpaper painted, closing greeter layer surface (crossfade)"
+        );
+        let shell = self.common.shell.read();
+        for output in shell.outputs() {
+            for surface in layer_map_for_output(output).layers() {
+                if surface.namespace() == crate::utils::quirks::GREETER_NAMESPACE {
+                    surface.layer_surface().send_close();
+                }
+            }
+        }
+    }
+
+    /// Persistent-compositor LOGOUT handoff — arm `logout_hold` for `output` so its
+    /// surface render thread stops presenting new (black) frames: the last composited
+    /// desktop frame stays latched on the CRTC until the fresh greeter paints (released
+    /// in `commit`).
+    /// fallback in `note_possible_logout`.
+    pub(crate) fn arm_logout_hold(&mut self, output: &smithay::output::Output) {
+        if self.common.greeter_present || self.common.should_stop {
+            return;
+        }
+        if !self.common.shell.read().outputs().any(|o| o == output) {
+            return;
+        }
+        {
+            let mut shell = self.common.shell.write();
+            if shell.logout_hold {
+                return;
+            }
+            shell.logout_hold = true;
+            shell.set_greeter_logout_return(true);
+        }
+        tracing::info!("logout handoff: holding last desktop frame until greeter paints");
+        self.backend.schedule_render(output);
+        // Safety net: force-release if the greeter never paints, so the screen can't
+        // freeze on the stale desktop frame. The greeter normally paints within ~1-2s.
+        let _ = self.common.event_loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(5)),
+            |_now, _, state: &mut State| {
+                if state.common.shell.read().logout_hold {
+                    tracing::warn!(
+                        "logout handoff: greeter did not paint within timeout, releasing hold"
+                    );
+                    let outputs = state
+                        .common
+                        .shell
+                        .read()
+                        .outputs()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    // Collect greeter surface ids (each per-output layer_map guard dropped
+                    // per iteration) so we can force them to full opacity below.
+                    let greeter_ids = outputs
+                        .iter()
+                        .flat_map(|o| {
+                            layer_map_for_output(o)
+                                .layers()
+                                .filter(|l| {
+                                    l.namespace() == crate::utils::quirks::GREETER_NAMESPACE
+                                })
+                                .map(|l| l.wl_surface().id())
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    {
+                        let mut shell = state.common.shell.write();
+                        shell.logout_hold = false;
+                        // Fall back to an INSTANT reveal if the timeout fires mid-fade
+                        for id in &greeter_ids {
+                            shell.remove_layer_fade_in(id);
+                        }
+                        shell.clear_greeter_fade_in();
+                    }
+                    for output in &outputs {
+                        state.backend.schedule_render(output);
+                    }
+                }
+                TimeoutAction::Drop
+            },
+        );
+    }
+
+    /// Fallback logout trigger: arm the frame-hold once `output` becomes fully empty of
+    /// desktop content. The PRIMARY trigger (wallpaper destroyed) fires earlier and is
+    /// what actually holds a non-black frame; this only covers teardown orders / desktop
+    /// shapes where the wallpaper is not present (e.g. a toplevel-only session).
+    pub(crate) fn note_possible_logout(&mut self, output: &smithay::output::Output) {
+        if self.common.greeter_present || self.common.should_stop {
+            return;
+        }
+        let empty = {
+            let shell = self.common.shell.read();
+            if !shell.outputs().any(|o| o == output) {
+                return;
+            }
+            !output_has_desktop_content(&shell, output)
+        };
+        if empty {
+            self.arm_logout_hold(output);
+        }
+    }
+
     fn send_initial_configure_and_map(&mut self, surface: &WlSurface) -> bool {
         // Check for pending windows first
         {

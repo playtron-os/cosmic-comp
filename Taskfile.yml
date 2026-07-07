@@ -64,17 +64,15 @@ tasks:
       - ./target/{{.TARGET_ARCH}}/debug/{{.NAME}}
 
   dist:prepare:
-    desc: Prepare the project for packaging
-    deps:
-      - build:release
-    sources:
-      - target/{{.TARGET_ARCH}}/release/{{.NAME}}
-    generates:
-      - .cache/{{.NAME}}/usr/bin/{{.NAME}}
+    desc: Prepare the project for packaging (set PROFILE=debug for a debuggable build)
+    vars:
+      PROFILE: '{{.PROFILE | default "release"}}'
+      BUILD_FLAGS: '{{if eq .PROFILE "debug"}}--features debug{{else}}--release{{end}}'
     cmds:
+      - cargo build {{.BUILD_FLAGS}} --target {{.TARGET_ARCH}}
       - rm -rf .cache/{{.NAME}}
       - mkdir -p .cache/{{.NAME}}/usr/bin
-      - install -Dm0755 "target/{{.TARGET_ARCH}}/release/{{.NAME}}" ".cache/{{.NAME}}/usr/bin/{{.NAME}}"
+      - install -Dm0755 "target/{{.TARGET_ARCH}}/{{.PROFILE}}/{{.NAME}}" ".cache/{{.NAME}}/usr/bin/{{.NAME}}"
       - install -Dm0644 "data/keybindings.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
       - install -Dm0644 "data/tiling-exceptions.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
       - install -Dm0644 "LICENSE" ".cache/{{.NAME}}/usr/share/licenses/cosmic-comp/LICENSE"
@@ -82,6 +80,15 @@ tasks:
       - install -Dm0644 "data/voice-mode/fallback_binding" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/fallback_binding"
       - install -Dm0644 "data/voice-mode/chat_app_id" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
       - install -Dm0644 "data/voice-mode/enabled" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/enabled"
+      # --- persistent-compositor deployment kit (packaged into the cosmic-comp RPM) ---
+      - install -Dm0755 "target/{{.TARGET_ARCH}}/{{.PROFILE}}/agentos-session-launch" ".cache/{{.NAME}}/usr/libexec/agentos-session-launch"
+      - install -Dm0755 "data/agentos-greeter-launch"                ".cache/{{.NAME}}/usr/libexec/agentos-greeter-launch"
+      - install -Dm0755 "data/agentos-session-logout"                ".cache/{{.NAME}}/usr/libexec/agentos-session-logout"
+      - install -Dm0644 "data/cosmic-comp-global.service"            ".cache/{{.NAME}}/usr/lib/systemd/system/cosmic-comp-global.service"
+      - install -Dm0644 "data/agentos-compositor.sysusers"           ".cache/{{.NAME}}/usr/lib/sysusers.d/agentos-compositor.conf"
+      - install -Dm0644 "data/50-agentos-desktop.rules"              ".cache/{{.NAME}}/usr/share/polkit-1/rules.d/50-agentos-desktop.rules"
+      - install -Dm0644 "data/agentos_greeter_compositor.te"         ".cache/{{.NAME}}/usr/share/selinux/packages/agentos_greeter_compositor.te"
+      - install -Dm0644 "data/agentos_greeter_compositor.fc"         ".cache/{{.NAME}}/usr/share/selinux/packages/agentos_greeter_compositor.fc"
       - mkdir -p dist
 
   dist:archive:
@@ -221,6 +228,8 @@ tasks:
         sh: pwd
       SSH_KEY:
         sh: echo "${SSH_KEY}"
+      CONTAINER_OPTS:
+        sh: 'docker --version 2>/dev/null | grep -qi podman && echo "--security-opt label=disable --userns=keep-id" || echo ""'
     requires:
       vars:
         - TARGET
@@ -240,6 +249,7 @@ tasks:
         {{ end }}
       - |
         docker run --rm \
+          {{.CONTAINER_OPTS}} \
           -v "{{.PWD}}:{{.PWD}}" \
           -v "{{.PWD}}/.cache/home:/home/build" \
           -v "{{.PWD}}/.cache/var/lib/rpm:/var/lib/rpm" \

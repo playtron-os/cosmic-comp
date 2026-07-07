@@ -199,7 +199,15 @@ impl State {
         path: &Path,
         dh: &DisplayHandle,
     ) -> Result<Vec<Output>> {
-        if !self.backend.kms().session.is_active() {
+        // Seamless overlap hand-off: when COSMIC_RENDER_WHILE_INACTIVE is set (the
+        // greetd overlap starts the session compositor on an INACTIVE VT), do NOT
+        // bail out here. We still enumerate connectors and create the output+surface
+        // so the compositor comes up (instead of crashing with "Backend initialized
+        // without output"); the KMS commits merely fail EACCES on the muted fd and
+        // retry until this VT is activated, at which point they succeed and present.
+        if !self.backend.kms().session.is_active()
+            && std::env::var_os("COSMIC_RENDER_WHILE_INACTIVE").is_none()
+        {
             return Ok(Vec::new());
         }
 
@@ -296,7 +304,9 @@ impl State {
     }
 
     pub fn device_changed(&mut self, dev: dev_t) -> Result<Vec<Output>> {
-        if !self.backend.kms().session.is_active() {
+        if !self.backend.kms().session.is_active()
+            && std::env::var_os("COSMIC_RENDER_WHILE_INACTIVE").is_none()
+        {
             return Ok(Vec::new());
         }
 
@@ -712,8 +722,17 @@ impl Device {
                     )
                 })?,
         ));
-        let (drm, notifier) = DrmDevice::new(fd.clone(), false)
+        let (mut drm, notifier) = DrmDevice::new(fd.clone(), false)
             .with_context(|| format!("Failed to initialize drm device for: {}", path.display()))?;
+        // Overlap hand-off: if we come up on an inactive VT (logind hands us a muted fd),
+        // mirror that in software up-front — mark the DrmDevice inactive so every
+        // smithay commit/test_state/page_flip path returns DeviceInactive (deferred)
+        // instead of reaching the kernel and EACCESing. On a fresh device pause() is a
+        // pure state flip (no surfaces, muted fd is non-privileged so no drmDropMaster).
+        // On ActivateSession the device is re-activated and the deferred modeset replays.
+        if !session.is_active() {
+            drm.pause();
+        }
         let dev_node = DrmNode::from_dev_id(dev)?;
 
         let gbm = GbmDevice::new(fd)
@@ -841,8 +860,11 @@ impl Device {
     }
 
     pub fn enumerate_surfaces(&mut self) -> Result<OutputChanges> {
-        // enumerate our outputs
-        let config = drm_helpers::display_configuration(self.drm.device_mut())?;
+        // enumerate our outputs. Skip the master-gated stale-state cleanup while the
+        // device is inactive (muted fd on an inactive VT) — it would EACCES; it is
+        // deferred to the first session activation.
+        let run_cleanup = self.drm.device().is_active();
+        let config = drm_helpers::display_configuration(self.drm.device_mut(), run_cleanup)?;
 
         let surfaces = self
             .inner

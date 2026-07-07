@@ -133,6 +133,10 @@ use self::{
 const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(100);
+/// Compositor-owned ext-session-lock UNLOCK fade-out
+const UNLOCK_FADE_DURATION: Duration = Duration::from_millis(250);
+/// Compositor-owned ext-session-lock LOCK fade-IN
+const LOCK_FADE_IN_DURATION: Duration = Duration::from_millis(250);
 const GESTURE_MAX_LENGTH: f64 = 150.0;
 const GESTURE_POSITION_THRESHOLD: f64 = 0.5;
 const GESTURE_VELOCITY_THRESHOLD: f64 = 0.02;
@@ -690,6 +694,22 @@ pub struct Shell {
     pub pending_activations: HashMap<ActivationKey, ActivationContext>,
     pub override_redirect_windows: Vec<X11Surface>,
     pub session_lock: Option<SessionLock>,
+    /// Rolling per-output capture of the ext-session-lock cover surface, taken
+    /// each frame WHILE LOCKED.
+    unlock_snapshot: Mutex<HashMap<Output, crate::backend::render::UnlockSnapshot>>,
+    /// Start instant of the compositor-owned unlock fade-out.
+    unlock_fade: Option<Instant>,
+    /// Start instant of the compositor-owned LOCK fade-IN (desktop → lock).
+    lock_fade_in: Option<Instant>,
+    lock_fade_in_started: bool,
+    /// Rolling per-output capture of the last good DESKTOP composite, taken (throttled)
+    /// while a live desktop is up.
+    logout_snapshot: Mutex<HashMap<Output, crate::backend::render::UnlockSnapshot>>,
+    /// True from logout-hold arm until the greeter fade-in completes
+    greeter_logout_return: bool,
+    /// Start instant of the LOGOUT greeter crossfade — drives the `logout_snapshot`
+    /// compositing-beneath and keeps `animations_going` alive for the ramp.
+    greeter_fade_in: Option<Instant>,
     pub seats: Seats,
     pub previous_workspace_idx: Option<(Serial, WeakOutput, usize)>,
     pub xwayland_keyboard_grab: Option<XWaylandKeyboardGrab<State>>,
@@ -753,6 +773,15 @@ pub struct Shell {
     voice_mode: VoiceMode,
     /// Voice orb rendering state
     pub voice_orb_state: crate::backend::render::voice_orb::VoiceOrbState,
+
+    /// Persistent-compositor LOGOUT handoff: armed when the desktop session's last
+    /// surface is destroyed while no greeter is mapped yet. While set, surface
+    /// render threads skip presenting the (empty, black) frame so the last
+    /// composited desktop frame stays latched on the CRTC until greetd's fresh
+    /// greeter paints — the mirror image of the login handoff, so logout shows no
+    /// black flash. Set in `note_possible_logout`, cleared when the greeter paints
+    /// (`commit`) or by a safety timeout. See `redraw()` in backend/kms/surface.
+    pub logout_hold: bool,
 
     /// Layer surfaces currently fading in (surface ObjectId -> map instant)
     layer_fade_in: std::collections::HashMap<ObjectId, Instant>,
@@ -2284,6 +2313,13 @@ impl Shell {
             pending_activations: HashMap::new(),
             override_redirect_windows: Vec::new(),
             session_lock: None,
+            unlock_snapshot: Mutex::new(HashMap::new()),
+            unlock_fade: None,
+            lock_fade_in: None,
+            lock_fade_in_started: false,
+            logout_snapshot: Mutex::new(HashMap::new()),
+            greeter_logout_return: false,
+            greeter_fade_in: None,
             previous_workspace_idx: None,
             xwayland_keyboard_grab: None,
 
@@ -2318,6 +2354,7 @@ impl Shell {
             // Voice mode state
             voice_mode: VoiceMode::None,
             voice_orb_state: Default::default(),
+            logout_hold: false,
 
             // Layer surface fade-in tracking
             layer_fade_in: std::collections::HashMap::new(),
@@ -3171,6 +3208,9 @@ impl Shell {
         let fade_in = !self.layer_fade_in.is_empty();
         let pending_fade = !self.pending_layer_fade_in.is_empty();
         let fade_out = !self.layer_fade_out.is_empty();
+        let unlock_fade = self.any_unlock_fade_in_flight();
+        let lock_fade_in = self.any_lock_fade_in_in_flight();
+        let greeter_fade_in = self.any_greeter_fade_in_flight();
         let layer_resize = self
             .active_layer_resize_anim
             .as_ref()
@@ -3191,6 +3231,9 @@ impl Shell {
             || fade_in
             || pending_fade
             || fade_out
+            || unlock_fade
+            || lock_fade_in
+            || greeter_fade_in
             || layer_resize
     }
 
@@ -3269,6 +3312,14 @@ impl Shell {
         let completed_closes = self.cleanup_layer_closes();
         // Complete layer surface fade-outs (moves to hidden_surfaces)
         let completed_fade_outs = self.cleanup_layer_fade_outs();
+        // Finish the compositor-owned unlock fade-out + drop its snapshot textures
+        self.cleanup_unlock_fade();
+        // Finish the compositor-owned lock fade-IN once the cover is fully opaque
+        // (order.rs then resumes the lock-only short-circuit).
+        self.cleanup_lock_fade_in();
+        // Finish the logout greeter crossfade + drop the desktop snapshot textures
+        // and clear the logout-return latch when the ramp completes.
+        self.cleanup_greeter_fade_in();
         if !completed_fade_outs.is_empty() || !completed_closes.is_empty() || slide_completed {
             // Update layer blur cache for outputs with completed fade-outs or slides
             for output in self.outputs().cloned().collect::<Vec<_>>() {
@@ -5347,6 +5398,228 @@ impl Shell {
         completed
     }
 
+    // -----------------------------------------------------------------------
+    // Compositor-owned ext-session-lock UNLOCK fade-out
+    // -----------------------------------------------------------------------
+
+    /// Store/refresh the rolling unlock snapshot for `output`. Called from the
+    /// render path while LOCKED, hence `&self` + the interior `Mutex`.
+    pub fn set_unlock_snapshot(
+        &self,
+        output: &Output,
+        snapshot: crate::backend::render::UnlockSnapshot,
+    ) {
+        self.unlock_snapshot
+            .lock()
+            .unwrap()
+            .insert(output.clone(), snapshot);
+    }
+
+    /// Run `f` with the current unlock snapshot for `output`, if one exists.
+    /// Encapsulates the interior `Mutex`; the render path uses it to build the
+    /// fade overlay element from the captured texture.
+    pub fn with_unlock_snapshot<T>(
+        &self,
+        output: &Output,
+        f: impl FnOnce(&crate::backend::render::UnlockSnapshot) -> T,
+    ) -> Option<T> {
+        self.unlock_snapshot.lock().unwrap().get(output).map(f)
+    }
+
+    /// Begin the unlock fade-out — but only if a lock snapshot was captured for
+    /// at least one output; otherwise the desktop is revealed instantly (no
+    /// regression vs. the previous instant unlock). Called from the session-lock
+    /// `unlock` handler after `session_lock` has been nulled.
+    pub fn start_unlock_fade(&mut self) {
+        if !self.unlock_snapshot.lock().unwrap().is_empty() {
+            self.unlock_fade = Some(Instant::now());
+        }
+    }
+
+    /// Alpha for the unlock fade overlay (the captured lock image), 1.0 → 0.0
+    pub fn unlock_fade_alpha(&self) -> Option<f32> {
+        let start = self.unlock_fade?;
+        let progress =
+            (start.elapsed().as_secs_f32() / UNLOCK_FADE_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            None
+        } else {
+            Some(1.0 - progress.powi(3))
+        }
+    }
+
+    /// Whether an unlock fade is running (drives `animations_going`).
+    pub fn any_unlock_fade_in_flight(&self) -> bool {
+        self.unlock_fade.is_some()
+    }
+
+    /// Drop the unlock fade + all captured lock snapshots (their `GlesTexture`s).
+    pub fn clear_unlock_fade(&mut self) {
+        self.unlock_fade = None;
+        self.unlock_snapshot.lock().unwrap().clear();
+    }
+
+    /// Finish the unlock fade once it has run its course: null the timer and free
+    /// the snapshot textures so we don't leak one `GlesTexture` per lock/unlock
+    /// cycle.
+    fn cleanup_unlock_fade(&mut self) {
+        if let Some(start) = self.unlock_fade
+            && start.elapsed() >= UNLOCK_FADE_DURATION
+        {
+            self.clear_unlock_fade();
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Compositor-owned LOCK fade-IN (desktop → lock).
+    // -----------------------------------------------------------------------
+
+    /// Begin the lock fade-in the first frame the ext-session-lock cover surface
+    /// presents a buffer.
+    pub fn note_lock_surface_first_buffer(&mut self, surface: &WlSurface) -> bool {
+        if self.lock_fade_in_started {
+            return false;
+        }
+        let Some(session_lock) = self.session_lock.as_ref() else {
+            return false;
+        };
+        let is_lock_surface = session_lock
+            .surfaces
+            .values()
+            .any(|s| s.wl_surface() == surface);
+        if !is_lock_surface {
+            return false;
+        }
+        let ready = smithay::backend::renderer::utils::with_renderer_surface_state(surface, |st| {
+            st.buffer().is_some()
+        })
+        .unwrap_or(false);
+        if !ready {
+            return false;
+        }
+        self.lock_fade_in = Some(Instant::now());
+        self.lock_fade_in_started = true;
+        true
+    }
+
+    /// Alpha for the lock fade-in overlay (the live lock cover), 0.0 → 1.0
+    pub fn lock_fade_in_alpha(&self) -> Option<f32> {
+        let start = self.lock_fade_in?;
+        let progress =
+            (start.elapsed().as_secs_f32() / LOCK_FADE_IN_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+        if progress >= 1.0 {
+            None
+        } else {
+            Some(1.0 - (1.0 - progress).powi(3))
+        }
+    }
+
+    /// Whether a lock fade-in is running (drives `animations_going`).
+    pub fn any_lock_fade_in_in_flight(&self) -> bool {
+        self.lock_fade_in.is_some()
+    }
+
+    /// Reset the lock fade-in state on a fresh `lock()`/`unlock()`, so the NEXT lock
+    /// re-fades from scratch and a stale timer never leaks across sessions.
+    pub fn clear_lock_fade_in(&mut self) {
+        self.lock_fade_in = None;
+        self.lock_fade_in_started = false;
+    }
+
+    /// Finish the lock fade-in once the cover is fully opaque: null the timer (but
+    /// keep `lock_fade_in_started` set so it doesn't restart) so order.rs resumes the
+    /// lock-only short-circuit.
+    fn cleanup_lock_fade_in(&mut self) {
+        if let Some(start) = self.lock_fade_in
+            && start.elapsed() >= LOCK_FADE_IN_DURATION
+        {
+            self.lock_fade_in = None;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Compositor-owned LOGOUT greeter crossfade (desktop → greeter).
+    // -----------------------------------------------------------------------
+
+    /// Store/refresh the rolling logout snapshot for `output`. Called (throttled) from
+    /// the KMS submit path while a live desktop is up, hence `&self` + interior `Mutex`.
+    pub fn set_logout_snapshot(
+        &self,
+        output: &Output,
+        snapshot: crate::backend::render::UnlockSnapshot,
+    ) {
+        self.logout_snapshot
+            .lock()
+            .unwrap()
+            .insert(output.clone(), snapshot);
+    }
+
+    /// Run `f` with the current logout snapshot for `output`, if one exists.
+    pub fn with_logout_snapshot<T>(
+        &self,
+        output: &Output,
+        f: impl FnOnce(&crate::backend::render::UnlockSnapshot) -> T,
+    ) -> Option<T> {
+        self.logout_snapshot.lock().unwrap().get(output).map(f)
+    }
+
+    /// True if at least one output has a captured last-desktop frame — the gate for
+    /// choosing a logout crossfade over an instant greeter reveal.
+    pub fn any_logout_snapshot(&self) -> bool {
+        !self.logout_snapshot.lock().unwrap().is_empty()
+    }
+
+    /// True if any output currently has a mapped greeter (`GREETER_NAMESPACE`) layer
+    /// surface
+    pub fn any_greeter_mapped(&self) -> bool {
+        self.outputs().any(|output| {
+            layer_map_for_output(output)
+                .layers()
+                .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+        })
+    }
+
+    /// The logout-vs-login discriminator. Set when the logout hold is
+    /// armed; read by `map_layer` and the hold-release path.
+    pub fn set_greeter_logout_return(&mut self, value: bool) {
+        self.greeter_logout_return = value;
+    }
+
+    /// Whether the greeter is currently returning after a logout (fade in flight or armed).
+    pub fn greeter_logout_return(&self) -> bool {
+        self.greeter_logout_return
+    }
+
+    /// Begin the logout greeter crossfade timer (the greeter's per-element alpha is
+    /// started separately via `activate_pending_fade_in`).
+    pub fn start_greeter_fade_in(&mut self) {
+        self.greeter_fade_in = Some(Instant::now());
+    }
+
+    /// Whether the logout greeter crossfade is running (drives `animations_going` and
+    /// the snapshot-beneath compositing).
+    pub fn any_greeter_fade_in_flight(&self) -> bool {
+        self.greeter_fade_in.is_some()
+    }
+
+    /// Drop the logout snapshot textures + clear the logout-return latch and fade timer.
+    pub fn clear_greeter_fade_in(&mut self) {
+        self.greeter_fade_in = None;
+        self.greeter_logout_return = false;
+        self.logout_snapshot.lock().unwrap().clear();
+    }
+
+    /// Finish the logout greeter crossfade once it has run its course (same duration as
+    /// the shared layer fade-in the greeter alpha rides): free the snapshot textures and
+    /// clear the latch so we don't leak a `GlesTexture` per output per logout.
+    fn cleanup_greeter_fade_in(&mut self) {
+        if let Some(start) = self.greeter_fade_in
+            && start.elapsed() >= LAYER_FADE_IN_DURATION
+        {
+            self.clear_greeter_fade_in();
+        }
+    }
+
     /// Remove a surface from fade-in tracking (called when surface is destroyed)
     pub fn remove_layer_fade_in(&mut self, surface_id: &ObjectId) {
         self.layer_fade_in.remove(surface_id);
@@ -6852,9 +7125,13 @@ impl Shell {
                     let mut map = layer_map_for_output(&pending.output);
                     map.arrange();
                 }
-            } else {
+            } else if pending.surface.namespace() != crate::utils::quirks::GREETER_NAMESPACE {
                 self.rise_surfaces.insert(surface_id.clone());
                 self.pending_layer_opens.insert(surface_id.clone());
+            } else if self.greeter_logout_return
+                && self.with_logout_snapshot(&pending.output, |_| ()).is_some()
+            {
+                self.pending_layer_fade_in.insert(surface_id.clone());
             }
         }
 

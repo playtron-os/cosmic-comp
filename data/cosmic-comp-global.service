@@ -1,0 +1,45 @@
+[Unit]
+Description=Global Wayland compositor (persistent; owns the display from boot)
+After=systemd-user-sessions.service systemd-logind.service plymouth-quit-wait.service getty@tty1.service
+Conflicts=getty@tty1.service
+Wants=greetd.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+# Dedicated non-root user; logind session on tty1 grants it the display.
+User=agentos-display
+Group=compositor
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty-force
+StandardOutput=journal
+TTYReset=yes
+TTYVHangup=yes
+# $HOME=/run/cosmic-comp must exist + be writable or cosmic-config panics
+# (config/mod.rs:177). RuntimeDirectory creates it, owned agentos-display:compositor
+# (Group= above). Mode 0750 so only the `compositor` group can traverse it and reach
+# the wayland socket inside — any other-uid local process is locked out even though the
+# socket itself is 0777. Interim access control until the compositor gains a per-uid
+# accept gate.
+RuntimeDirectory=cosmic-comp
+RuntimeDirectoryMode=0750
+Environment=LIBSEAT_BACKEND=logind
+Environment=COSMIC_BACKEND=kms
+Environment=XDG_SESSION_CLASS=greeter
+Environment=XDG_SESSION_TYPE=wayland
+Environment=RUST_LOG=warn,cosmic_comp=info
+# Wrapper does two things PAM/pam_umask/pam_systemd would otherwise undo:
+#   umask 0     -> libwayland creates the socket 0777 so the greeter (greeter) and
+#                  desktop (<desktop-user>) can connect cross-UID.
+#   XDG_RUNTIME_DIR=/run/cosmic-comp -> override PAM's /run/user/957 (mode 0700,
+#                  unreachable cross-UID) so the socket lands in the 0750 compositor-
+#                  group dir that the greeter + desktop can traverse. BARE (no kiosk
+#                  child): greetd launches the clients.
+ExecStart=/bin/sh -c 'umask 0; export XDG_RUNTIME_DIR=/run/cosmic-comp; exec /usr/bin/cosmic-comp'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target
+Alias=display-manager.service

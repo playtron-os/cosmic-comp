@@ -280,6 +280,10 @@ pub struct Common {
     pub startup_done: Arc<AtomicBool>,
     pub should_stop: bool,
 
+    /// True while the login greeter (`GREETER_NAMESPACE`) has a mapped
+    /// layer surface.
+    pub greeter_present: bool,
+
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
     pub loop_health: crate::perf::LoopHealth,
@@ -842,6 +846,7 @@ impl State {
                 clock,
                 startup_done: Arc::new(AtomicBool::new(false)),
                 should_stop: false,
+                greeter_present: false,
                 gesture_state: None,
                 coldstart: Default::default(),
                 loop_health: Default::default(),

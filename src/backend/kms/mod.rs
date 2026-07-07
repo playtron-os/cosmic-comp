@@ -26,7 +26,10 @@ use smithay::{
     },
     output::Output,
     reexports::{
-        calloop::{Dispatcher, EventLoop, LoopHandle},
+        calloop::{
+            Dispatcher, EventLoop, LoopHandle,
+            timer::{TimeoutAction, Timer},
+        },
         drm::{
             Device as _,
             control::{Device as _, connector::Interface, crtc},
@@ -48,6 +51,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::{Arc, RwLock, atomic::AtomicBool},
+    time::{Duration, Instant},
 };
 
 mod device;
@@ -90,6 +94,15 @@ pub fn init_backend(
 ) -> Result<()> {
     // establish session
     let (session, notifier) = LibSeatSession::new().context("Failed to acquire session")?;
+    // Overlap-handoff diagnostic: tells us definitively whether this compositor is
+    // seated on seat0 and whether it booted active or inactive (muted VT). If `seat`
+    // is empty or `active` never flips true, we are bound to the wrong (seatless)
+    // logind session and the fix is in greetd session placement, not here.
+    info!(
+        seat = %session.seat(),
+        active = session.is_active(),
+        "libseat session acquired"
+    );
 
     // setup input
     let libinput_context = init_libinput(dh, &session, &event_loop.handle())
@@ -106,6 +119,7 @@ pub fn init_backend(
         .handle()
         .insert_source(notifier, move |event, &mut (), state| match event {
             SessionEvent::ActivateSession => {
+                info!("libseat: ActivateSession");
                 state.resume_session(
                     dispatcher.clone(),
                     state.common.event_loop_handle.clone(),
@@ -113,6 +127,7 @@ pub fn init_backend(
                 );
             }
             SessionEvent::PauseSession => {
+                info!("libseat: PauseSession");
                 state.pause_session();
             }
         })
@@ -175,6 +190,86 @@ pub fn init_backend(
         state.launch_xwayland(primary);
     } else {
         state.notify_ready();
+    }
+
+    // Overlap hand-off self-heal.
+    //
+    // greetd starts us on an INACTIVE VT (the seamless overlap); Edit C in Device::new
+    // paused the DrmDevice so init could complete on a muted fd. On the VT switch logind
+    // resumes the device and we briefly activate — DRM master IS granted and the first
+    // frame is shown — but a stray PauseSession then flips smithay's in-process
+    // `is_active` back to false WITHOUT logind ever dropping our master (confirmed on
+    // device: `debugfs .../clients` shows cosmic-comp holding `master=y active=y` with
+    // the whole client tree attached, yet every frame logs "Device is currently paused").
+    // We wedge: refusing to render against a device we actually own, input dead, and
+    // libseat's own `is_active()` is stuck false too so no event ever re-checks it.
+    //
+    // Reconcile against the AUTHORITATIVE ownership signal — are we the foreground VT?
+    // (/sys/class/tty/tty0/active vs our XDG_VTNR) — not libseat's stuck bool. While a
+    // device is paused and we own (or, per libseat, are active on) the foreground VT,
+    // re-run `resume_session` (idempotent — the same routine every real VT-switch-in
+    // runs, so libinput/leases/outputs resume too). Because we already hold master,
+    // `drm.activate()` succeeds; if we somehow don't, it fails harmlessly and we retry.
+    // Armed ONLY when we boot inactive (inert on a normal active boot); self-disarms
+    // once healthy; bounded lifetime so it can never fight a genuine later VT-switch.
+    if !state.backend.kms().session.is_active() {
+        let disp = udev_dispatcher.clone();
+        let sig = event_loop.get_signal();
+        let my_vt = std::env::var("XDG_VTNR")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let armed = event_loop.handle().insert_source(
+            Timer::from_duration(Duration::from_millis(250)),
+            move |_now, _meta, state| {
+                // Authoritative "we should own DRM master": we are the foreground VT.
+                let foreground_vt = std::fs::read_to_string("/sys/class/tty/tty0/active")
+                    .ok()
+                    .and_then(|s| s.trim().strip_prefix("tty").and_then(|n| n.parse().ok()));
+                let on_foreground = my_vt.is_some() && my_vt == foreground_vt;
+
+                let (libseat_active, any_paused) = {
+                    let kms = state.backend.kms();
+                    (
+                        kms.session.is_active(),
+                        kms.drm_devices
+                            .values()
+                            .any(|d| !d.drm.device().is_active()),
+                    )
+                };
+                let should_be_active = on_foreground || libseat_active;
+
+                // Bounded lifetime. We poll for the whole window rather than disarming
+                // on the first healthy tick: the wedge is "activate + one frame (looks
+                // healthy) -> stray PauseSession re-pauses us", so disarming early would
+                // miss the re-pause. Polling until the deadline heals whenever we catch
+                // the wedge; by then the hand-off is long settled, so we disarm.
+                if Instant::now() >= deadline {
+                    if should_be_active && any_paused {
+                        warn!(
+                            on_foreground,
+                            libseat_active, "Overlap hand-off self-heal: gave up, DRM still paused"
+                        );
+                    }
+                    return TimeoutAction::Drop;
+                }
+                // The wedge: we own the foreground VT (hold master) but the device is
+                // paused in-process. Re-drive the full activation.
+                if should_be_active && any_paused {
+                    warn!(
+                        on_foreground,
+                        libseat_active,
+                        "Overlap hand-off: own foreground VT but DRM paused — self-healing"
+                    );
+                    let lh = state.common.event_loop_handle.clone();
+                    state.resume_session(disp.clone(), lh, sig.clone());
+                }
+                TimeoutAction::ToDuration(Duration::from_millis(250))
+            },
+        );
+        if let Err(err) = armed {
+            warn!(?err, "Failed to arm overlap hand-off self-heal timer");
+        }
     }
 
     Ok(())
@@ -373,7 +468,29 @@ impl State {
         }
         // active drm, resume leases
         for device in backend.drm_devices.values_mut() {
-            if let Err(err) = device.drm.lock().activate(true) {
+            // Flicker-free handoff: activate WITHOUT disabling connectors. Passing
+            // `true` here makes smithay run a global reset that blanks every CRTC
+            // (ACTIVE=0, MODE_ID=0, all planes cleared) — a full black flash on
+            // every VT-switch-in / session activation. With `false`, the mode and
+            // the previous DRM master's (e.g. the greeter's) last framebuffer stay
+            // programmed on the CRTC; when this compositor picks the same mode its
+            // first commit is a pure atomic page-flip (commit_pending()==false), so
+            // the previous frame is held on screen until our first frame flips in.
+            // See smithay DrmDevice::activate docs: false "will also prevent
+            // flickering of already turned on connectors".
+            let mut drm = device.drm.lock();
+            let mut result = drm.activate(false);
+            if result.is_err() {
+                // Fallback: if adopting the live state failed, force a clean reset
+                // (the old behavior) so we still come up, at the cost of one flash.
+                warn!(
+                    err = ?result.as_ref().unwrap_err(),
+                    "flicker-free activate(false) failed; retrying with reset"
+                );
+                result = drm.activate(true);
+            }
+            drop(drm);
+            if let Err(err) = result {
                 error!(?err, "Failed to resume drm device");
                 continue;
             }
@@ -792,7 +909,10 @@ impl KmsGuard<'_> {
         startup_done: Arc<AtomicBool>,
         clock: &Clock<Monotonic>,
     ) -> Result<(), anyhow::Error> {
-        if !self.session.is_active() {
+        // See device_added: with COSMIC_RENDER_WHILE_INACTIVE set (overlap hand-off),
+        // configure outputs even while inactive so the compositor is fully set up and
+        // ready to page-flip the instant its VT is activated.
+        if !self.session.is_active() && std::env::var_os("COSMIC_RENDER_WHILE_INACTIVE").is_none() {
             return Ok(());
         }
 
@@ -940,18 +1060,46 @@ impl KmsGuard<'_> {
                 let drm = &mut device.drm;
                 let conn = surface.connector;
                 let conn_info = drm.device().get_connector(conn, false)?;
-                let mode = conn_info
-                    .modes()
-                    .iter()
-                    // match the size
-                    .filter(|mode| {
-                        let (x, y) = mode.size();
-                        Size::from((x as i32, y as i32)) == output_config.mode_size()
+                // Flicker-free handoff (#3): for the FIRST bring-up of this surface
+                // — e.g. taking the display over from the greeter's compositor —
+                // prefer the mode the CRTC is ALREADY scanning out, if this
+                // connector supports it. Matching the live mode makes smithay's
+                // first commit a pure page-flip instead of a blanking modeset, so
+                // the previous compositor's last frame is held on screen until our
+                // first frame flips in. Once the surface is active, honor the
+                // configured mode as before.
+                let live_mode = if !surface.is_active() {
+                    drm.device()
+                        .get_crtc(*crtc)
+                        .ok()
+                        .and_then(|info| info.mode())
+                } else {
+                    None
+                };
+                let mode = live_mode
+                    .as_ref()
+                    .and_then(|live| {
+                        let live_rate = drm_helpers::calculate_refresh_rate(*live);
+                        conn_info.modes().iter().find(|m| {
+                            m.size() == live.size()
+                                && drm_helpers::calculate_refresh_rate(**m) == live_rate
+                        })
                     })
-                    // and then select the closest refresh rate (e.g. to match 59.98 as 60)
-                    .min_by_key(|mode| {
-                        let refresh_rate = drm_helpers::calculate_refresh_rate(**mode);
-                        (output_config.0.mode.1.unwrap() as i32 - refresh_rate as i32).abs()
+                    // Fall back to the configured mode: closest refresh at the size.
+                    .or_else(|| {
+                        conn_info
+                            .modes()
+                            .iter()
+                            // match the size
+                            .filter(|mode| {
+                                let (x, y) = mode.size();
+                                Size::from((x as i32, y as i32)) == output_config.mode_size()
+                            })
+                            // and then select the closest refresh rate (e.g. to match 59.98 as 60)
+                            .min_by_key(|mode| {
+                                let refresh_rate = drm_helpers::calculate_refresh_rate(**mode);
+                                (output_config.0.mode.1.unwrap() as i32 - refresh_rate as i32).abs()
+                            })
                     })
                     .ok_or(anyhow::anyhow!("Unable to find matching mode"))?;
 

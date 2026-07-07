@@ -9,6 +9,9 @@ use smithay::{
 // TODO: Avoid special case, or add protocol to expose required behavior
 pub const WORKSPACE_OVERVIEW_NAMESPACE: &str = "cosmic-workspace-overview";
 
+/// Layer shell namespace used by the login greeter.
+pub const GREETER_NAMESPACE: &str = "agentos-greeter";
+
 /// Check if a workspace overview shell surface is open on the output
 pub fn workspace_overview_is_open(output: &Output) -> bool {
     layer_map_for_output(output)

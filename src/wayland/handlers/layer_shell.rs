@@ -172,6 +172,9 @@ impl WlrLayerShellHandler for State {
         _layer: Layer,
         namespace: String,
     ) {
+        if namespace == crate::utils::quirks::GREETER_NAMESPACE {
+            self.common.greeter_present = true;
+        }
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
         let no_output = wl_output.is_none();
@@ -280,6 +283,9 @@ impl WlrLayerShellHandler for State {
             })
             .cloned();
 
+        let torn_output = maybe_output.clone();
+        let mut torn_was_background = false;
+
         if let Some(output) = maybe_output {
             {
                 let mut map = layer_map_for_output(&output);
@@ -287,6 +293,7 @@ impl WlrLayerShellHandler for State {
                     .layer_for_surface(surface.wl_surface(), WindowSurfaceType::TOPLEVEL)
                     .unwrap()
                     .clone();
+                torn_was_background = matches!(layer.layer(), Layer::Background);
                 map.unmap_layer(&layer);
             }
 
@@ -296,6 +303,46 @@ impl WlrLayerShellHandler for State {
             shell.workspaces.recalculate();
 
             self.backend.schedule_render(&output);
+        }
+
+        // Persistent-compositor login handoff: if the greeter was torn down via a
+        // non-dismiss path (its own 30s timeout, greetd's alarm, or a crash), the
+        // per-commit dismiss gate would otherwise stay armed for the session. The
+        // surface being destroyed has already been unmapped above, so re-derive
+        // whether ANY greeter surface still remains (one per output) and disarm once
+        // none do. Idempotent, and re-armed on re-login via `new_layer_surface`.
+        if self.common.greeter_present
+            && !shell.outputs().any(|o| {
+                layer_map_for_output(o)
+                    .layers()
+                    .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+            })
+        {
+            self.common.greeter_present = false;
+        }
+
+        // If the greeter was torn down while a LOGOUT crossfade latch was still set
+        // (greeter crash / timeout, never the normal login handoff which clears it in
+        // `dismiss_greeter`), drop the latch + captured snapshot so a later logout starts
+        // clean and no stale fade lingers. Idempotent no-op when nothing is armed.
+        if shell.greeter_logout_return()
+            && !shell.outputs().any(|o| {
+                layer_map_for_output(o)
+                    .layers()
+                    .any(|l| l.namespace() == crate::utils::quirks::GREETER_NAMESPACE)
+            })
+        {
+            shell.clear_greeter_fade_in();
+        }
+
+        // Logout handoff START
+        std::mem::drop(shell);
+        if let Some(output) = torn_output {
+            if torn_was_background {
+                self.arm_logout_hold(&output);
+            } else {
+                self.note_possible_logout(&output);
+            }
         }
     }
 }

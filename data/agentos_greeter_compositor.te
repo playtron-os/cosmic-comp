@@ -1,0 +1,49 @@
+module agentos_greeter_compositor 1.1;
+
+# Lets greetd's greeter (xdm_t) reach the persistent cosmic-comp wayland socket in
+# /run/cosmic-comp so the global-compositor login works in ENFORCING — but ONLY that
+# socket, not all of /run.
+#
+# Hardened (was: a broad grant to the generic `var_run_t`). Now /run/cosmic-comp gets a
+# PRIVATE type, cosmic_comp_runtime_t:
+#   * the dir is labeled by the accompanying .fc (systemd's RuntimeDirectory applies it);
+#   * the runtime-created socket + wayland-N.lock inherit the private type via the
+#     type_transitions below;
+#   * marking the type `file_type` gives the UNCONFINED compositor + desktop their normal
+#     access, so only xdm_t (the one CONFINED accessor) needs an explicit, narrow rule.
+#
+#   sock_file write   -> connect to the wayland socket
+#   sock_file getattr -> stat it
+#   file r/w/getattr/map -> the wayland-N.lock (libwayland locks the socket)
+#
+# Build + install (RPM %post): checkmodule -M -m -o X.mod X.te ;
+#   semodule_package -o X.pp -m X.mod -f X.fc ; semodule -i X.pp
+
+require {
+	attribute file_type;
+	type xdm_t;
+	type init_t;
+	type unconfined_service_t;
+	type unconfined_t;
+	class dir search;
+	class sock_file { getattr write };
+	class file { getattr map read write };
+}
+
+# Private type for /run/cosmic-comp (dir, wayland socket, lock file).
+type cosmic_comp_runtime_t;
+typeattribute cosmic_comp_runtime_t file_type;
+
+# The socket + lock are created at runtime inside the labeled dir; make them inherit the
+# private type regardless of which domain cosmic-comp-global.service runs in.
+type_transition init_t               cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition unconfined_service_t cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition unconfined_t         cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition init_t               cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+type_transition unconfined_service_t cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+type_transition unconfined_t         cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+
+# The greeter reaches ONLY the compositor socket now.
+allow xdm_t cosmic_comp_runtime_t:dir search;
+allow xdm_t cosmic_comp_runtime_t:sock_file { getattr write };
+allow xdm_t cosmic_comp_runtime_t:file { getattr map read write };

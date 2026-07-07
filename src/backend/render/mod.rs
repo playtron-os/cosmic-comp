@@ -133,7 +133,7 @@ impl AsMut<GlowRenderer> for RendererRef<'_> {
     }
 }
 
-pub static CLEAR_COLOR: Color32F = Color32F::new(0.153, 0.161, 0.165, 1.0);
+pub static CLEAR_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 1.0);
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
@@ -1412,12 +1412,40 @@ where
             }
             Stage::SessionLock(lock_surface) => {
                 elements.extend(
-                    session_lock_elements(renderer, output, lock_surface)
+                    session_lock_elements(renderer, output, lock_surface, 1.0)
                         .into_iter()
                         .map(Into::into)
                         .flat_map(crop_to_output)
                         .map(Into::into),
                 );
+                // Roll-capture the (near-static) lock cover into an owned texture. On
+                // unlock the protocol destroys the live lock surface synchronously, so
+                // we can't fade it afterwards — instead we keep this copy and dissolve
+                // it over the now-live desktop (see the unlock-fade overlay below + the
+                // session-lock `unlock` handler). Throttled to UNLOCK_SNAPSHOT_MIN_INTERVAL
+                // so we don't re-copy the full screen on every locked frame. `shell` is a
+                // read guard here, so the store goes through the field's interior `Mutex`.
+                if let Some(lock_surface) = lock_surface {
+                    let now = Instant::now();
+                    let due = shell
+                        .with_unlock_snapshot(output, |s| {
+                            now.duration_since(s.captured_at) >= UNLOCK_SNAPSHOT_MIN_INTERVAL
+                        })
+                        .unwrap_or(true);
+                    if due
+                        && let Some((texture, src_size)) =
+                            capture_unlock_snapshot(renderer, output, lock_surface)
+                    {
+                        shell.set_unlock_snapshot(
+                            output,
+                            UnlockSnapshot {
+                                texture,
+                                src_size,
+                                captured_at: now,
+                            },
+                        );
+                    }
+                }
             }
             Stage::LayerPopup {
                 popup, location, ..
@@ -2201,6 +2229,90 @@ where
         ControlFlow::Continue(())
     })?;
 
+    // Compositor-owned UNLOCK fade-out. `render_input_order` short-circuits the
+    // desktop while `session_lock` is Some and emits no SessionLock stage once
+    // unlocked, so the overlay is appended here, after the pass. Only while
+    // unlocked — never over an active lock: the moment `unlock` nulls
+    // `session_lock` the live desktop composites below, and we draw the
+    // pre-captured lock image on TOP at a decreasing alpha, so the frame at
+    // unlock still looks exactly like the locked screen and then dissolves away.
+    if shell.session_lock.is_none()
+        && let Some(alpha) = shell.unlock_fade_alpha()
+    {
+        let fade_elem = shell.with_unlock_snapshot(output, |snapshot| {
+            TextureRenderElement::from_texture_render_buffer(
+                (0.0, 0.0),
+                &snapshot.texture,
+                Some(alpha),
+                // Explicit full-texture src so the overlay SCALES to the output
+                // rect; a size-only element would CROP the texture instead.
+                Some(Rectangle::from_size(snapshot.src_size)),
+                Some(output.geometry().size.as_logical()),
+                Kind::Unspecified,
+            )
+        });
+        if let Some(fade_elem) = fade_elem {
+            let wre: WorkspaceRenderElement<R> = fade_elem.into();
+            if let Some(cropped) = crop_to_output(wre) {
+                // Front of the list = topmost (smithay orders front-to-back), so
+                // the lock cover fades over everything — including the cursor and
+                // zoom overlays added earlier — matching a full-screen lock.
+                elements.insert(0, cropped.into());
+            }
+        }
+    }
+
+    // Compositor-owned LOCK fade-IN (desktop → lock). While a fresh lock ramps in,
+    // `focus/order.rs` suppresses its lock short-circuit (see `lock_fade_in_alpha`),
+    // so the LIVE desktop composited below. Here we draw the live lock cover ON TOP
+    // at a rising alpha until it is fully opaque, at which point order.rs takes over
+    // with the lock-only path. `session_lock` is Some throughout the lock-in, so this
+    // never overlaps the unlock overlay above (which requires it to be None).
+    if shell.session_lock.is_some()
+        && let Some(alpha) = shell.lock_fade_in_alpha()
+        && let Some(lock_surface) = shell
+            .session_lock
+            .as_ref()
+            .and_then(|sl| sl.surfaces.get(output))
+    {
+        let lock_elems: Vec<CosmicElement<R>> =
+            session_lock_elements(renderer, output, Some(lock_surface), alpha)
+                .into_iter()
+                .map(Into::into)
+                .flat_map(crop_to_output)
+                .map(Into::into)
+                .collect();
+        // Front of the list = topmost; splice preserves the cover's internal z-order.
+        elements.splice(0..0, lock_elems);
+    }
+
+    // Compositor-owned LOGOUT greeter crossfade (desktop → greeter). While the fresh
+    // greeter fades IN (its per-element alpha rides `layer_fade_in`, applied in
+    // order.rs), composite the captured last-desktop frame BENEATH it so the crossfade
+    // lands on the real desktop instead of black. The greeter is an Overlay layer
+    // surface (near the top of `elements`); pushing the snapshot at the END makes it
+    // the bottom-most element. Fully opaque — the greeter's rising alpha does the blend.
+    if shell.greeter_logout_return() && shell.any_greeter_fade_in_flight() {
+        let snap_elem = shell.with_logout_snapshot(output, |snapshot| {
+            TextureRenderElement::from_texture_render_buffer(
+                (0.0, 0.0),
+                &snapshot.texture,
+                Some(1.0),
+                // Explicit full-texture src so the snapshot SCALES to the output rect
+                // instead of cropping (same reason as the unlock overlay above).
+                Some(Rectangle::from_size(snapshot.src_size)),
+                Some(output.geometry().size.as_logical()),
+                Kind::Unspecified,
+            )
+        });
+        if let Some(snap_elem) = snap_elem {
+            let wre: WorkspaceRenderElement<R> = snap_elem.into();
+            if let Some(cropped) = crop_to_output(wre) {
+                elements.push(cropped.into());
+            }
+        }
+    }
+
     let ws_elapsed = ws_start.elapsed();
     // Only log at debug level when workspace_elements takes a long time (>2ms)
     if ws_elapsed.as_micros() > 2000 {
@@ -2266,6 +2378,7 @@ fn session_lock_elements<R>(
     renderer: &mut R,
     output: &Output,
     lock_surface: Option<&LockSurface>,
+    alpha: f32,
 ) -> Vec<WaylandSurfaceRenderElement<R>>
 where
     R: Renderer + ImportAll,
@@ -2278,7 +2391,7 @@ where
             surface.wl_surface(),
             (0, 0),
             scale,
-            1.0,
+            alpha,
             FRAME_TIME_FILTER,
         )
     } else {
@@ -2322,6 +2435,139 @@ fn offscreen_render_format(target_format: Fourcc) -> Fourcc {
         | Fourcc::Xbgr16161616f => Fourcc::Abgr16161616f,
         _ => Fourcc::Abgr8888,
     }
+}
+
+/// Owned, per-output copy of an ext-session-lock cover surface, captured while
+/// LOCKED so it can be faded out over the live desktop after unlock. The
+/// protocol destroys the live lock surface + buffer synchronously on unlock, so
+/// there is nothing left to fade at that point — we keep this snapshot instead.
+/// Minimum interval between lock-cover roll-captures while locked. The lock is
+/// near-static and the unlock fade is 250 ms, so a slightly-stale capture is fine —
+/// this avoids a full-screen texture copy on *every* locked frame (saves GPU/power
+/// while locked, when the machine is idle anyway).
+const UNLOCK_SNAPSHOT_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Stored on `Shell::unlock_snapshot`; drawn by the fade overlay in
+/// `workspace_elements`.
+#[derive(Debug)]
+pub struct UnlockSnapshot {
+    /// The lock image at full output resolution (captured with texture_scale 1,
+    /// so its logical extent equals its pixel dimensions).
+    pub texture: TextureRenderBuffer<GlesTexture>,
+    /// Full extent of the texture in its logical space; passed as the explicit
+    /// `src` so the overlay SCALES to the output rect instead of cropping it.
+    pub src_size: Size<f64, Logical>,
+    /// When this snapshot was captured — throttles the per-locked-frame roll-capture
+    /// (see `UNLOCK_SNAPSHOT_MIN_INTERVAL`). Also set (unused) on the logout snapshot.
+    pub captured_at: Instant,
+}
+
+/// Create a full-output Abgr8888 offscreen `TextureRenderBuffer` for a login-transition
+/// snapshot, plus its physical size and logical `src_size`. `None` if the output has no
+/// area. Shared by the logout capture (`kms::surface::capture_logout_snapshot`) and the
+/// unlock capture below — the two differ only in HOW they draw into the returned buffer.
+pub(crate) fn make_snapshot_buffer<R>(
+    renderer: &mut R,
+    output: &Output,
+) -> Option<(
+    TextureRenderBuffer<GlesTexture>,
+    Size<i32, smithay::utils::Physical>,
+    Size<f64, Logical>,
+)>
+where
+    R: AsGlowRenderer + Offscreen<GlesTexture>,
+{
+    let output_scale = output.current_scale().fractional_scale();
+    let size_phys: Size<i32, smithay::utils::Physical> = output
+        .geometry()
+        .size
+        .as_logical()
+        .to_physical_precise_round(output_scale);
+    if size_phys.w <= 0 || size_phys.h <= 0 {
+        return None;
+    }
+    let buffer_dims = size_phys.to_logical(1).to_buffer(1, Transform::Normal);
+    // Abgr8888 (NOT an _Srgb format): the renderer's surfaces are LINEAR here and the
+    // fade blends premultiplied.
+    let texture =
+        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, buffer_dims).ok()?;
+    let texture_buffer = TextureRenderBuffer::from_texture(
+        renderer.glow_renderer(),
+        texture,
+        1,
+        Transform::Normal,
+        None,
+    );
+    let src_size = Size::from((size_phys.w as f64, size_phys.h as f64));
+    Some((texture_buffer, size_phys, src_size))
+}
+
+/// Roll-capture the live lock cover surface into an owned GLES texture, so it
+/// can be dissolved over the desktop after unlock (see `UnlockSnapshot`).
+fn capture_unlock_snapshot<R>(
+    renderer: &mut R,
+    output: &Output,
+    lock_surface: &LockSurface,
+) -> Option<(TextureRenderBuffer<GlesTexture>, Size<f64, Logical>)>
+where
+    R: AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    use smithay::backend::renderer::{Bind as _, Frame as _};
+
+    let output_scale = output.current_scale().fractional_scale();
+    let glow = renderer.glow_renderer_mut();
+    // Rebuild the lock surface tree against the glow renderer (same trick as
+    // capture_slide_snapshot) so the elements draw onto the glow offscreen frame
+    // regardless of the outer renderer `R`.
+    let elements: Vec<WaylandSurfaceRenderElement<GlowRenderer>> =
+        render_elements_from_surface_tree(
+            glow,
+            lock_surface.wl_surface(),
+            (0, 0),
+            Scale::from(output_scale),
+            1.0,
+            FRAME_TIME_FILTER,
+        );
+    if elements.is_empty() {
+        return None;
+    }
+
+    let (mut texture_buffer, size_phys, src_size) = make_snapshot_buffer(glow, output)?;
+    let buffer_dims = size_phys.to_logical(1).to_buffer(1, Transform::Normal);
+
+    texture_buffer
+        .render()
+        .draw::<_, GlesError>(|tex| {
+            let mut target = glow.bind(tex)?;
+            let mut frame = glow.render(&mut target, size_phys, Transform::Normal)?;
+            let full = [Rectangle::from_size(size_phys)];
+            // Clear to TRANSPARENT black; the lock elements composite on top.
+            frame.clear(Color32F::from([0.0, 0.0, 0.0, 0.0]), &full)?;
+            // Elements are ordered front-to-back; draw back-to-front.
+            for element in elements.iter().rev() {
+                let src = element.src();
+                let dst = element.geometry(output_scale.into());
+                RenderElement::<GlowRenderer>::draw(
+                    element,
+                    &mut frame,
+                    src,
+                    dst,
+                    &full,
+                    &[],
+                    None,
+                )?;
+            }
+            drop(frame);
+            Ok(vec![Rectangle::from_size(buffer_dims)])
+        })
+        .map_err(|err| {
+            tracing::warn!(?err, "Failed to render unlock snapshot");
+            err
+        })
+        .ok()?;
+
+    Some((texture_buffer, src_size))
 }
 
 // Used for mirroring and postprocessing
