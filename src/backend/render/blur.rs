@@ -374,6 +374,11 @@ impl BlurRenderState {
             return Ok(false);
         }
 
+        // Remap a BGRA-ordered 10-bit scanout format (AR30/XR30) to the
+        // GLES-renderable equivalent before allocating; the Argb8888 retry below
+        // still covers any other unsupported format. See `offscreen_render_format`.
+        let format = super::offscreen_render_format(format);
+
         let downsample_enabled = blur_downsample_enabled();
 
         // Calculate blur size (downsampled if enabled, full size otherwise)

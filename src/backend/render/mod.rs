@@ -2286,6 +2286,44 @@ where
     }
 }
 
+/// Map a scanout target's DRM fourcc to a format the GLES renderer can actually
+/// allocate an offscreen texture/renderbuffer for.
+///
+/// `Offscreen::create_buffer` picks a GL internal format via smithay's
+/// `fourcc_to_gl_formats`, which only knows the RGBA-ordered (`Abgr*`) variants
+/// (`Abgr8888`, `Abgr2101010`, `Abgr16161616f`) plus their opaque `Xbgr*` twins.
+/// Several KMS drivers scan out 10-bit panels in the BGRA-ordered `Argb2101010`/
+/// `Xrgb2101010` (AR30/XR30) — observed on Qualcomm `msm`/Adreno (10-bit OLED)
+/// and AMD — and that fourcc has no GLES-renderable internal format, so feeding
+/// the raw scanout fourcc into `create_buffer` hard-errors with
+/// `UnsupportedPixelFormat(AR30)` — freezing every frame while a screen filter
+/// (night shift / invert / color filter) or blur is active.
+///
+/// The offscreen buffer is a GPU-internal scratch texture: it is rendered into,
+/// sampled by the postprocess/blur shader, and drawn to the real scanout target
+/// (which binds the AR30 dmabuf via EGLImage and works fine). It is never read
+/// back to the CPU nor exported as a dmabuf, so its channel-order *name* is
+/// irrelevant — only the bit depth matters. We therefore remap to the
+/// byte-order-swapped `Abgr` variant of the same depth, preserving 10-bit / 16f
+/// precision, and fall back to 8-bit `Abgr8888` for anything unrecognized.
+///
+/// Applied at the offscreen-allocation chokepoints (`PostprocessState::new_with_renderer`,
+/// `PostprocessState::track_cursor`, `BlurRenderState::ensure_textures`) so every
+/// caller — the winit/x11 nested backend (`target.format()`) and the KMS backend
+/// (`compositor.format()`) alike — is covered without wrapping each call site.
+fn offscreen_render_format(target_format: Fourcc) -> Fourcc {
+    match target_format {
+        Fourcc::Argb2101010 | Fourcc::Xrgb2101010 | Fourcc::Abgr2101010 | Fourcc::Xbgr2101010 => {
+            Fourcc::Abgr2101010
+        }
+        Fourcc::Argb16161616f
+        | Fourcc::Xrgb16161616f
+        | Fourcc::Abgr16161616f
+        | Fourcc::Xbgr16161616f => Fourcc::Abgr16161616f,
+        _ => Fourcc::Abgr8888,
+    }
+}
+
 // Used for mirroring and postprocessing
 #[derive(Debug)]
 pub struct PostprocessState {
@@ -2306,6 +2344,11 @@ impl PostprocessState {
         let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
         let opaque_regions = vec![Rectangle::from_size(buffer_size)];
 
+        // A GLES offscreen can't be allocated in a BGRA-ordered 10-bit scanout
+        // format (AR30/XR30) — remap to the renderable equivalent so a 10-bit
+        // primary plane doesn't hard-fail postprocess allocation (which would
+        // freeze the output when a screen filter such as night shift is active).
+        let format = offscreen_render_format(format);
         let texture = Offscreen::<GlesTexture>::create_buffer(renderer, format, buffer_size)?;
         let texture_buffer = TextureRenderBuffer::from_texture(
             renderer.glow_renderer(),
@@ -2335,6 +2378,7 @@ impl PostprocessState {
         size: Size<i32, Physical>,
         scale: Scale<f64>,
     ) -> Result<(), R::Error> {
+        let format = offscreen_render_format(format);
         let buffer_size = size.to_logical(1).to_buffer(1, Transform::Normal);
 
         if let (Some(tex), Some(tracker)) = (
