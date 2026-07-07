@@ -24,7 +24,8 @@ mod generated {
 
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
-    backend::GlobalId, protocol::wl_surface::WlSurface,
+    backend::{GlobalId, ObjectId},
+    protocol::wl_surface::WlSurface,
 };
 use std::collections::HashSet;
 use std::sync::Mutex;
@@ -36,8 +37,11 @@ pub struct LayerSurfaceDismissControllerData {
     pub surface: Weak<WlSurface>,
     /// Whether dismiss notifications are currently armed
     pub armed: Mutex<bool>,
-    /// Surfaces in the dismiss group (clicks on these won't trigger dismiss)
-    pub group_surfaces: Mutex<HashSet<u32>>,
+    /// Surfaces in the dismiss group (clicks on these won't trigger dismiss).
+    /// Keyed by globally-unique `ObjectId`, NOT the per-client `protocol_id`: the
+    /// clicked surface may belong to a different connection (e.g. the wallpaper),
+    /// whose protocol_id could numerically clash with a member and false-positive.
+    pub group_surfaces: Mutex<HashSet<ObjectId>>,
     /// When set, interactions landing on ANY other layer-shell surface (panel,
     /// dock, layer popup) do not dismiss this controller — only clicks on app
     /// content or the bare desktop do. Opted into via `set_ignore_layer_clicks`
@@ -98,7 +102,7 @@ pub trait LayerSurfaceDismissHandler {
     );
 
     /// Unregister a dismiss controller
-    fn unregister_dismiss_controller(&mut self, surface_id: u32);
+    fn unregister_dismiss_controller(&mut self, surface_id: ObjectId);
 
     /// Get all armed dismiss controllers
     fn get_armed_dismiss_controllers(
@@ -171,9 +175,9 @@ where
                 let surface_id = surface.id().protocol_id();
                 debug!(surface_id, "Creating dismiss controller for layer surface");
 
-                // Include the surface itself in its own group
+                // Include the surface itself in its own group (by global ObjectId)
                 let mut group_surfaces = HashSet::new();
-                group_surfaces.insert(surface_id);
+                group_surfaces.insert(surface.id());
 
                 let controller_data = LayerSurfaceDismissControllerData {
                     surface: surface.downgrade(),
@@ -217,8 +221,7 @@ where
             zcosmic_layer_surface_dismiss_v1::Request::Destroy => {
                 // Unregister the controller
                 if let Ok(surface) = data.surface.upgrade() {
-                    let surface_id = surface.id().protocol_id();
-                    state.unregister_dismiss_controller(surface_id);
+                    state.unregister_dismiss_controller(surface.id());
                 }
             }
             zcosmic_layer_surface_dismiss_v1::Request::Arm => {
@@ -240,13 +243,13 @@ where
                 }
             }
             zcosmic_layer_surface_dismiss_v1::Request::AddToGroup { surface } => {
-                let group_surface_id = surface.id().protocol_id();
-                debug!(group_surface_id, "Adding surface to dismiss group");
+                let group_surface_id = surface.id();
+                debug!(?group_surface_id, "Adding surface to dismiss group");
                 data.group_surfaces.lock().unwrap().insert(group_surface_id);
             }
             zcosmic_layer_surface_dismiss_v1::Request::RemoveFromGroup { surface } => {
-                let group_surface_id = surface.id().protocol_id();
-                debug!(group_surface_id, "Removing surface from dismiss group");
+                let group_surface_id = surface.id();
+                debug!(?group_surface_id, "Removing surface from dismiss group");
                 data.group_surfaces
                     .lock()
                     .unwrap()
@@ -273,7 +276,7 @@ where
 ///
 /// Returns the controllers that should be dismissed.
 pub fn check_dismiss_on_click(
-    clicked_surface_id: Option<u32>,
+    clicked_surface_id: Option<ObjectId>,
     clicked_is_layer: bool,
     controllers: &[zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1],
 ) -> Vec<zcosmic_layer_surface_dismiss_v1::ZcosmicLayerSurfaceDismissV1> {
@@ -285,14 +288,14 @@ pub fn check_dismiss_on_click(
             let armed = *data.armed.lock().unwrap();
             if armed {
                 let group = data.group_surfaces.lock().unwrap();
-                let controlled_surface_id = data
-                    .surface
-                    .upgrade()
-                    .map(|s| s.id().protocol_id())
-                    .unwrap_or(0);
+                let controlled_surface_id = data.surface.upgrade().map(|s| s.id());
                 // In the group only if there's a clicked surface AND it's a member.
                 // A click on empty space (`None`) is never in the group → dismiss.
-                let in_group = clicked_surface_id.is_some_and(|id| group.contains(&id));
+                // Compared by global ObjectId, so a click from ANOTHER connection
+                // (e.g. the wallpaper) can't false-positive via a per-client id clash.
+                let in_group = clicked_surface_id
+                    .as_ref()
+                    .is_some_and(|id| group.contains(id));
                 // Opted-in controllers ignore clicks on OTHER layer-shell chrome
                 // (panel/dock/popover): such a click neither dismisses nor counts
                 // as "outside" — the controlling button drives this surface.
@@ -300,7 +303,7 @@ pub fn check_dismiss_on_click(
                     clicked_is_layer && *data.ignore_layer_clicks.lock().unwrap();
                 debug!(
                     ?clicked_surface_id,
-                    controlled_surface_id,
+                    ?controlled_surface_id,
                     in_group,
                     clicked_is_layer,
                     ignored_layer_click,

@@ -941,7 +941,7 @@ impl State {
                             match State::surface_under(pointer_location, &output, &shell) {
                                 Some((target, _)) => {
                                     let surface = WaylandFocus::wl_surface(&target);
-                                    let id = surface.as_ref().map(|s| s.id().protocol_id());
+                                    let id = surface.as_ref().map(|s| s.id());
                                     let is_layer = surface.as_ref().is_some_and(|s| {
                                         smithay::desktop::layer_map_for_output(&output)
                                             .layer_for_surface(
@@ -964,7 +964,7 @@ impl State {
                         {
                             let controllers = self.common.dismiss_controller_registry.get_all();
                             let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
-                                clicked_surface_id,
+                                clicked_surface_id.clone(),
                                 clicked_is_layer,
                                 &controllers,
                             );
@@ -1672,9 +1672,9 @@ impl State {
 
                     // Check for layer surface dismiss on touch down (with whether the
                     // touch landed on layer-shell chrome, for opted-in controllers).
-                    let clicked_surface_id = under.as_ref().and_then(|(target, _)| {
-                        WaylandFocus::wl_surface(target).map(|s| s.id().protocol_id())
-                    });
+                    let clicked_surface_id = under
+                        .as_ref()
+                        .and_then(|(target, _)| WaylandFocus::wl_surface(target).map(|s| s.id()));
                     let clicked_is_layer = under.as_ref().is_some_and(|(target, _)| {
                         WaylandFocus::wl_surface(target).is_some_and(|s| {
                             smithay::desktop::layer_map_for_output(&output)
@@ -1690,7 +1690,7 @@ impl State {
                     {
                         let controllers = self.common.dismiss_controller_registry.get_all();
                         let to_dismiss = crate::wayland::protocols::layer_surface_dismiss::check_dismiss_on_click(
-                            clicked_surface_id,
+                            clicked_surface_id.clone(),
                             clicked_is_layer,
                             &controllers,
                         );
