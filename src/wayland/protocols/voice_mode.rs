@@ -503,7 +503,7 @@ impl VoiceModeState {
     /// This is used for tap detection - priority order:
     /// 1. If a non-default registered window is currently focused, send to it
     /// 2. If there's a last-focused non-default receiver (e.g., chat-ui was unfocused), send to it
-    /// 3. Fall back to the default receiver (typically humainos-home)
+    /// 3. Fall back to the default receiver
     /// Returns the surface that received the event (if any), for activation purposes
     pub fn send_focus_input_to_surface_or_default(
         &self,

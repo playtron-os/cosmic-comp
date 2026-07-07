@@ -93,7 +93,7 @@ impl CompTheme {
                 let fallback_name = DynamicTheme::list_available()
                     .first()
                     .map(|e| e.name.clone())
-                    .unwrap_or_else(|| "humain".to_string());
+                    .unwrap_or_else(|| "playtron".to_string());
                 info!(
                     fallback_name,
                     "No active theme symlink, using first available"
