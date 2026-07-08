@@ -35,6 +35,11 @@ fn main() -> ExitCode {
         } else {
             Some(CStr::from_ptr((*pw).pw_name).to_owned())
         };
+        let home: Option<String> = if pw.is_null() || (*pw).pw_dir.is_null() {
+            None
+        } else {
+            CStr::from_ptr((*pw).pw_dir).to_str().ok().map(String::from)
+        };
 
         // Become fully root (ruid too) so systemctl runs privileged — a shell drops
         // euid when ruid != euid. uid/gid captured above, so we can still drop back.
@@ -63,6 +68,10 @@ fn main() -> ExitCode {
             }
             std::thread::sleep(Duration::from_millis(50)); // up to ~2s for the user bus
         }
+
+        // While root: read the X11 cookie the compositor handed off (0600 agentos-display).
+        // Installed into the user's ~/.Xauthority after we drop privileges, below.
+        let xcookie = std::fs::read_to_string("/run/cosmic-comp/xcookie").ok();
 
         // Drop privileges COMPLETELY back to the authenticated user.
         if let Some(ref u) = user
@@ -94,6 +103,36 @@ fn main() -> ExitCode {
         if libc::setuid(0) == 0 {
             eprintln!("agentos-session-launch: refused to drop root");
             return ExitCode::from(1);
+        }
+
+        // Now running as the desktop user. Install X11 cookie auth + fix DISPLAY propagation:
+        // write the cookie into the user's ~/.Xauthority (0600), export DISPLAY + XAUTHORITY for
+        // the session, and import them into THIS user's systemd manager so `user@uid` X clients
+        // get them too — the compositor's own import runs as agentos-display and never reaches
+        // this manager, which is why X clients currently have no DISPLAY.
+        if let (Some(line), Some(home)) = (xcookie.as_deref(), home.as_deref())
+            && let (Some(display), Some(hex)) = (
+                line.split_whitespace().next(),
+                line.split_whitespace().nth(1),
+            )
+        {
+            let xauthority = format!("{home}/.Xauthority");
+            let disp = format!(":{display}");
+            let _ = Command::new("xauth")
+                .args(["-f", &xauthority, "add", &disp, "MIT-MAGIC-COOKIE-1", hex])
+                .status();
+            // Single-threaded here, so set_var is sound.
+            std::env::set_var("DISPLAY", &disp);
+            std::env::set_var("XAUTHORITY", &xauthority);
+            let _ = Command::new("systemctl")
+                .args([
+                    "--user",
+                    "import-environment",
+                    "DISPLAY",
+                    "XAUTHORITY",
+                    "WAYLAND_DISPLAY",
+                ])
+                .status();
         }
     }
 
