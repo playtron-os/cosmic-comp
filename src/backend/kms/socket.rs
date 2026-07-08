@@ -77,6 +77,10 @@ impl Common {
         let token = self
             .event_loop_handle
             .insert_source(listener, move |client_stream, _, state: &mut State| {
+                // Same session gate as the primary socket (see wayland_authz).
+                if !state.common.wayland_authz.admit(&client_stream) {
+                    return;
+                }
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {

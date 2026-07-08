@@ -284,6 +284,9 @@ pub struct Common {
     /// layer surface.
     pub greeter_present: bool,
 
+    /// Admits/rejects connecting wayland clients by their logind session (desktop vs ssh/service).
+    pub wayland_authz: crate::wayland_authz::WaylandAuthz,
+
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
     pub loop_health: crate::perf::LoopHealth,
@@ -847,6 +850,7 @@ impl State {
                 startup_done: Arc::new(AtomicBool::new(false)),
                 should_stop: false,
                 greeter_present: false,
+                wayland_authz: crate::wayland_authz::WaylandAuthz::new(),
                 gesture_state: None,
                 coldstart: Default::default(),
                 loop_health: Default::default(),
