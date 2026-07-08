@@ -105,18 +105,87 @@ fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: u32) {
     }
 }
 
+/// Server-side X11 auth file XWayland reads via `-auth` (readable only by the compositor uid).
+const XAUTH_SERVER: &str = "/run/cosmic-comp/xauth";
+/// Handoff file: the hex cookie for the setuid session launcher (runs as root) to install into
+/// the desktop user's `~/.Xauthority`. 0600, so only root/the compositor can read it.
+const XCOOKIE_HANDOFF: &str = "/run/cosmic-comp/xcookie";
+
+/// Generate an MIT-MAGIC-COOKIE-1 for display `:display`: write the server auth file (for
+/// XWayland's `-auth`) plus the handoff file the session launcher installs per-user. Best-effort:
+/// returns `None` on any failure, in which case XWayland runs without `-auth` (no regression).
+fn setup_xauth(display: u32) -> Option<std::path::PathBuf> {
+    use std::io::{Read, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut cookie = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut cookie))
+        .ok()?;
+    let hex: String = cookie.iter().map(|b| format!("{b:02x}")).collect();
+    let disp = format!(":{display}");
+
+    let _ = std::fs::remove_file(XAUTH_SERVER);
+    let ok = std::process::Command::new("xauth")
+        .args(["-f", XAUTH_SERVER, "add", &disp, "MIT-MAGIC-COOKIE-1", &hex])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        warn!("xwayland: failed to write server xauth; X11 will run without auth");
+        return None;
+    }
+    let _ = std::fs::set_permissions(XAUTH_SERVER, std::fs::Permissions::from_mode(0o600));
+
+    // Handoff the cookie to the session launcher (`display hex`).
+    if let Ok(mut h) = std::fs::File::create(XCOOKIE_HANDOFF) {
+        let _ = h.set_permissions(std::fs::Permissions::from_mode(0o600));
+        let _ = writeln!(h, "{display} {hex}");
+    }
+    Some(std::path::PathBuf::from(XAUTH_SERVER))
+}
+
+/// Restrict the X11 filesystem socket to the `compositor` group (0770) so non-group uids can't
+/// reach it — defense in depth alongside the cookie. Best-effort.
+fn harden_x_socket(display: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = format!("/tmp/.X11-unix/X{display}");
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770));
+    // chgrp to `compositor` (a group the compositor uid belongs to).
+    if let Ok(cname) = std::ffi::CString::new("compositor") {
+        let gid = unsafe {
+            let g = libc::getgrnam(cname.as_ptr());
+            if g.is_null() { None } else { Some((*g).gr_gid) }
+        };
+        if let (Some(gid), Ok(cpath)) = (gid, std::ffi::CString::new(path.as_str())) {
+            unsafe {
+                libc::chown(cpath.as_ptr(), u32::MAX, gid);
+            }
+        }
+    }
+}
+
 impl State {
     pub fn launch_xwayland(&mut self, render_node: Option<DrmNode>) {
         if self.common.xwayland_state.is_some() {
             return;
         }
 
+        // Pin display :0 and add X11 cookie auth: `setup_xauth` writes the server auth file that
+        // XWayland reads via `-auth`; the session launcher installs the matching cookie into the
+        // user's ~/.Xauthority. `open_abstract_socket=false` drops the namespace-reachable socket.
+        // Best-effort — if setup fails we spawn without `-auth` (no worse than before).
+        let xauth = setup_xauth(0);
+        let extra_args: Vec<OsString> = match &xauth {
+            Some(p) => vec!["-auth".into(), p.clone().into_os_string()],
+            None => Vec::new(),
+        };
         let (xwayland, client) = match XWayland::spawn(
             &self.common.display_handle,
-            None,
+            Some(0u32),
             std::iter::empty::<(OsString, OsString)>(),
-            std::iter::empty::<OsString>(),
-            true,
+            extra_args,
+            false,
             Stdio::null(),
             Stdio::null(),
             |user_data| {
@@ -141,6 +210,9 @@ impl State {
                     x11_socket,
                     display_number,
                 } => {
+                    // Restrict the X11 socket to the `compositor` group (defense in depth beside
+                    // the cookie auth): non-group uids can't even reach it.
+                    harden_x_socket(display_number);
                     let (tx, rx) = mpsc::channel();
                     std::thread::spawn(move || xrdb_thread(rx, display_number));
 

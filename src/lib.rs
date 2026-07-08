@@ -65,6 +65,7 @@ pub mod theme;
 pub mod toolkit_config;
 pub mod utils;
 pub mod wayland;
+pub mod wayland_authz;
 pub mod xwayland;
 
 #[cfg(feature = "profile-with-tracy")]
@@ -346,6 +347,11 @@ fn init_wayland_display(
     event_loop
         .handle()
         .insert_source(source, |client_stream, _, state| {
+            // Admit only the local desktop/greeter; reject ssh/sessionless clients (the method
+            // logs the reason). Dropping the stream here closes it before any protocol runs.
+            if !state.common.wayland_authz.admit(&client_stream) {
+                return;
+            }
             let client_state = state.new_client_state();
             match state
                 .common

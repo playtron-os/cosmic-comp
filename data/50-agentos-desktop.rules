@@ -1,0 +1,73 @@
+// 50-agentos-desktop.rules — polkit authorization for the persistent-compositor login model.
+//
+// The desktop is a Wayland client of the persistent compositor, so its logind session is
+// `active` but SEATLESS → polkit treats it as non-local and evaluates every action at the
+// `allow_any` tier, not `allow_active`. Actions a normal active desktop allows silently
+// regress to an admin prompt (or denial). We restore normal active-desktop behaviour for the
+// single trusted operator (wheel + active session): seamless for routine actions, but a
+// one-time admin prompt for the catastrophic/irreversible few — so in-session malware can't
+// silently reflash the OS or firmware, wipe a disk, or delete an account.
+
+polkit.addRule(function(action, subject) {
+    // Require an ACTIVE session — the seatless desktop is active=true, but non-interactive
+    // wheel contexts (SSH, cron, system services) are active=false and must NOT get these
+    // grants. We drop only the `local` check (which the seatless session fails), not `active`.
+    if (!subject.isInGroup("wheel") || !subject.active) {
+        return polkit.Result.NOT_HANDLED;
+    }
+
+    // Catastrophic + irreversible: still take one admin prompt (mirrors allow_active=auth_admin
+    // on a normal desktop). EXACT ids, not prefixes, so sibling actions like
+    // fwupd.update-internal-trusted (signed → seamless) are unaffected. Checked before `granted`.
+    var confirm = [
+        "org.projectatomic.rpmostree1.deploy",                    // boot an arbitrary OS image
+        "org.projectatomic.rpmostree1.rebase",
+        "org.projectatomic.rpmostree1.install-local-packages",
+        "org.projectatomic.rpmostree1.install-uninstall-packages",
+        "org.projectatomic.rpmostree1.override",
+        "org.freedesktop.fwupd.update-internal",                  // firmware flash (unsigned)
+        "org.freedesktop.fwupd.update-hotplug",
+        "org.freedesktop.fwupd.downgrade-internal",
+        "org.freedesktop.fwupd.downgrade-hotplug",
+        "org.freedesktop.fwupd.device-unlock",
+        "org.freedesktop.udisks2.ata-secure-erase",              // irreversible disk wipe
+        "org.freedesktop.udisks2.nvme-sanitize",
+        "org.freedesktop.udisks2.nvme-format-namespace",
+        "one.playtron.Settings.Users.Admin",                     // manage users
+        "one.playtron.accounts1.delete-credential"               // delete an account
+    ];
+    for (var i = 0; i < confirm.length; i++) {
+        if (action.id == confirm[i]) {
+            return polkit.Result.AUTH_ADMIN_KEEP;
+        }
+    }
+
+    // Seamless for the trusted operator — appliance-relevant namespaces (allow_active=yes equiv).
+    var granted = [
+        "org.freedesktop.NetworkManager.",
+        "org.freedesktop.ModemManager1.",
+        "org.freedesktop.udisks2.",
+        "org.freedesktop.UPower.",
+        "org.freedesktop.login1.",           // power + inhibitors + chvt + reboot-to-firmware
+        "org.freedesktop.timedate1.",
+        "org.freedesktop.locale1.",
+        "org.freedesktop.hostname1.",
+        "org.freedesktop.color-manager.",
+        "org.freedesktop.RealtimeKit1.",
+        "org.freedesktop.packagekit.",
+        "net.reactivated.fprint.",
+        "com.system76.",
+        "one.playtron.",                     // own services (mail / accounts / settings)
+        "org.projectatomic.rpmostree1.",     // OS updates (deploy/rebase/… carved out above)
+        "org.freedesktop.Flatpak.",          // app updates
+        "org.freedesktop.fwupd.",            // firmware updates (flash carved out above)
+        "org.shadowblip."                    // InputPlumber gamepad control (any=no otherwise)
+    ];
+
+    for (var i = 0; i < granted.length; i++) {
+        if (action.id.indexOf(granted[i]) === 0) {
+            return polkit.Result.YES;
+        }
+    }
+    return polkit.Result.NOT_HANDLED;
+});

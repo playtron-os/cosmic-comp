@@ -194,6 +194,15 @@ pub struct SurfaceThreadState {
     /// Throttle for the periodic frame-pacing log (once/second while a game is
     /// fullscreen).
     last_pacing_log: Option<std::time::Instant>,
+    /// Throttle for the rolling LOGOUT desktop snapshot: the last time this output
+    /// captured its composited frame into `Shell::logout_snapshot`. Capped to ~once/
+    /// second so the extra offscreen composite is negligible in steady state. See the
+    /// capture block in `redraw`.
+    last_logout_snapshot: Option<std::time::Instant>,
+    /// Throttle for the rolling LOGIN greeter-cover snapshot (into `Shell::login_snapshot`),
+    /// captured while the greeter is up so `dismiss_greeter` can hold+fade it. Same ~once/
+    /// second cap as the logout snapshot; they are mutually exclusive (greeter up XOR not).
+    last_login_snapshot: Option<std::time::Instant>,
 }
 
 pub type GbmDrmOutput = DrmOutput<
@@ -601,6 +610,8 @@ fn surface_thread(
         last_tearing: false,
         last_vrr: false,
         last_pacing_log: None,
+        last_logout_snapshot: None,
+        last_login_snapshot: None,
     };
 
     let signal = event_loop.get_signal();
@@ -1483,6 +1494,66 @@ fn process_blur(
     );
 }
 
+/// Render the current composited desktop `elements` into an owned full-output
+/// GlesTexture and store it as `output`'s LOGOUT snapshot on `Shell`.
+/// Render the current `elements` into a fresh offscreen texture and return it as an
+/// `UnlockSnapshot`, or `None` if the offscreen buffer couldn't be allocated. Shared by the
+/// rolling LOGOUT (desktop) and LOGIN (greeter) captures.
+fn render_frame_snapshot<'a>(
+    output: &Output,
+    renderer: &mut GlMultiRenderer<'a>,
+    elements: &[CosmicElement<GlMultiRenderer<'a>>],
+) -> Result<Option<crate::backend::render::UnlockSnapshot>, RenderError<GlMultiError>> {
+    let output_scale = output.current_scale().fractional_scale();
+    let Some((mut texture_buffer, size_phys, src_size)) =
+        crate::backend::render::make_snapshot_buffer(renderer, output)
+    else {
+        tracing::warn!(
+            "snapshot: make_snapshot_buffer returned None — no snapshot captured (offscreen alloc failed or zero-size output)"
+        );
+        return Ok(None);
+    };
+    let buffer_dims = size_phys.to_logical(1).to_buffer(1, Transform::Normal);
+    let mut dt = OutputDamageTracker::new(size_phys, output_scale, Transform::Normal);
+    texture_buffer
+        .render()
+        .draw::<_, RenderError<GlMultiError>>(|tex| {
+            let mut fb = renderer.bind(tex).map_err(RenderError::Rendering)?;
+            // Age 0 = full redraw into the fresh offscreen.
+            let _ = dt.render_output(renderer, &mut fb, 0, elements, CLEAR_COLOR)?;
+            Ok(vec![Rectangle::from_size(buffer_dims)])
+        })?;
+    Ok(Some(crate::backend::render::UnlockSnapshot {
+        texture: texture_buffer,
+        src_size,
+        captured_at: std::time::Instant::now(),
+    }))
+}
+
+fn capture_logout_snapshot<'a>(
+    output: &Output,
+    shell: &Arc<parking_lot::RwLock<Shell>>,
+    renderer: &mut GlMultiRenderer<'a>,
+    elements: &[CosmicElement<GlMultiRenderer<'a>>],
+) -> Result<(), RenderError<GlMultiError>> {
+    if let Some(snap) = render_frame_snapshot(output, renderer, elements)? {
+        shell.read().set_logout_snapshot(output, snap);
+    }
+    Ok(())
+}
+
+fn capture_login_snapshot<'a>(
+    output: &Output,
+    shell: &Arc<parking_lot::RwLock<Shell>>,
+    renderer: &mut GlMultiRenderer<'a>,
+    elements: &[CosmicElement<GlMultiRenderer<'a>>],
+) -> Result<(), RenderError<GlMultiError>> {
+    if let Some(snap) = render_frame_snapshot(output, renderer, elements)? {
+        shell.read().set_login_snapshot(output, snap);
+    }
+    Ok(())
+}
+
 impl SurfaceThreadState {
     fn suspend(&mut self, tx: SyncSender<()>) {
         self.active.store(false, Ordering::SeqCst);
@@ -1887,6 +1958,39 @@ impl SurfaceThreadState {
             return Ok(());
         };
 
+        // Login/logout handoff frame hold: Present NOTHING so the last composited frame
+        // stays latched on the CRTC — no black flash. Two mirror-image cases:
+        //  * logout_hold: the desktop's surfaces are gone and greetd's fresh greeter has
+        //    not painted yet — the last desktop frame stays latched.
+        //  * login_hold: the greeter departed (its own timeout / greetd's alarm / a crash)
+        //    before the desktop wallpaper painted — the greeter's last frame stays latched.
+        // Each is released when the incoming surface paints (compositor.rs `commit`) or by
+        // a safety timeout, both of which schedule a fresh render.
+        //
+        // redraw() only runs from the one-shot `queue_redraw` timer, so at entry the
+        // state is Queued(_) OR WaitingForEstimatedVBlankAndQueued{..}. The firing
+        // `queued_render` timer removes itself via its own TimeoutAction::Drop, but a
+        // still-armed `estimated_vblank` timer (the latter state) must be disarmed
+        // before we park in Idle — otherwise it later fires into on_estimated_vblank's
+        // `unreachable!()` and panics this surface's render thread, permanently freezing
+        // the output. Mirrors the normal submit path (see the estimated_vblank removal
+        // after queue_frame below).
+        let hold_frame = {
+            let shell = self.shell.read();
+            // logout_hold is global (coordinated greeter crossfade); login_hold is
+            // per-output (this output holds only while ITS own wallpaper is pending).
+            shell.logout_hold || shell.login_hold.contains(&self.output)
+        };
+        if hold_frame {
+            if let QueueState::WaitingForEstimatedVBlankAndQueued {
+                estimated_vblank, ..
+            } = mem::replace(&mut self.state, QueueState::Idle)
+            {
+                self.loop_handle.remove(estimated_vblank);
+            }
+            return Ok(());
+        }
+
         let frame_start = std::time::Instant::now();
         let mut profile = crate::backend::render::gpu_profiler::FrameProfile::default();
         profile.frame_start = frame_start;
@@ -2125,6 +2229,59 @@ impl SurfaceThreadState {
         };
         self.timings.set_vrr(vrr);
         self.timings.elements_done(&self.clock);
+
+        // Rolling LOGOUT desktop snapshot.
+        {
+            let now = std::time::Instant::now();
+            let due = self
+                .last_logout_snapshot
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+            let want_snapshot = self.mirroring.is_none() && due && !game_mode_active && {
+                let shell = self.shell.read();
+                shell.session_lock.is_none()
+                    && !shell.logout_hold
+                    && !shell.greeter_logout_return()
+                    && !shell.any_greeter_mapped()
+                    && !shell.any_login_fade_in_flight()
+            };
+            if want_snapshot {
+                if let Err(err) =
+                    capture_logout_snapshot(&self.output, &self.shell, &mut renderer, &elements)
+                {
+                    tracing::warn!(?err, "Failed to capture logout desktop snapshot");
+                }
+                self.last_logout_snapshot = Some(now);
+            }
+        }
+
+        // Rolling LOGIN greeter-cover snapshot — the mirror of the logout one, gated on the
+        // greeter being UP (its opaque Overlay covers the output, so the composited frame IS
+        // the greeter cover). `dismiss_greeter` later holds+fades this over the wallpaper.
+        // Skipped once the fade is in flight (already captured) or while locked.
+        {
+            let now = std::time::Instant::now();
+            let due = self
+                .last_login_snapshot
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+            let want_snapshot = self.mirroring.is_none() && due && !game_mode_active && {
+                let shell = self.shell.read();
+                shell.session_lock.is_none()
+                    // THIS output must have a greeter that has actually PAINTED a buffer
+                    && shell.output_has_painted_greeter(&self.output)
+                    && !shell.any_login_fade_in_flight()
+                    // Not during the LOGOUT crossfade (greeter fading IN) — that frame is a
+                    // half-opaque greeter; wait until it's fully up on the greeter screen.
+                    && !shell.greeter_logout_return()
+            };
+            if want_snapshot {
+                if let Err(err) =
+                    capture_login_snapshot(&self.output, &self.shell, &mut renderer, &elements)
+                {
+                    tracing::warn!(?err, "Failed to capture login greeter snapshot");
+                }
+                self.last_login_snapshot = Some(now);
+            }
+        }
 
         // we can't use the elements after `compositor.render_frame`,
         // so let's collect everything we need for screencopy now

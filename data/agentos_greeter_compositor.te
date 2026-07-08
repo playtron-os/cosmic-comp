@@ -1,0 +1,97 @@
+module agentos_greeter_compositor 1.2;
+
+# Lets greetd's greeter (xdm_t) reach the persistent cosmic-comp wayland socket in
+# /run/cosmic-comp so the global-compositor login works in ENFORCING — but ONLY that
+# socket, not all of /run.
+#
+# Hardened (was: a broad grant to the generic `var_run_t`). Now /run/cosmic-comp gets a
+# PRIVATE type, cosmic_comp_runtime_t:
+#   * the dir is labeled by the accompanying .fc (systemd's RuntimeDirectory applies it);
+#   * the runtime-created socket + wayland-N.lock inherit the private type via the
+#     type_transitions below;
+#   * marking the type `file_type` gives the UNCONFINED compositor + desktop their normal
+#     access, so only xdm_t (the one CONFINED accessor) needs an explicit, narrow rule.
+#
+#   sock_file write   -> connect to the wayland socket
+#   sock_file getattr -> stat it
+#   file r/w/getattr/map -> the wayland-N.lock (libwayland locks the socket)
+#
+# Build + install (RPM %post): checkmodule -M -m -o X.mod X.te ;
+#   semodule_package -o X.pp -m X.mod -f X.fc ; semodule -i X.pp
+
+require {
+	attribute file_type;
+	type xdm_t;
+	type init_t;
+	type unconfined_service_t;
+	type unconfined_t;
+	class dir search;
+	class sock_file { getattr write };
+	class file { getattr map read write };
+}
+
+# Private type for /run/cosmic-comp (dir, wayland socket, lock file).
+type cosmic_comp_runtime_t;
+typeattribute cosmic_comp_runtime_t file_type;
+
+# The socket + lock are created at runtime inside the labeled dir; make them inherit the
+# private type regardless of which domain cosmic-comp-global.service runs in.
+type_transition init_t               cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition unconfined_service_t cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition unconfined_t         cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition init_t               cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+type_transition unconfined_service_t cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+type_transition unconfined_t         cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+
+# The greeter reaches ONLY the compositor socket now.
+allow xdm_t cosmic_comp_runtime_t:dir search;
+allow xdm_t cosmic_comp_runtime_t:sock_file { getattr write };
+allow xdm_t cosmic_comp_runtime_t:file { getattr map read write };
+
+# ==========================================================================================
+# Confined domain for the compositor process itself (was: unconfined_t).
+#
+# PERMISSIVE-FIRST: shipped `permissive` — denials are LOGGED, not enforced. This pass only
+# makes the domain ENTER; harvest the full allow set (DRM/KMS, input, dbus/logind, udev, shm…)
+# on-device, then flip to enforcing:
+#   semodule -DB                                   # disable dontaudit, else suppressed denials hide
+#   (exercise login / logout / lock / launch apps)
+#   ausearch -m avc -c cosmic-comp | audit2allow   # -> paste the rules below
+#   semodule -B                                    # restore dontaudit
+# Verify entry: `ps -eZ | grep cosmic-comp` must show cosmic_comp_t (not unconfined_t).
+#
+# Entry path: `PAMName=login` lands the ExecStart shell in unconfined_t (agentos-display maps
+# via __default__ -> unconfined_u); its `sh -c 'exec /usr/bin/cosmic-comp'` execs the labeled
+# binary and the type_transition below enters cosmic_comp_t. INVARIANT: keyed to unconfined_t /
+# unconfined_r. If agentos-display is ever remapped to a confined seuser, add the parallel
+# type_transition + `role <r> types cosmic_comp_t` for that source, or the transition silently
+# stops (or computes an invalid context that fails exec).
+# ==========================================================================================
+
+require {
+	attribute domain;
+	attribute exec_type;
+	role unconfined_r;
+	class process transition;
+	class file { entrypoint execute open };
+}
+
+# The compositor's own domain + the label for /usr/bin/cosmic-comp (see .fc).
+type cosmic_comp_t;
+type cosmic_comp_exec_t;
+typeattribute cosmic_comp_t domain;
+typeattribute cosmic_comp_exec_t exec_type, file_type;
+
+# Enter cosmic_comp_t when the unconfined_t launch shell execs the labeled binary. The role
+# carries over from the launcher (unconfined_r), so authorize that role to hold the type.
+type_transition unconfined_t cosmic_comp_exec_t:process cosmic_comp_t;
+allow unconfined_t cosmic_comp_t:process transition;
+allow cosmic_comp_t cosmic_comp_exec_t:file { entrypoint read execute open getattr map };
+role unconfined_r types cosmic_comp_t;
+
+# The socket + lock the confined compositor creates in its runtime dir keep the private type.
+type_transition cosmic_comp_t cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
+type_transition cosmic_comp_t cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
+
+# Log, don't block, until the harvested allow set (above note) is complete.
+permissive cosmic_comp_t;

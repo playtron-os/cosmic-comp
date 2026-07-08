@@ -1,0 +1,28 @@
+#!/bin/bash
+# Fast, atomic logout for the persistent-compositor model.
+#
+# Panels call THIS instead of `loginctl terminate-user`: terminate-user first spends
+# seconds deactivating user@UID (staggered teardown / flicker) before the desktop
+# dies. Here we end the desktop session IMMEDIATELY — SIGTERM cosmic-session (the
+# greetd session leader), which reaps its components and lets greetd return to the
+# greeter at once — then clean up the user manager asynchronously so nothing lingers
+# (linger is off).
+set -u
+uid=$(id -u)
+
+# End the desktop session now. cosmic-session tears down its components and exits;
+# greetd sees the session close and shows the greeter.
+pkill -TERM -u "$uid" -x cosmic-session
+
+# Background cleanup: force-kill if it didn't exit promptly, then stop the user
+# manager (best-effort). Detached so logout returns instantly.
+(
+    for _ in $(seq 1 20); do
+        pgrep -u "$uid" -x cosmic-session >/dev/null || break
+        sleep 0.1
+    done
+    pkill -KILL -u "$uid" -x cosmic-session 2>/dev/null
+    systemctl stop "user@${uid}.service" 2>/dev/null
+) &
+
+exit 0

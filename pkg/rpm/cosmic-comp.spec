@@ -49,6 +49,44 @@ install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/fallback_binding" "%
 install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/chat_app_id" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
 install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/enabled" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled"
 
+# --- Persistent-compositor deployment kit (global-compositor login model).
+# One persistent cosmic-comp hosts the greeter + desktop as wayland clients; these
+# artifacts deploy that model.
+install -Dm4755 "usr/libexec/agentos-session-launch"        "%{buildroot}%{_libexecdir}/agentos-session-launch"
+install -Dm0755 "usr/libexec/agentos-greeter-launch"        "%{buildroot}%{_libexecdir}/agentos-greeter-launch"
+install -Dm0755 "usr/libexec/agentos-session-logout"        "%{buildroot}%{_libexecdir}/agentos-session-logout"
+install -Dm0644 "usr/lib/systemd/system/cosmic-comp-global.service"            "%{buildroot}%{_prefix}/lib/systemd/system/cosmic-comp-global.service"
+install -Dm0644 "usr/lib/sysusers.d/agentos-compositor.conf"                    "%{buildroot}%{_prefix}/lib/sysusers.d/agentos-compositor.conf"
+install -Dm0644 "usr/share/polkit-1/rules.d/50-agentos-desktop.rules"          "%{buildroot}%{_datadir}/polkit-1/rules.d/50-agentos-desktop.rules"
+install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.te"     "%{buildroot}%{_datadir}/selinux/packages/agentos_greeter_compositor.te"
+install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.fc"     "%{buildroot}%{_datadir}/selinux/packages/agentos_greeter_compositor.fc"
+
+%post
+# Persistent-compositor model: create the agentos-display + greeter users + compositor
+# group, then compile+load the SELinux module that lets the greeter (xdm_t) reach the
+# compositor's wayland socket in /run/cosmic-comp. Runs at install (image build), where
+# systemd-sysusers + the SELinux build tools are present; guarded so a bare install is safe.
+systemd-sysusers /usr/lib/sysusers.d/agentos-compositor.conf >/dev/null 2>&1 || :
+if command -v checkmodule >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1; then
+    m=/usr/share/selinux/packages/agentos_greeter_compositor
+    # Non-fatal (image build must not abort), but NOT silenced: a silent module/relabel failure
+    # ships fake confinement (compositor keeps running unconfined_t while looking hardened).
+    if checkmodule -M -m -o "$m.mod" "$m.te" && \
+       semodule_package -o "$m.pp" -m "$m.mod" -f "$m.fc" && \
+       semodule -i "$m.pp"; then
+        # Apply cosmic_comp_exec_t so the binary triggers the transition into cosmic_comp_t
+        # (the runtime dir is labeled by systemd's RuntimeDirectory at boot).
+        restorecon -F /usr/bin/cosmic-comp || :
+        semodule -l | grep -q agentos_greeter_compositor || \
+            echo "WARNING: agentos_greeter_compositor SELinux module did not load" >&2
+        matchpathcon /usr/bin/cosmic-comp 2>/dev/null | grep -q cosmic_comp_exec_t || \
+            echo "WARNING: /usr/bin/cosmic-comp fcontext is not cosmic_comp_exec_t" >&2
+    else
+        echo "WARNING: failed to build/load agentos_greeter_compositor SELinux module" >&2
+    fi
+    rm -f "$m.mod" "$m.pp"
+fi
+
 %files
 %license %{_datadir}/licenses/cosmic-comp/LICENSE
 %{_bindir}/cosmic-comp
@@ -58,6 +96,15 @@ install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/enabled" "%{buildroo
 %{_datadir}/cosmic/com.playtron.VoiceMode/v1/fallback_binding
 %{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id
 %{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled
+# Persistent-compositor deployment kit
+%attr(4755,root,root) %{_libexecdir}/agentos-session-launch
+%{_libexecdir}/agentos-greeter-launch
+%{_libexecdir}/agentos-session-logout
+%{_prefix}/lib/systemd/system/cosmic-comp-global.service
+%{_prefix}/lib/sysusers.d/agentos-compositor.conf
+%{_datadir}/polkit-1/rules.d/50-agentos-desktop.rules
+%{_datadir}/selinux/packages/agentos_greeter_compositor.te
+%{_datadir}/selinux/packages/agentos_greeter_compositor.fc
 
 %changelog
 * Thu Jan 09 2026 Playtron <dev@playtron.one> - 1.0.0-1
