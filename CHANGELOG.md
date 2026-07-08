@@ -1,3 +1,12 @@
+## [1.28.6](https://github.com/playtron-os/cosmic-comp/compare/v1.28.5...v1.28.6) (2026-07-08)
+
+
+### Bug Fixes
+
+* prevent broadcasting get_head reads to every client ([c078d6d](https://github.com/playtron-os/cosmic-comp/commit/c078d6d3a7af595d9df8751081df16aace6bfc72))
+* prevent crash by mapping rendering types correctly in post process ([bca8ea6](https://github.com/playtron-os/cosmic-comp/commit/bca8ea60681fc43191d7c94cc3ad79b9c19d6796))
+* use ObjectId in layer dismiss protocol to prevent collisions ([d2e6964](https://github.com/playtron-os/cosmic-comp/commit/d2e6964225f5e2aa302b449f14ce8fca8deea2ce))
+
 ## [1.28.5](https://github.com/playtron-os/cosmic-comp/compare/v1.28.4...v1.28.5) (2026-07-02)
 
 
