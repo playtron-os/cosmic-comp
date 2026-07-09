@@ -1,3 +1,10 @@
+## [1.28.7](https://github.com/playtron-os/cosmic-comp/compare/v1.28.6...v1.28.7) (2026-07-09)
+
+
+### Bug Fixes
+
+* fix crash on active_num running before workspace is set ([13440fb](https://github.com/playtron-os/cosmic-comp/commit/13440fb2b8ab70edc4d1281a3e16290fa4567778))
+
 ## [1.28.6](https://github.com/playtron-os/cosmic-comp/compare/v1.28.5...v1.28.6) (2026-07-08)
 
 
