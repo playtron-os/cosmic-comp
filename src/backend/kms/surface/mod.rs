@@ -831,8 +831,8 @@ fn process_blur(
     // Get workspace info
     let workspace_info = {
         let shell_ref = shell.read();
-        let (previous_idx, idx) = shell_ref.workspaces.active_num(output_ref);
         shell_ref.workspaces.active(output_ref).map(|(prev, curr)| {
+            let (previous_idx, idx) = shell_ref.workspaces.active_num(output_ref);
             let previous = prev
                 .zip(previous_idx)
                 .map(|((w, start), idx)| (w.handle, idx, start));
