@@ -1670,6 +1670,15 @@ impl State {
                     let under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
 
+                    // Determine which window/surface should receive keyboard focus.
+                    // `surface_under`/`touch.down` only route touch events to the
+                    // surface under the finger; they never change the keyboard focus
+                    // or raise/activate the tapped window. Without this, tapping a
+                    // window behind the currently focused one does nothing (HUM-165).
+                    // Mirror the pointer-button path, which calls `Shell::set_focus`.
+                    let keyboard_focus_target =
+                        State::element_under(position, &output, &shell, &seat);
+
                     // Check for layer surface dismiss on touch down (with whether the
                     // touch landed on layer-shell chrome, for opted-in controllers).
                     let clicked_surface_id = under
@@ -1708,6 +1717,16 @@ impl State {
 
                     let serial = SERIAL_COUNTER.next_serial();
                     let touch = seat.get_touch().unwrap();
+
+                    // Change keyboard focus to the tapped window, unless touch is
+                    // already grabbed (e.g. an in-progress client touch gesture),
+                    // in which case focus must stay with the grab owner.
+                    if !touch.is_grabbed()
+                        && let Some(target) = keyboard_focus_target
+                    {
+                        Shell::set_focus(self, Some(&target), &seat, Some(serial), false);
+                    }
+
                     touch.down(
                         self,
                         under,
