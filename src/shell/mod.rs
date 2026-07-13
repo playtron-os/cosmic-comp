@@ -3992,7 +3992,11 @@ impl Shell {
 
     /// The translate offset `(x, y)` (logical px) for an opening surface, or
     /// `(0, 0)` if it isn't opening. Folds into the layer-surface render offset.
+    /// Full-output surfaces pure-fade (no rise) — see [`is_full_output_layer`].
     pub fn get_layer_open_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        if self.is_full_output_layer(surface_id) {
+            return (0, 0);
+        }
         for o in &self.layer_opens {
             if o.surface_id == *surface_id {
                 return o.translate_offset();
@@ -4002,7 +4006,11 @@ impl Shell {
     }
 
     /// The scale factor for an opening surface, or `1.0` if it isn't opening.
+    /// Full-output surfaces pure-fade (no scale) — see [`is_full_output_layer`].
     pub fn get_layer_open_scale(&self, surface_id: &ObjectId) -> f32 {
+        if self.is_full_output_layer(surface_id) {
+            return 1.0;
+        }
         for o in &self.layer_opens {
             if o.surface_id == *surface_id {
                 return o.scale();
@@ -4020,8 +4028,12 @@ impl Shell {
     }
 
     /// The translate offset `(x, y)` (logical px) for a closing surface, or
-    /// `(0, 0)` if it isn't closing. Slides DOWN `0 → +6px`.
+    /// `(0, 0)` if it isn't closing. Slides DOWN `0 → +6px`. Full-output surfaces
+    /// pure-fade (no rise) — see [`is_full_output_layer`].
     pub fn get_layer_close_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        if self.is_full_output_layer(surface_id) {
+            return (0, 0);
+        }
         for c in &self.layer_closes {
             if c.surface_id == *surface_id {
                 return c.translate_offset();
@@ -4031,8 +4043,11 @@ impl Shell {
     }
 
     /// The scale factor for a closing surface, or `1.0` if it isn't closing.
-    /// Scales DOWN `1.0 → 0.97`.
+    /// Scales DOWN `1.0 → 0.97`. Full-output surfaces pure-fade (no scale).
     pub fn get_layer_close_scale(&self, surface_id: &ObjectId) -> f32 {
+        if self.is_full_output_layer(surface_id) {
+            return 1.0;
+        }
         for c in &self.layer_closes {
             if c.surface_id == *surface_id {
                 return c.scale();
@@ -5086,6 +5101,31 @@ impl Shell {
                 }
             }
         }
+    }
+
+    /// Whether a layer surface fills its whole output (anchored to all four
+    /// edges) — a full-screen backdrop / modal scrim. Scaling or rising such a
+    /// surface about its centre only reveals gaps at the screen edges, so the
+    /// open/close animations skip the scale + translate for it (keeping just the
+    /// alpha fade), giving a clean fade-in with no "scale-in" wobble.
+    fn is_full_output_layer(&self, surface_id: &ObjectId) -> bool {
+        use smithay::wayland::shell::wlr_layer::Anchor;
+        for output in self.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.wl_surface().id() == *surface_id {
+                    let anchor = with_states(layer.wl_surface(), |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        cached.current().anchor
+                    });
+                    return anchor.contains(Anchor::TOP)
+                        && anchor.contains(Anchor::BOTTOM)
+                        && anchor.contains(Anchor::LEFT)
+                        && anchor.contains(Anchor::RIGHT);
+                }
+            }
+        }
+        false
     }
 
     /// Detect if a layer surface is anchored to a single lateral edge (Left or Right)
