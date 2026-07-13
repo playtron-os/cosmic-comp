@@ -1,3 +1,12 @@
+## [1.28.8](https://github.com/playtron-os/cosmic-comp/compare/v1.28.7...v1.28.8) (2026-07-13)
+
+
+### Bug Fixes
+
+* do not animate offset/scale for full output layershell surfaces ([d9c7f05](https://github.com/playtron-os/cosmic-comp/commit/d9c7f054cf41a7ec31c8f4224dfcd725fcc5aed7))
+* focus tapped window on touchscreen (HUM-165) ([5f93c54](https://github.com/playtron-os/cosmic-comp/commit/5f93c54076aebba9237c6d52bbe320713b7d8482))
+* hide cursor on touchscreen input (HUM-166) ([07a1bc7](https://github.com/playtron-os/cosmic-comp/commit/07a1bc7e28e68e4a27b795b07312351d2aa91951))
+
 ## [1.28.7](https://github.com/playtron-os/cosmic-comp/compare/v1.28.6...v1.28.7) (2026-07-09)
 
 
