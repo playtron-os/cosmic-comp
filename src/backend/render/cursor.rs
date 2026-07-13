@@ -408,7 +408,10 @@ pub fn notify_cursor_activity(state: &State, seat: &Seat<State>) -> bool {
     was_hidden
 }
 
-fn hide_cursor(state: &mut State, seat: &Seat<State>) {
+/// Hide the cursor and cancel any pending idle-hide timer. No-op while the
+/// pointer is grabbed (e.g. an in-progress drag). The cursor is revealed again
+/// by [`notify_cursor_activity`] on the next real pointer/mouse activity.
+pub fn hide_cursor(state: &mut State, seat: &Seat<State>) {
     if let Some(ptr) = seat.get_pointer()
         && ptr.is_grabbed()
     {

@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    backend::render::{ElementFilter, cursor::notify_cursor_activity},
+    backend::render::{
+        ElementFilter,
+        cursor::{hide_cursor, notify_cursor_activity},
+    },
     config::{
         Action, Config, PrivateAction,
         key_bindings::{
@@ -1716,6 +1719,12 @@ impl State {
                     }
 
                     let serial = SERIAL_COUNTER.next_serial();
+
+                    // Hide the mouse cursor while interacting via touch (as Windows
+                    // does). It stays hidden until the next real pointer/mouse activity,
+                    // which reveals it again via `notify_cursor_activity`.
+                    hide_cursor(self, &seat);
+
                     let touch = seat.get_touch().unwrap();
 
                     // Change keyboard focus to the tapped window, unless touch is
