@@ -1,3 +1,10 @@
+## [1.28.9](https://github.com/playtron-os/cosmic-comp/compare/v1.28.8...v1.28.9) (2026-07-18)
+
+
+### Bug Fixes
+
+* make x11 configs async in set geometry to prevent freeze during x11 window close ([77ec1e7](https://github.com/playtron-os/cosmic-comp/commit/77ec1e79b578ca19cf2a9390947bcda39932c768))
+
 ## [1.28.8](https://github.com/playtron-os/cosmic-comp/compare/v1.28.7...v1.28.8) (2026-07-13)
 
 
