@@ -2124,7 +2124,14 @@ impl State {
         // Ctrl+Alt+Super+Shift+F1x must not also trigger voice. (The activation
         // hold-timer below has the same guard, to cover any key-press order.)
         let perf_chord_mods = modifiers.ctrl && modifiers.alt && modifiers.shift;
-        if voice_config.enabled && !perf_chord_mods && (matches || is_f18 || is_voice_key_release) {
+        // Skip voice/chat handling while a keyboard-shortcuts inhibitor is active,
+        // so the Super press is forwarded to the focused client instead. Mirrors the
+        // `!shortcuts_inhibited` gate on global compositor shortcuts below.
+        if voice_config.enabled
+            && !perf_chord_mods
+            && !shortcuts_inhibited
+            && (matches || is_f18 || is_voice_key_release)
+        {
             // Block voice key handling entirely during session lock (idle/login screen)
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
