@@ -133,6 +133,9 @@ tasks:
       # Only replace the FIRST version match (the package version), not dependency versions
       - sed -i '0,/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"$/s//version = "{{.VERSION}}"/' Cargo.toml
       - "sed -i 's/^Version: .*/Version: {{.VERSION}}/' pkg/rpm/cosmic-comp.spec"
+      # Sync the package's own entry in Cargo.lock (version line follows the name line).
+      # Without this the release commit ships a stale lock, so the next local build rewrites it.
+      - sed -i '/^name = "{{.NAME}}"$/{n;s/^version = .*/version = "{{.VERSION}}"/}' Cargo.lock
 
   release:build:
     desc: "Build the release RPMs for all arches (skipped when SKIP_BUILD=true; used by the release prepare step)"
