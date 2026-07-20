@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/playtron-os/cosmic-comp/compare/v1.28.9...v1.29.0) (2026-07-20)
+
+
+### Features
+
+* implement safe gpu reset detection and handling to avoid restarting compositor ([86bf498](https://github.com/playtron-os/cosmic-comp/commit/86bf4986aa6f76c5a9f2cabdda5bd13ac636352e))
+
 ## [1.28.9](https://github.com/playtron-os/cosmic-comp/compare/v1.28.8...v1.28.9) (2026-07-18)
 
 
