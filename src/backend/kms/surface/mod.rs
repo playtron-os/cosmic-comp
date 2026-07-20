@@ -60,7 +60,8 @@ use smithay::{
                 },
             },
             gles::{
-                GlesRenderbuffer, GlesRenderer, GlesTexture, Uniform, element::TextureShaderElement,
+                GlesError, GlesRenderbuffer, GlesRenderer, GlesTexture, Uniform,
+                element::TextureShaderElement,
             },
             glow::GlowRenderer,
             multigpu::{ApiDevice, Error as MultiError, GpuManager},
@@ -188,6 +189,17 @@ pub struct SurfaceThreadState {
     /// Count of consecutive render failures for backoff calculation.
     render_failure_count: u32,
 
+    /// Rate-limit for GPU-reset recovery requests to the main thread: one reset makes
+    /// every output signal every frame. Not a gate on rendering (that would risk getting
+    /// stuck) — purely to avoid flooding the channel. `None` until the first request.
+    last_gpu_reset_sent: Option<std::time::Instant>,
+
+    /// True once this surface has ever had a renderer node. Distinguishes "renderer lost"
+    /// (recovery needed) from "not set up yet", so a missing renderer at startup doesn't
+    /// spuriously request recovery, but a renderer that vanished after a failed recovery
+    /// does — keeping a still-wedged GPU under retry instead of frozen.
+    has_had_node: bool,
+
     /// Last tearing / VRR state, for change-only `gaming`-target logs.
     last_tearing: bool,
     last_vrr: bool,
@@ -255,6 +267,9 @@ pub enum ThreadCommand {
 pub enum SurfaceCommand {
     SendFrames(usize),
     RenderStates(RenderElementStates),
+    /// The surface hit a GPU context reset; ask the main thread (owner of the device
+    /// EGL + share group) to recreate this GPU's renderers.
+    GpuReset,
 }
 
 #[derive(Debug, Default)]
@@ -359,6 +374,10 @@ impl Surface {
                                 Some(feedback)
                             }
                         });
+                }
+                Event::Msg(SurfaceCommand::GpuReset) => {
+                    warn!(node = ?dev_node, "Surface reported a GPU reset; recreating renderers");
+                    state.backend.kms().recover_from_gpu_reset();
                 }
                 Event::Closed => {}
             })
@@ -597,6 +616,8 @@ fn surface_thread(
 
         frame_profiler: crate::backend::render::gpu_profiler::FrameProfiler::new(&name),
         render_failure_count: 0,
+        last_gpu_reset_sent: None,
+        has_had_node: false,
 
         last_tearing: false,
         last_vrr: false,
@@ -1560,6 +1581,15 @@ impl SurfaceThreadState {
         init_shaders(renderer.borrow_mut()).context("Failed to initialize shaders")?;
 
         self.api.as_mut().add_node(node, gbm, renderer);
+        self.has_had_node = true;
+
+        // If this surface is live (has a compositor), a freshly (re)added renderer means
+        // we should repaint promptly — this is how a surface recovers after a GPU-reset
+        // teardown. During initial setup `compositor` is still None, so this is a no-op.
+        if self.compositor.is_some() {
+            self.render_failure_count = 0;
+            self.queue_redraw(true);
+        }
 
         Ok(())
     }
@@ -1818,6 +1848,19 @@ impl SurfaceThreadState {
             .loop_handle
             .insert_source(timer, move |_time, _, state| {
                 if let Err(err) = state.redraw(estimated_presentation) {
+                    // Recognize a GPU context reset anywhere in the error's source chain —
+                    // render_frame and the offscreen/postprocess passes both preserve the
+                    // typed chain down to GlesError::ContextReset — and ask the main thread
+                    // to recreate the contexts (rate-limited inside). This single choke
+                    // point covers every render path; other errors fall through untouched.
+                    if err.chain().any(|e| {
+                        matches!(e.downcast_ref::<GlesError>(), Some(GlesError::ContextReset))
+                    }) {
+                        Self::request_recovery(
+                            &mut state.last_gpu_reset_sent,
+                            &state.thread_sender,
+                        );
+                    }
                     let name = state.output.name();
                     state.render_failure_count = state.render_failure_count.saturating_add(1);
                     warn!(
@@ -1881,6 +1924,22 @@ impl SurfaceThreadState {
         }
     }
 
+    /// Rate-limited request to the main thread to recreate this GPU's renderers after a
+    /// context reset. Takes the fields explicitly (not `&mut self`) so it can be called
+    /// while `self.compositor` is mutably borrowed in `redraw`.
+    fn request_recovery(
+        last_sent: &mut Option<std::time::Instant>,
+        sender: &Sender<SurfaceCommand>,
+    ) {
+        let now = std::time::Instant::now();
+        if last_sent.is_some_and(|t| now.duration_since(t) < Duration::from_millis(500)) {
+            return;
+        }
+        *last_sent = Some(now);
+        warn!("GPU context reset — requesting renderer recovery");
+        let _ = sender.send(SurfaceCommand::GpuReset);
+    }
+
     #[profiling::function]
     fn redraw(&mut self, estimated_presentation: Duration) -> Result<()> {
         let Some(compositor) = self.compositor.as_mut() else {
@@ -1902,12 +1961,38 @@ impl SurfaceThreadState {
             &self.shell.read(),
         );
 
+        // Acquire the renderer gracefully. During GPU-reset recovery the main thread
+        // briefly removes this node while it recreates the context, so the node can be
+        // absent here. A missing renderer must NOT panic — bail so the normal backoff
+        // retry repaints once it is re-added (this is what makes recovery panic-free for
+        // every surface, not just the one that reported the reset).
+        // If we previously HAD a renderer and it is now gone (e.g. a recovery attempt that
+        // failed to recreate the context while the GPU was still wedged), re-request
+        // recovery so a still-wedged GPU keeps being retried rather than leaving this
+        // output frozen. `has_had_node` gates out the benign startup case (no node yet).
         let mut renderer = if render_node != self.target_node {
-            self.api
+            match self
+                .api
                 .renderer(&render_node, &self.target_node, compositor.format())
-                .unwrap()
+            {
+                Ok(renderer) => renderer,
+                Err(err) => {
+                    if self.has_had_node {
+                        Self::request_recovery(&mut self.last_gpu_reset_sent, &self.thread_sender);
+                    }
+                    anyhow::bail!("renderer for {:?} unavailable: {:?}", render_node, err);
+                }
+            }
         } else {
-            self.api.single_renderer(&self.target_node).unwrap()
+            match self.api.single_renderer(&self.target_node) {
+                Ok(renderer) => renderer,
+                Err(err) => {
+                    if self.has_had_node {
+                        Self::request_recovery(&mut self.last_gpu_reset_sent, &self.thread_sender);
+                    }
+                    anyhow::bail!("renderer for {:?} unavailable: {:?}", self.target_node, err);
+                }
+            }
         };
 
         self.timings.start_render(&self.clock);
@@ -2577,7 +2662,14 @@ impl SurfaceThreadState {
                         let _ = device.renderer_mut().cleanup_texture_cache();
                     }
                 }
-                anyhow::bail!("Rendering failed: {}", err);
+                // Propagate the TYPED error (do NOT stringify) so the render-timer closure
+                // can walk the source chain and recognize a GPU context reset
+                // (GlesError::ContextReset) uniformly — whether it surfaced here or in an
+                // earlier offscreen/postprocess pass (which also preserves the chain via
+                // `.context(...)?`). Centralizing detection there is what stops a reset on a
+                // postprocess-active output (e.g. Night Light) from being missed, and keeps
+                // non-reset errors on their existing log-and-backoff path unchanged.
+                return Err(err).context("Rendering failed");
             }
         }
 

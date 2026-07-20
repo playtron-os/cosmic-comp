@@ -74,6 +74,10 @@ pub struct KmsState {
     libinput: Libinput,
 
     pub syncobj_state: Option<DrmSyncobjState>,
+
+    /// Debounce for GPU-reset recovery: one reset hits the whole GPU, so every output
+    /// signals the same event; ignore repeats within a short window.
+    last_gpu_reset_recovery: Option<std::time::Instant>,
 }
 
 pub struct KmsGuard<'a> {
@@ -131,6 +135,7 @@ pub fn init_backend(
         libinput: libinput_context,
 
         syncobj_state: None,
+        last_gpu_reset_recovery: None,
     });
 
     // manually add already present gpus
@@ -699,6 +704,43 @@ impl KmsState {
         }
 
         Ok(())
+    }
+
+    /// Recreate GPU renderers/contexts after a GPU reset (device wedged / TDR).
+    ///
+    /// A robust EGL context reports a reset (`GlesError::ContextReset`) instead of letting
+    /// Mesa abort the process; the surface thread that hit it asks us (the owner of the
+    /// device EGL + share group) to rebuild. Reuses the session-resume teardown/recreate
+    /// pair. Note: this recreates every device's contexts, not only the one that reset —
+    /// fine for the single-GPU target, and a reset is rare.
+    ///
+    /// Coalesced over a short window so a multi-output reset storm rebuilds once, but it is
+    /// NOT permanently blocked: if the GPU is still resetting and the recreated context
+    /// fails again, the surfaces keep retrying (backoff) and re-request after the window,
+    /// so a still-wedged GPU self-heals rather than getting stuck.
+    pub fn recover_from_gpu_reset(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_gpu_reset_recovery
+            && now.duration_since(last) < std::time::Duration::from_millis(500)
+        {
+            return;
+        }
+        self.last_gpu_reset_recovery = Some(now);
+
+        warn!("Recreating GPU renderers after context reset");
+        if let Err(err) = self.clear_used_devices() {
+            warn!(
+                ?err,
+                "Failed to tear down graphics contexts during GPU-reset recovery"
+            );
+        }
+        if let Err(err) = self.refresh_used_devices() {
+            warn!(
+                ?err,
+                "Failed to recreate graphics contexts during GPU-reset recovery"
+            );
+        }
+        crate::backend::render::blur::invalidate_all_blur_caches();
     }
 
     pub fn lock_devices(&mut self) -> KmsGuard<'_> {
