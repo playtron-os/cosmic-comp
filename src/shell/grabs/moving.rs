@@ -1308,6 +1308,19 @@ impl Drop for MoveGrab {
                         .unwrap_or(window_location);
                     shell.remap_x11_transient_children(remap_pos, &tc);
 
+                    // If the window was unmaximized during the drag, send a fresh
+                    // configure now that it is stably mapped at its drop location.
+                    // The unmaximize configure was emitted earlier while the element
+                    // was being torn down for the grab; a client that draws its own
+                    // decorations may not re-enable its resize handles until it sees
+                    // the settled, non-maximized state. This mirrors the button
+                    // restore path users rely on to recover resizing.
+                    if grab_state.target_size.is_some()
+                        && let Some((window, _)) = drop_result.as_ref()
+                    {
+                        window.force_configure();
+                    }
+
                     drop_result
                 } else {
                     let mut shell = state.common.shell.write();
