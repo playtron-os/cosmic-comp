@@ -1,3 +1,11 @@
+## [1.29.1](https://github.com/playtron-os/cosmic-comp/compare/v1.29.0...v1.29.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **input:** honor keyboard-shortcuts inhibitor for voice/chat Super key ([a700075](https://github.com/playtron-os/cosmic-comp/commit/a70007570fd7c8a1f67b6cbdf8856969aca1995e))
+* restore resizing after dragging a maximized window away to unmaximize (HUM-238) ([fc524ce](https://github.com/playtron-os/cosmic-comp/commit/fc524cee7b523aff9c08b8597f140cf1b8f5bdce))
+
 # [1.29.0](https://github.com/playtron-os/cosmic-comp/compare/v1.28.9...v1.29.0) (2026-07-20)
 
 
