@@ -1,3 +1,10 @@
+## [1.29.2](https://github.com/playtron-os/cosmic-comp/compare/v1.29.1...v1.29.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* clamp window positioning on right/bottom as well ([ad727ea](https://github.com/playtron-os/cosmic-comp/commit/ad727ea2ef6b266c0022b2969ec5868651ea1e7e))
+
 ## [1.29.1](https://github.com/playtron-os/cosmic-comp/compare/v1.29.0...v1.29.1) (2026-07-21)
 
 
