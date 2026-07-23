@@ -7753,52 +7753,51 @@ impl Shell {
                 let elem_geo = element_geo.or_else(|| workspace.element_geometry(&old_mapped))?;
                 let mut initial_window_location = elem_geo.loc.to_global(workspace.output());
 
-                let mut new_size = if let Some(max_state) =
-                    old_mapped.maximized_state.lock().unwrap().take()
-                {
-                    // Unmaximize directly instead of going through the pipelined
-                    // `unmaximize_request`. The element is about to be unmapped for
-                    // the grab, so the deferred animation would never complete;
-                    // worse, that path emits a configure that re-asserts the
-                    // maximized state right before we clear it. A client-decorated
-                    // window that sees maximized re-asserted keeps its resize
-                    // handles hidden, so pulling it away from the top left it
-                    // unresizable. Clear the flags and configure to the restore
-                    // geometry in one clean step, mirroring the sticky branch below.
-                    old_mapped.set_maximized(false);
-                    old_mapped.set_tiled(false);
+                let mut new_size =
+                    if let Some(max_state) = old_mapped.maximized_state.lock().unwrap().take() {
+                        // Unmaximize directly instead of going through the pipelined
+                        // `unmaximize_request`. The element is about to be unmapped for
+                        // the grab, so the deferred animation would never complete;
+                        // worse, that path emits a configure that re-asserts the
+                        // maximized state right before we clear it. A client-decorated
+                        // window that sees maximized re-asserted keeps its resize
+                        // handles hidden, so pulling it away from the top left it
+                        // unresizable. Clear the flags and configure to the restore
+                        // geometry in one clean step, mirroring the sticky branch below.
+                        old_mapped.set_maximized(false);
+                        old_mapped.set_tiled(false);
 
-                    // If the restore geometry is as large as (or larger than) the
-                    // output zone, shrink to 2/3 so the window actually appears
-                    // unmaximized when dropped.
-                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
-                    let mut restore_geo = max_state.original_geometry;
-                    if let Some(s) =
-                        Self::drag_shrink_size(restore_geo.size.w, restore_geo.size.h, zone)
-                    {
-                        restore_geo.size = s.as_local();
-                    }
+                        // If the restore geometry is as large as (or larger than) the
+                        // output zone, shrink to 2/3 so the window actually appears
+                        // unmaximized when dropped.
+                        let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                        let mut restore_geo = max_state.original_geometry;
+                        if let Some(s) =
+                            Self::drag_shrink_size(restore_geo.size.w, restore_geo.size.h, zone)
+                        {
+                            restore_geo.size = s.as_local();
+                        }
 
-                    old_mapped.set_geometry(restore_geo.to_global(workspace.output()));
-                    old_mapped.configure();
-                    Some(restore_geo.size.as_logical())
-                } else {
-                    // Not maximized, but if the window fills the output zone,
-                    // shrink it on drag so the user can reposition it.
-                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
-                    if let Some(new_size) =
-                        Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
-                    {
-                        old_mapped.set_geometry(Rectangle::new(
-                            elem_geo.loc.to_global(workspace.output()),
-                            new_size.as_local().as_global(),
-                        ));
+                        old_mapped.set_geometry(restore_geo.to_global(workspace.output()));
                         old_mapped.configure();
-                        Some(new_size)
+                        Some(restore_geo.size.as_logical())
                     } else {
-                        None
-                    }
-                };
+                        // Not maximized, but if the window fills the output zone,
+                        // shrink it on drag so the user can reposition it.
+                        let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                        if let Some(new_size) =
+                            Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
+                        {
+                            old_mapped.set_geometry(Rectangle::new(
+                                elem_geo.loc.to_global(workspace.output()),
+                                new_size.as_local().as_global(),
+                            ));
+                            old_mapped.configure();
+                            Some(new_size)
+                        } else {
+                            None
+                        }
+                    };
 
                 let layer = if if mapped == old_mapped {
                     let was_floating = workspace.floating_layer.unmap(&mapped, None);

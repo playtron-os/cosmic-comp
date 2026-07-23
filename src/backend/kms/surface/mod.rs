@@ -918,6 +918,18 @@ fn process_blur(
             }
         };
 
+        // Same reasoning as the layer branch below: an empty capture would clear the
+        // background texture to the opaque `CLEAR_COLOR` and cache flat charcoal.
+        if capture_elements.is_empty() {
+            tracing::warn!(
+                output = %output_name,
+                group = group_idx,
+                "Empty window blur capture; keeping cached texture"
+            );
+            any_blur_applied = true;
+            continue;
+        }
+
         // Compute content hash for cache invalidation
         // This includes commit counters (which change on content updates) and geometry
         let stored_hash = get_blur_group_content_hash(&output_name, group.capture_z_threshold);
@@ -1273,6 +1285,22 @@ fn process_blur(
                 }
             };
 
+            // An empty capture is never a legitimate backdrop: `render_output` below
+            // does a full redraw, so it would clear the whole background texture to the
+            // OPAQUE `CLEAR_COLOR` and we'd cache flat charcoal for every surface in the
+            // group — translucent client glass over it reads as a solid grey card. Keep
+            // whatever is already cached and retry next frame instead.
+            if capture_elements.is_empty() {
+                tracing::warn!(
+                    output = %output_name,
+                    layer = ?layer_type,
+                    surfaces = surfaces.len(),
+                    "Empty layer blur capture; keeping cached texture"
+                );
+                any_blur_applied = true;
+                continue;
+            }
+
             // Compute content hash for cache invalidation
             let layer_z = group_key as usize;
             let content_hash =
@@ -1326,8 +1354,12 @@ fn process_blur(
                 "Re-blurring layer group"
             );
 
-            // Store the new content hash and update timestamp for throttling
-            store_layer_blur_content_hash(&hash_key, content_hash);
+            // Update the throttle timestamp now (so a persistently failing group retries
+            // once per throttle interval rather than every frame), but DON'T record the
+            // content hash yet — see the success gate below. Recording it here against a
+            // pass that then fails leaves the NEW hash paired with the OLD texture, so the
+            // `!content_changed && !geometry_changed && all_cached` skip above freezes the
+            // group: the desktop behind it is static, so `content_changed` never flips back.
             store_layer_blur_last_update(&hash_key);
 
             // Render captured elements to background texture
@@ -1363,6 +1395,14 @@ fn process_blur(
             };
             let bg_render_elapsed = bg_render_start.elapsed();
 
+            if !bg_render_ok {
+                tracing::warn!(
+                    output = %output_name,
+                    layer = ?layer_type,
+                    "Failed to render background for layer blur"
+                );
+            }
+
             // Downsample background to smaller texture for blur passes (if enabled)
             let downsample_start = std::time::Instant::now();
             let downsample_enabled = blur_downsample_enabled();
@@ -1380,6 +1420,14 @@ fn process_blur(
                 !downsample_enabled && bg_render_ok
             };
             let downsample_elapsed = downsample_start.elapsed();
+
+            if bg_render_ok && !downsample_ok {
+                tracing::warn!(
+                    output = %output_name,
+                    layer = ?layer_type,
+                    "Failed to downsample for layer blur"
+                );
+            }
 
             // Apply blur passes using LAYER-SPECIFIC textures to avoid cache pollution
             // with window blur (which uses texture_a/texture_b)
@@ -1429,6 +1477,11 @@ fn process_blur(
                             }
                         };
 
+                        // The pass succeeded, so this content hash now genuinely describes
+                        // the texture we're about to cache. Recording it any earlier is
+                        // what lets a failed pass latch a stale (possibly grey) backdrop.
+                        store_layer_blur_content_hash(&hash_key, content_hash);
+
                         // Cache the SAME blurred texture for ALL surfaces in this layer
                         for (surface_id, geo) in &surfaces {
                             cache_blur_texture_for_layer(
@@ -1464,6 +1517,12 @@ fn process_blur(
                         }
 
                         any_blur_applied = true;
+                    } else {
+                        tracing::warn!(
+                            output = %output_name,
+                            layer = ?layer_type,
+                            "Layer blur passes failed"
+                        );
                     }
                 }
             }

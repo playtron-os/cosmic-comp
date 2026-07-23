@@ -3092,6 +3092,19 @@ where
                 )?;
                 let capture_elapsed = capture_start.elapsed();
 
+                // An empty capture is never a legitimate backdrop: the full redraw below
+                // would clear the background texture to the OPAQUE `CLEAR_COLOR` and cache
+                // flat charcoal for the whole group. Keep the cache and retry next frame.
+                if layer_capture_elements.is_empty() {
+                    tracing::warn!(
+                        output = %output_name,
+                        layer = ?layer_type,
+                        "Empty layer blur capture; keeping cached texture"
+                    );
+                    any_blur_applied = true;
+                    continue;
+                }
+
                 // Compute content hash for cache invalidation
                 let content_hash = compute_element_content_hash(0, &layer_capture_elements, scale);
 
@@ -3137,8 +3150,11 @@ where
                     "Re-blurring layer group"
                 );
 
-                // Store the new content hash and update timestamp for throttling
-                store_layer_blur_content_hash(&hash_key, content_hash);
+                // Update the throttle timestamp now (so a persistently failing group retries
+                // once per throttle interval rather than every frame), but record the content
+                // hash only once the pass has succeeded — otherwise the NEW hash is paired
+                // with the OLD texture and the `!content_changed` skip above freezes the group
+                // against a static desktop. (Mirrors the KMS path.)
                 store_layer_blur_last_update(&hash_key);
 
                 // Render captured elements to background texture
@@ -3251,6 +3267,10 @@ where
                                 pong.clone()
                             }
                         };
+
+                        // The pass succeeded, so this hash now genuinely describes the
+                        // texture being cached. See the note at the timestamp store above.
+                        store_layer_blur_content_hash(&hash_key, content_hash);
 
                         // Cache the SAME blurred texture for all surfaces in this group
                         for (surface_id, geo) in surfaces {
