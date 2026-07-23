@@ -1,3 +1,11 @@
+## [1.30.1](https://github.com/playtron-os/cosmic-comp/compare/v1.30.0...v1.30.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* keep new floating windows centered when a closing window is still mapped ([c55e683](https://github.com/playtron-os/cosmic-comp/commit/c55e683cc679d60ec7da22e1a53076cfa9fc1c39))
+* never show an empty scene as the backdrop blur capture ([68749b4](https://github.com/playtron-os/cosmic-comp/commit/68749b434bb9931f96c8826c668ff1144df555c4))
+
 # [1.30.0](https://github.com/playtron-os/cosmic-comp/compare/v1.29.2...v1.30.0) (2026-07-23)
 
 
