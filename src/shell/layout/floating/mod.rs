@@ -1230,6 +1230,23 @@ impl FloatingLayout {
 
         mapped.set_tiled(false);
         let zone = output_geometry.as_local();
+
+        // Keep newly-placed windows fully on-screen. The branches above clamp only the
+        // top-left edge (`.max`), and the `last_geometry` restore is unclamped — so a
+        // position/size carried over from a wider or differently-scaled output can push
+        // the window past the right/bottom edge. Clamp against the non-exclusive zone.
+        let clamped_position: Point<i32, Local> = Point::from((
+            position.x.clamp(
+                zone.loc.x,
+                zone.loc.x + (zone.size.w - win_geo.size.w).max(0),
+            ),
+            position.y.clamp(
+                zone.loc.y,
+                zone.loc.y + (zone.size.h - win_geo.size.h).max(0),
+            ),
+        ));
+        let position = clamped_position;
+
         mapped.set_fills_output_zone(
             position.x == zone.loc.x
                 && position.y == zone.loc.y
