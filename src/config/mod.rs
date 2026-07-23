@@ -1061,6 +1061,12 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     state.common.config.cosmic_conf.activation_policy = new;
                 }
             }
+            "clipboard_persistence" => {
+                let new = get_config::<bool>(&config, "clipboard_persistence");
+                if new != state.common.config.cosmic_conf.clipboard_persistence {
+                    state.common.config.cosmic_conf.clipboard_persistence = new;
+                }
+            }
             _ => {}
         }
     }

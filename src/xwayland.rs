@@ -13,7 +13,7 @@ use crate::{
     },
     state::State,
     utils::prelude::*,
-    wayland::handlers::xdg_activation::ActivationContext,
+    wayland::handlers::{selection::SelectionUserData, xdg_activation::ActivationContext},
 };
 use cosmic_comp_config::{EavesdroppingKeyboardMode, XwaylandDescaling};
 use smithay::{
@@ -1389,7 +1389,15 @@ impl XwmHandler for State {
         let seat = self.common.shell.read().seats.last_active().clone();
         match selection {
             SelectionTarget::Clipboard => {
-                if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd) {
+                // A persisted (compositor-owned) clipboard can't be read back
+                // via `request_data_device_client_selection` — serve it from our
+                // own cache instead.
+                if current_data_device_selection_userdata(&seat).as_deref()
+                    == Some(&SelectionUserData::Persisted)
+                {
+                    crate::clipboard::serve(self, &mime_type, fd);
+                } else if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd)
+                {
                     error!(
                         ?err,
                         "Failed to request current wayland clipboard for Xwayland.",
@@ -1416,12 +1424,18 @@ impl XwmHandler for State {
 
         let seat = self.common.shell.read().seats.last_active().clone();
         match selection {
-            SelectionTarget::Clipboard => {
-                set_data_device_selection(&self.common.display_handle, &seat, mime_types, xwm)
-            }
-            SelectionTarget::Primary => {
-                set_primary_selection(&self.common.display_handle, &seat, mime_types, xwm)
-            }
+            SelectionTarget::Clipboard => set_data_device_selection(
+                &self.common.display_handle,
+                &seat,
+                mime_types,
+                SelectionUserData::Xwayland(xwm),
+            ),
+            SelectionTarget::Primary => set_primary_selection(
+                &self.common.display_handle,
+                &seat,
+                mime_types,
+                SelectionUserData::Xwayland(xwm),
+            ),
         }
     }
 
@@ -1430,12 +1444,16 @@ impl XwmHandler for State {
         for seat in shell.seats.iter() {
             match selection {
                 SelectionTarget::Clipboard => {
-                    if current_data_device_selection_userdata(seat).as_deref() == Some(&xwm) {
+                    if current_data_device_selection_userdata(seat).as_deref()
+                        == Some(&SelectionUserData::Xwayland(xwm))
+                    {
                         clear_data_device_selection(&self.common.display_handle, seat)
                     }
                 }
                 SelectionTarget::Primary => {
-                    if current_primary_selection_userdata(seat).as_deref() == Some(&xwm) {
+                    if current_primary_selection_userdata(seat).as_deref()
+                        == Some(&SelectionUserData::Xwayland(xwm))
+                    {
                         clear_primary_selection(&self.common.display_handle, seat)
                     }
                 }
