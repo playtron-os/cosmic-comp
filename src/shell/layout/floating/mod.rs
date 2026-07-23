@@ -1032,6 +1032,9 @@ impl FloatingLayout {
         prev: Option<Rectangle<i32, Local>>,
     ) {
         let already_mapped = self.space.element_geometry(&mapped).map(RectExt::as_local);
+        // (Re)mapping means this window is an active layout participant again, so it
+        // is no longer "closing" — clear any stale flag left by an ignored close.
+        mapped.closing.store(false, Ordering::SeqCst);
         let mut win_geo = mapped.geometry().as_local();
 
         let output = self.space.outputs().next().unwrap().clone();
@@ -1109,10 +1112,21 @@ impl FloatingLayout {
 
                 let three_fours_width = (output_geometry.size.w / 4 * 3).max(360);
 
-                // figure out new position
+                // figure out new position — anchor the cascade on the most recent
+                // window that is genuinely still part of the layout. Skipping
+                // closing windows is essential: closing a window is asynchronous, so
+                // a window relaunched before the previous one finishes tearing down
+                // would otherwise anchor on the dying window and get stacked 48px
+                // below it instead of centered (windows drifting toward the bottom).
                 let pos = self
                     .spawn_order
-                    .last()
+                    .iter()
+                    .rev()
+                    .find(|window| {
+                        window.alive()
+                            && !window.closing.load(Ordering::SeqCst)
+                            && !window.moved_since_mapped.load(Ordering::SeqCst)
+                    })
                     .and_then(|window| self.space.element_geometry(window))
                     .filter(|geo| {
                         geo.size.w < three_fours_width

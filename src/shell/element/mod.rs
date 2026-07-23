@@ -46,7 +46,10 @@ use std::{
     borrow::Cow,
     fmt,
     hash::Hash,
-    sync::{Arc, Mutex, Weak, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 pub mod surface;
@@ -108,6 +111,13 @@ pub struct CosmicMapped {
     pub(super) resize_state: Arc<Mutex<Option<ResizeState>>>,
     pub last_geometry: Arc<Mutex<Option<Rectangle<i32, Local>>>>,
     pub moved_since_mapped: Arc<AtomicBool>,
+    /// Set once the client has been sent an xdg `close` request but before its
+    /// surface is actually destroyed. Closing a window is asynchronous: during
+    /// that gap the window is still `alive()` and mapped, so without this flag it
+    /// remains a valid floating spawn-order cascade anchor — a window relaunched
+    /// before the old one finishes closing would then be stacked 48px below the
+    /// dying window instead of centered. Reset on (re)map (see `map_internal`).
+    pub closing: Arc<AtomicBool>,
     pub floating_tiled: Arc<Mutex<Option<TiledCorners>>>,
     //sticky
     pub previous_layer: Arc<Mutex<Option<ManagedLayer>>>,
@@ -125,6 +135,7 @@ impl fmt::Debug for CosmicMapped {
             .field("resize_state", &self.resize_state)
             .field("last_geometry", &self.last_geometry)
             .field("moved_since_mapped", &self.moved_since_mapped)
+            .field("closing", &self.closing)
             .field("floating_tiled", &self.floating_tiled)
             .finish()
     }
@@ -527,6 +538,10 @@ impl CosmicMapped {
             _ => unreachable!(),
         };
 
+        // Mark the window as closing so it is excluded from the floating cascade
+        // anchor while the client asynchronously tears down its surface. Cleared
+        // again on the next (re)map in case the client ignores the close request.
+        self.closing.store(true, Ordering::SeqCst);
         window.close();
     }
 
@@ -1151,6 +1166,7 @@ impl From<CosmicWindow> for CosmicMapped {
             resize_state: Arc::new(Mutex::new(None)),
             last_geometry: Arc::new(Mutex::new(None)),
             moved_since_mapped: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
             floating_tiled: Arc::new(Mutex::new(None)),
             previous_layer: Arc::new(Mutex::new(None)),
             #[cfg(feature = "debug")]
@@ -1168,6 +1184,7 @@ impl From<CosmicStack> for CosmicMapped {
             resize_state: Arc::new(Mutex::new(None)),
             last_geometry: Arc::new(Mutex::new(None)),
             moved_since_mapped: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
             floating_tiled: Arc::new(Mutex::new(None)),
             previous_layer: Arc::new(Mutex::new(None)),
             #[cfg(feature = "debug")]
