@@ -1,3 +1,10 @@
+# [1.30.0](https://github.com/playtron-os/cosmic-comp/compare/v1.29.2...v1.30.0) (2026-07-23)
+
+
+### Features
+
+* persist clipboard contents after the source client exits ([1d87eb2](https://github.com/playtron-os/cosmic-comp/commit/1d87eb255cfab0658ce6c610d675f12819d4ec02))
+
 ## [1.29.2](https://github.com/playtron-os/cosmic-comp/compare/v1.29.1...v1.29.2) (2026-07-23)
 
 
