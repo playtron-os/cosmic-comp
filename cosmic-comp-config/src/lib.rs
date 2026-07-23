@@ -110,6 +110,15 @@ pub struct CosmicCompConfig {
     /// Hide the cursor after this many seconds of pointer inactivity (None disables)
     pub cursor_hide_timeout: Option<u32>,
     pub activation_policy: ActivationPolicy,
+    /// Keep clipboard contents available after the source client exits.
+    ///
+    /// When enabled (the default), the compositor snapshots each new clipboard
+    /// selection into its own memory and re-offers it, so a copy survives the
+    /// app that made it closing or crashing (e.g. the screenshot portal).
+    /// Applies to the regular clipboard only, not the primary (middle-click)
+    /// selection. Set to `false` to opt out (the compositor then holds no
+    /// clipboard contents in memory).
+    pub clipboard_persistence: bool,
 }
 
 impl Default for CosmicCompConfig {
@@ -152,6 +161,7 @@ impl Default for CosmicCompConfig {
             blur_intensity: 0.55,
             cursor_hide_timeout: None,
             activation_policy: ActivationPolicy::default(),
+            clipboard_persistence: true,
         }
     }
 }

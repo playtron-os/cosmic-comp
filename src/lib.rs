@@ -47,6 +47,7 @@ use clap_lex::RawArgs;
 use std::error::Error;
 
 pub mod backend;
+pub mod clipboard;
 pub mod comp_theme;
 pub mod config;
 pub mod dbus;
