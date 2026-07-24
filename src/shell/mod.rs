@@ -658,6 +658,10 @@ pub struct GameMode {
     pub app_id: Option<u32>,
     /// The game surface we fullscreened, so we can un-fullscreen it on exit.
     pub game_surface: Option<CosmicSurface>,
+    /// The output the game is fullscreened on — display caps (refresh rate, VRR
+    /// / tearing support, external) are reported for THIS output, not just the
+    /// first one, so they're correct on multi-monitor setups.
+    pub output: Option<Output>,
     /// Windows we minimized on entry, restored verbatim on exit.
     pub minimized: Vec<CosmicSurface>,
     /// Set when entry was requested but no window carrying that app id was mapped
@@ -729,6 +733,10 @@ pub struct Shell {
     /// game-mode D-Bus bridge so `AppFrametimeNs` (Auto-TDP) reads live values.
     /// Wired in `State::new` after the bridge is created; 0 when no game runs.
     pub game_mode_frametime_ns: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the game's output supports async-flip tearing — a device cap only
+    /// the KMS surface thread can probe (`c.supports_tearing()`); it writes this
+    /// each frame for the game's output, read back for `TearingSupported`.
+    pub game_mode_tearing_supported: std::sync::Arc<std::sync::atomic::AtomicBool>,
     appearance_conf: AppearanceConfig,
     tiling_exceptions: TilingExceptions,
     /// Home mode state for animation (fading in/out of home screen)
@@ -2314,6 +2322,9 @@ impl Shell {
             game_mode_fps_limit: 0,
             game_mode_vrr: crate::dbus::game_mode::VrrMode::Auto,
             game_mode_frametime_ns: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            game_mode_tearing_supported: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             tiling_exceptions,
             // Start in home mode only if HOME_ENABLED is set
             home_mode: if home_enabled() {

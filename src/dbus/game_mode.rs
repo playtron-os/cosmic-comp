@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use calloop::{LoopHandle, channel::Sender};
 use futures_executor::ThreadPool;
+use smithay::backend::drm::VrrSupport;
 use smithay::output::Output;
 use smithay::xwayland::X11Surface;
 use tracing::{debug, info, warn};
@@ -27,7 +28,7 @@ use zbus::{interface, object_server::SignalEmitter};
 use crate::logger::GAMING_TARGET;
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::shell::{CosmicSurface, GameMode, Shell};
-use crate::state::{Common, State};
+use crate::state::State;
 use crate::utils::prelude::OutputExt;
 
 /// Well-known bus name cosmic-comp owns for gaming control.
@@ -202,7 +203,8 @@ pub enum GameModeCommand {
 }
 
 /// Compositor-side handle: mutate the snapshot and emit signals. Stored on
-/// [`Common`]; the connection is wired in asynchronously once `serve` connects.
+/// [`Common`](crate::state::Common); the connection is wired in asynchronously
+/// once `serve` connects.
 #[derive(Clone)]
 pub struct GameModeBridge {
     io: Arc<GameModeIo>,
@@ -668,16 +670,44 @@ impl State {
 
         // Focused app id: the `STEAM_GAME` app id of the focused window (0 if it
         // is untagged — e.g. a native Wayland toplevel; see `LAUNCHER_APP_ID`).
-        let focused_app_id = shell
+        let mut focused_app_id = shell
             .seats
             .last_active()
             .get_keyboard()
             .and_then(|kbd| kbd.current_focus())
-            .and_then(|target| shell.focused_element(&target))
-            .map(|mapped| app_id_of(&mapped.active_window()))
+            .map(|target| match target {
+                // A fullscreen game's focus target is `Fullscreen`, which
+                // `focused_element` can't resolve — read the app id directly.
+                KeyboardFocusTarget::Fullscreen(surface) => app_id_of(&surface),
+                KeyboardFocusTarget::Element(mapped) => app_id_of(&mapped.active_window()),
+                _ => 0,
+            })
             .unwrap_or(0);
+        // In game mode the game (or an active overlay grab) is what's focused —
+        // fall back to it when the live keyboard focus doesn't resolve (e.g. the
+        // compositor's VT isn't foreground), so `FocusedAppId` tracks the game
+        // rather than reading 0.
+        if active && focused_app_id == 0 {
+            focused_app_id = shell
+                .game_mode
+                .input_grab
+                .as_ref()
+                .map(app_id_of)
+                .unwrap_or(active_app_id);
+        }
 
-        let output = shell.outputs().next().cloned();
+        // Report caps for the output the GAME is on (not just the first output),
+        // so refresh rate / VRR / external are correct on multi-monitor setups.
+        let output = shell
+            .game_mode
+            .output
+            .clone()
+            .or_else(|| shell.outputs().next().cloned());
+        // Tearing support is a device cap the game's KMS surface thread probes and
+        // publishes (see `surface_thread`); read what it last wrote.
+        let tearing_supported = shell
+            .game_mode_tearing_supported
+            .load(std::sync::atomic::Ordering::Relaxed);
         drop(shell);
 
         let display_refresh_rate = output
@@ -691,6 +721,13 @@ impl State {
             Vec::new()
         };
         let display_external = output.as_ref().map(|o| !o.is_internal()).unwrap_or(false);
+        // VRR support: probed from the game's output connector (adaptive sync).
+        let vrr_supported = matches!(
+            output.as_ref().and_then(|o| o.adaptive_sync_support()),
+            Some(VrrSupport::Supported | VrrSupport::RequiresModeset)
+        );
+        // HDR has no output pipeline yet, so it is never supported.
+        let hdr_supported = false;
 
         let (state_changed, focus_changed, caps_changed) = {
             let mut s = bridge.shared().lock().unwrap();
@@ -698,7 +735,10 @@ impl State {
             let focus_changed = s.focused_app_id != focused_app_id;
             let caps_changed = s.refresh_rates != refresh_rates
                 || s.display_refresh_rate != display_refresh_rate
-                || s.display_external != display_external;
+                || s.display_external != display_external
+                || s.vrr_supported != vrr_supported
+                || s.hdr_supported != hdr_supported
+                || s.tearing_supported != tearing_supported;
 
             s.active = active;
             s.active_app_id = active_app_id;
@@ -706,6 +746,9 @@ impl State {
             s.refresh_rates = refresh_rates;
             s.display_refresh_rate = display_refresh_rate;
             s.display_external = display_external;
+            s.vrr_supported = vrr_supported;
+            s.hdr_supported = hdr_supported;
+            s.tearing_supported = tearing_supported;
 
             (state_changed, focus_changed, caps_changed)
         };
@@ -809,6 +852,7 @@ impl State {
             active: true,
             app_id: Some(app_id),
             game_surface: Some(game),
+            output: Some(output),
             minimized: others,
             pending_app_id: None,
             overlay_asserted: prev_overlay_asserted,
@@ -1064,22 +1108,6 @@ fn focus_target_for(shell: &Shell, window: &CosmicSurface) -> Option<KeyboardFoc
         .flat_map(|ws| ws.mapped())
         .find(|m| m.windows().any(|(s, _)| s == *window))
         .map(|m| KeyboardFocusTarget::from(m.clone()))
-}
-
-/// Update display-capability fields that depend on a specific output (called
-/// from the KMS surface thread as outputs/caps change).
-pub fn update_display_caps(common: &Common, vrr_supported: bool, tearing_supported: bool) {
-    let bridge = &common.game_mode_bridge;
-    let changed = {
-        let mut s = bridge.shared().lock().unwrap();
-        let changed = s.vrr_supported != vrr_supported || s.tearing_supported != tearing_supported;
-        s.vrr_supported = vrr_supported;
-        s.tearing_supported = tearing_supported;
-        changed
-    };
-    if changed {
-        bridge.notify_capabilities_changed();
-    }
 }
 
 #[cfg(test)]

@@ -2605,6 +2605,15 @@ impl SurfaceThreadState {
                     PrimaryPlaneElement::Swapchain(_)
                 );
                 let supports_tearing = compositor.with_compositor(|c| c.supports_tearing());
+                // Publish the game's-output tearing capability for the game-mode
+                // `TearingSupported` D-Bus property (only the surface thread can
+                // probe it).
+                if has_active_fullscreen {
+                    self.shell
+                        .read()
+                        .game_mode_tearing_supported
+                        .store(supports_tearing, Ordering::Relaxed);
+                }
                 let tearing = game_mode_tearing && !vrr && scanout && supports_tearing;
                 compositor.with_compositor(|c| c.set_tearing(tearing));
 
