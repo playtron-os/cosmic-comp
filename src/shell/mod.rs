@@ -4002,6 +4002,20 @@ impl Shell {
         self.layer_opens.iter().any(|o| o.surface_id == *surface_id)
     }
 
+    /// True while any layer surface is playing its open (scale + fade-in) or
+    /// fade-out animation. The blur content hash only tracks commit counters and
+    /// geometry — NOT the compositor-side alpha/scale these animations apply — so a
+    /// blur group whose captured backdrop includes an animating surface must force a
+    /// re-capture each frame while one runs. Otherwise the blurred backdrop freezes
+    /// at the animation's first frame: e.g. a wallpaper captured at fade-in start
+    /// (alpha≈0, scaled down) never updates to its settled state, and the glass on
+    /// top stays dark until unrelated damage forces a re-blur.
+    pub fn has_layer_open_or_fade_animations(&self) -> bool {
+        self.layer_opens.iter().any(|o| o.is_animating())
+            || !self.layer_fade_in.is_empty()
+            || !self.layer_fade_out.is_empty()
+    }
+
     /// The translate offset `(x, y)` (logical px) for an opening surface, or
     /// `(0, 0)` if it isn't opening. Folds into the layer-surface render offset.
     /// Full-output surfaces pure-fade (no rise) — see [`is_full_output_layer`].

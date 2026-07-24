@@ -2,11 +2,11 @@
 
 use crate::{
     backend::render::{
-        BlurCaptureContext, BlurRenderState, BlurredTextureInfo, CLEAR_COLOR, CursorMode,
-        ElementFilter, GlMultiError, GlMultiRenderer, PostprocessOutputConfig, PostprocessShader,
-        PostprocessState, apply_dual_kawase_blur, blur_downsample_enabled,
-        cache_blur_texture_for_layer, cache_blur_texture_for_window, compute_element_content_hash,
-        copy_blur_texture_for_cache, downsample_texture,
+        BLUR_CAPTURE_CLEAR_COLOR, BlurCaptureContext, BlurRenderState, BlurredTextureInfo,
+        CLEAR_COLOR, CursorMode, ElementFilter, GlMultiError, GlMultiRenderer,
+        PostprocessOutputConfig, PostprocessShader, PostprocessState, apply_dual_kawase_blur,
+        blur_downsample_enabled, cache_blur_texture_for_layer, cache_blur_texture_for_window,
+        compute_element_content_hash, copy_blur_texture_for_cache, downsample_texture,
         element::{CosmicElement, DamageElement},
         get_blur_group_content_hash, get_cached_blur_texture_for_layer,
         get_cached_blur_texture_for_window, get_layer_blur_content_hash, get_layer_blur_surfaces,
@@ -1007,7 +1007,9 @@ fn process_blur(
                             &mut bound_target,
                             0, // Full redraw
                             &capture_elements,
-                            CLEAR_COLOR,
+                            // Transparent, not CLEAR_COLOR: an empty/partial window
+                            // blur capture must blend away, not cache opaque charcoal.
+                            BLUR_CAPTURE_CLEAR_COLOR,
                         );
                         match res {
                             Ok(_) => Ok(Vec::new()),
@@ -1156,6 +1158,14 @@ fn process_blur(
         let layer_blur_start = std::time::Instant::now();
         let layer_blur_surfaces = get_layer_blur_surfaces(&output_name);
 
+        // While a layer surface below the panel/cards is playing its open (scale +
+        // fade-in) or fade-out animation, the captured backdrop changes every frame
+        // but the content hash can't see it (it hashes commit counters + geometry,
+        // not the compositor-applied alpha/scale). Force a re-capture each frame in
+        // that window — like `geometry_changed` below — so the blur tracks the
+        // animation and lands on the settled frame instead of freezing at frame 1.
+        let content_animating = shell.read().has_layer_open_or_fade_animations();
+
         // Group surfaces by (layer type, blur radius) for proper capture.
         // Surfaces with different radii need separate blur passes.
         let layer_to_key = |l: Layer| -> u8 {
@@ -1252,7 +1262,11 @@ fn process_blur(
             // Keyed per (output, layer, radius bucket) so distinct buckets in the same
             // layer don't share throttle/content-hash state.
             let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
-            if all_cached && !geometry_changed && should_throttle_layer_blur(&hash_key) {
+            if all_cached
+                && !geometry_changed
+                && !content_animating
+                && should_throttle_layer_blur(&hash_key)
+            {
                 tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
@@ -1293,12 +1307,19 @@ fn process_blur(
                 }
             };
 
-            // An empty capture is never a legitimate backdrop: `render_output` below
-            // does a full redraw, so it would clear the whole background texture to the
-            // OPAQUE `CLEAR_COLOR` and we'd cache flat charcoal for every surface in the
-            // group — translucent client glass over it reads as a solid grey card. Keep
-            // whatever is already cached and retry next frame instead.
-            if capture_elements.is_empty() {
+            // Empty capture handling. We only fast-path (keep the existing texture)
+            // when EVERY surface in the group already has one — that's the transient
+            // case (e.g. the wallpaper's Background cache momentarily emptied) where
+            // overwriting the good blurred texture with an empty scene would flash a
+            // grey/black card. When some surface is UNCACHED (a fresh/secondary output
+            // at startup, before anything mapped below it), do NOT skip: fall through
+            // and render the empty capture. The blur SOURCE clears to TRANSPARENT (see
+            // below), so we cache a benign invisible backdrop rather than nothing —
+            // and the moment a wallpaper/window maps below, its commit re-blurs into a
+            // real backdrop. (Skipping here instead left the panel with no cached
+            // texture at all → no backdrop element → glass over the opaque frame-clear
+            // = the black panel reported on a fresh HP output after restart.)
+            if capture_elements.is_empty() && all_cached {
                 tracing::warn!(
                     output = %output_name,
                     layer = ?layer_type,
@@ -1323,8 +1344,10 @@ fn process_blur(
             let stored_hash = get_layer_blur_content_hash(&hash_key);
             let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
-            // If content unchanged and all cached, skip
-            if !content_changed && !geometry_changed && all_cached {
+            // If content unchanged and all cached, skip (unless a below-surface is
+            // mid open/fade animation — then the backdrop is changing invisibly to
+            // the hash and we must re-capture).
+            if !content_changed && !geometry_changed && !content_animating && all_cached {
                 tracing::trace!(
                     layer = ?layer_type,
                     surfaces = surfaces.len(),
@@ -1342,6 +1365,7 @@ fn process_blur(
             let is_dragging = grabbed_window_key.is_some();
             let throttled = content_changed
                 && !geometry_changed
+                && !content_animating
                 && all_cached
                 && !is_dragging
                 && should_throttle_layer_blur(&hash_key);
@@ -1392,7 +1416,11 @@ fn process_blur(
                                 &mut bound_target,
                                 0, // Full redraw
                                 &capture_elements,
-                                CLEAR_COLOR,
+                                // Transparent, not CLEAR_COLOR: an empty/partial layer
+                                // blur capture must blend away (final_alpha=0) so the
+                                // client glass shows the real content behind it, rather
+                                // than caching opaque charcoal that reads as grey/black.
+                                BLUR_CAPTURE_CLEAR_COLOR,
                             );
                             match res {
                                 Ok(_) => Ok(Vec::new()),

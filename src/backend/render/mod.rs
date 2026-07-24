@@ -134,6 +134,13 @@ impl AsMut<GlowRenderer> for RendererRef<'_> {
 }
 
 pub static CLEAR_COLOR: Color32F = Color32F::new(0.153, 0.161, 0.165, 1.0);
+/// Clear color for blur *source* captures (the offscreen we render the below-layer
+/// scene into before blurring). Must be fully TRANSPARENT, not `CLEAR_COLOR`: an
+/// empty or partial-coverage capture then contributes nothing (the shader's
+/// `final_alpha = blurred.a * …` makes zero-alpha regions invisible) so the client
+/// glass shows the real content behind it, instead of caching opaque charcoal that
+/// reads as a flat grey/black card. Whole-output frame clears stay `CLEAR_COLOR`.
+pub static BLUR_CAPTURE_CLEAR_COLOR: Color32F = Color32F::new(0.0, 0.0, 0.0, 0.0);
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
@@ -2857,7 +2864,9 @@ where
                             &mut bound_target,
                             0, // Full redraw
                             &capture_elements,
-                            CLEAR_COLOR,
+                            // Transparent, not CLEAR_COLOR: an empty/partial window
+                            // blur capture must blend away, not cache opaque charcoal.
+                            BLUR_CAPTURE_CLEAR_COLOR,
                         );
                         match res {
                             Ok(_) => Ok(Vec::new()),
@@ -3052,6 +3061,12 @@ where
 
             let layer_blur_start = std::time::Instant::now();
 
+            // Force re-capture while a below-layer surface plays its open/fade
+            // animation — the content hash can't see the compositor-applied
+            // alpha/scale, so the backdrop would otherwise freeze at frame 1.
+            // (Mirrors the KMS path.)
+            let content_animating = shell.read().has_layer_open_or_fade_animations();
+
             // Process each group (by layer + radius bucket) that has blur surfaces
             for ((group_key, bucket), surfaces) in &surfaces_by_group {
                 let layer_type = key_to_layer(*group_key);
@@ -3083,7 +3098,11 @@ where
                 // Throttle/content-hash state is keyed per (output, layer, radius bucket)
                 // so distinct buckets in the same layer don't clobber each other.
                 let hash_key = format!("{}_{:?}_{}", output_name, layer_type, bucket);
-                if all_cached && !geometry_changed && should_throttle_layer_blur(&hash_key) {
+                if all_cached
+                    && !geometry_changed
+                    && !content_animating
+                    && should_throttle_layer_blur(&hash_key)
+                {
                     any_blur_applied = true;
                     continue;
                 }
@@ -3107,10 +3126,14 @@ where
                 )?;
                 let capture_elapsed = capture_start.elapsed();
 
-                // An empty capture is never a legitimate backdrop: the full redraw below
-                // would clear the background texture to the OPAQUE `CLEAR_COLOR` and cache
-                // flat charcoal for the whole group. Keep the cache and retry next frame.
-                if layer_capture_elements.is_empty() {
+                // Only fast-path (keep the existing texture) when EVERY surface already
+                // has one — the transient case where overwriting a good blurred texture
+                // with an empty scene would flash a grey/black card. When uncached (a
+                // fresh output before anything mapped below), fall through and render:
+                // the blur source clears to TRANSPARENT (below) so we cache a benign
+                // invisible backdrop, and a later map re-blurs into a real one. (Mirrors
+                // the KMS path; see the fresh-output black-panel regression.)
+                if layer_capture_elements.is_empty() && all_cached {
                     tracing::warn!(
                         output = %output_name,
                         layer = ?layer_type,
@@ -3130,7 +3153,7 @@ where
                 let stored_hash = get_layer_blur_content_hash(&hash_key);
                 let content_changed = stored_hash.is_none() || stored_hash != Some(content_hash);
 
-                if !content_changed && !geometry_changed && all_cached {
+                if !content_changed && !geometry_changed && !content_animating && all_cached {
                     let layer_group_elapsed = layer_group_start.elapsed();
                     tracing::trace!(
                         layer = ?layer_type,
@@ -3149,6 +3172,7 @@ where
                 let is_dragging = grabbed_window_key.is_some();
                 let throttled = content_changed
                     && !geometry_changed
+                    && !content_animating
                     && all_cached
                     && !is_dragging
                     && should_throttle_layer_blur(&hash_key);
@@ -3193,7 +3217,9 @@ where
                                 &mut bound_target,
                                 0, // Full redraw for blur capture
                                 &layer_capture_elements,
-                                CLEAR_COLOR,
+                                // Transparent, not CLEAR_COLOR: an empty/partial capture
+                                // must blend away rather than cache opaque charcoal.
+                                BLUR_CAPTURE_CLEAR_COLOR,
                             );
                             match res {
                                 Ok(_) => Ok(Vec::new()),
