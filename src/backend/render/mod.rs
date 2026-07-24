@@ -2789,6 +2789,18 @@ where
             )?;
             let capture_elapsed = capture_start.elapsed();
 
+            // An empty capture would clear the background texture to the opaque
+            // CLEAR_COLOR and cache flat charcoal (mirrors the layer branch guard).
+            if capture_elements.is_empty() {
+                tracing::warn!(
+                    output = %output_name,
+                    group = group_idx,
+                    "Empty window blur capture; keeping cached texture"
+                );
+                any_blur_applied = true;
+                continue;
+            }
+
             // Compute content hash for cache invalidation
             // This includes element IDs (which change on content updates) and geometry
             let content_hash =
@@ -2828,9 +2840,6 @@ where
                 all_cached = all_cached,
                 "Re-blurring group"
             );
-
-            // Store the new content hash after we commit to re-blurring
-            store_blur_group_content_hash(&output_name, group.capture_z_threshold, content_hash);
 
             // Render captured elements to background texture (once per group)
             let bg_render_start = std::time::Instant::now();
@@ -2914,6 +2923,12 @@ where
                     );
 
                     if blur_result.is_ok() {
+                        // Pass succeeded: this hash now describes the cached texture.
+                        store_blur_group_content_hash(
+                            &output_name,
+                            group.capture_z_threshold,
+                            content_hash,
+                        );
                         // Cache the SAME blurred texture for ALL windows in this group
                         // Store both blur texture size and original screen size for coordinate mapping
                         for (window_key, geometry, _alpha, z_idx) in &group.windows {
@@ -3101,6 +3116,9 @@ where
                         layer = ?layer_type,
                         "Empty layer blur capture; keeping cached texture"
                     );
+                    // Throttle a sustained empty capture (see the KMS branch); the
+                    // last-good texture keeps showing, so deferring the retry is free.
+                    store_layer_blur_last_update(&hash_key);
                     any_blur_applied = true;
                     continue;
                 }

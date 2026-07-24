@@ -2139,6 +2139,18 @@ impl Common {
         );
 
         std::mem::drop(shell);
+
+        // Purge this output's blur caches. These per-output maps are otherwise only
+        // cleared by the global `invalidate_all_blur_caches` (VT/session resume, GPU
+        // reset, config reload), so without this a removed output leaves stale layer
+        // surfaces + blur textures behind; on re-add, the first layer commit can read
+        // that stale/empty cache before the wallpaper re-maps — the empty-Background
+        // capture that renders widget-card backdrops as flat CLEAR_COLOR grey.
+        let output_name = output.name();
+        crate::backend::render::clear_cached_layer_surfaces(&output_name);
+        crate::backend::render::clear_blur_textures_for_output(&output_name);
+        crate::backend::render::clear_layer_blur_textures_for_output(&output_name);
+
         self.refresh(); // cleans up excess of workspaces and empty workspaces
     }
 

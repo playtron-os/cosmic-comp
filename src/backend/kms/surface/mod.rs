@@ -978,8 +978,9 @@ fn process_blur(
             "Re-blurring group"
         );
 
-        // Store the new content hash and timestamp after we commit to re-blurring
-        store_blur_group_content_hash(&output_name, group.capture_z_threshold, content_hash);
+        // Bump the throttle timestamp now, but store the content hash only once the
+        // pass succeeds (mirrors the layer branch): pairing the new hash with the old
+        // texture on a failed render would freeze the group on stale content.
         store_blur_group_last_update(&output_name, group.capture_z_threshold);
 
         // Render captured elements to background texture
@@ -1085,6 +1086,13 @@ fn process_blur(
                                 pong.clone()
                             }
                         };
+
+                    // Pass succeeded: this hash now describes the texture we cache.
+                    store_blur_group_content_hash(
+                        &output_name,
+                        group.capture_z_threshold,
+                        content_hash,
+                    );
 
                     // Cache the same blurred texture for all windows in this group
                     for (window_key, window_geo, _alpha, z_idx) in &group.windows {
@@ -1297,6 +1305,11 @@ fn process_blur(
                     surfaces = surfaces.len(),
                     "Empty layer blur capture; keeping cached texture"
                 );
+                // Bump the throttle so a *sustained* empty capture retries at the
+                // throttle rate (~10/s) instead of re-running the capture + warning
+                // every frame. The last-good texture stays cached and keeps showing,
+                // so deferring the retry costs nothing visually.
+                store_layer_blur_last_update(&hash_key);
                 any_blur_applied = true;
                 continue;
             }
