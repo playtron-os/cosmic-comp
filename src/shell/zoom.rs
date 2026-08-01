@@ -612,7 +612,7 @@ impl Program for ZoomProgram {
     ) -> iced_runtime::Task<Self::Message> {
         match message {
             ZoomMessage::Decrease => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     let seat = state.common.shell.read().seats.last_active().clone();
                     let increment =
                         state.common.config.cosmic_conf.accessibility_zoom.increment as f64 / 100.0;
@@ -621,7 +621,7 @@ impl Program for ZoomProgram {
                 });
             }
             ZoomMessage::Increase => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     let seat = state.common.shell.read().seats.last_active().clone();
                     let increment =
                         state.common.config.cosmic_conf.accessibility_zoom.increment as f64 / 100.0;
@@ -633,7 +633,7 @@ impl Program for ZoomProgram {
                 self.open_menu = OpenMenu::More;
                 let movement = self.movement;
                 if let Some((seat, serial)) = last_seat.cloned() {
-                    let _ = loop_handle.insert_idle(move |state| {
+                    loop_handle.insert_idle(move |state| {
                         if let Some(start_data) =
                             check_grab_preconditions(&seat, Some(serial), None)
                         {
@@ -672,7 +672,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-continuously"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -702,7 +702,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-onedge"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -732,7 +732,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-centered"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -761,7 +761,7 @@ impl Program for ZoomProgram {
                                         .toggled(movement == ZoomMovement::Centered),
                                         Item::Separator,
                                         Item::new(crate::fl!("a11y-zoom-settings"), |handle| {
-                                            let _ = handle.insert_idle(move |state| {
+                                            handle.insert_idle(move |state| {
                                                 state.spawn_command(format!(
                                                     "{} accessibility-magnifier",
                                                     crate::utils::process::settings_binary(),
@@ -804,7 +804,7 @@ impl Program for ZoomProgram {
                 self.open_menu = OpenMenu::Increment;
                 if let Some((seat, serial)) = last_seat.cloned() {
                     let increments = self.increments.clone();
-                    let _ = loop_handle.insert_idle(move |state| {
+                    loop_handle.insert_idle(move |state| {
                         if let Some(start_data) =
                             check_grab_preconditions(&seat, Some(serial), None)
                         {
@@ -841,7 +841,7 @@ impl Program for ZoomProgram {
                                     &seat,
                                     increments.into_iter().map(|val| {
                                         Item::new(format!("{}%", val), move |handle| {
-                                            let _ = handle.insert_idle(move |state| {
+                                            handle.insert_idle(move |state| {
                                                 state
                                                     .common
                                                     .config
@@ -895,7 +895,7 @@ impl Program for ZoomProgram {
                 }
             }
             ZoomMessage::Close => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     state
                         .common
                         .config

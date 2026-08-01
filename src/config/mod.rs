@@ -211,7 +211,7 @@ impl Config {
 
             // Read initial toolkit config
             let config = ToolkitConfig::default();
-            let _ = loop_handle.insert_idle(move |state| {
+            loop_handle.insert_idle(move |state| {
                 handle_new_toolkit_config(config, state);
             });
 
@@ -315,7 +315,7 @@ impl Config {
             ),
         };
 
-        let _ = loop_handle.insert_idle(|state| {
+        loop_handle.insert_idle(|state| {
             let filter_conf = state.common.config.dynamic_conf.screen_filter();
             state
                 .common

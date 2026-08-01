@@ -6135,7 +6135,7 @@ impl Shell {
 
         if toggled {
             let value = !all_outputs_off;
-            let _ = loop_handle.insert_idle(move |state| {
+            loop_handle.insert_idle(move |state| {
                 state.common.a11y_state.set_screen_magnifier(value);
             });
         }
