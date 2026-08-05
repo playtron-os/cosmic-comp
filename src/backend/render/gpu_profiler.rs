@@ -214,10 +214,36 @@ pub struct FrameProfile {
     pub submit_duration: Duration,
     pub total_duration: Duration,
     pub element_count: usize,
-    pub blur_window_count: usize,
-    pub blur_layer_count: usize,
+    pub draw: DrawStats,
     pub damage_rects: usize,
     pub skipped: bool,
+}
+
+/// What the frame submission actually drew.
+///
+/// Read back from smithay's frame result rather than timed separately: it
+/// already decides, per element, whether the element was composited, handed to a
+/// plane, or skipped as invisible, and how many pixels of it were visible.
+///
+/// `overdraw_px` is the sum of those visible areas. Compared against the output
+/// size it says how many times over the screen was painted -- which is the
+/// number that distinguishes "compositing is inherently costly here" from
+/// "we are drawing windows nobody can see".
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DrawStats {
+    /// Elements composited through the GPU.
+    pub rendered: usize,
+    /// Elements handed directly to a plane, costing no compositing.
+    pub zero_copy: usize,
+    /// Elements skipped because nothing of them was visible.
+    pub skipped: usize,
+    /// Total visible pixels across composited elements.
+    pub overdraw_px: usize,
+    /// Pixels of the output itself, for the ratio.
+    pub output_px: usize,
+    /// Whether the primary plane took an element directly instead of the
+    /// composited swapchain image.
+    pub primary_scanout: bool,
 }
 
 impl Default for FrameProfile {
@@ -230,8 +256,7 @@ impl Default for FrameProfile {
             submit_duration: Duration::ZERO,
             total_duration: Duration::ZERO,
             element_count: 0,
-            blur_window_count: 0,
-            blur_layer_count: 0,
+            draw: DrawStats::default(),
             damage_rects: 0,
             skipped: false,
         }
@@ -294,8 +319,6 @@ impl FrameProfiler {
                 draw_ms = format!("{:.2}", profile.draw_duration.as_secs_f64() * 1000.0),
                 submit_ms = format!("{:.2}", profile.submit_duration.as_secs_f64() * 1000.0),
                 elements = profile.element_count,
-                blur_windows = profile.blur_window_count,
-                blur_layers = profile.blur_layer_count,
                 damage = profile.damage_rects,
                 "SLOW FRAME (>{:.1}ms): {:.2}ms total",
                 self.slow_threshold.as_secs_f64() * 2000.0,
@@ -398,18 +421,6 @@ impl FrameProfiler {
             .map(|p| p.element_count as f64)
             .sum::<f64>()
             / window_size as f64;
-        let avg_blur_wins: f64 = self
-            .profiles
-            .iter()
-            .map(|p| p.blur_window_count as f64)
-            .sum::<f64>()
-            / window_size as f64;
-        let avg_blur_layers: f64 = self
-            .profiles
-            .iter()
-            .map(|p| p.blur_layer_count as f64)
-            .sum::<f64>()
-            / window_size as f64;
         let avg_damage: f64 = self
             .profiles
             .iter()
@@ -443,8 +454,25 @@ impl FrameProfiler {
             avg_submit.as_secs_f64() * 1000.0,
         );
         warn!(
-            "│ Load:    elements={:.0}  blur_windows={:.1}  blur_layers={:.1}  damage_rects={:.0}",
-            avg_elements, avg_blur_wins, avg_blur_layers, avg_damage,
+            "│ Load:    elements={:.0}  damage_rects={:.0}",
+            avg_elements, avg_damage,
+        );
+        let n = window_size as f64;
+        let avg = |f: fn(&FrameProfile) -> f64| self.profiles.iter().map(f).sum::<f64>() / n;
+        // Overdraw is the headline: at 1.0x the compositor painted each output
+        // pixel once, at 10x it painted the screen ten times over.
+        let overdraw = {
+            let px: f64 = avg(|p| p.draw.overdraw_px as f64);
+            let out: f64 = avg(|p| p.draw.output_px as f64);
+            if out > 0.0 { px / out } else { 0.0 }
+        };
+        warn!(
+            "│ Draw:    rendered={:.1}  zerocopy={:.1}  skipped={:.1}  overdraw={:.2}x  scanout={:.0}%",
+            avg(|p| p.draw.rendered as f64),
+            avg(|p| p.draw.zero_copy as f64),
+            avg(|p| p.draw.skipped as f64),
+            overdraw,
+            avg(|p| if p.draw.primary_scanout { 100.0 } else { 0.0 }),
         );
         warn!("└──────────────────────────────────────────────────────────────");
     }
@@ -493,18 +521,6 @@ pub fn set_gpu_info(info: GpuInfo) {
 /// Get the current GPU info, if detected.
 pub fn get_gpu_info() -> Option<GpuInfo> {
     GPU_INFO.read().ok().and_then(|g| g.clone())
-}
-
-/// Get the effective blur downsample factor.
-pub fn effective_blur_downsample_factor() -> i32 {
-    // Allow env override
-    if let Some(val) = std::env::var("COSMIC_BLUR_DOWNSAMPLE_FACTOR")
-        .ok()
-        .and_then(|v| v.parse::<i32>().ok())
-    {
-        return val;
-    }
-    super::BLUR_DOWNSAMPLE_FACTOR
 }
 
 // =============================================================================

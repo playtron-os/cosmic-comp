@@ -1,3 +1,210 @@
+## [1.34.1](https://github.com/playtron-os/cosmic-comp/compare/v1.34.0...v1.34.1) (2026-08-05)
+
+
+### Bug Fixes
+
+* stop recording a rejected mirror configuration ([76a3cfe](https://github.com/playtron-os/cosmic-comp/commit/76a3cfe350207e91474176c1c5b9a201c93202c8))
+
+# [1.34.0](https://github.com/playtron-os/cosmic-comp/compare/v1.33.0...v1.34.0) (2026-08-04)
+
+
+### Bug Fixes
+
+* **blur:** keep a backdrop settled while its surface moves ([698bcf7](https://github.com/playtron-os/cosmic-comp/commit/698bcf762e1fb1aec3a30e8fd686318113f2497f))
+* **blur:** let a backdrop arriving with its surface appear with it ([77b5e14](https://github.com/playtron-os/cosmic-comp/commit/77b5e14465552f6783d5d41a5daed7ba967e86e9))
+* **shadow:** stop squaring the popup shadow's opacity ([36eaba5](https://github.com/playtron-os/cosmic-comp/commit/36eaba59ce35f435cdea1d9e7639d2a86c7f766a))
+* **shadow:** wait for a popup to be drawn before shadowing it ([9265ae3](https://github.com/playtron-os/cosmic-comp/commit/9265ae399135e2992a7f36479c0685adf0adaa9a))
+
+
+### Features
+
+* **shadow:** draw shadows behind popups of ordinary windows ([3baf8b4](https://github.com/playtron-os/cosmic-comp/commit/3baf8b4c6d92ac37de245db638d000434dfa68fd))
+
+# [1.33.0](https://github.com/playtron-os/cosmic-comp/compare/v1.32.0...v1.33.0) (2026-08-04)
+
+
+### Bug Fixes
+
+* a11y: magnifier: correct Centered/OnEdge focal-point math and refresh focal point at zoom-in ([01c0cb0](https://github.com/playtron-os/cosmic-comp/commit/01c0cb020e9fce991254b1d1e6a6485be6046dde))
+* clamp pointer edge after applying the output offset ([8d450d4](https://github.com/playtron-os/cosmic-comp/commit/8d450d497763912c4575c0f28dda661dafd4366c))
+* **corner_radius:** check LayerHookId for layer surfaces ([ffeda33](https://github.com/playtron-os/cosmic-comp/commit/ffeda3375a7e60ace6ae64b19432f1f0c1fc1034))
+* **corner_radius:** loosen padding size constraint ([b890f7b](https://github.com/playtron-os/cosmic-comp/commit/b890f7b0fa86d087ba2ae4d6cd64ec3a1f8b7cb9))
+* **deploy:** accept the sudo password from the environment ([ffdf811](https://github.com/playtron-os/cosmic-comp/commit/ffdf811c3f4987969c9a0aec7c855f33ea0055b7))
+* **deploy:** relabel the deployed binary and stop leaking the sudo password ([ac04d80](https://github.com/playtron-os/cosmic-comp/commit/ac04d80a7b5ccc390302908495c5632af50fc611))
+* dont play fade in when fullscreening an already maximized window ([f50dfd9](https://github.com/playtron-os/cosmic-comp/commit/f50dfd9a33f073d9e851dfa922b42a936e93b89a))
+* ensure X window focus on unmap/map ([5ce21fb](https://github.com/playtron-os/cosmic-comp/commit/5ce21fb4f3de9671d6cb6c4738d9bd02d541a57a))
+* fade layer popups in as well as out ([a4a4cc2](https://github.com/playtron-os/cosmic-comp/commit/a4a4cc2806d07a9ed65d05ca5823b253858ed9d2))
+* fade layer surfaces in over real content and restore blur parity ([add6c3b](https://github.com/playtron-os/cosmic-comp/commit/add6c3bd0f35254a8cedf8e35521a5dd28bd0d41))
+* fade the blur backdrop with its surface ([f4454c2](https://github.com/playtron-os/cosmic-comp/commit/f4454c2b292a2ea575c2ad751ccd85435a279bb1))
+* fall back to legacy X11 names when loading pointer themes ([067be10](https://github.com/playtron-os/cosmic-comp/commit/067be10474ff8fc8d0053061e4f8a5f355883de7))
+* flicker on wayland context menu pop up ([aabf1cd](https://github.com/playtron-os/cosmic-comp/commit/aabf1cdc08c844ca05339f53fe6c2d56aeeaf59a))
+* **game-mode:** don't resolve the caller's pid from inside the method ([4a5965b](https://github.com/playtron-os/cosmic-comp/commit/4a5965b378c430372473dd778c86bd863fd85fcb))
+* input to cropped tiled windows should be bound to the tile ([2329cea](https://github.com/playtron-os/cosmic-comp/commit/2329cea5c9f27145cb45aa0d004f14d5020357ea))
+* keep the blur capture inside the framebuffer origin ([156558e](https://github.com/playtron-os/cosmic-comp/commit/156558eaf0ff5afe54c78bec83fe5c22295b2469))
+* **kms:** don't panic when renderer creation fails after a GPU reset ([9514b49](https://github.com/playtron-os/cosmic-comp/commit/9514b4945edc2656b38a34419c3a8618f490cb17))
+* **kms:** gate overlay scanout per-element by buffer GPU node ([012c77e](https://github.com/playtron-os/cosmic-comp/commit/012c77ec81f55f8d149639f77ea7254b43f9e20f))
+* **kms:** join surface threads before exit to avoid SIGABRT on shutdown ([53a8d0b](https://github.com/playtron-os/cosmic-comp/commit/53a8d0bea2c1a361c1a0c57b20b4adc4b748c2a0))
+* **kms:** skip empty DRM cleanup commit in display_configuration ([24d2900](https://github.com/playtron-os/cosmic-comp/commit/24d29008f0ce00074612b49987e47468db3ef231))
+* map_window_request should update pending state ([9789187](https://github.com/playtron-os/cosmic-comp/commit/9789187416810f851b72e75f11b9648515e76794))
+* no ceil for scaled outline thickness ([4d370cd](https://github.com/playtron-os/cosmic-comp/commit/4d370cdf92b5d96d78032593947f4ad9eae793bf))
+* pad_rect typos ([77f57a6](https://github.com/playtron-os/cosmic-comp/commit/77f57a656d1c03d412f135dd3e5fa647926d1b3d))
+* prevent fullscreening freezing compositor ([830e420](https://github.com/playtron-os/cosmic-comp/commit/830e420cc57f181d7f7d2bd61ae2691049869503))
+* release active popup grabs on toplevel destruction ([1d72227](https://github.com/playtron-os/cosmic-comp/commit/1d72227a30144c96cd2cd1583fd726b9c9dd717d))
+* restart the voice orb's shader clock when it hides ([68f6ff6](https://github.com/playtron-os/cosmic-comp/commit/68f6ff66f112c97bba7f06b6f11beea0f0ea44fe))
+* restore corner rounding and blur strength after the upstream merge ([5dd6029](https://github.com/playtron-os/cosmic-comp/commit/5dd602908c568569b4a163c99c0347dd871328cc))
+* take into account pending maximized state when recalculating window geometry ([7a7c6b7](https://github.com/playtron-os/cosmic-comp/commit/7a7c6b7fd42e0941b0742314541dcefdacb08fa4))
+* use configured blur strength for lock surface and its subsurfaces ([f6d3daf](https://github.com/playtron-os/cosmic-comp/commit/f6d3dafda7790023059237bc717c21a288d552df))
+* workaround for Chromium apps breaking below 1.0 scaling ([6108cef](https://github.com/playtron-os/cosmic-comp/commit/6108cef8b368653c51c0bbe6f81132a5a80b5c46))
+
+
+### Features
+
+* adopt upstream's blur and extend the background-effect protocol ([09297d5](https://github.com/playtron-os/cosmic-comp/commit/09297d5b84eecd17bffebe12bf83bcefbb026fe2))
+* attribute blur cache invalidation to the surface causing it ([c71a4c6](https://github.com/playtron-os/cosmic-comp/commit/c71a4c62077b09ead2237f635baed243f4b8b8c8))
+* carry blur corner radii per region rect ([9c9d2b2](https://github.com/playtron-os/cosmic-comp/commit/9c9d2b241b62a55a177a9d9774361228873ecacb))
+* carry the exact sub-pixel blur area over the wire ([0d1a34a](https://github.com/playtron-os/cosmic-comp/commit/0d1a34ac554a6318f0531012ed578dd33b4cfb66))
+* fade in blur rects ([446568e](https://github.com/playtron-os/cosmic-comp/commit/446568e1b4cd240a7605899f236a8a6a3d9ebbbd))
+* **game-mode:** implement the scaling modes and the resolution spoof ([d039e40](https://github.com/playtron-os/cosmic-comp/commit/d039e404500dd832d85cc8e6a40f038a19bb1c11))
+* **game-mode:** learn the launching process from the bus, off-thread ([bf8e4f6](https://github.com/playtron-os/cosmic-comp/commit/bf8e4f696370ae84f226e99293c9a4510c526d67))
+* **game-mode:** only allow authorized clients to drive game mode ([dfe8e08](https://github.com/playtron-os/cosmic-comp/commit/dfe8e08148adfe9815f9397ec0063747c06983ce))
+* implement adaptive foreground protocol ([2ec7d6e](https://github.com/playtron-os/cosmic-comp/commit/2ec7d6edc798bef55dc764dc4fe3254e9941cf2d))
+* **render:** add the FSR upscaling and sharpening shaders ([5fbf94c](https://github.com/playtron-os/cosmic-comp/commit/5fbf94c9729c203c6ad0e0a4786a6e9b7d1c2bbb))
+* **render:** generate the NVIDIA Image Scaling filter coefficients ([a1b7d56](https://github.com/playtron-os/cosmic-comp/commit/a1b7d5662c55974a79ed465928d8051bee108d91))
+
+
+### Performance Improvements
+
+* cache the blur ping-pong scratch texture ([86c7dc5](https://github.com/playtron-os/cosmic-comp/commit/86c7dc540b326e85ff1afad82b4571192a66fdc6))
+* let the renderer cull what an opaque backdrop hides ([120c49b](https://github.com/playtron-os/cosmic-comp/commit/120c49b40cf9d01531ad71c4cfa794fb9d2222e7))
+* make blur cheaper and measurable ([05fcefa](https://github.com/playtron-os/cosmic-comp/commit/05fcefa05041f7c0d71fe97b15cf07601ea8ba17))
+* reuse the voice orb's render element across frames ([b83ad83](https://github.com/playtron-os/cosmic-comp/commit/b83ad837bd1253a4be82ae59860e95188f5bdcd2))
+* skip compositing workspaces that voice mode has faded out ([3e3a2ee](https://github.com/playtron-os/cosmic-comp/commit/3e3a2eeddcbae69e22763864f36b8cd915321886))
+
+# [1.32.0](https://github.com/playtron-os/cosmic-comp/compare/v1.31.0...v1.32.0) (2026-07-30)
+
+
+### Bug Fixes
+
+* **game-mode:** center launch banners instead of forcing them fullscreen ([24b7b60](https://github.com/playtron-os/cosmic-comp/commit/24b7b60d166fe11676f90159834e556ce4698ac2))
+* **game-mode:** don't focus windows game mode will not render ([32989cd](https://github.com/playtron-os/cosmic-comp/commit/32989cd581c5f3f7c3084e017d1900837eb8bc91))
+* **game-mode:** drive frame callbacks for the composited overlay ([5c0f46c](https://github.com/playtron-os/cosmic-comp/commit/5c0f46cf61f6831bcf7a2a2b71f4f8898a8a3ea2))
+* **game-mode:** filter override-redirect windows and reclaim stolen focus ([397da31](https://github.com/playtron-os/cosmic-comp/commit/397da319c1235019d6b4b4e967f564f5687d0348))
+* **game-mode:** keep the game on the output game mode owns ([3aada5b](https://github.com/playtron-os/cosmic-comp/commit/3aada5b813226baffe491855dc504fd980d72780))
+* **game-mode:** place a launched game on the game-mode output when it maps ([75f8c55](https://github.com/playtron-os/cosmic-comp/commit/75f8c55a0a3ed57ee0eabfe66d77ff94112c2409))
+* **game-mode:** render the controlled base's popups, not the seat's ([68cbc89](https://github.com/playtron-os/cosmic-comp/commit/68cbc894e81cd640195b667beb52ed299acd38c2))
+* **game-mode:** route the pointer to a blocking overlay ([496df09](https://github.com/playtron-os/cosmic-comp/commit/496df099255d2cabde5fe4d825bce93737b0dd33))
+* **game-mode:** scope strict control to the game's own workspace ([4fedc5f](https://github.com/playtron-os/cosmic-comp/commit/4fedc5f9bac2930c99694315cc4b7b476d13fb07))
+* **game-mode:** suppress popups of windows the game workspace hides ([4053102](https://github.com/playtron-os/cosmic-comp/commit/405310275fe1cfe16f12a866030dbdf7f45c18be))
+* **game-mode:** undo the presentation scale when hit-testing the game ([e72fb2f](https://github.com/playtron-os/cosmic-comp/commit/e72fb2f320fdeb4d693632bda40a20f762ef6508))
+* windows getting stuck in maximized state even while unmaximized ([23c9bfe](https://github.com/playtron-os/cosmic-comp/commit/23c9bfe29643e1afe7e2f0761e427e68824a1dca))
+
+
+### Features
+
+* **game-mode:** honor base-layer priority from the session manager ([c3d14ab](https://github.com/playtron-os/cosmic-comp/commit/c3d14ab079ea8560cbc1c6d9918a802e0cffe972))
+* **game-mode:** let the adopted game's own windows render above it ([f23fe97](https://github.com/playtron-os/cosmic-comp/commit/f23fe97cf0b13c8876175dab4beb947ce08e72ff))
+* **game-mode:** rank base candidates so a splash never displaces the game ([d2d887e](https://github.com/playtron-os/cosmic-comp/commit/d2d887e392881412ad1eb122ec681856baaaed56))
+* **game-mode:** strict fullscreen control on the game-mode output ([e194349](https://github.com/playtron-os/cosmic-comp/commit/e194349f8bf7e810ab1b58bfee02f4002739368f))
+* **logging:** opt-in game-mode trace via COSMIC_GAME_TRACE ([9b102f6](https://github.com/playtron-os/cosmic-comp/commit/9b102f61d2090107c337c46015155f379230462c))
+
+# [1.31.0](https://github.com/playtron-os/cosmic-comp/compare/v1.30.1...v1.31.0) (2026-07-29)
+
+
+### Bug Fixes
+
+* **blur:** free cached blur textures when their surface goes away ([3dc5e79](https://github.com/playtron-os/cosmic-comp/commit/3dc5e79faafa5c52583633f4e9e9084fc05ee259))
+* **blur:** reclaim blur textures for destroyed layer-shell popups ([e968ec1](https://github.com/playtron-os/cosmic-comp/commit/e968ec1244330cb8f471d76df8ed618de28602e9)), closes [tmp/#NNNN](https://github.com/tmp//issues/NNNN)
+* clean up blue cache on remove output and handle storing blur group content hash only on successful pass ([9f5f337](https://github.com/playtron-os/cosmic-comp/commit/9f5f337e618ec78d7afc62a624924717ddfcbdb5))
+* defer game-mode window mutations out of source dispatch ([1239518](https://github.com/playtron-os/cosmic-comp/commit/12395180c671b9306190f7b1cd2524c046cb4ff5))
+* **game-mode:** always fill the output gamescope-style; keep game activated ([234987c](https://github.com/playtron-os/cosmic-comp/commit/234987ca9e95ae65312a919088cd156d1cb59c3c))
+* **game-mode:** clean up state on exit + relaunch so a re-launched app fullscreens ([2ff2c51](https://github.com/playtron-os/cosmic-comp/commit/2ff2c51e3d5807cc0f1978c0249e85fb0074d2ec))
+* **game-mode:** revert always-fill; keep the fullscreen game scanout-capable ([f7443db](https://github.com/playtron-os/cosmic-comp/commit/f7443db7b6e4c298e3fb62650e8f78dba0e6ac55))
+* **iced:** defer IcedElement executor-source removal off the loop thread ([919d924](https://github.com/playtron-os/cosmic-comp/commit/919d924c37222cc61d0fda0e3e02ed5ef85f6504))
+* **iced:** keep calloop's Rc state on the event-loop thread ([488aca3](https://github.com/playtron-os/cosmic-comp/commit/488aca3a018d3c209b9c20a542ba5b374116217c))
+* keep secondary-output panel blur alive and track wallpaper open animation ([d143739](https://github.com/playtron-os/cosmic-comp/commit/d14373949e1fe20541e9f287cca29aabe1d61e52))
+* keep the game-mode window fullscreen + animate launcher exit ([da21b72](https://github.com/playtron-os/cosmic-comp/commit/da21b7262baf563c92dbfea52eaf60c531eccc59))
+* **motion:** source panel slide from ease_out_expo, keep ease_spring a spring ([31b6350](https://github.com/playtron-os/cosmic-comp/commit/31b6350093c757cf69b7103751e6e1d8c5bac265))
+* remove hard coded F23 capture for voice input ([80aa149](https://github.com/playtron-os/cosmic-comp/commit/80aa149aff6f31794209aeaf129f4d5f44e41b1c))
+* report game-mode display caps from the game's output ([5d91b1f](https://github.com/playtron-os/cosmic-comp/commit/5d91b1fac24fa1aab39b600ebdc5213f6abe51e6))
+* rounded corner clipping ([ab319bd](https://github.com/playtron-os/cosmic-comp/commit/ab319bd9119ea879dd7014df3940cf5f425c63ce))
+* update smithay to fix x11 vkcube crashing compositor ([bded512](https://github.com/playtron-os/cosmic-comp/commit/bded512795eac812a5279ce9937292dbc9d29908))
+
+
+### Features
+
+* **debug:** add opt-in parking_lot deadlock detection ([5163425](https://github.com/playtron-os/cosmic-comp/commit/516342531044c57990967bf9eafae6dfa3dff40d))
+* **game-mode:** composite a Wayland launcher/overlay over the fullscreen game ([d4ed95b](https://github.com/playtron-os/cosmic-comp/commit/d4ed95bca72797f622bcd67c3893f80ec9835b11))
+* **game-mode:** cross-fade launcher<->game workspace switches ([812dddc](https://github.com/playtron-os/cosmic-comp/commit/812dddcf9ffa86b52a842c7242c63134512ef1fa))
+* **game-mode:** emit launcher key (Super) as raw down/up events ([72707e4](https://github.com/playtron-os/cosmic-comp/commit/72707e4ea6bedffb015edbc505df2bcdf811a60f))
+* **game-mode:** reroute bare-Super launcher key to Grid; add LauncherKeyPressed signal ([ea7c64f](https://github.com/playtron-os/cosmic-comp/commit/ea7c64fca07a3655fbc7e6366b4580bbc4ddf440))
+* **game-mode:** scanout-safe gamescope upscaler for sub-output games ([9f37c15](https://github.com/playtron-os/cosmic-comp/commit/9f37c15ea6f0dea8745b8043761ea5fbe1ae93c8))
+* make default output scale a bit bigger and fix workspaces appearing even when they are disabled ([9242d35](https://github.com/playtron-os/cosmic-comp/commit/9242d35b5f0a57ae32784de19d6826ecf4a81865))
+* make the launcher a game-mode target + exclusive game output ([5db7d65](https://github.com/playtron-os/cosmic-comp/commit/5db7d65e020551836ece7442b487a3ba88e03125))
+* re-resolve the game surface when STEAM_GAME is retagged ([ec7aed8](https://github.com/playtron-os/cosmic-comp/commit/ec7aed8b44e970250fb1edd3935d789e6ee97fef))
+* support activating layershell via xdg activation ([3fccbb1](https://github.com/playtron-os/cosmic-comp/commit/3fccbb106e6cd2260af9013852473a29be5ea193))
+* support per rect corner radii for blur protocol ([d3de4bc](https://github.com/playtron-os/cosmic-comp/commit/d3de4bca00c323488959c5ecc50d5d8f4e7e0c2f))
+* workspace-based game mode (dedicated clean workspace per app) ([629969c](https://github.com/playtron-os/cosmic-comp/commit/629969c44cc9d00f8de396987210de546f9cd46e))
+
+## [1.30.1](https://github.com/playtron-os/cosmic-comp/compare/v1.30.0...v1.30.1) (2026-07-23)
+
+
+### Bug Fixes
+
+* keep new floating windows centered when a closing window is still mapped ([c55e683](https://github.com/playtron-os/cosmic-comp/commit/c55e683cc679d60ec7da22e1a53076cfa9fc1c39))
+* never show an empty scene as the backdrop blur capture ([68749b4](https://github.com/playtron-os/cosmic-comp/commit/68749b434bb9931f96c8826c668ff1144df555c4))
+
+# [1.30.0](https://github.com/playtron-os/cosmic-comp/compare/v1.29.2...v1.30.0) (2026-07-23)
+
+
+### Features
+
+* persist clipboard contents after the source client exits ([1d87eb2](https://github.com/playtron-os/cosmic-comp/commit/1d87eb255cfab0658ce6c610d675f12819d4ec02))
+
+## [1.29.2](https://github.com/playtron-os/cosmic-comp/compare/v1.29.1...v1.29.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* clamp window positioning on right/bottom as well ([ad727ea](https://github.com/playtron-os/cosmic-comp/commit/ad727ea2ef6b266c0022b2969ec5868651ea1e7e))
+
+## [1.29.1](https://github.com/playtron-os/cosmic-comp/compare/v1.29.0...v1.29.1) (2026-07-21)
+
+
+### Bug Fixes
+
+* **input:** honor keyboard-shortcuts inhibitor for voice/chat Super key ([a700075](https://github.com/playtron-os/cosmic-comp/commit/a70007570fd7c8a1f67b6cbdf8856969aca1995e))
+* restore resizing after dragging a maximized window away to unmaximize (HUM-238) ([fc524ce](https://github.com/playtron-os/cosmic-comp/commit/fc524cee7b523aff9c08b8597f140cf1b8f5bdce))
+
+# [1.29.0](https://github.com/playtron-os/cosmic-comp/compare/v1.28.9...v1.29.0) (2026-07-20)
+
+
+### Features
+
+* implement safe gpu reset detection and handling to avoid restarting compositor ([86bf498](https://github.com/playtron-os/cosmic-comp/commit/86bf4986aa6f76c5a9f2cabdda5bd13ac636352e))
+
+## [1.28.9](https://github.com/playtron-os/cosmic-comp/compare/v1.28.8...v1.28.9) (2026-07-18)
+
+
+### Bug Fixes
+
+* make x11 configs async in set geometry to prevent freeze during x11 window close ([77ec1e7](https://github.com/playtron-os/cosmic-comp/commit/77ec1e79b578ca19cf2a9390947bcda39932c768))
+
+## [1.28.8](https://github.com/playtron-os/cosmic-comp/compare/v1.28.7...v1.28.8) (2026-07-13)
+
+
+### Bug Fixes
+
+* do not animate offset/scale for full output layershell surfaces ([d9c7f05](https://github.com/playtron-os/cosmic-comp/commit/d9c7f054cf41a7ec31c8f4224dfcd725fcc5aed7))
+* focus tapped window on touchscreen (HUM-165) ([5f93c54](https://github.com/playtron-os/cosmic-comp/commit/5f93c54076aebba9237c6d52bbe320713b7d8482))
+* hide cursor on touchscreen input (HUM-166) ([07a1bc7](https://github.com/playtron-os/cosmic-comp/commit/07a1bc7e28e68e4a27b795b07312351d2aa91951))
+
+## [1.28.7](https://github.com/playtron-os/cosmic-comp/compare/v1.28.6...v1.28.7) (2026-07-09)
+
+
+### Bug Fixes
+
+* fix crash on active_num running before workspace is set ([13440fb](https://github.com/playtron-os/cosmic-comp/commit/13440fb2b8ab70edc4d1281a3e16290fa4567778))
+
 ## [1.28.6](https://github.com/playtron-os/cosmic-comp/compare/v1.28.5...v1.28.6) (2026-07-08)
 
 

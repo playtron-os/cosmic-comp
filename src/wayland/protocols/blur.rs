@@ -39,6 +39,20 @@ use std::sync::Mutex;
 pub struct BlurRegionData {
     /// The blur region. If None, the entire surface should be blurred.
     pub region: Option<Vec<Rectangle<i32, Logical>>>,
+    /// Per-rect corner radii `[top-left, top-right, bottom-right, bottom-left]`
+    /// in logical px, index-matched to `region` (a shorter vec leaves the
+    /// remaining rects on the surface's single radius). `None` when the client
+    /// didn't send `set_region_radii`, i.e. one radius rounds every rect.
+    pub region_radii: Option<Vec<[f32; 4]>>,
+    /// The exact sub-pixel area of each rect, index-matched to `region` (a
+    /// shorter vec leaves the remaining rects on their whole-pixel rect).
+    /// `None` when the client didn't send `set_region_geometry`.
+    ///
+    /// `region` stays the conservative whole-pixel bound used for capture and
+    /// damage; this is what the effect is actually rendered to, so a surface at
+    /// a fractional position or under a scale animation gets a backdrop that
+    /// matches the shape it draws rather than one rounded away from it.
+    pub region_geometry: Option<Vec<Rectangle<f64, Logical>>>,
     /// Custom blur radius in pixels. If None, the compositor default is used.
     pub radius: Option<f32>,
     /// Backdrop saturation multiplier (1.0 = unchanged). If None, no saturation
@@ -82,6 +96,8 @@ impl Cacheable for CacheableBlurState {
 pub struct BlurData {
     surface: Weak<WlSurface>,
     pending_region: Mutex<Option<Vec<Rectangle<i32, Logical>>>>,
+    pending_region_radii: Mutex<Option<Vec<[f32; 4]>>>,
+    pending_region_geometry: Mutex<Option<Vec<Rectangle<f64, Logical>>>>,
     pending_radius: Mutex<Option<f32>>,
     pending_saturation: Mutex<Option<f32>>,
     pending_tint: Mutex<Option<f32>>,
@@ -105,7 +121,7 @@ impl BlurState {
             + 'static,
     {
         let global =
-            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(3, ());
+            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(5, ());
         BlurState { global }
     }
 
@@ -169,6 +185,8 @@ where
                 let blur_data = BlurData {
                     surface: surface.downgrade(),
                     pending_region: Mutex::new(None),
+                    pending_region_radii: Mutex::new(None),
+                    pending_region_geometry: Mutex::new(None),
                     pending_radius: Mutex::new(None),
                     pending_saturation: Mutex::new(None),
                     pending_tint: Mutex::new(None),
@@ -214,6 +232,8 @@ where
                 };
 
                 let pending_region = data.pending_region.lock().unwrap().take();
+                let pending_region_radii = data.pending_region_radii.lock().unwrap().take();
+                let pending_region_geometry = data.pending_region_geometry.lock().unwrap().take();
                 let pending_radius = data.pending_radius.lock().unwrap().take();
                 let pending_saturation = data.pending_saturation.lock().unwrap().take();
                 let pending_tint = data.pending_tint.lock().unwrap().take();
@@ -223,6 +243,7 @@ where
                     surface_id = surface.id().protocol_id(),
                     has_region = pending_region.is_some(),
                     region_count = pending_region.as_ref().map(|r| r.len()).unwrap_or(0),
+                    radii_count = pending_region_radii.as_ref().map(|r| r.len()).unwrap_or(0),
                     ?pending_radius,
                     ?pending_saturation,
                     ?pending_tint,
@@ -240,6 +261,8 @@ where
                     pending.border = pending_border;
                     pending.data = Some(BlurRegionData {
                         region: pending_region,
+                        region_radii: pending_region_radii,
+                        region_geometry: pending_region_geometry,
                         radius: pending_radius,
                         saturation: pending_saturation,
                         tint: pending_tint,
@@ -278,6 +301,18 @@ where
                 });
                 *data.pending_region.lock().unwrap() = regions;
             }
+            org_kde_kwin_blur::Request::SetRegionGeometry { geometry } => {
+                let geometry = parse_region_geometry(&geometry);
+                tracing::trace!(rect_count = geometry.len(), "Blur SetRegionGeometry");
+                *data.pending_region_geometry.lock().unwrap() = Some(geometry);
+            }
+            org_kde_kwin_blur::Request::SetRegionRadii { radii } => {
+                let radii = parse_region_radii(&radii);
+                tracing::trace!(rect_count = radii.len(), "Blur SetRegionRadii");
+                // Both this and the region are pending state consumed by the next
+                // commit, so the client may send them in either order.
+                *data.pending_region_radii.lock().unwrap() = Some(radii);
+            }
             org_kde_kwin_blur::Request::Release => {
                 // Release is a destructor for the blur *object*, NOT an unset.
                 // Clients create a new blur object and commit it
@@ -313,6 +348,43 @@ where
             }
         }
     }
+}
+
+/// Parse a `set_region_radii` array: four native-endian `u32` radii
+/// (top-left, top-right, bottom-right, bottom-left) per region rect, in the
+/// order the rects were added to the region. A trailing partial quadruple is
+/// ignored, as the protocol specifies.
+fn parse_region_radii(bytes: &[u8]) -> Vec<[f32; 4]> {
+    bytes
+        .chunks_exact(std::mem::size_of::<u32>() * 4)
+        .map(|quad| {
+            let at = |i: usize| {
+                u32::from_ne_bytes([quad[i], quad[i + 1], quad[i + 2], quad[i + 3]]) as f32
+            };
+            [at(0), at(4), at(8), at(12)]
+        })
+        .collect()
+}
+
+/// Parse a `set_region_geometry` array: four native-endian `i32` per region
+/// rect -- x, y, width, height in surface-local logical px, fixed-point with 8
+/// fractional bits -- in the order the rects were added to the region. A
+/// trailing partial quadruple is ignored, as the protocol specifies.
+fn parse_region_geometry(bytes: &[u8]) -> Vec<Rectangle<f64, Logical>> {
+    bytes
+        .chunks_exact(std::mem::size_of::<i32>() * 4)
+        .map(|quad| {
+            let at = |i: usize| {
+                i32::from_ne_bytes([quad[i], quad[i + 1], quad[i + 2], quad[i + 3]]) as f64 / 256.0
+            };
+            // A negative extent is not expressible as a rectangle; clamp rather
+            // than let it invert the far edge downstream.
+            Rectangle::new(
+                (at(0), at(4)).into(),
+                (at(8).max(0.0), at(12).max(0.0)).into(),
+            )
+        })
+        .collect()
 }
 
 /// Helper function to get the blur state for a surface
@@ -381,3 +453,46 @@ macro_rules! delegate_blur {
     };
 }
 pub(crate) use delegate_blur;
+
+#[cfg(test)]
+mod tests {
+    use super::parse_region_radii;
+
+    fn wl_array(radii: &[u32]) -> Vec<u8> {
+        radii.iter().flat_map(|r| r.to_ne_bytes()).collect()
+    }
+
+    #[test]
+    fn parses_one_quadruple_per_rect_in_order() {
+        // Two rects: a 16px card, then a "pill" the compositor will clamp per-rect.
+        let bytes = wl_array(&[16, 16, 16, 16, 9999, 9999, 9999, 9999]);
+        assert_eq!(
+            parse_region_radii(&bytes),
+            vec![[16.0; 4], [9999.0; 4]],
+            "radii must stay grouped per rect, in region order"
+        );
+    }
+
+    #[test]
+    fn keeps_per_corner_order_tl_tr_br_bl() {
+        let bytes = wl_array(&[1, 2, 3, 4]);
+        assert_eq!(parse_region_radii(&bytes), vec![[1.0, 2.0, 3.0, 4.0]]);
+    }
+
+    #[test]
+    fn ignores_a_trailing_partial_quadruple() {
+        // A short/garbled tail must not shift the radii of earlier rects.
+        let mut bytes = wl_array(&[8, 8, 8, 8, 12, 12]);
+        assert_eq!(parse_region_radii(&bytes), vec![[8.0; 4]]);
+        // Not even a whole u32 left over.
+        bytes.push(0);
+        assert_eq!(parse_region_radii(&bytes), vec![[8.0; 4]]);
+    }
+
+    #[test]
+    fn empty_array_yields_no_radii() {
+        // Distinct from "no set_region_radii at all" (None) — an empty array just
+        // leaves every rect on the surface's single radius.
+        assert!(parse_region_radii(&[]).is_empty());
+    }
+}

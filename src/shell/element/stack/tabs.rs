@@ -1,3 +1,6 @@
+// MERGE: upstream's import churn here (cosmic::iced_core -> cosmic::iced::core, and the
+// cosmic container Catalog/draw_background imports) does not apply — this widget was
+// rewritten on iced_core/iced_tiny_skia/icetron_p and never touches cosmic.
 use super::tab::{MIN_ACTIVE_TAB_WIDTH, Tab, TabMessage};
 use iced_core::{
     Alignment, Element, Length, Point, Rectangle, Renderer as _, Shell, Size, Vector, event,
@@ -23,6 +26,9 @@ pub struct Tabs<'a, Message> {
     height: Length,
     width: Length,
     scroll_to: Option<usize>,
+    /// Tab-strip scroll duration, resolved from the theme at construction (the
+    /// `Widget`/`Scrollable` impls have no theme handle of their own).
+    scroll_duration: Duration,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,8 +106,6 @@ impl Offset {
     }
 }
 
-const SCROLL_ANIMATION_DURATION: Duration = Duration::from_millis(200);
-
 impl<'a, Message> Tabs<'a, Message>
 where
     Message: TabMessage + 'static,
@@ -161,6 +165,7 @@ where
             width: Length::Fill,
             height: Length::Fill,
             scroll_to: None,
+            scroll_duration: theme.motion.scroll,
         }
     }
 
@@ -186,13 +191,18 @@ where
 }
 
 impl State {
-    pub fn offset(&self, bounds: Rectangle, content_bounds: Size) -> Vector {
+    pub fn offset(
+        &self,
+        bounds: Rectangle,
+        content_bounds: Size,
+        scroll_duration: Duration,
+    ) -> Vector {
         if let Some(animation) = self.scroll_animation {
             let percentage = {
                 let percentage = Instant::now()
                     .duration_since(animation.start_time)
                     .as_millis() as f32
-                    / SCROLL_ANIMATION_DURATION.as_millis() as f32;
+                    / scroll_duration.as_millis() as f32;
                 ease(EaseInOutCubic, 0.0, 1.0, percentage.min(1.0))
             };
 
@@ -212,9 +222,9 @@ impl State {
         }
     }
 
-    pub fn cleanup_old_animations(&mut self) {
+    pub fn cleanup_old_animations(&mut self, scroll_duration: Duration) {
         if let Some(animation) = self.scroll_animation.as_ref()
-            && Instant::now().duration_since(animation.start_time) > SCROLL_ANIMATION_DURATION
+            && Instant::now().duration_since(animation.start_time) > scroll_duration
         {
             self.scroll_animation.take();
         }
@@ -425,6 +435,10 @@ where
         let num_elements = self.elements.len();
 
         let mut bounds = layout.bounds();
+        // MERGE: upstream now paints the tab-strip background as Color::TRANSPARENT so the
+        // frosted-glass blur behind the stack shows through. Our tab strip never painted a
+        // background at all, so that is already the effective behaviour — the cosmic
+        // Catalog::style/draw_background call is dropped rather than ported.
         let content_bounds =
             layout
                 .children()
@@ -453,7 +467,7 @@ where
             );
         }
 
-        let offset = state.offset(bounds, content_bounds);
+        let offset = state.offset(bounds, content_bounds, self.scroll_duration);
 
         // Draw tabs in a clipped layer with scroll offset
         renderer.with_layer(bounds, |renderer| {
@@ -505,7 +519,7 @@ where
         let content_layout = layout.children().next().unwrap();
         let content_bounds = content_layout.bounds();
 
-        state.cleanup_old_animations();
+        state.cleanup_old_animations(self.scroll_duration);
 
         operation.scrollable(
             self.id.as_ref(),
@@ -539,7 +553,7 @@ where
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_mut::<State>();
-        state.cleanup_old_animations();
+        state.cleanup_old_animations(self.scroll_duration);
         let num_elements = self.elements.len();
 
         let mut bounds = layout.bounds();
@@ -558,7 +572,7 @@ where
             bounds.x += 30.;
             bounds.width -= 64.;
         }
-        let offset = state.offset(bounds, content_bounds);
+        let offset = state.offset(bounds, content_bounds, self.scroll_duration);
 
         // Handle scroll_to
         if let Some(idx) = self.scroll_to {
@@ -714,7 +728,7 @@ where
             bounds.width -= 64.;
             bounds.x += 30.;
         }
-        let offset = state.offset(bounds, content_bounds);
+        let offset = state.offset(bounds, content_bounds, self.scroll_duration);
 
         self.elements[2..num_elements - 2]
             .iter()

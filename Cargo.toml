@@ -3,8 +3,8 @@ authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
 name = "cosmic-comp"
-version = "1.28.6"
-rust-version = "1.90"
+version = "1.34.1"
+rust-version = "1.93"
 
 [workspace]
 members = ["cosmic-comp-config"]
@@ -28,7 +28,7 @@ cosmic-settings-config = { git = "https://github.com/pop-os/cosmic-settings-daem
 cosmic-settings-daemon-config = { git = "https://github.com/pop-os/cosmic-settings-daemon", features = [
     "greeter",
 ] }
-cosmic-text = { git = "https://github.com/pop-os/cosmic-text.git", features = [
+cosmic-text = { version = "0.19", features = [
     "shape-run-cache",
 ] }
 dirs = "6"
@@ -66,8 +66,14 @@ thiserror = "2.0.18"
 jiff = "0.2"
 tiny-skia = "0.11"
 tracing = { version = "0.1.44", features = [
-    "max_level_debug",
-    "release_max_level_info",
+    "max_level_trace",
+    # Was `release_max_level_info`, which COMPILED OUT every debug!/trace! in
+    # release builds — making the game-mode/window instrumentation (target:
+    # GAMING_TARGET) invisible on the device even with COSMIC_GAME_TRACE set.
+    # `trace` keeps every callsite in the binary; the runtime EnvFilter (default
+    # warn for cosmic_comp/smithay, `gaming` lifted only by COSMIC_GAME_TRACE)
+    # still gates what is actually emitted, so normal runs stay quiet.
+    "release_max_level_trace",
 ] }
 tracing-journald = "0.3.2"
 tracing-subscriber = { version = "0.3.22", features = [
@@ -92,7 +98,8 @@ parking_lot = "0.12.5"
 logind-zbus = { version = "5.3.2", optional = true }
 futures-executor = { version = "0.3.32" }
 futures-util = "0.3.32"
-cgmath = "0.18.0"
+glam = { version = "0.33", default-features = false, features = ["std"] }
+smallvec = "1.15.2"
 
 [dependencies.id_tree]
 branch = "feature/copy_clone"
@@ -127,6 +134,9 @@ optional = true
 [features]
 debug = ["egui", "egui_plot", "smithay-egui", "anyhow/backtrace"]
 default = ["systemd"]
+# Runtime detection of parking_lot lock cycles (see utils::deadlock). Adds
+# bookkeeping to every lock acquisition, so keep it out of release builds.
+deadlock-detection = ["parking_lot/deadlock_detection"]
 stacking = []
 logind = ["logind-zbus"]
 systemd = ["libsystemd", "logind"]
@@ -150,7 +160,9 @@ inherits = "release"
 lto = "fat"
 
 [patch."https://github.com/pop-os/cosmic-protocols"]
-cosmic-protocols = { git = "https://github.com/playtron-os//cosmic-protocols", rev = "badeb0e" }
+# Our force_close commit rebased onto pop-os main, which upstream cosmic-comp
+# requires for the newer corner-radius API.
+cosmic-protocols = { git = "https://github.com/playtron-os/cosmic-protocols", branch = "main" }
 [patch."https://github.com/pop-os/libcosmic/"]
 cosmic-config = { git = "https://github.com/playtron-os/libcosmic.git" }
 cosmic-config-derive = { git = "https://github.com/playtron-os/libcosmic.git" }

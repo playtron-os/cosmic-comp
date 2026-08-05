@@ -105,14 +105,21 @@ rpm: all
 
 run-debug:
 	WAYLAND_DISPLAY=wayland-2 \
+	COSMIC_BACKEND=kms \
 	COSMIC_COMP_LOG=warn,cosmic_comp::shell::layout=debug,cosmic_comp::shell::layout::floating=debug,cosmic_comp::backend::render=debug,cosmic_comp::wayland::handlers::surface_embed=info,cosmic_comp::backend::kms=debug,cosmic_comp::shell=debug,cosmic_comp::shell::workspace=debug,cosmic_comp::backend::kms::surface=debug,cosmic_comp::xwayland=debug,smithay::xwayland=debug \
-	stdbuf -oL cargo run --features debug 2>&1 \
+	dbus-run-session --config-file=$(CURDIR)/scripts/game-mode-session.conf -- sh -c 'echo "GAMEMODE_BUS=$$DBUS_SESSION_BUS_ADDRESS"; exec stdbuf -oL cargo run --features debug' 2>&1 \
 	| stdbuf -oL sed -r 's/\x1B\[[0-9;]*[A-Za-z]//g' \
 	| stdbuf -oL grep -v 'smithay::backend::renderer::gles' \
 	| tee test.log
 
 # Deploy to a remote device for testing.
 # Usage: make deploy HOST=user@hostname
+#
+# The device's sudo password is read interactively, or taken from SUDO_PASS when
+# set -- which is required when stdin is not a terminal (an IDE task runner, CI),
+# since the interactive read would otherwise get EOF and send an empty password:
+#   SUDO_PASS=... make deploy HOST=user@hostname
+# Better still, give the device passwordless sudo for this and skip it entirely.
 REMOTE_BIN = /usr/bin/$(BINARY)
 HOST ?=
 
@@ -120,13 +127,19 @@ deploy:
 ifndef HOST
 	$(error HOST is required. Usage: make deploy HOST=user@hostname)
 endif
-	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	@if [ -z "$$SUDO_PASS" ]; then \
+	  read -s -p "Enter sudo password for $(HOST): " SUDO_PASS || true; echo; \
+	fi; \
+	if [ -z "$$SUDO_PASS" ]; then \
+	  echo "no sudo password: pass SUDO_PASS=... (needed when stdin is not a terminal)" >&2; \
+	  exit 1; \
+	fi && \
 	cargo build && \
 	echo "Stripping debug symbols..." && \
 	strip -o "$(CARGO_TARGET_DIR)/debug/$(BINARY).stripped" "$(CARGO_TARGET_DIR)/debug/$(BINARY)" && \
 	echo "Deploying $(BINARY) to $(HOST):$(REMOTE_BIN)..." && \
 	scp -C "$(CARGO_TARGET_DIR)/debug/$(BINARY).stripped" "$(HOST):/tmp/$(BINARY)" && \
-	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	printf '%s\n' "$$SUDO_PASS" | ssh $(HOST) "sudo -S sh -c 'install -m0755 /tmp/$(BINARY) $(REMOTE_BIN) && { command -v restorecon >/dev/null 2>&1 && restorecon -v $(REMOTE_BIN) || true; } && { pkill -x $(BINARY) || true; }'" && \
 	echo "Done. Compositor restarted on $(HOST)."
 
 # Deploy a profiling build (release optimizations + debug symbols).
@@ -136,11 +149,17 @@ deploy-profile:
 ifndef HOST
 	$(error HOST is required. Usage: make deploy-profile HOST=user@hostname)
 endif
-	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	@if [ -z "$$SUDO_PASS" ]; then \
+	  read -s -p "Enter sudo password for $(HOST): " SUDO_PASS || true; echo; \
+	fi; \
+	if [ -z "$$SUDO_PASS" ]; then \
+	  echo "no sudo password: pass SUDO_PASS=... (needed when stdin is not a terminal)" >&2; \
+	  exit 1; \
+	fi && \
 	cargo build --profile fastdebug && \
 	echo "Deploying $(BINARY) (fastdebug) to $(HOST):$(REMOTE_BIN)..." && \
 	scp -C "$(CARGO_TARGET_DIR)/fastdebug/$(BINARY)" "$(HOST):/tmp/$(BINARY)" && \
-	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	printf '%s\n' "$$SUDO_PASS" | ssh $(HOST) "sudo -S sh -c 'install -m0755 /tmp/$(BINARY) $(REMOTE_BIN) && { command -v restorecon >/dev/null 2>&1 && restorecon -v $(REMOTE_BIN) || true; } && { pkill -x $(BINARY) || true; }'" && \
 	echo "Done. Compositor restarted on $(HOST) (fastdebug profile)."
 
 # Deploy a release build (fully optimized, stripped).
@@ -149,11 +168,17 @@ deploy-release:
 ifndef HOST
 	$(error HOST is required. Usage: make deploy-release HOST=user@hostname)
 endif
-	@read -s -p "Enter sudo password for $(HOST): " SUDO_PASS && echo && \
+	@if [ -z "$$SUDO_PASS" ]; then \
+	  read -s -p "Enter sudo password for $(HOST): " SUDO_PASS || true; echo; \
+	fi; \
+	if [ -z "$$SUDO_PASS" ]; then \
+	  echo "no sudo password: pass SUDO_PASS=... (needed when stdin is not a terminal)" >&2; \
+	  exit 1; \
+	fi && \
 	cargo build --release && \
 	echo "Stripping debug symbols..." && \
 	strip -o "$(CARGO_TARGET_DIR)/release/$(BINARY).stripped" "$(CARGO_TARGET_DIR)/release/$(BINARY)" && \
 	echo "Deploying $(BINARY) (release) to $(HOST):$(REMOTE_BIN)..." && \
 	scp -C "$(CARGO_TARGET_DIR)/release/$(BINARY).stripped" "$(HOST):/tmp/$(BINARY)" && \
-	ssh $(HOST) "echo $$SUDO_PASS | sudo -S mv /tmp/$(BINARY) $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S chmod 0755 $(REMOTE_BIN) && echo $$SUDO_PASS | sudo -S pkill $(BINARY)" && \
+	printf '%s\n' "$$SUDO_PASS" | ssh $(HOST) "sudo -S sh -c 'install -m0755 /tmp/$(BINARY) $(REMOTE_BIN) && { command -v restorecon >/dev/null 2>&1 && restorecon -v $(REMOTE_BIN) || true; } && { pkill -x $(BINARY) || true; }'" && \
 	echo "Done. Compositor restarted on $(HOST) (release profile)."

@@ -23,7 +23,11 @@ pub fn home_enabled() -> bool {
 }
 
 use crate::{
-    shell::{focus::FocusTarget, grabs::fullscreen_items, layout::tiling::PlaceholderType},
+    shell::{
+        element::CosmicStack, focus::FocusTarget, grabs::fullscreen_items,
+        layout::tiling::PlaceholderType,
+    },
+    utils,
     wayland::{
         handlers::data_device::{self, get_dnd_icon},
         protocols::workspace::{State as WState, WorkspaceCapabilities},
@@ -78,7 +82,7 @@ use tracing::error;
 use crate::{
     backend::render::animations::spring::{Spring, SpringParams},
     config::Config,
-    utils::{prelude::*, quirks::WORKSPACE_OVERVIEW_NAMESPACE},
+    utils::{prelude::*, process::workspaces_enabled, quirks::WORKSPACE_OVERVIEW_NAMESPACE},
     wayland::{
         handlers::{
             toplevel_management::minimize_rectangle, xdg_activation::ActivationContext,
@@ -97,7 +101,6 @@ use crate::{
 };
 
 pub mod auto_hide;
-pub mod ease;
 pub mod element;
 pub mod focus;
 pub mod grabs;
@@ -115,9 +118,8 @@ use self::zoom::{OutputZoomState, ZoomState};
 
 use self::{
     element::{
-        CosmicWindow, MaximizedState,
-        resize_indicator::{ResizeIndicator, resize_indicator},
-        swap_indicator::{SwapIndicator, swap_indicator},
+        CosmicWindow, MaximizedState, resize_indicator::ResizeIndicator,
+        swap_indicator::SwapIndicator,
     },
     focus::target::{KeyboardFocusTarget, PointerFocusTarget},
     grabs::{
@@ -130,9 +132,7 @@ use self::{
     },
 };
 
-const ANIMATION_DURATION: Duration = Duration::from_millis(200);
 const LAYER_FADE_IN_DURATION: Duration = Duration::from_millis(200);
-const LAYER_FADE_OUT_DURATION: Duration = Duration::from_millis(100);
 /// Compositor-owned ext-session-lock UNLOCK fade-out
 const UNLOCK_FADE_DURATION: Duration = Duration::from_millis(250);
 
@@ -151,6 +151,12 @@ const MOVE_GRAB_Y_OFFSET: f64 = 16.;
 /// When dragging a zone-filling window, shrink it to this fraction of the zone.
 const DRAG_UNMAXIMIZE_FRACTION: (i32, i32) = (2, 3);
 const ACTIVATION_TOKEN_EXPIRE_TIME: Duration = Duration::from_secs(5);
+/// How many entrance-animation durations a layer surface may wait for real
+/// content before it animates in over whatever it has. Expressed against the
+/// animation's own duration so it tracks the motion token, and generous enough
+/// that a client rendering its first real frame (~220ms in practice) is never
+/// cut short.
+const PENDING_CONTENT_TIMEOUT_FACTOR: u32 = 4;
 
 #[derive(Debug, Clone)]
 pub enum Trigger {
@@ -169,17 +175,17 @@ pub enum OverviewMode {
 }
 
 impl OverviewMode {
-    pub fn alpha(&self) -> Option<f32> {
+    pub fn alpha(&self, animation: Duration) -> Option<f32> {
         match self {
             OverviewMode::Started(_, start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 Some(ease(EaseInOutCubic, 0.0, 1.0, percentage))
             }
             OverviewMode::Active(_) => Some(1.0),
             OverviewMode::Ended(_, end) => {
                 let percentage = Instant::now().duration_since(*end).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 if percentage < 1.0 {
                     Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
                 } else {
@@ -222,17 +228,17 @@ pub enum ResizeMode {
 }
 
 impl ResizeMode {
-    pub fn alpha(&self) -> Option<f32> {
+    pub fn alpha(&self, animation: Duration) -> Option<f32> {
         match self {
             ResizeMode::Started(_, start, _) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 Some(ease(EaseInOutCubic, 0.0, 1.0, percentage))
             }
             ResizeMode::Active(_, _) => Some(1.0),
             ResizeMode::Ended(end, _) => {
                 let percentage = Instant::now().duration_since(*end).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 if percentage < 1.0 {
                     Some(ease(EaseInOutCubic, 1.0, 0.0, percentage))
                 } else {
@@ -277,18 +283,18 @@ pub enum HomeMode {
 
 impl HomeMode {
     /// Returns the current opacity for home-only surfaces (0.0 = hidden, 1.0 = visible)
-    pub fn alpha(&self) -> f32 {
+    pub fn alpha(&self, animation: Duration) -> f32 {
         match self {
             HomeMode::None => 0.0,
             HomeMode::FadingIn(start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 ease(EaseInOutCubic, 0.0, 1.0, percentage.min(1.0))
             }
             HomeMode::Active => 1.0,
             HomeMode::FadingOut(start) => {
                 let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / ANIMATION_DURATION.as_millis() as f32;
+                    / animation.as_millis() as f32;
                 ease(EaseInOutCubic, 1.0, 0.0, percentage.min(1.0))
             }
         }
@@ -300,23 +306,23 @@ impl HomeMode {
     }
 
     /// Returns true if an animation is in progress
-    pub fn is_animating(&self) -> bool {
+    pub fn is_animating(&self, animation: Duration) -> bool {
         match self {
             HomeMode::FadingIn(start) | HomeMode::FadingOut(start) => {
-                Instant::now().duration_since(*start) < ANIMATION_DURATION
+                Instant::now().duration_since(*start) < animation
             }
             _ => false,
         }
     }
 
     /// Start transition to home mode
-    pub fn enter(&mut self) {
+    pub fn enter(&mut self, animation: Duration) {
         match self {
             HomeMode::None => *self = HomeMode::FadingIn(Instant::now()),
             HomeMode::FadingOut(start) => {
                 // Reverse the animation from current position
                 let elapsed = Instant::now().duration_since(*start);
-                let remaining = ANIMATION_DURATION.saturating_sub(elapsed);
+                let remaining = animation.saturating_sub(elapsed);
                 *self = HomeMode::FadingIn(Instant::now() - remaining);
             }
             _ => {} // Already active or fading in
@@ -324,13 +330,13 @@ impl HomeMode {
     }
 
     /// Start transition out of home mode
-    pub fn exit(&mut self) {
+    pub fn exit(&mut self, animation: Duration) {
         match self {
             HomeMode::Active => *self = HomeMode::FadingOut(Instant::now()),
             HomeMode::FadingIn(start) => {
                 // Reverse the animation from current position
                 let elapsed = Instant::now().duration_since(*start);
-                let remaining = ANIMATION_DURATION.saturating_sub(elapsed);
+                let remaining = animation.saturating_sub(elapsed);
                 *self = HomeMode::FadingOut(Instant::now() - remaining);
             }
             _ => {} // Already none or fading out
@@ -338,15 +344,15 @@ impl HomeMode {
     }
 
     /// Update animation state, transitioning to final state when complete
-    pub fn update(&mut self) {
+    pub fn update(&mut self, animation: Duration) {
         match self {
             HomeMode::FadingIn(start) => {
-                if Instant::now().duration_since(*start) >= ANIMATION_DURATION {
+                if Instant::now().duration_since(*start) >= animation {
                     *self = HomeMode::Active;
                 }
             }
             HomeMode::FadingOut(start) => {
-                if Instant::now().duration_since(*start) >= ANIMATION_DURATION {
+                if Instant::now().duration_since(*start) >= animation {
                     *self = HomeMode::None;
                 }
             }
@@ -667,10 +673,47 @@ pub struct GameMode {
     pub active: bool,
     /// The Steam app id (`STEAM_GAME`) currently in game mode.
     pub app_id: Option<u32>,
+    /// Pid of the process that launches games (the session manager). A game it
+    /// spawns is a descendant of it, which lets a brand-new game window be
+    /// recognized as game mode's at MAP time — before it has been tagged — and
+    /// placed on the game-mode output rather than under the cursor.
+    ///
+    /// Currently always `None`: it cannot be resolved from the D-Bus caller,
+    /// because asking the bus mid-method deadlocks the interface. The session
+    /// manager has to supply it explicitly. Until then `game_mode_claims` matches
+    /// on the game's own process tree only, which covers a running game's dialogs
+    /// but not a game being launched fresh.
+    pub controller_pid: Option<u32>,
+    /// Base-layer priority published by the session manager on the X11 root
+    /// (`GAMESCOPECTRL_BASELAYER_APPID`), highest priority FIRST.
+    ///
+    /// This is how the session manager expresses stacking without focusing
+    /// anything: a window whose app id appears earlier in the list is stacked
+    /// above one that appears later, so e.g. a custom webview shown over a
+    /// running game sorts ahead of the game while the game keeps rendering
+    /// behind it. Empty when the property is unset, in which case adoption
+    /// order alone decides.
+    pub baselayer_appids: Vec<u32>,
     /// The game surface we fullscreened, so we can un-fullscreen it on exit.
     pub game_surface: Option<CosmicSurface>,
-    /// Windows we minimized on entry, restored verbatim on exit.
-    pub minimized: Vec<CosmicSurface>,
+    /// Windows that belong WITH the adopted game and are therefore allowed to
+    /// render above it under strict control: its own dialogs, launcher/EULA
+    /// windows and in-prefix login/browser windows. Membership is an allowlist
+    /// rooted at `game_surface` (same `STEAM_GAME` id, same pid, or a
+    /// direct `WM_TRANSIENT_FOR` pointing at it), so an unrelated window —
+    /// including a game that raw-fullscreens itself before being adopted — stays
+    /// hidden. FRONT-TO-BACK (topmost first), matching `Workspace::mapped()`;
+    /// recomputed by `refresh_game_mode_state`.
+    pub children: Vec<CosmicSurface>,
+    /// The output the game is fullscreened on — display caps (refresh rate, VRR
+    /// / tearing support, external) are reported for THIS output, not just the
+    /// first one, so they're correct on multi-monitor setups.
+    pub output: Option<Output>,
+    /// The desktop workspace game mode was first entered from, restored on a full
+    /// exit. Each game-mode app is fullscreened on its own (clean, auto-reaped)
+    /// workspace and switching between apps is a workspace switch, so nothing is
+    /// minimized; this only records where "normal desktop" was.
+    pub home_workspace: Option<WorkspaceHandle>,
     /// Set when entry was requested but no window carrying that app id was mapped
     /// yet; resolved by `try_resolve_pending_game_mode` (the refresh tick and the
     /// `STEAM_GAME` property hook) once a matching window appears.
@@ -689,6 +732,13 @@ pub struct GameMode {
     /// `STEAM_INPUT_FOCUS` or `SetOverlay(blocking)`), so it can be released
     /// cleanly. Reset by `GameMode::default()` on exit.
     pub input_grab: Option<CosmicSurface>,
+    /// While an overlay is up (`SetOverlay(true)`), the surface to composite
+    /// over the game — the launcher (or a client overlay) window, resolved in
+    /// `refresh_overlay_visible`. The render path stacks it above the game with
+    /// its own per-pixel alpha (transparent except its panel), so the game shows
+    /// through. Keyboard input to a blocking overlay is handled separately by the
+    /// input grab; a non-blocking overlay just renders.
+    pub overlay_surface: Option<CosmicSurface>,
 }
 
 #[derive(Debug)]
@@ -761,6 +811,24 @@ pub struct Shell {
     /// game-mode D-Bus bridge so `AppFrametimeNs` (Auto-TDP) reads live values.
     /// Wired in `State::new` after the bridge is created; 0 when no game runs.
     pub game_mode_frametime_ns: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the game's output supports async-flip tearing — a device cap only
+    /// the KMS surface thread can probe (`c.supports_tearing()`); it writes this
+    /// each frame for the game's output, read back for `TearingSupported`.
+    pub game_mode_tearing_supported: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Latched by the KMS surface thread when a game-mode upscale (`scale_to`)
+    /// failed to land on a DRM plane and had to composite (`primary_element ==
+    /// Swapchain`) — detected only for a settled game on its own output with no
+    /// overlay up. Game mode reads it to stop requesting the scale (letterbox
+    /// instead of composited-to-black). Reset on entering game mode, so a new
+    /// game / an app switch re-tries the scale.
+    pub game_mode_scale_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Render resolution + scaling mode requested for the game (`SetScaling`).
+    ///
+    /// A non-zero size is a RESOLUTION SPOOF: the game is configured to render at
+    /// that size rather than the output's, and the result is scaled up to the
+    /// output using `mode`. Zero size keeps the game at output resolution and only
+    /// the mode applies (to a game that renders smaller by itself).
+    pub game_mode_scaling: (u32, u32, crate::dbus::game_mode::ScalingMode),
     appearance_conf: AppearanceConfig,
     tiling_exceptions: TilingExceptions,
     /// Home mode state for animation (fading in/out of home screen)
@@ -814,9 +882,11 @@ pub struct Shell {
 
     /// Layer surfaces currently fading in (surface ObjectId -> map instant)
     layer_fade_in: std::collections::HashMap<ObjectId, Instant>,
-    /// Layer surfaces waiting for a buffer commit before starting their fade-in.
-    /// Moved to `layer_fade_in` when the surface next commits a buffer.
-    pending_layer_fade_in: std::collections::HashSet<ObjectId>,
+    /// Layer surfaces waiting for a buffer commit before starting their fade-in,
+    /// with the instant they started waiting. Moved to `layer_fade_in` when the
+    /// surface commits a buffer with real content (see
+    /// [`Shell::activate_pending_fade_in`]).
+    pending_layer_fade_in: std::collections::HashMap<ObjectId, Instant>,
     /// Layer surfaces currently fading out (surface ObjectId -> start instant).
     /// While fading out, the surface remains visible with decreasing alpha.
     /// When the animation completes, moved to `hidden_surfaces`.
@@ -879,9 +949,10 @@ pub struct Shell {
     pub layer_opens: Vec<layer_open::LayerOpen>,
     /// Surfaces that will play the open animation but are waiting for their first
     /// buffer commit (auto_size geometry is 0 until then, and a re-shown surface
-    /// must render its first frame before it fades in). Moved to `layer_opens`
-    /// when the surface next commits a buffer (see `activate_pending_fade_in`).
-    pending_layer_opens: std::collections::HashSet<ObjectId>,
+    /// must render its first frame before it fades in), with the instant they
+    /// started waiting. Moved to `layer_opens` when the surface commits a buffer
+    /// with real content (see `activate_pending_fade_in`).
+    pending_layer_opens: std::collections::HashMap<ObjectId, Instant>,
 
     /// Layer surfaces currently playing the compositor-side CLOSE animation (the
     /// reverse of the open: 160ms easeInOut slide-down + scale-down + fade-out).
@@ -934,6 +1005,11 @@ pub enum WorkspaceDelta {
         spring: Spring,
         forward: bool,
     },
+    /// Time-driven cross-fade (no slide): the outgoing workspace stays opaque and
+    /// the incoming one fades in over it. Used for the game-mode launcher<->game
+    /// switch, where each workspace is a single fullscreen surface (so alpha
+    /// blending is exact, with no overlapping-window double-exposure).
+    Crossfade(Instant),
     // InvalidGesture(f64), TODO
     // InvalidGestureEnd(Instant, Spring), TODO
 }
@@ -946,8 +1022,7 @@ impl WorkspaceDelta {
         }
     }
 
-    pub fn new_gesture_end(delta: f64, velocity: f64, forward: bool) -> Self {
-        let params: SpringParams = SpringParams::new(1.0, 1000.0, 0.0001);
+    pub fn new_gesture_end(delta: f64, velocity: f64, forward: bool, params: SpringParams) -> Self {
         WorkspaceDelta::GestureEnd {
             start: Instant::now(),
             forward,
@@ -964,10 +1039,16 @@ impl WorkspaceDelta {
         WorkspaceDelta::Shortcut(Instant::now())
     }
 
+    pub fn new_crossfade() -> Self {
+        WorkspaceDelta::Crossfade(Instant::now())
+    }
+
     pub fn is_animating(&self) -> bool {
         matches!(
             self,
-            WorkspaceDelta::Shortcut(_) | WorkspaceDelta::GestureEnd { .. }
+            WorkspaceDelta::Shortcut(_)
+                | WorkspaceDelta::GestureEnd { .. }
+                | WorkspaceDelta::Crossfade(_)
         )
     }
 }
@@ -1071,38 +1152,80 @@ fn create_workspace_from_pinned(
     )
 }
 
-/* We will probably need this again at some point
+/// Fold `workspace` into `into`, moving every window across and dropping the now-empty
+/// workspace from the protocol.
+///
+/// Both workspaces must already sit on the same output: call [`Workspace::set_output`] on
+/// `workspace` first, so the per-output toplevel bookkeeping is already correct by the time
+/// we get here.
 fn merge_workspaces(
     mut workspace: Workspace,
     into: &mut Workspace,
     workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
-    toplevel_info_state: &mut ToplevelInfoState<State, CosmicSurface>,
+    seats: &[Seat<State>],
 ) {
-    if into.fullscreen.is_some() {
-        // Don't handle the returned original workspace, for this nieche case.
-        let _ = workspace.remove_fullscreen();
-    }
-
+    // Re-parent the toplevel -> workspace association for everything we are about to move.
+    // Collect first and de-duplicate: a maximized tiled window is mapped in both layers, and a
+    // surface part-way through un-fullscreening is in `fullscreen_surfaces` as well as its
+    // layer. `toplevel_enter_workspace` is a bare `Vec::push` with no dedup of its own, so
+    // visiting a surface twice would emit `ext_workspace_enter` twice for it.
+    let mut moving = Vec::new();
+    let note = |toplevel: CosmicSurface, moving: &mut Vec<CosmicSurface>| {
+        if !moving.contains(&toplevel) {
+            moving.push(toplevel);
+        }
+    };
     for element in workspace.mapped() {
-        // fixup toplevel state
         for (toplevel, _) in element.windows() {
-            toplevel_info_state.toplevel_leave_workspace(&toplevel, &workspace.handle);
-            toplevel_info_state.toplevel_enter_workspace(&toplevel, &into.handle);
+            note(toplevel, &mut moving);
         }
     }
-    // Merge minimized windows, updating toplevel workspace tracking
     for minimized in &workspace.minimized_windows {
         for toplevel in minimized.windows() {
-            toplevel_info_state.toplevel_leave_workspace(&toplevel, &workspace.handle);
-            toplevel_info_state.toplevel_enter_workspace(&toplevel, &into.handle);
+            note(toplevel, &mut moving);
         }
     }
-    into.minimized_windows.extend(workspace.minimized_windows.drain(..));
+    for fullscreen in &workspace.fullscreen_surfaces {
+        note(fullscreen.surface.clone(), &mut moving);
+    }
+    for toplevel in &moving {
+        toplevel_leave_workspace(toplevel, &workspace.handle);
+        toplevel_enter_workspace(toplevel, &into.handle);
+    }
+
+    // Carry the per-seat focus history across. Without this the moved windows are absent from
+    // `into`'s focus stack, and every lookup that resolves through it - `get_fullscreen` most
+    // notably - stops finding them. `FocusStack::iter` yields newest-first and `append` pushes
+    // onto the top, so walk it in reverse to preserve the relative order.
+    for seat in seats {
+        let previous = workspace
+            .focus_stack
+            .get(seat)
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        // Whatever held the top of `into`'s stack keeps it. `Workspace::render` gates the
+        // fullscreen render path on `focus_stack.last()`, so letting the departing output's
+        // most-recent window win would drop a live fullscreen - a game, in practice - behind
+        // the windows we just merged in.
+        let keep_on_top = into.focus_stack.get(seat).last().cloned();
+        let mut stack = into.focus_stack.get_mut(seat);
+        for target in previous.into_iter().rev() {
+            stack.append(target);
+        }
+        if let Some(target) = keep_on_top {
+            stack.append(target);
+        }
+    }
+
+    into.minimized_windows
+        .append(&mut workspace.minimized_windows);
+    into.fullscreen_surfaces
+        .append(&mut workspace.fullscreen_surfaces);
     into.tiling_layer.merge(workspace.tiling_layer);
     into.floating_layer.merge(workspace.floating_layer);
     workspace_state.remove_workspace(workspace.handle);
 }
-*/
 
 impl WorkspaceSet {
     fn new(
@@ -1151,12 +1274,25 @@ impl WorkspaceSet {
             state.remove_workspace_state(&self.workspaces[old_active].handle, WState::Urgent);
             state.remove_workspace_state(&self.workspaces[idx].handle, WState::Urgent);
             state.add_workspace_state(&self.workspaces[idx].handle, WState::Active);
+            let dbg_crossfade = matches!(workspace_delta, WorkspaceDelta::Crossfade(_));
             self.previously_active = if animate {
                 Some((old_active, workspace_delta))
             } else {
                 None
             };
             self.active = idx;
+            // Grey-slide anchor (bug 1): the moment a slide/crossfade to another
+            // workspace begins. If the incoming workspace's game surface has no first
+            // frame yet, this is when the empty grey workspace starts animating in.
+            tracing::debug!(
+                target: crate::logger::GAMING_TARGET,
+                output = %self.output.name(),
+                from = old_active,
+                to = idx,
+                crossfade = dbg_crossfade,
+                animate,
+                "workspace transition start"
+            );
             Ok(true)
         } else {
             // snap to workspace, when in between workspaces due to swipe gesture
@@ -1215,7 +1351,7 @@ impl WorkspaceSet {
             match start {
                 WorkspaceDelta::Shortcut(st) => {
                     if Instant::now().duration_since(st).as_millis() as f32
-                        >= ANIMATION_DURATION.as_millis() as f32
+                        >= self.theme.motion.animation.as_millis() as f32
                     {
                         self.previously_active = None;
                     }
@@ -1223,6 +1359,13 @@ impl WorkspaceSet {
                 WorkspaceDelta::GestureEnd { start, spring, .. } => {
                     if Instant::now().duration_since(start).as_millis()
                         > spring.duration().as_millis()
+                    {
+                        self.previously_active = None;
+                    }
+                }
+                WorkspaceDelta::Crossfade(st) => {
+                    if Instant::now().duration_since(st).as_millis() as f32
+                        >= self.theme.motion.slide_crossfade.as_millis() as f32
                     {
                         self.previously_active = None;
                     }
@@ -1553,6 +1696,8 @@ impl Workspaces {
             return;
         }
 
+        let seats = seats.cloned().collect::<Vec<_>>();
+
         if let Some(set) = self.sets.shift_remove(output) {
             {
                 let map = layer_map_for_output(output);
@@ -1566,7 +1711,7 @@ impl Workspaces {
             // and hope enumeration order works in our favor.
             let new_output = self.sets.get_index(0).map(|(o, _)| o.clone());
             if let Some(new_output) = new_output {
-                for seat in seats {
+                for seat in &seats {
                     if &seat.active_output() == output {
                         seat.set_active_output(&new_output);
                     }
@@ -1580,6 +1725,22 @@ impl Workspaces {
                 for (i, mut workspace) in set.workspaces.into_iter().enumerate() {
                     if workspace.can_auto_remove(xdg_activation_state) {
                         workspace_state.remove_workspace(workspace.handle);
+                    } else if !workspaces_enabled() && !new_set.workspaces.is_empty() {
+                        // Workspaces are disabled for this product (no `cosmic-workspaces`
+                        // installed), so unplugging an output must not leave a second
+                        // window-bearing workspace behind on the surviving one. Fold the
+                        // windows into its active workspace instead of appending the whole
+                        // workspace, which is what used to strand the user on "workspace 2"
+                        // after a monitor round-trip.
+                        workspace.set_output(&new_output, false);
+                        let target = new_set.active.min(new_set.workspaces.len() - 1);
+                        merge_workspaces(
+                            workspace,
+                            &mut new_set.workspaces[target],
+                            workspace_state,
+                            &seats,
+                        );
+                        new_set.workspaces[target].refresh();
                     } else {
                         // update workspace protocol state
                         workspace_state.remove_workspace_state(&workspace.handle, WState::Active);
@@ -2054,9 +2215,11 @@ impl Workspaces {
                 w.tiling_layer.theme = theme.clone();
                 w.floating_layer.theme = theme.clone();
 
-                w.mapped().for_each(|m| {
-                    m.update_theme(theme.clone());
-                });
+                w.mapped()
+                    .chain(w.minimized_windows.iter().flat_map(|m| m.mapped()))
+                    .for_each(|m| {
+                        m.update_theme(theme.clone());
+                    });
             }
         }
 
@@ -2071,9 +2234,11 @@ impl Workspaces {
             s.sticky_layer.refresh();
 
             for w in &mut s.workspaces {
-                w.mapped().for_each(|m| {
-                    m.force_redraw();
-                });
+                w.mapped()
+                    .chain(w.minimized_windows.iter().flat_map(|m| m.mapped()))
+                    .for_each(|m| {
+                        m.force_redraw();
+                    });
 
                 w.refresh();
                 w.dirty.store(true, Ordering::Relaxed);
@@ -2161,12 +2326,31 @@ impl Workspaces {
 #[derive(Debug)]
 pub struct InvalidWorkspaceIndex;
 
+utils::id_gen!(next_output_id, OUTPUT_ID, OUTPUT_IDS);
+pub struct OutputId(usize);
+
+impl OutputId {
+    pub fn namespace_for_workspace(&self, idx: usize) -> usize {
+        self.0 | (idx << 32)
+    }
+}
+
+impl Drop for OutputId {
+    fn drop(&mut self) {
+        OUTPUT_IDS.lock().unwrap().remove(&self.0);
+    }
+}
+
 impl Common {
     pub fn add_output(&mut self, output: &Output) {
         let mut shell = self.shell.write();
         shell
             .workspaces
             .add_output(output, &mut self.workspace_state.update());
+
+        output
+            .user_data()
+            .insert_if_missing_threadsafe(|| OutputId(next_output_id()));
 
         if let Some(state) = shell.zoom_state.as_ref() {
             output.user_data().insert_if_missing_threadsafe(|| {
@@ -2197,6 +2381,13 @@ impl Common {
         );
 
         std::mem::drop(shell);
+
+        // MERGE: dropped the per-output blur-cache purge (clear_cached_layer_surfaces /
+        // clear_blur_textures_for_output / clear_layer_blur_textures_for_output). Those
+        // lived in our `backend::render::blur` module, which upstream's frosted-glass
+        // implementation replaces — it blits from the live framebuffer per frame and
+        // keeps no per-output texture cache, so there is nothing left to purge here.
+
         self.refresh(); // cleans up excess of workspaces and empty workspaces
     }
 
@@ -2369,6 +2560,13 @@ impl Shell {
             game_mode_fps_limit: 0,
             game_mode_vrr: crate::dbus::game_mode::VrrMode::Auto,
             game_mode_frametime_ns: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            game_mode_tearing_supported: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            game_mode_scaling: (0, 0, crate::dbus::game_mode::ScalingMode::Native),
+            game_mode_scale_rejected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
             tiling_exceptions,
             // Start in home mode only if HOME_ENABLED is set
             home_mode: if home_enabled() {
@@ -2390,7 +2588,7 @@ impl Shell {
 
             // Layer surface fade-in tracking
             layer_fade_in: std::collections::HashMap::new(),
-            pending_layer_fade_in: std::collections::HashSet::new(),
+            pending_layer_fade_in: std::collections::HashMap::new(),
             layer_fade_out: std::collections::HashMap::new(),
 
             // Layer surfaces that follow the cursor to whichever output
@@ -2415,7 +2613,7 @@ impl Shell {
 
             // Fade+rise open/close animations (the default layer transition)
             layer_opens: Vec::new(),
-            pending_layer_opens: std::collections::HashSet::new(),
+            pending_layer_opens: std::collections::HashMap::new(),
             layer_closes: Vec::new(),
             rise_surfaces: std::collections::HashSet::new(),
 
@@ -2496,6 +2694,8 @@ impl Shell {
         velocity: f64,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
+        // Snapshot the theme's window spring for the velocity-seeded release.
+        let window_spring = self.theme.motion.window_spring;
         let result =
             match &mut self.workspaces.mode {
                 WorkspaceMode::OutputBound => {
@@ -2524,6 +2724,7 @@ impl Shell {
                                         delta.abs(),
                                         velocity.abs(),
                                         forward,
+                                        window_spring,
                                     ),
                                     workspace_state,
                                 )?;
@@ -2533,6 +2734,7 @@ impl Shell {
                                         1.0 - delta.abs(),
                                         velocity.abs(),
                                         !forward,
+                                        window_spring,
                                     ),
                                     workspace_state,
                                 )?;
@@ -2566,6 +2768,7 @@ impl Shell {
                                         delta.abs(),
                                         velocity.abs(),
                                         forward,
+                                        window_spring,
                                     ),
                                     workspace_state,
                                 )?;
@@ -2575,6 +2778,7 @@ impl Shell {
                                         1.0 - delta.abs(),
                                         velocity.abs(),
                                         !forward,
+                                        window_spring,
                                     ),
                                     workspace_state,
                                 )?;
@@ -2591,6 +2795,99 @@ impl Shell {
         }
 
         result
+    }
+
+    /// Whether `pid` is `ancestor`, or descends from it.
+    ///
+    /// Walks `/proc/<pid>/stat`'s parent field upward. Bounded so a malformed or
+    /// cyclic chain cannot spin.
+    fn process_descends_from(pid: u32, ancestor: u32) -> bool {
+        let mut current = pid;
+        for _ in 0..32 {
+            if current == ancestor {
+                return true;
+            }
+            if current <= 1 {
+                return false;
+            }
+            // Field 4 of /proc/<pid>/stat is the parent pid. The comm field (2) can
+            // contain spaces and parentheses, so parse after the final ')'.
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{current}/stat")) else {
+                return false;
+            };
+            let Some(rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+                return false;
+            };
+            let Some(ppid) = rest.split_whitespace().nth(1).and_then(|p| p.parse().ok()) else {
+                return false;
+            };
+            current = ppid;
+        }
+        false
+    }
+
+    /// Whether a window that is being mapped belongs to game mode, and should
+    /// therefore be placed on the output game mode owns rather than wherever the
+    /// cursor happens to be.
+    ///
+    /// Checked at MAP time, so it cannot rely on `STEAM_GAME` — the session manager
+    /// tags a window only after it appears. Instead a window qualifies when it is
+    /// already tagged for the active app, or when its process descends from the
+    /// game (its own dialogs) or from the client driving game mode (the game that
+    /// client just launched).
+    pub fn game_mode_claims(&self, surface: &CosmicSurface) -> bool {
+        if !self.game_mode.active {
+            return false;
+        }
+        if self.game_mode.app_id.is_some_and(|app_id| {
+            app_id != 0 && crate::dbus::game_mode::app_id_of(surface) == app_id
+        }) {
+            return true;
+        }
+        let Some(pid) = surface.pid() else {
+            return false;
+        };
+        let base_pid = self.game_mode.game_surface.as_ref().and_then(|s| s.pid());
+        [base_pid, self.game_mode.controller_pid]
+            .into_iter()
+            .flatten()
+            .any(|ancestor| Self::process_descends_from(pid, ancestor))
+    }
+
+    /// Whether strict game-mode control would refuse to RENDER `surface`: game
+    /// mode is active and the surface shares the controlled surface's workspace
+    /// without being the controlled surface itself.
+    ///
+    /// Such a window draws nothing, so it must not be granted focus either — the
+    /// render path and the input path have to agree, otherwise the compositor
+    /// hands the keyboard to a window the user cannot see.
+    pub fn game_mode_hides(&self, surface: &CosmicSurface) -> bool {
+        if !self.game_mode.active {
+            return false;
+        }
+        let Some(controlled) = self.game_mode.game_surface.as_ref() else {
+            return false;
+        };
+        if controlled == surface {
+            return false;
+        }
+        // A window belonging WITH the game (its dialog, EULA or in-prefix login
+        // window) IS rendered above it, so it must stay focusable. Evaluated
+        // against the base rather than reading `GameMode::children`, which the
+        // ~150ms refresh tick has not rebuilt yet for a window that just mapped.
+        if self.game_mode.app_id.is_some_and(|app_id| {
+            crate::dbus::game_mode::is_game_child(controlled, app_id, surface)
+        }) {
+            return false;
+        }
+        // Only the controlled surface's own workspace is under strict control;
+        // other workspaces (even on the game's output) are a normal desktop.
+        self.workspaces.spaces().any(|ws| {
+            ws.get_fullscreen_surfaces()
+                .any(|f| &f.surface == controlled)
+                && (ws.get_fullscreen_surfaces().any(|f| &f.surface == surface)
+                    || ws.mapped().any(|m| &m.active_window() == surface))
+        })
     }
 
     pub fn active_space(&self, output: &Output) -> Option<&Workspace> {
@@ -3216,7 +3513,7 @@ impl Shell {
             self.resize_mode,
             ResizeMode::None | ResizeMode::Active(_, _)
         );
-        let home = self.home_mode.is_animating();
+        let home = self.home_mode.is_animating(self.theme.motion.animation);
         let voice = self.voice_mode.is_animating();
         let voice_orb = self.voice_orb_state.needs_continuous_render();
         let workspaces = self
@@ -3269,6 +3566,7 @@ impl Shell {
             || greeter_fade_in
             || login_fade
             || layer_resize
+            || crate::backend::render::wayland::blur_effect::blur_fade_in_flight()
     }
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
@@ -3280,7 +3578,7 @@ impl Shell {
             clients.extend(workspace.update_animations());
         }
         // Update home mode animation
-        self.home_mode.update();
+        self.home_mode.update(self.theme.motion.animation);
         // Update voice mode fade animation and coordinate orb showing/hiding
         self.update_voice_mode_fade();
         // Update voice orb animation - track if shrinking_from_attached just completed
@@ -3343,9 +3641,9 @@ impl Shell {
         // Clean up completed open animations
         self.cleanup_layer_opens();
         // Complete close animations (moves to hidden_surfaces)
-        let completed_closes = self.cleanup_layer_closes();
+        self.cleanup_layer_closes();
         // Complete layer surface fade-outs (moves to hidden_surfaces)
-        let completed_fade_outs = self.cleanup_layer_fade_outs();
+        self.cleanup_layer_fade_outs();
         // Finish the compositor-owned unlock fade-out + drop its snapshot textures
         self.cleanup_unlock_fade();
         // Finish the compositor-owned LOGIN greeter crossfade + drop its snapshot textures
@@ -3356,15 +3654,9 @@ impl Shell {
         // Finish the logout greeter crossfade + drop the desktop snapshot textures
         // and clear the logout-return latch when the ramp completes.
         self.cleanup_greeter_fade_in();
-        if !completed_fade_outs.is_empty() || !completed_closes.is_empty() || slide_completed {
-            // Update layer blur cache for outputs with completed fade-outs or slides
-            for output in self.outputs().cloned().collect::<Vec<_>>() {
-                crate::wayland::handlers::layer_shell::update_layer_blur_state(
-                    &output,
-                    self.hidden_surfaces(),
-                );
-            }
-        }
+        // MERGE: dropped the follow-up `update_layer_blur_state()` refresh that ran for every
+        // output once a fade-out/close/slide finished — upstream's frosted-glass samples the live
+        // framebuffer per frame, so there is no layer-blur cache to invalidate.
         clients
     }
 
@@ -4077,9 +4369,27 @@ impl Shell {
         self.layer_opens.iter().any(|o| o.surface_id == *surface_id)
     }
 
+    /// True while any layer surface is playing its open (scale + fade-in) or
+    /// fade-out animation. The blur content hash only tracks commit counters and
+    /// geometry — NOT the compositor-side alpha/scale these animations apply — so a
+    /// blur group whose captured backdrop includes an animating surface must force a
+    /// re-capture each frame while one runs. Otherwise the blurred backdrop freezes
+    /// at the animation's first frame: e.g. a wallpaper captured at fade-in start
+    /// (alpha≈0, scaled down) never updates to its settled state, and the glass on
+    /// top stays dark until unrelated damage forces a re-blur.
+    pub fn has_layer_open_or_fade_animations(&self) -> bool {
+        self.layer_opens.iter().any(|o| o.is_animating())
+            || !self.layer_fade_in.is_empty()
+            || !self.layer_fade_out.is_empty()
+    }
+
     /// The translate offset `(x, y)` (logical px) for an opening surface, or
     /// `(0, 0)` if it isn't opening. Folds into the layer-surface render offset.
+    /// Full-output surfaces pure-fade (no rise) — see [`is_full_output_layer`].
     pub fn get_layer_open_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        if self.is_full_output_layer(surface_id) {
+            return (0, 0);
+        }
         for o in &self.layer_opens {
             if o.surface_id == *surface_id {
                 return o.translate_offset();
@@ -4089,7 +4399,11 @@ impl Shell {
     }
 
     /// The scale factor for an opening surface, or `1.0` if it isn't opening.
+    /// Full-output surfaces pure-fade (no scale) — see [`is_full_output_layer`].
     pub fn get_layer_open_scale(&self, surface_id: &ObjectId) -> f32 {
+        if self.is_full_output_layer(surface_id) {
+            return 1.0;
+        }
         for o in &self.layer_opens {
             if o.surface_id == *surface_id {
                 return o.scale();
@@ -4107,8 +4421,12 @@ impl Shell {
     }
 
     /// The translate offset `(x, y)` (logical px) for a closing surface, or
-    /// `(0, 0)` if it isn't closing. Slides DOWN `0 → +6px`.
+    /// `(0, 0)` if it isn't closing. Slides DOWN `0 → +6px`. Full-output surfaces
+    /// pure-fade (no rise) — see [`is_full_output_layer`].
     pub fn get_layer_close_offset(&self, surface_id: &ObjectId) -> (i32, i32) {
+        if self.is_full_output_layer(surface_id) {
+            return (0, 0);
+        }
         for c in &self.layer_closes {
             if c.surface_id == *surface_id {
                 return c.translate_offset();
@@ -4118,8 +4436,11 @@ impl Shell {
     }
 
     /// The scale factor for a closing surface, or `1.0` if it isn't closing.
-    /// Scales DOWN `1.0 → 0.97`.
+    /// Scales DOWN `1.0 → 0.97`. Full-output surfaces pure-fade (no scale).
     pub fn get_layer_close_scale(&self, surface_id: &ObjectId) -> f32 {
+        if self.is_full_output_layer(surface_id) {
+            return 1.0;
+        }
         for c in &self.layer_closes {
             if c.surface_id == *surface_id {
                 return c.scale();
@@ -4258,12 +4579,14 @@ impl Shell {
         if from == target {
             return;
         }
+        let motion = self.theme.motion;
         self.active_layer_resize_anim = Some(layer_resize_anim::LayerResizeAnim::new(
             surface_id.clone(),
             output.clone(),
             anchor_right,
             from,
             target,
+            motion,
         ));
         // Apply the first frame immediately so the motion starts this dispatch.
         self.update_layer_resize_animation();
@@ -4776,7 +5099,7 @@ impl Shell {
                 OverviewMode::Started(_, _) | OverviewMode::Active(_)
             ) {
                 if matches!(trigger, Trigger::KeyboardSwap(_, _)) {
-                    self.swap_indicator = Some(swap_indicator(evlh, self.theme.clone()));
+                    self.swap_indicator = Some(SwapIndicator::new(evlh, self.theme.clone()));
                 }
                 self.overview_mode = OverviewMode::Started(trigger, Instant::now());
             }
@@ -4787,8 +5110,10 @@ impl Shell {
             let (reverse_duration, trigger) =
                 if let OverviewMode::Started(trigger, start) = self.overview_mode.clone() {
                     (
-                        ANIMATION_DURATION
-                            - Instant::now().duration_since(start).min(ANIMATION_DURATION),
+                        self.theme.motion.animation
+                            - Instant::now()
+                                .duration_since(start)
+                                .min(self.theme.motion.animation),
                         Some(trigger),
                     )
                 } else {
@@ -4800,7 +5125,7 @@ impl Shell {
 
     pub fn overview_mode(&self) -> (OverviewMode, Option<SwapIndicator>) {
         if let OverviewMode::Started(trigger, timestamp) = &self.overview_mode
-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
+            && Instant::now().duration_since(*timestamp) > self.theme.motion.animation
         {
             return (
                 OverviewMode::Active(trigger.clone()),
@@ -4808,7 +5133,7 @@ impl Shell {
             );
         }
         if let OverviewMode::Ended(_, timestamp) = &self.overview_mode
-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
+            && Instant::now().duration_since(*timestamp) > self.theme.motion.animation
         {
             return (OverviewMode::None, None);
         }
@@ -4828,18 +5153,18 @@ impl Shell {
 
     /// Get the current opacity for home-only surfaces (0.0-1.0)
     pub fn home_alpha(&self) -> f32 {
-        self.home_mode.alpha()
+        self.home_mode.alpha(self.theme.motion.animation)
     }
 
     /// Exit home mode visually only (fade out home surfaces without restoring windows)
     /// Use this when another mode like voice mode takes over
     pub fn exit_home_visual_only(&mut self) {
-        self.home_mode.exit();
+        self.home_mode.exit(self.theme.motion.animation);
     }
 
     /// Enter home mode (with animation) and minimize all windows
     pub fn enter_home(&mut self) {
-        self.home_mode.enter();
+        self.home_mode.enter(self.theme.motion.animation);
 
         // If voice mode is active and attached to a window, transition to floating
         // since the window will be minimized
@@ -4908,7 +5233,7 @@ impl Shell {
 
     /// Exit home mode (with animation) and restore previously minimized windows
     pub fn exit_home(&mut self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
-        self.home_mode.exit();
+        self.home_mode.exit(self.theme.motion.animation);
 
         // Restore windows that were minimized by home mode
         let surfaces_to_restore = std::mem::take(&mut self.home_minimized_surfaces);
@@ -4919,12 +5244,12 @@ impl Shell {
 
     /// Update home mode animation state
     pub fn update_home_animation(&mut self) {
-        self.home_mode.update();
+        self.home_mode.update(self.theme.motion.animation);
     }
 
     /// Check if home mode animation is in progress
     pub fn home_animation_going(&self) -> bool {
-        self.home_mode.is_animating()
+        self.home_mode.is_animating(self.theme.motion.animation)
     }
 
     /// Get the set of home-only surface IDs
@@ -4989,6 +5314,9 @@ impl Shell {
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
     pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
         use crate::wayland::protocols::layer_surface_visibility::LayerTransition;
+        // Snapshot the theme's motion tokens once; the open/close animations
+        // capture this so their sampling needs no theme handle.
+        let motion = self.theme.motion;
         // Decide whether to slide or fade. A surface that explicitly requested
         // `Fade` never slides (even if edge-anchored); otherwise fall back to
         // the anchor-based heuristic.
@@ -5001,21 +5329,20 @@ impl Shell {
         // surface we first capture how "open" it currently is, so the close can start
         // from there (a seamless reverse) instead of snapping to full-open and
         // popping. `close_backdate_ms` is how far to back-date the LayerClose:
-        //   - mid-open at linear progress p → (1 - p) · CLOSE_DURATION (symmetry)
-        //   - never shown (still pending first commit) → CLOSE_DURATION (already hidden)
+        //   - mid-open at linear progress p → (1 - p) · motion.layer_open (symmetry)
+        //   - never shown (still pending first commit) → motion.layer_open (already hidden)
         //   - fully open / resting → 0 (full close from the top)
         let close_backdate_ms: u64 = if hidden {
-            let backdate = if let Some(o) =
-                self.layer_opens.iter().find(|o| o.surface_id == surface_id)
-            {
-                let p = (o.start.elapsed().as_secs_f32() / layer_open::OPEN_DURATION.as_secs_f32())
-                    .clamp(0.0, 1.0);
-                ((1.0 - p) * layer_open::CLOSE_DURATION.as_millis() as f32) as u64
-            } else if self.pending_layer_opens.contains(&surface_id) {
-                layer_open::CLOSE_DURATION.as_millis() as u64
-            } else {
-                0
-            };
+            let backdate =
+                if let Some(o) = self.layer_opens.iter().find(|o| o.surface_id == surface_id) {
+                    let p = (o.start.elapsed().as_secs_f32() / motion.layer_open.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                    ((1.0 - p) * motion.layer_open.as_millis() as f32) as u64
+                } else if self.pending_layer_opens.contains_key(&surface_id) {
+                    motion.layer_open.as_millis() as u64
+                } else {
+                    0
+                };
             self.remove_layer_open(&surface_id);
             backdate
         } else {
@@ -5026,7 +5353,7 @@ impl Shell {
             // Use slide animation for side-anchored panels
             if hidden {
                 let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
-                let was_pending = self.pending_layer_fade_in.remove(&surface_id);
+                let was_pending = self.pending_layer_fade_in.remove(&surface_id).is_some();
                 tracing::debug!(
                     ?surface_id,
                     ?edge,
@@ -5042,7 +5369,7 @@ impl Shell {
                     .iter_mut()
                     .find(|s| s.surface_id == surface_id)
                 {
-                    existing.visibility.start_hide();
+                    existing.visibility.start_hide(motion);
                 } else {
                     let mut slide = layer_slide::LayerSlide::new(
                         surface_id.clone(),
@@ -5050,7 +5377,7 @@ impl Shell {
                         width,
                         exclusive_zone,
                     );
-                    slide.visibility.start_hide();
+                    slide.visibility.start_hide(motion);
                     self.layer_slides.push(slide);
                 }
                 // Configure all floating windows at their final size right
@@ -5082,7 +5409,7 @@ impl Shell {
                         .iter_mut()
                         .find(|s| s.surface_id == surface_id)
                     {
-                        existing.visibility.start_show();
+                        existing.visibility.start_show(motion);
                     } else {
                         let mut slide = layer_slide::LayerSlide::new_hidden(
                             surface_id.clone(),
@@ -5090,7 +5417,7 @@ impl Shell {
                             width,
                             exclusive_zone,
                         );
-                        slide.visibility.start_show();
+                        slide.visibility.start_show(motion);
                         self.layer_slides.push(slide);
                     }
                     // Configure all floating windows at their final size right
@@ -5108,7 +5435,7 @@ impl Shell {
             // perfectly synced with the translate + scale.
             if hidden {
                 let was_fading_in = self.layer_fade_in.remove(&surface_id).is_some();
-                let was_pending = self.pending_layer_fade_in.remove(&surface_id);
+                let was_pending = self.pending_layer_fade_in.remove(&surface_id).is_some();
                 // Any in-flight open was already folded into `close_backdate_ms`
                 // and removed above via `remove_layer_open`.
                 tracing::debug!(
@@ -5123,6 +5450,7 @@ impl Shell {
                     .push(layer_open::LayerClose::new_backdated(
                         surface_id.clone(),
                         close_backdate_ms,
+                        motion,
                     ));
             } else {
                 let was_hidden = self.hidden_surfaces.remove(&surface_id);
@@ -5135,7 +5463,7 @@ impl Shell {
                     .iter()
                     .find(|c| c.surface_id == surface_id)
                     .map(|c| {
-                        (c.start.elapsed().as_secs_f32() / layer_open::CLOSE_DURATION.as_secs_f32())
+                        (c.start.elapsed().as_secs_f32() / motion.layer_open.as_secs_f32())
                             .clamp(0.0, 1.0)
                     });
                 self.rise_surfaces.insert(surface_id.clone());
@@ -5150,29 +5478,54 @@ impl Shell {
                     // Defer the rise-in until the surface commits its first buffer
                     // (so neither content nor blur shows a stale frame). Held at
                     // alpha 0 until then by `layer_fade_in_alphas`.
-                    self.pending_layer_opens.insert(surface_id);
+                    self.pending_layer_opens.insert(surface_id, Instant::now());
                 } else if let Some(close_progress) = reversing_close {
                     // Reverse the in-flight close into an open. Back-date the open
                     // so its first frame matches the close's current alpha/scale/
                     // offset (the easing is point-symmetric about (0.5, 0.5)),
                     // then it rises the rest of the way — no jump.
-                    let backdate = ((1.0 - close_progress)
-                        * layer_open::OPEN_DURATION.as_millis() as f32)
-                        as u64;
+                    let backdate =
+                        ((1.0 - close_progress) * motion.layer_open.as_millis() as f32) as u64;
                     self.layer_closes.retain(|c| c.surface_id != surface_id);
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
                     self.layer_opens.push(layer_open::LayerOpen::new_backdated(
                         surface_id.clone(),
                         backdate,
+                        motion,
                     ));
                 } else if was_fading_out {
                     // Legacy plain fade-out still in flight — rise in from scratch.
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
                     self.layer_opens
-                        .push(layer_open::LayerOpen::new(surface_id));
+                        .push(layer_open::LayerOpen::new(surface_id, motion));
                 }
             }
         }
+    }
+
+    /// Whether a layer surface fills its whole output (anchored to all four
+    /// edges) — a full-screen backdrop / modal scrim. Scaling or rising such a
+    /// surface about its centre only reveals gaps at the screen edges, so the
+    /// open/close animations skip the scale + translate for it (keeping just the
+    /// alpha fade), giving a clean fade-in with no "scale-in" wobble.
+    fn is_full_output_layer(&self, surface_id: &ObjectId) -> bool {
+        use smithay::wayland::shell::wlr_layer::Anchor;
+        for output in self.outputs() {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                if layer.wl_surface().id() == *surface_id {
+                    let anchor = with_states(layer.wl_surface(), |states| {
+                        let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
+                        cached.current().anchor
+                    });
+                    return anchor.contains(Anchor::TOP)
+                        && anchor.contains(Anchor::BOTTOM)
+                        && anchor.contains(Anchor::LEFT)
+                        && anchor.contains(Anchor::RIGHT);
+                }
+            }
+        }
+        false
     }
 
     /// Detect if a layer surface is anchored to a single lateral edge (Left or Right)
@@ -5288,8 +5641,9 @@ impl Shell {
             .iter()
             .filter_map(|(surface_id, start)| {
                 let elapsed = now.saturating_duration_since(*start);
-                let progress =
-                    (elapsed.as_secs_f32() / LAYER_FADE_IN_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                let progress = (elapsed.as_secs_f32()
+                    / self.theme.motion.layer_fade_in.as_secs_f32())
+                .clamp(0.0, 1.0);
                 if progress >= 1.0 {
                     None
                 } else {
@@ -5308,7 +5662,7 @@ impl Shell {
             .collect();
         // Surfaces waiting for a buffer commit before their fade-in starts
         // are held at alpha=0 so neither content nor blur is visible yet.
-        for surface_id in &self.pending_layer_fade_in {
+        for surface_id in self.pending_layer_fade_in.keys() {
             result.entry(surface_id.clone()).or_insert(0.0);
         }
         // Open animations drive their alpha (0→1) from the SAME single eased
@@ -5320,7 +5674,7 @@ impl Shell {
             result.insert(open.surface_id.clone(), open.alpha());
         }
         // Surfaces still waiting for their first buffer commit are held at 0.
-        for surface_id in &self.pending_layer_opens {
+        for surface_id in self.pending_layer_opens.keys() {
             result.entry(surface_id.clone()).or_insert(0.0);
         }
         if !result.is_empty() {
@@ -5337,7 +5691,7 @@ impl Shell {
         let now = Instant::now();
         self.layer_fade_in.retain(|_, start| {
             let elapsed = now.saturating_duration_since(*start);
-            elapsed < LAYER_FADE_IN_DURATION
+            elapsed < self.theme.motion.layer_fade_in
         });
     }
 
@@ -5381,7 +5735,7 @@ impl Shell {
     }
 
     /// Get the map of layer surfaces currently fading out with their alpha values.
-    /// Alpha goes from 1.0 → 0.0 over LAYER_FADE_OUT_DURATION.
+    /// Alpha goes from 1.0 → 0.0 over the layer fade-out duration.
     pub fn layer_fade_out_alphas(&self) -> std::collections::HashMap<ObjectId, f32> {
         let now = Instant::now();
         let mut result: std::collections::HashMap<ObjectId, f32> = self
@@ -5389,8 +5743,9 @@ impl Shell {
             .iter()
             .filter_map(|(surface_id, start)| {
                 let elapsed = now.saturating_duration_since(*start);
-                let progress =
-                    (elapsed.as_secs_f32() / LAYER_FADE_OUT_DURATION.as_secs_f32()).clamp(0.0, 1.0);
+                let progress = (elapsed.as_secs_f32()
+                    / self.theme.motion.layer_fade_out.as_secs_f32())
+                .clamp(0.0, 1.0);
                 if progress >= 1.0 {
                     None
                 } else {
@@ -5416,7 +5771,7 @@ impl Shell {
         let mut completed = Vec::new();
         self.layer_fade_out.retain(|surface_id, start| {
             let elapsed = now.saturating_duration_since(*start);
-            if elapsed >= LAYER_FADE_OUT_DURATION {
+            if elapsed >= self.theme.motion.layer_fade_out {
                 tracing::debug!(
                     ?surface_id,
                     elapsed_ms = elapsed.as_millis(),
@@ -5769,15 +6124,48 @@ impl Shell {
         self.layer_fade_out.remove(surface_id);
     }
 
+    /// Whether this surface is still waiting for its first buffer before its
+    /// entrance animation starts.
+    pub fn is_layer_fade_in_pending(&self, surface_id: &ObjectId) -> bool {
+        self.pending_layer_opens.contains_key(surface_id)
+            || self.pending_layer_fade_in.contains_key(surface_id)
+    }
+
     /// Activate a pending fade-in for a surface.
     /// Called from the compositor `commit()` handler when a layer surface commits
     /// a buffer.  If the surface has a pending fade-in (was just un-hidden),
     /// this starts the actual animation so the blur fades in together with the
     /// freshly rendered content.
-    pub fn activate_pending_fade_in(&mut self, surface_id: &ObjectId) {
-        if self.pending_layer_fade_in.remove(surface_id) {
+    pub fn activate_pending_fade_in(&mut self, surface_id: &ObjectId, has_content: bool) {
+        // Layer-shell toolkits commit before they know their auto-size geometry:
+        // first a buffer-less commit, then a 1-2px placeholder, and only ~220ms
+        // later the real content. Starting the entrance animation on those spends
+        // the whole ~190ms fade on a 1x1 surface and lands the real buffer after
+        // it has already finished, so the surface appears at full opacity having
+        // visibly animated nothing.
+        //
+        // Waiting for real content instead means the fade runs over the thing it
+        // is supposed to reveal. The placeholder stays at alpha 0 meanwhile,
+        // which is what we want to show of it anyway.
+        //
+        // The wait is bounded: a surface that never grows past the placeholder
+        // would otherwise sit in `pending_*` forever, and those keep
+        // `animations_going()` true — pinning the compositor to a permanent
+        // redraw loop. After the timeout it animates regardless.
+        let waited_long_enough = |since: Instant| {
+            since.elapsed() >= self.theme.motion.layer_open * PENDING_CONTENT_TIMEOUT_FACTOR
+        };
+        let ready = |pending: &std::collections::HashMap<ObjectId, Instant>| {
+            pending
+                .get(surface_id)
+                .is_some_and(|since| has_content || waited_long_enough(*since))
+        };
+
+        if ready(&self.pending_layer_fade_in) {
+            self.pending_layer_fade_in.remove(surface_id);
             tracing::debug!(
                 ?surface_id,
+                has_content,
                 "activate_pending_fade_in: starting blur fade-in on buffer commit"
             );
             self.layer_fade_in
@@ -5788,14 +6176,17 @@ impl Shell {
         // first-buffer-commit hook (auto_size means geometry is only valid now,
         // and a re-shown surface must render its first frame first). Replace any
         // stale entry so a re-show restarts the animation cleanly.
-        if self.pending_layer_opens.remove(surface_id) {
+        if ready(&self.pending_layer_opens) {
+            self.pending_layer_opens.remove(surface_id);
             tracing::debug!(
                 ?surface_id,
+                has_content,
                 "activate_pending_fade_in: starting open (slide-up) animation on buffer commit"
             );
             self.layer_opens.retain(|o| o.surface_id != *surface_id);
+            let motion = self.theme.motion;
             self.layer_opens
-                .push(layer_open::LayerOpen::new(surface_id.clone()));
+                .push(layer_open::LayerOpen::new(surface_id.clone(), motion));
         }
     }
 
@@ -5808,7 +6199,7 @@ impl Shell {
     pub fn restart_layer_fade_in(&mut self, surface_id: ObjectId) {
         let is_already_fading_in = self.layer_fade_in.contains_key(&surface_id);
         let is_fading_out = self.layer_fade_out.contains_key(&surface_id);
-        let is_pending = self.pending_layer_fade_in.contains(&surface_id);
+        let is_pending = self.pending_layer_fade_in.contains_key(&surface_id);
         let is_hidden = self.hidden_surfaces.contains(&surface_id);
 
         // Only restart when the surface is pending its first fade-in or
@@ -6054,11 +6445,11 @@ impl Shell {
     pub fn surface_home_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
         if self.home_only_surfaces.contains(surface_id) {
             // Home-only surface: visible when at home or animating
-            let alpha = self.home_mode.alpha();
+            let alpha = self.home_mode.alpha(self.theme.motion.animation);
             (alpha > 0.0, alpha)
         } else if self.hide_on_home_surfaces.contains(surface_id) {
             // Hide-on-home surface: visible when NOT at home (inverse alpha)
-            let alpha = 1.0 - self.home_mode.alpha();
+            let alpha = 1.0 - self.home_mode.alpha(self.theme.motion.animation);
             (alpha > 0.0, alpha)
         } else {
             // Always-visible surface (default)
@@ -6070,10 +6461,10 @@ impl Shell {
     pub fn should_surface_be_visible(&self, surface_id: &ObjectId, is_home: bool) -> bool {
         if self.home_only_surfaces.contains(surface_id) {
             // Home-only surface: visible when at home or during animation
-            is_home || self.home_mode.alpha() > 0.0
+            is_home || self.home_mode.alpha(self.theme.motion.animation) > 0.0
         } else if self.hide_on_home_surfaces.contains(surface_id) {
             // Hide-on-home surface: visible when NOT at home or during animation
-            !is_home || self.home_mode.alpha() < 1.0
+            !is_home || self.home_mode.alpha(self.theme.motion.animation) < 1.0
         } else {
             // Always-visible surface (default)
             true
@@ -6093,7 +6484,7 @@ impl Shell {
             } else {
                 self.resize_mode = ResizeMode::Started(pattern, Instant::now(), direction);
             }
-            self.resize_indicator = Some(resize_indicator(
+            self.resize_indicator = Some(ResizeIndicator::new(
                 direction,
                 config,
                 evlh,
@@ -6109,7 +6500,7 @@ impl Shell {
 
     pub fn resize_mode(&self) -> (ResizeMode, Option<ResizeIndicator>) {
         if let ResizeMode::Started(binding, timestamp, direction) = &self.resize_mode
-            && Instant::now().duration_since(*timestamp) > ANIMATION_DURATION
+            && Instant::now().duration_since(*timestamp) > self.theme.motion.animation
         {
             return (
                 ResizeMode::Active(binding.clone(), *direction),
@@ -6117,7 +6508,7 @@ impl Shell {
             );
         }
         if let ResizeMode::Ended(timestamp, _) = self.resize_mode
-            && Instant::now().duration_since(timestamp) > ANIMATION_DURATION
+            && Instant::now().duration_since(timestamp) > self.theme.motion.animation
         {
             return (ResizeMode::None, None);
         }
@@ -6220,6 +6611,12 @@ impl Shell {
             increment: zoom_config.increment,
             movement: zoom_config.view_moves,
         });
+
+        self.update_focal_point(
+            seat,
+            seat.get_pointer().unwrap().current_location().as_global(),
+            zoom_config.view_moves,
+        );
     }
 
     pub fn update_focal_point(
@@ -6255,12 +6652,12 @@ impl Shell {
     ) {
         match &self.overview_mode {
             OverviewMode::Started(trigger, timestamp)
-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
+                if Instant::now().duration_since(*timestamp) > self.theme.motion.animation =>
             {
                 self.overview_mode = OverviewMode::Active(trigger.clone());
             }
             OverviewMode::Ended(_, timestamp)
-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
+                if Instant::now().duration_since(*timestamp) > self.theme.motion.animation =>
             {
                 self.overview_mode = OverviewMode::None;
                 self.swap_indicator = None;
@@ -6270,12 +6667,12 @@ impl Shell {
 
         match &self.resize_mode {
             ResizeMode::Started(binding, timestamp, direction)
-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
+                if Instant::now().duration_since(*timestamp) > self.theme.motion.animation =>
             {
                 self.resize_mode = ResizeMode::Active(binding.clone(), *direction);
             }
             ResizeMode::Ended(timestamp, _)
-                if Instant::now().duration_since(*timestamp) > ANIMATION_DURATION =>
+                if Instant::now().duration_since(*timestamp) > self.theme.motion.animation =>
             {
                 self.resize_mode = ResizeMode::None;
                 self.resize_indicator = None;
@@ -6344,15 +6741,36 @@ impl Shell {
     pub fn remap_unfullscreened_window(
         &mut self,
         surface: CosmicSurface,
-        state: Option<FullscreenRestoreState>,
+        mut state: Option<FullscreenRestoreState>,
         loop_handle: &LoopHandle<'static, State>,
     ) -> CosmicMapped {
-        let window = CosmicMapped::from(CosmicWindow::new(
-            surface,
-            loop_handle.clone(),
-            self.theme.clone(),
-            self.appearance_conf,
-        ));
+        if let Some(FullscreenRestoreState::Stack { state: stack_state }) = &state {
+            if let Some(mapped) = self.mapped().find(|m| **m == stack_state.stack)
+                && let Some(stack) = mapped.stack_ref()
+            {
+                let idx = stack_state.idx.min(stack.len());
+                stack.add_window(surface, Some(idx), None);
+                return mapped.clone();
+            } else {
+                state = None;
+            }
+        }
+
+        let window = if state.as_ref().is_some_and(|s| s.was_stack()) {
+            CosmicMapped::from(CosmicStack::new(
+                std::iter::once(surface),
+                loop_handle.clone(),
+                self.theme.clone(),
+                self.appearance_conf,
+            ))
+        } else {
+            CosmicMapped::from(CosmicWindow::new(
+                surface,
+                loop_handle.clone(),
+                self.theme.clone(),
+                self.appearance_conf,
+            ))
+        };
 
         if let Some(FullscreenRestoreState::Sticky { output, state, .. }) = &state {
             let output = output
@@ -6389,7 +6807,9 @@ impl Shell {
                 workspace
             }
             None => self.workspaces.active_mut(&seat.active_output()).unwrap(),
-            Some(FullscreenRestoreState::Sticky { .. }) => unreachable!(),
+            Some(FullscreenRestoreState::Sticky { .. } | FullscreenRestoreState::Stack { .. }) => {
+                unreachable!()
+            }
         };
         let fullscreen_geometry = workspace.output.geometry().to_local(&workspace.output);
 
@@ -6504,7 +6924,9 @@ impl Shell {
                     }
                 }
             }
-            Some(FullscreenRestoreState::Sticky { .. }) => unreachable!(),
+            Some(FullscreenRestoreState::Sticky { .. } | FullscreenRestoreState::Stack { .. }) => {
+                unreachable!()
+            }
         }
 
         window
@@ -6672,8 +7094,18 @@ impl Shell {
         };
 
         let should_be_fullscreen = output.is_some();
+        // A window game mode claims belongs on the output game mode owns, decided
+        // HERE rather than after adoption: everything below places the window, so
+        // deferring would map it under the cursor, show it there for a frame, then
+        // move it. `game_mode_claims` recognizes it by process ancestry, since the
+        // session manager only tags a window after it appears.
+        let game_mode_output = self
+            .game_mode_claims(&window)
+            .then(|| self.game_mode.output.clone())
+            .flatten();
         // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
-        let mut output = output
+        let mut output = game_mode_output
+            .or(output)
             .or(embed_parent_output)
             .or(transient_parent_output)
             .unwrap_or_else(|| seat.active_output());
@@ -6734,10 +7166,12 @@ impl Shell {
 
         let maybe_focused = workspace.focus_stack.get(&seat).iter().next().cloned();
         if let Some(FocusTarget::Window(focused)) = maybe_focused
-            && (focused.is_stack() && !is_dialog && !should_be_maximized)
+            && let Some(stack) = focused.stack_ref()
+            && !is_dialog
+            && !should_be_maximized
             && !(workspace.is_tiled(&focused.active_window()) && floating_exception)
         {
-            focused.stack_ref().unwrap().add_window(window, None, None);
+            stack.add_window(window, None, None);
             if was_activated {
                 workspace_state.add_workspace_state(&workspace_handle, WState::Urgent);
             }
@@ -6860,8 +7294,17 @@ impl Shell {
             window.force_configure();
         }
 
-        let new_target = if (workspace_output == seat.active_output()
-            && active_handle == workspace_handle)
+        let new_target = if self.game_mode_hides(&window) {
+            // Game mode renders ONLY its controlled surface on that workspace, so a
+            // window it will not draw must not take the keyboard either: focusing an
+            // invisible window looks exactly like a hung game (keystrokes vanish
+            // into a black screen). Park it on the focus stack and mark the
+            // workspace urgent instead, the same treatment as focus-stealing
+            // prevention below.
+            self.append_focus_stack(mapped, &seat);
+            workspace_state.add_workspace_state(&workspace_handle, WState::Urgent);
+            None
+        } else if (workspace_output == seat.active_output() && active_handle == workspace_handle)
             || should_be_sticky
         {
             // Focus stealing prevention: only grant immediate focus if the window
@@ -7237,13 +7680,14 @@ impl Shell {
                     "map_layer: starting first-open slide-in"
                 );
                 // Start hidden, then immediately begin the slide-in.
+                let motion = self.theme.motion;
                 let mut slide = layer_slide::LayerSlide::new_hidden(
                     surface_id.clone(),
                     edge,
                     width,
                     exclusive_zone,
                 );
-                slide.visibility.start_show();
+                slide.visibility.start_show(motion);
                 self.layer_slides.push(slide);
                 // Override exclusive_zone to 0 for the start of the animation,
                 // then re-arrange so other surfaces don't jump immediately.
@@ -7258,11 +7702,13 @@ impl Shell {
                 }
             } else if pending.surface.namespace() != crate::utils::quirks::GREETER_NAMESPACE {
                 self.rise_surfaces.insert(surface_id.clone());
-                self.pending_layer_opens.insert(surface_id.clone());
+                self.pending_layer_opens
+                    .insert(surface_id.clone(), Instant::now());
             } else if self.greeter_logout_return
                 && self.with_logout_snapshot(&pending.output, |_| ()).is_some()
             {
-                self.pending_layer_fade_in.insert(surface_id.clone());
+                self.pending_layer_fade_in
+                    .insert(surface_id.clone(), Instant::now());
             }
         }
 
@@ -7289,8 +7735,8 @@ impl Shell {
                     .map(|idx| (idx, m.clone()))
             });
             let surface = if let Some((idx, mapped)) = sticky_res {
-                if mapped.is_stack() {
-                    mapped.stack_ref().unwrap().remove_idx(idx)
+                if let Some(stack) = mapped.stack_ref() {
+                    stack.remove_idx(idx)
                 } else {
                     set.sticky_layer.unmap(&mapped, None);
                     Some(mapped.active_window())
@@ -7300,20 +7746,13 @@ impl Shell {
                 .iter()
                 .position(|w| w.windows().any(|s| &s == surface))
             {
-                if set
+                if let Some(stack) = set
                     .minimized_windows
-                    .get(idx)
+                    .get_mut(idx)
                     .unwrap()
-                    .mapped()
-                    .is_some_and(CosmicMapped::is_stack)
+                    .mapped_mut()
+                    .and_then(|m| m.stack_ref())
                 {
-                    let window = set
-                        .minimized_windows
-                        .get_mut(idx)
-                        .unwrap()
-                        .mapped_mut()
-                        .unwrap();
-                    let stack = window.stack_ref().unwrap();
                     let idx = stack.surfaces().position(|s| &s == surface);
                     idx.and_then(|idx| stack.remove_idx(idx))
                 } else {
@@ -7548,7 +7987,7 @@ impl Shell {
         toplevel_enter_workspace(window, to);
 
         // we can't restore to a given position
-        if let WorkspaceRestoreData::Tiling(Some(state)) = &mut window_state {
+        if let WorkspaceRestoreData::Tiling(state) = &mut window_state {
             state.state.take();
         }
         // update fullscreen state to restore to the new workspace
@@ -7564,6 +8003,7 @@ impl Shell {
                         state: None,
                         was_maximized: previous.was_maximized(),
                     },
+                    was_stack: previous.was_stack(),
                 };
             } else if let FullscreenRestoreState::Tiling { workspace, .. }
             | FullscreenRestoreState::Floating { workspace, .. } = previous
@@ -7575,7 +8015,7 @@ impl Shell {
         if is_minimized {
             let to_workspace = self.workspaces.space_for_handle_mut(to).unwrap(); // checked above
             let minimized_window = match window_state {
-                WorkspaceRestoreData::Floating(Some(previous)) => {
+                WorkspaceRestoreData::Floating(previous) => {
                     let window = CosmicMapped::from(CosmicWindow::new(
                         window.clone(),
                         evlh.clone(),
@@ -7585,7 +8025,7 @@ impl Shell {
                     window.set_minimized(true);
                     MinimizedWindow::Floating { window, previous }
                 }
-                WorkspaceRestoreData::Tiling(Some(previous)) => {
+                WorkspaceRestoreData::Tiling(previous) => {
                     let window = CosmicMapped::from(CosmicWindow::new(
                         window.clone(),
                         evlh.clone(),
@@ -7652,7 +8092,7 @@ impl Shell {
                     self.appearance_conf,
                 ));
                 let position = match window_state {
-                    WorkspaceRestoreData::Floating(Some(data)) => Some(
+                    WorkspaceRestoreData::Floating(data) => Some(
                         data.position_relative(to_workspace.output.geometry().size.as_logical()),
                     ),
                     _ => None,
@@ -7755,7 +8195,7 @@ impl Shell {
         let to_workspace = self.workspaces.space_for_handle_mut(to).unwrap(); // checked above
         if !to_workspace.tiling_enabled {
             let (position, was_maximized, was_snapped) = match &window_state {
-                WorkspaceRestoreData::Floating(Some(data)) => (
+                WorkspaceRestoreData::Floating(data) => (
                     Some(data.position_relative(to_workspace.output.geometry().size.as_logical())),
                     data.was_maximized,
                     data.was_snapped,
@@ -7958,6 +8398,7 @@ impl Shell {
             return None;
         };
 
+        let theme = self.theme.clone();
         let grab = MenuGrab::new(
             GrabStartData::Pointer(start_data),
             seat,
@@ -7966,7 +8407,7 @@ impl Shell {
             MenuAlignment::CORNER,
             None,
             evlh.clone(),
-            self.theme.clone(),
+            theme,
         );
 
         Some((grab, Focus::Keep))
@@ -8121,50 +8562,51 @@ impl Shell {
                 let elem_geo = element_geo.or_else(|| workspace.element_geometry(&old_mapped))?;
                 let mut initial_window_location = elem_geo.loc.to_global(workspace.output());
 
-                let mut new_size = if old_mapped.maximized_state.lock().unwrap().is_some() {
-                    // If surface is maximized then unmaximize it
-                    let geo = workspace.unmaximize_request(&old_mapped);
-                    // The pipelined unmaximize defers set_maximized/set_tiled
-                    // until animation completion, but the element is about to be
-                    // unmapped for the grab so the animation will never finish.
-                    // Clear the protocol state flags and configure to the target
-                    // (original) size immediately.
-                    old_mapped.set_maximized(false);
-                    old_mapped.set_tiled(false);
+                let mut new_size =
+                    if let Some(max_state) = old_mapped.maximized_state.lock().unwrap().take() {
+                        // Unmaximize directly instead of going through the pipelined
+                        // `unmaximize_request`. The element is about to be unmapped for
+                        // the grab, so the deferred animation would never complete;
+                        // worse, that path emits a configure that re-asserts the
+                        // maximized state right before we clear it. A client-decorated
+                        // window that sees maximized re-asserted keeps its resize
+                        // handles hidden, so pulling it away from the top left it
+                        // unresizable. Clear the flags and configure to the restore
+                        // geometry in one clean step, mirroring the sticky branch below.
+                        old_mapped.set_maximized(false);
+                        old_mapped.set_tiled(false);
 
-                    // If the original geometry is as large as (or larger than)
-                    // the output zone, shrink to 2/3 so the window actually
-                    // appears unmaximized when dropped.
-                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
-                    let clamped_geo = geo.map(|mut g| {
-                        if let Some(s) = Self::drag_shrink_size(g.size.w, g.size.h, zone) {
-                            g.size = s.as_local();
+                        // If the restore geometry is as large as (or larger than) the
+                        // output zone, shrink to 2/3 so the window actually appears
+                        // unmaximized when dropped.
+                        let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                        let mut restore_geo = max_state.original_geometry;
+                        if let Some(s) =
+                            Self::drag_shrink_size(restore_geo.size.w, restore_geo.size.h, zone)
+                        {
+                            restore_geo.size = s.as_local();
                         }
-                        g
-                    });
 
-                    if let Some(ref geo) = clamped_geo {
-                        old_mapped.set_geometry(geo.to_global(workspace.output()));
-                    }
-                    old_mapped.configure();
-                    clamped_geo.map(|geo| geo.size.as_logical())
-                } else {
-                    // Not maximized, but if the window fills the output zone,
-                    // shrink it on drag so the user can reposition it.
-                    let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
-                    if let Some(new_size) =
-                        Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
-                    {
-                        old_mapped.set_geometry(Rectangle::new(
-                            elem_geo.loc.to_global(workspace.output()),
-                            new_size.as_local().as_global(),
-                        ));
+                        old_mapped.set_geometry(restore_geo.to_global(workspace.output()));
                         old_mapped.configure();
-                        Some(new_size)
+                        Some(restore_geo.size.as_logical())
                     } else {
-                        None
-                    }
-                };
+                        // Not maximized, but if the window fills the output zone,
+                        // shrink it on drag so the user can reposition it.
+                        let zone = layer_map_for_output(workspace.output()).non_exclusive_zone();
+                        if let Some(new_size) =
+                            Self::drag_shrink_size(elem_geo.size.w, elem_geo.size.h, zone)
+                        {
+                            old_mapped.set_geometry(Rectangle::new(
+                                elem_geo.loc.to_global(workspace.output()),
+                                new_size.as_local().as_global(),
+                            ));
+                            old_mapped.configure();
+                            Some(new_size)
+                        } else {
+                            None
+                        }
+                    };
 
                 let layer = if if mapped == old_mapped {
                     let was_floating = workspace.floating_layer.unmap(&mapped, None);
@@ -8200,13 +8642,13 @@ impl Shell {
                 }
 
                 (initial_window_location, layer, workspace.handle, new_size)
-            } else if let Some(sticky_layer) = self
-                .workspaces
-                .sets
-                .get_mut(&cursor_output)
-                .filter(|set| set.sticky_layer.mapped().any(|m| m == &old_mapped))
-                .map(|set| &mut set.sticky_layer)
-            {
+            } else {
+                let sticky_layer = self
+                    .workspaces
+                    .sets
+                    .get_mut(&cursor_output)
+                    .filter(|set| set.sticky_layer.mapped().any(|m| m == &old_mapped))
+                    .map(|set| &mut set.sticky_layer)?;
                 let elem_geo = sticky_layer.element_geometry(&old_mapped).unwrap();
                 let mut initial_window_location = elem_geo.loc.to_global(&cursor_output);
 
@@ -8273,8 +8715,6 @@ impl Shell {
                     self.active_space(&cursor_output).unwrap().handle,
                     new_size,
                 )
-            } else {
-                return None;
             };
 
         toplevel_leave_workspace(&window, &workspace_handle);
@@ -8575,14 +9015,13 @@ impl Shell {
                 .unwrap()
                 .to_global(&set.output);
             (&mut set.sticky_layer, geometry)
-        } else if let Some(workspace) = self.space_for_mut(mapped) {
+        } else {
+            let workspace = self.space_for_mut(mapped)?;
             let geometry = workspace
                 .element_geometry(mapped)
                 .unwrap()
                 .to_global(workspace.output());
             (&mut workspace.floating_layer, geometry)
-        } else {
-            return None;
         };
 
         let new_loc = if edge.contains(ResizeEdge::LEFT) {
@@ -8619,7 +9058,8 @@ impl Shell {
             ReleaseMode::Click,
         ) {
             grab.into()
-        } else if let Some(ws) = self.space_for_mut(mapped) {
+        } else {
+            let ws = self.space_for_mut(mapped)?;
             let node_id = mapped.tiling_node_id.lock().unwrap().clone()?;
             let (node, left_up_idx, orientation) = ws.tiling_layer.resize_request(node_id, edge)?;
             ResizeForkGrab::new(
@@ -8632,8 +9072,6 @@ impl Shell {
                 ReleaseMode::Click,
             )
             .into()
-        } else {
-            return None;
         };
 
         Some(((focus, new_loc), (grab, Focus::Keep)))
@@ -8645,7 +9083,11 @@ impl Shell {
         seat: &Seat<State>,
         loop_handle: &LoopHandle<'static, State>,
     ) {
-        if window.is_maximized(true) {
+        // Dispatch on `maximized_state`, not the toplevel's protocol flag: both
+        // branches below act on `maximized_state`, so keying off the flag makes a
+        // desync unrecoverable (unmaximize finds no state and no-ops, and the flag
+        // stays set, so maximize is never reached again).
+        if window.maximized_state.lock().unwrap().is_some() {
             self.unmaximize_request_with_options(window);
         } else {
             if window.is_fullscreen(true) {
@@ -8931,10 +9373,9 @@ impl Shell {
             .find(|set| set.sticky_layer.mapped().any(|m| m == &mapped))
         {
             &mut set.sticky_layer
-        } else if let Some(workspace) = self.space_for_mut(&mapped) {
-            &mut workspace.floating_layer
         } else {
-            return None;
+            let workspace = self.space_for_mut(&mapped)?;
+            &mut workspace.floating_layer
         };
 
         let grab: ResizeGrab = if let Some(grab) = floating_layer.resize_request(
@@ -8946,7 +9387,8 @@ impl Shell {
             ReleaseMode::NoMouseButtons,
         ) {
             grab.into()
-        } else if let Some(ws) = self.space_for_mut(&mapped) {
+        } else {
+            let ws = self.space_for_mut(&mapped)?;
             let node_id = mapped.tiling_node_id.lock().unwrap().clone()?;
             let (node, left_up_idx, orientation) =
                 ws.tiling_layer.resize_request(node_id, edges)?;
@@ -8960,8 +9402,6 @@ impl Shell {
                 ReleaseMode::NoMouseButtons,
             )
             .into()
-        } else {
-            return None;
         };
 
         Some((grab, Focus::Clear))
@@ -9270,14 +9710,19 @@ impl Shell {
         {
             let mut from = set.sticky_layer.element_geometry(&mapped).unwrap();
             let mut was_maximized = false;
-            window = if mapped
-                .stack_ref()
-                .map(|stack| stack.len() > 1)
-                .unwrap_or(false)
+            let mut restore_state = None;
+            let was_stack = mapped.is_stack();
+            window = if let Some(stack) = mapped.stack_ref()
+                && stack.len() > 1
             {
-                let stack = mapped.stack_ref().unwrap();
-                let surface = stack.surfaces().find(|s| s == surface).unwrap();
-                stack.remove_window(&surface);
+                let idx = stack.surfaces().position(|s| &s == surface)?;
+                let surface = stack.remove_idx(idx)?;
+                restore_state = Some(FullscreenRestoreState::Stack {
+                    state: StackRestoreData {
+                        stack: mapped.key(),
+                        idx,
+                    },
+                });
                 surface
             } else {
                 // Must be set before `map_internal`/`unmap` below, as both may call
@@ -9310,7 +9755,7 @@ impl Shell {
             workspace.map_fullscreen(
                 &window,
                 &seat,
-                Some(FullscreenRestoreState::Sticky {
+                Some(restore_state.unwrap_or(FullscreenRestoreState::Sticky {
                     output: old_output,
                     state: FloatingRestoreData {
                         geometry: from,
@@ -9318,10 +9763,12 @@ impl Shell {
                         was_maximized,
                         was_snapped: None,
                     },
-                }),
+                    was_stack,
+                })),
                 Some(from),
             );
-        } else if let Some(workspace) = self.space_for_mut(&mapped) {
+        } else {
+            let workspace = self.space_for_mut(&mapped)?;
             if mapped.is_minimized() {
                 // TODO: Rewrite the `MinimizedWindow` to restore to fullscreen
                 return None;
@@ -9349,23 +9796,26 @@ impl Shell {
                 &seat,
                 match state {
                     WorkspaceRestoreData::Floating(floating_state) => {
-                        floating_state.map(|state| FullscreenRestoreState::Floating {
+                        Some(FullscreenRestoreState::Floating {
                             workspace: handle,
-                            state,
+                            state: floating_state,
+                            was_stack: mapped.is_stack(),
                         })
                     }
                     WorkspaceRestoreData::Tiling(tiling_state) => {
-                        tiling_state.map(|state| FullscreenRestoreState::Tiling {
+                        Some(FullscreenRestoreState::Tiling {
                             workspace: handle,
-                            state,
+                            state: tiling_state,
+                            was_stack: mapped.is_stack(),
                         })
+                    }
+                    WorkspaceRestoreData::Stack(stack_state) => {
+                        Some(FullscreenRestoreState::Stack { state: stack_state })
                     }
                     WorkspaceRestoreData::Fullscreen(_) => unreachable!(),
                 },
                 Some(from),
             );
-        } else {
-            return None;
         };
 
         // Trigger auto-hide for surfaces on the same output.
@@ -9501,13 +9951,14 @@ impl Shell {
 
         let map = smithay::desktop::layer_map_for_output(output);
         for layer_surface in map.layers() {
+            let namespace = self.workspaces.active_num(output).1;
             layer_surface.take_presentation_feedback(
                 &mut output_presentation_feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
                     surface_presentation_feedback_flags_from_states(
                         surface,
-                        None,
+                        Some(namespace),
                         render_element_states,
                     )
                 },

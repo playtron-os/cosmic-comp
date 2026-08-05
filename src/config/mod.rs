@@ -193,6 +193,14 @@ impl Config {
                 c
             });
 
+        // Seed the render-side blur strength from config, so the first frame
+        // already uses the configured intensity rather than a default.
+        crate::backend::render::wayland::blur_effect::set_blur_config(
+            cosmic_comp_config.blur_enabled,
+            cosmic_comp_config.blur_intensity,
+            cosmic_comp_config.blur_noise,
+        );
+
         // Listen for updates to the toolkit config
         if let Ok(tk_config_ctx) = cosmic_config::Config::new("com.system76.CosmicTk", 1) {
             fn handle_new_toolkit_config(config: ToolkitConfig, state: &mut State) {
@@ -353,12 +361,6 @@ impl Config {
                 Err(err) => warn!(?err, "Failed to create voice config watch source"),
             }
         }
-
-        // Initialize blur config globals from loaded config
-        crate::backend::render::blur::init_blur_config(
-            cosmic_comp_config.blur_enabled,
-            cosmic_comp_config.blur_intensity,
-        );
 
         Config {
             dynamic_conf: Self::load_dynamic(&xdg),
@@ -1018,7 +1020,11 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 let new = get_config::<bool>(&config, "blur_enabled");
                 if new != state.common.config.cosmic_conf.blur_enabled {
                     state.common.config.cosmic_conf.blur_enabled = new;
-                    crate::backend::render::blur::set_blur_enabled(new);
+                    crate::backend::render::wayland::blur_effect::set_blur_config(
+                        new,
+                        state.common.config.cosmic_conf.blur_intensity,
+                        state.common.config.cosmic_conf.blur_noise,
+                    );
                     for output in state.common.shell.read().outputs() {
                         state.backend.schedule_render(output);
                     }
@@ -1028,9 +1034,26 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 let new = get_config::<f32>(&config, "blur_intensity");
                 if (new - state.common.config.cosmic_conf.blur_intensity).abs() > f32::EPSILON {
                     state.common.config.cosmic_conf.blur_intensity = new;
-                    crate::backend::render::blur::set_blur_intensity(new);
+                    crate::backend::render::wayland::blur_effect::set_blur_config(
+                        state.common.config.cosmic_conf.blur_enabled,
+                        new,
+                        state.common.config.cosmic_conf.blur_noise,
+                    );
                     // Invalidate blur caches so new intensity takes effect
-                    crate::backend::render::blur::invalidate_all_blur_caches();
+                    for output in state.common.shell.read().outputs() {
+                        state.backend.schedule_render(output);
+                    }
+                }
+            }
+            "blur_noise" => {
+                let new = get_config::<f32>(&config, "blur_noise");
+                if (new - state.common.config.cosmic_conf.blur_noise).abs() > f32::EPSILON {
+                    state.common.config.cosmic_conf.blur_noise = new;
+                    crate::backend::render::wayland::blur_effect::set_blur_config(
+                        state.common.config.cosmic_conf.blur_enabled,
+                        state.common.config.cosmic_conf.blur_intensity,
+                        new,
+                    );
                     for output in state.common.shell.read().outputs() {
                         state.backend.schedule_render(output);
                     }
@@ -1059,6 +1082,12 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 let new = get_config::<ActivationPolicy>(&config, "activation_policy");
                 if new != state.common.config.cosmic_conf.activation_policy {
                     state.common.config.cosmic_conf.activation_policy = new;
+                }
+            }
+            "clipboard_persistence" => {
+                let new = get_config::<bool>(&config, "clipboard_persistence");
+                if new != state.common.config.cosmic_conf.clipboard_persistence {
+                    state.common.config.cosmic_conf.clipboard_persistence = new;
                 }
             }
             _ => {}

@@ -14,12 +14,14 @@ use smithay::{
     xwayland::X11Surface,
 };
 
+use tracing::trace;
+
 use crate::{
     backend::render::{ElementFilter, HomeVisibilityContext},
+    logger::GAMING_TARGET,
     shell::{
-        SeatExt, Shell, Workspace, WorkspaceDelta,
-        focus::target::KeyboardFocusTarget,
-        layout::{floating::FloatingLayout, tiling::ANIMATION_DURATION},
+        CosmicSurface, SeatExt, Shell, Workspace, WorkspaceDelta,
+        focus::target::KeyboardFocusTarget, layout::floating::FloatingLayout,
     },
     utils::{
         geometry::*,
@@ -29,20 +31,9 @@ use crate::{
     wayland::protocols::workspace::WorkspaceHandle,
 };
 
-/// Check if windows/workspaces should be included for the given element filter.
-/// Returns false for LayerShellOnly and for LayerBlurCapture when capturing for
-/// layers below windows (Bottom, Background).
-fn should_include_windows(element_filter: &ElementFilter) -> bool {
-    match element_filter {
-        ElementFilter::LayerShellOnly => false,
-        ElementFilter::LayerBlurCapture(layer, _) => {
-            // Only include windows for layers above windows (Top, Overlay)
-            // Bottom and Background are below windows, so skip windows when capturing for them
-            matches!(layer, Layer::Top | Layer::Overlay)
-        }
-        _ => true,
-    }
-}
+// MERGE: dropped `should_include_windows` — it only existed to special-case our
+// blur-capture element filters, which upstream's frosted-glass implementation
+// replaces. Windows are now gated on `!= ElementFilter::LayerShellOnly` again.
 
 pub enum Stage<'a> {
     ZoomUI,
@@ -51,14 +42,14 @@ pub enum Stage<'a> {
         layer: LayerSurface,
         popup: &'a PopupKind,
         location: Point<i32, Global>,
+        workspace_idx: usize,
     },
     LayerSurface {
         layer: LayerSurface,
         location: Point<i32, Global>,
         /// Alpha/opacity for the surface (0.0-1.0), used for home visibility animation
         alpha: f32,
-        /// Alpha for blur backdrop (may differ from surface alpha during fade-in)
-        blur_alpha: f32,
+        workspace_idx: usize,
     },
     OverrideRedirect {
         surface: &'a X11Surface,
@@ -69,18 +60,82 @@ pub enum Stage<'a> {
     WorkspacePopups {
         workspace: &'a Workspace,
         offset: Point<i32, Logical>,
+        /// Same strict game-mode control as [`Stage::Workspace`]: popups are
+        /// rendered for the controlled set only.
+        game_mode_only: Option<GameModeView<'a>>,
     },
     Workspace {
         workspace: &'a Workspace,
         offset: Point<i32, Logical>,
+        /// Uniform opacity for the whole workspace (1.0 except during a
+        /// `WorkspaceDelta::Crossfade`, where the incoming workspace fades in).
+        alpha: f32,
+        /// Strict game-mode fullscreen control: when `Some`, this workspace renders
+        /// ONLY the controlled set (see [`GameModeView`]). Any other window — e.g.
+        /// a Proton game that raw-fullscreens itself before playserve tags + game
+        /// mode adopts it — stays completely invisible. `None` renders the
+        /// workspace normally.
+        game_mode_only: Option<GameModeView<'a>>,
+    },
+    /// A game-mode overlay (the launcher / a client overlay) composited above
+    /// the game at the output origin, honoring the surface's own per-pixel alpha
+    /// so the game shows through the transparent regions.
+    OverlaySurface {
+        surface: &'a CosmicSurface,
     },
 }
+
+/// The set of windows strict game-mode control allows on the game's workspace:
+/// the adopted `base` plus its own `children` (dialogs, EULA/launcher windows,
+/// in-prefix login/browser windows — see `resolve_game_children`). Anything not
+/// in this set renders nothing and receives no input.
+#[derive(Debug, Clone, Copy)]
+pub struct GameModeView<'a> {
+    /// The adopted game/launcher surface, presented fullscreen.
+    pub base: &'a CosmicSurface,
+    /// Windows belonging with the game, stacked above it, FRONT-TO-BACK
+    /// (topmost first) — the same order `Workspace::mapped()` yields.
+    pub children: &'a [CosmicSurface],
+}
+/// Whether an override-redirect window may render while strict game-mode control
+/// is in effect for this workspace.
+///
+/// Override-redirect windows were the one un-filtered path left: they bypass the
+/// window manager, and the emission loop only checked that they intersect the
+/// output — so an unrelated app's tooltip or menu painted straight over the
+/// fullscreen game, the exact inverse of the game's own dialogs being hidden.
+///
+/// Allowed: gaming overlays (`STEAM_OVERLAY` / `GAMESCOPE_EXTERNAL_OVERLAY` — the
+/// Steam overlay, MangoHud), and windows belonging to the game itself, i.e. its
+/// own Wine/CEF dropdowns and tooltips. Only same-process windows may composite
+/// over the game, and 1x1 stubs never do.
+fn game_mode_allows_override(
+    view: Option<GameModeView<'_>>,
+    game_app_id: Option<u32>,
+    or: &X11Surface,
+) -> bool {
+    let Some(view) = view else {
+        // Not under strict control — unchanged behavior.
+        return true;
+    };
+    if or.steam_overlay().is_some_and(|v| v != 0) || or.external_overlay().is_some_and(|v| v != 0) {
+        return true;
+    }
+    let size = or.last_configure().size;
+    if size.w <= 1 || size.h <= 1 {
+        return false;
+    }
+    let base_pid = view.base.pid();
+    (base_pid.is_some() && or.pid() == base_pid)
+        || (game_app_id.is_some() && or.steam_game() == game_app_id)
+}
+
 pub fn render_input_order<R: Default + 'static>(
     shell: &Shell,
     output: &Output,
     previous: Option<(WorkspaceHandle, usize, WorkspaceDelta)>,
     current: (WorkspaceHandle, usize),
-    element_filter: &ElementFilter,
+    element_filter: ElementFilter,
     callback: impl FnMut(Stage) -> ControlFlow<Result<R, OutputNoMode>, ()>,
 ) -> Result<R, OutputNoMode> {
     match render_input_order_internal(shell, output, previous, current, element_filter, callback) {
@@ -94,7 +149,7 @@ fn render_input_order_internal<R: 'static>(
     output: &Output,
     previous: Option<(WorkspaceHandle, usize, WorkspaceDelta)>,
     current: (WorkspaceHandle, usize),
-    element_filter: &ElementFilter,
+    element_filter: ElementFilter,
     mut callback: impl FnMut(Stage) -> ControlFlow<Result<R, OutputNoMode>, ()>,
 ) -> ControlFlow<Result<R, OutputNoMode>, ()> {
     // Create home visibility context once for all layer surface filtering
@@ -112,6 +167,42 @@ fn render_input_order_internal<R: 'static>(
             .get(output)
             .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
             .is_some_and(|w| w.fullscreen_surfaces.iter().any(|f| !f.is_animating()));
+    if shell.game_mode.active {
+        // Bug 1: when a game workspace's fullscreen is still is_animating() (the
+        // entrance), exclusive is false, desktop layers/background still render,
+        // and a bufferless game workspace clears to grey — the grey slide.
+        trace!(target: GAMING_TARGET, output = %output.name(), game_mode_exclusive, "gm: exclusivity resolved");
+    }
+
+    // Strict game-mode control: the game's own workspace renders ONLY the surface
+    // game mode controls (its `game_surface`). A game that raw-fullscreens itself
+    // lands in that workspace's fullscreen list and would otherwise show; gate it
+    // off until playserve tags it and game mode adopts it as the controlled surface
+    // (then it renders + fades in like any game).
+    //
+    // Scoped to the workspace actually holding the controlled surface, NOT to the
+    // whole output: the other workspaces on the game's output are an ordinary
+    // desktop, so switching to one and launching an app there must keep working.
+    let game_mode_controlled: Option<GameModeView<'_>> = (shell.game_mode.active
+        && shell.game_mode.output.as_ref() == Some(output))
+    .then_some(shell.game_mode.game_surface.as_ref())
+    .flatten()
+    .filter(|controlled| {
+        shell
+            .workspaces
+            .sets
+            .get(output)
+            .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
+            .is_some_and(|w| {
+                w.fullscreen_surfaces
+                    .iter()
+                    .any(|f| &f.surface == *controlled)
+            })
+    })
+    .map(|base| GameModeView {
+        base,
+        children: &shell.game_mode.children,
+    });
 
     if shell
         .zoom_state
@@ -148,16 +239,17 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location,
+                workspace_idx: current.1,
             })?;
         }
-        for (layer, location, alpha, blur_alpha) in
+        for (layer, location, alpha) in
             layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: current.1,
             })?;
         }
     }
@@ -199,7 +291,11 @@ fn render_input_order_internal<R: 'static>(
         };
     let has_fullscreen = game_mode_exclusive || (fullscreen.is_some() && !overview_is_open);
 
-    let (previous, current_offset) = match previous.as_ref() {
+    // For a transition: `previous` = (outgoing workspace, has_fullscreen, its
+    // offset); plus the incoming `current_offset` and the two opacities.
+    // A slide keeps both opaque and moves them apart; a Crossfade keeps both at
+    // offset 0 (stacked) and fades the incoming one in over the opaque outgoing.
+    let (previous, current_offset, previous_alpha, current_alpha) = match previous.as_ref() {
         Some((previous, previous_idx, start)) => {
             let layout = shell.workspaces.layout;
 
@@ -208,57 +304,80 @@ fn render_input_order_internal<R: 'static>(
             };
             let has_fullscreen = workspace.get_fullscreen(seat).is_some();
 
-            let (forward, percentage) = match start {
-                WorkspaceDelta::Shortcut(st) => (
-                    *previous_idx < current.1,
-                    ease(
-                        EaseInOutCubic,
-                        0.0,
-                        1.0,
-                        Instant::now().duration_since(*st).as_millis() as f32
-                            / ANIMATION_DURATION.as_millis() as f32,
+            if let WorkspaceDelta::Crossfade(st) = start {
+                let t: f32 = ease(
+                    EaseInOutCubic,
+                    0.0f32,
+                    1.0f32,
+                    Instant::now().duration_since(*st).as_millis() as f32
+                        / shell.theme().motion.slide_crossfade.as_millis() as f32,
+                )
+                .clamp(0.0, 1.0);
+                // Both stacked at offset 0; outgoing opaque (drawn under),
+                // incoming fades in (drawn over, emitted first == topmost).
+                (
+                    Some((previous, previous_idx, has_fullscreen, Point::default())),
+                    Point::default(),
+                    1.0f32,
+                    t,
+                )
+            } else {
+                let (forward, percentage) = match start {
+                    WorkspaceDelta::Shortcut(st) => (
+                        *previous_idx < current.1,
+                        ease(
+                            EaseInOutCubic,
+                            0.0,
+                            1.0,
+                            Instant::now().duration_since(*st).as_millis() as f32
+                                / shell.theme().motion.animation.as_millis() as f32,
+                        ),
                     ),
-                ),
-                WorkspaceDelta::Gesture {
-                    percentage: prog,
-                    forward,
-                } => (*forward, *prog as f32),
-                WorkspaceDelta::GestureEnd {
-                    start,
-                    spring,
-                    forward,
-                } => (
-                    *forward,
-                    (spring.value_at(Instant::now().duration_since(*start)) as f32).clamp(0.0, 1.0),
-                ),
-            };
+                    WorkspaceDelta::Gesture {
+                        percentage: prog,
+                        forward,
+                    } => (*forward, *prog as f32),
+                    WorkspaceDelta::GestureEnd {
+                        start,
+                        spring,
+                        forward,
+                    } => (
+                        *forward,
+                        (spring.value_at(Instant::now().duration_since(*start)) as f32)
+                            .clamp(0.0, 1.0),
+                    ),
+                    WorkspaceDelta::Crossfade(_) => unreachable!("handled above"),
+                };
 
-            let offset = Point::<i32, Logical>::from(match (layout, forward) {
-                (WorkspaceLayout::Vertical, true) => {
-                    (0, (-output_size.h as f32 * percentage).round() as i32)
-                }
-                (WorkspaceLayout::Vertical, false) => {
-                    (0, (output_size.h as f32 * percentage).round() as i32)
-                }
-                (WorkspaceLayout::Horizontal, true) => {
-                    ((-output_size.w as f32 * percentage).round() as i32, 0)
-                }
-                (WorkspaceLayout::Horizontal, false) => {
-                    ((output_size.w as f32 * percentage).round() as i32, 0)
-                }
-            });
+                let offset = Point::<i32, Logical>::from(match (layout, forward) {
+                    (WorkspaceLayout::Vertical, true) => {
+                        (0, (-output_size.h as f32 * percentage).round() as i32)
+                    }
+                    (WorkspaceLayout::Vertical, false) => {
+                        (0, (output_size.h as f32 * percentage).round() as i32)
+                    }
+                    (WorkspaceLayout::Horizontal, true) => {
+                        ((-output_size.w as f32 * percentage).round() as i32, 0)
+                    }
+                    (WorkspaceLayout::Horizontal, false) => {
+                        ((output_size.w as f32 * percentage).round() as i32, 0)
+                    }
+                });
 
-            (
-                Some((previous, has_fullscreen, offset)),
-                Point::<i32, Logical>::from(match (layout, forward) {
-                    (WorkspaceLayout::Vertical, true) => (0, output_size.h + offset.y),
-                    (WorkspaceLayout::Vertical, false) => (0, -(output_size.h - offset.y)),
-                    (WorkspaceLayout::Horizontal, true) => (output_size.w + offset.x, 0),
-                    (WorkspaceLayout::Horizontal, false) => (-(output_size.w - offset.x), 0),
-                }),
-            )
+                (
+                    Some((previous, previous_idx, has_fullscreen, offset)),
+                    Point::<i32, Logical>::from(match (layout, forward) {
+                        (WorkspaceLayout::Vertical, true) => (0, output_size.h + offset.y),
+                        (WorkspaceLayout::Vertical, false) => (0, -(output_size.h - offset.y)),
+                        (WorkspaceLayout::Horizontal, true) => (output_size.w + offset.x, 0),
+                        (WorkspaceLayout::Horizontal, false) => (-(output_size.w - offset.x), 0),
+                    }),
+                    1.0f32,
+                    1.0f32,
+                )
+            }
         }
-        None => (None, Point::default()),
+        None => (None, Point::default(), 1.0f32, 1.0f32),
     };
 
     // Top-level layer shell popups
@@ -270,11 +389,12 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    if should_include_windows(element_filter) {
+    if element_filter != ElementFilter::LayerShellOnly {
         // overlay redirect windows
         // they need to be over sticky windows, because they could be popups of sticky windows,
         // and we can't differenciate that.
@@ -289,18 +409,25 @@ fn render_input_order_internal<R: 'static>(
                     .intersection(output.geometry())
                     .is_some()
             })
+            .filter(|or| {
+                game_mode_allows_override(game_mode_controlled, shell.game_mode.app_id, or)
+            })
             .map(|or| (or, or.last_configure().loc.as_global()))
         {
             callback(Stage::OverrideRedirect { surface, location })?;
         }
 
-        // sticky window popups
-        callback(Stage::StickyPopups(&set.sticky_layer))?;
+        // sticky window popups — suppressed under an exclusive game so nothing
+        // desktop renders over the fullscreen game (real overlays are
+        // override-redirect, handled above).
+        if !game_mode_exclusive {
+            callback(Stage::StickyPopups(&set.sticky_layer))?;
+        }
     }
 
-    if should_include_windows(element_filter) {
+    if element_filter != ElementFilter::LayerShellOnly {
         // previous workspace popups
-        if let Some((previous_handle, _, offset)) = previous.as_ref() {
+        if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
             let Some(workspace) = shell.workspaces.space_for_handle(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
@@ -308,6 +435,7 @@ fn render_input_order_internal<R: 'static>(
             callback(Stage::WorkspacePopups {
                 workspace,
                 offset: *offset,
+                game_mode_only: None,
             })?;
         }
 
@@ -319,6 +447,7 @@ fn render_input_order_internal<R: 'static>(
         callback(Stage::WorkspacePopups {
             workspace,
             offset: current_offset,
+            game_mode_only: game_mode_controlled,
         })?;
     }
 
@@ -331,11 +460,12 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+    if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
     {
         // previous bottom layer popups
@@ -346,6 +476,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location: location + offset.as_global(),
+                workspace_idx: **idx,
             })?;
         }
     }
@@ -359,11 +490,12 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+    if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
     {
         // previous background layer popups
@@ -374,51 +506,81 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 popup: &popup,
                 location: location + offset.as_global(),
+                workspace_idx: **idx,
             })?;
         }
     }
 
     if !has_focused_fullscreen {
         // top-layer shell
-        for (layer, location, alpha, blur_alpha) in
+        for (layer, location, alpha) in
             layer_surfaces(output, Layer::Top, element_filter, &home_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    // sticky windows
-    if should_include_windows(element_filter) {
+    // sticky windows — suppressed under an exclusive game (see sticky popups above)
+    if element_filter != ElementFilter::LayerShellOnly && !game_mode_exclusive {
         callback(Stage::Sticky(&set.sticky_layer))?;
     }
 
-    if should_include_windows(element_filter) {
-        // workspace windows
+    if element_filter != ElementFilter::LayerShellOnly {
+        // Game-mode overlay: the launcher (or a client overlay) composited ABOVE
+        // the game. Emitted first (topmost) so it stacks over the game workspace;
+        // its own per-pixel alpha lets the game show through the transparent part.
+        // Only on the game's own output (game mode is single-output).
+        if shell.game_mode.active
+            && shell.game_mode.overlay_active
+            && shell.game_mode.output.as_ref() == Some(output)
+            && let Some(surface) = shell.game_mode.overlay_surface.as_ref()
+        {
+            trace!(target: GAMING_TARGET, output = %output.name(), overlay_app_id = %surface.app_id(), "overlay stage: EMITTED topmost over game");
+            callback(Stage::OverlaySurface { surface })?;
+        } else if shell.game_mode.active {
+            // BUG 2: the QAM was asserted but the 4-way gate dropped it — surface
+            // exactly which sub-condition failed (output mismatch, overlay_active
+            // false, or overlay_surface None). Only in game mode so it's not spam.
+            trace!(
+                target: GAMING_TARGET,
+                output = %output.name(),
+                overlay_active = shell.game_mode.overlay_active,
+                output_match = shell.game_mode.output.as_ref() == Some(output),
+                has_surface = shell.game_mode.overlay_surface.is_some(),
+                "overlay stage: GATED OUT"
+            );
+        }
+
+        // workspace windows (the incoming workspace — fades in during a crossfade)
         callback(Stage::Workspace {
             workspace,
             offset: current_offset,
+            alpha: current_alpha,
+            game_mode_only: game_mode_controlled,
         })?;
 
-        // previous workspace windows
-        if let Some((previous_handle, _, offset)) = previous.as_ref() {
+        // previous workspace windows (the outgoing workspace)
+        if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
             let Some(workspace) = shell.workspaces.space_for_handle(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             callback(Stage::Workspace {
                 workspace,
                 offset: *offset,
+                alpha: previous_alpha,
+                game_mode_only: None,
             })?;
         }
     }
 
     if !has_focused_fullscreen {
         // bottom layer
-        for (layer, mut location, alpha, blur_alpha) in
+        for (layer, mut location, alpha) in
             layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -426,16 +588,16 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+    if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
     {
         // previous bottom layer
-        for (layer, mut location, alpha, blur_alpha) in
+        for (layer, mut location, alpha) in
             layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
         {
             location += offset.as_global();
@@ -443,14 +605,14 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: **idx,
             })?;
         }
     }
 
     if !has_fullscreen {
         // background layer
-        for (layer, mut location, alpha, blur_alpha) in
+        for (layer, mut location, alpha) in
             layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
         {
             location += current_offset.as_global();
@@ -458,16 +620,16 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: current.1,
             })?;
         }
     }
 
-    if let Some((_, has_fullscreen, offset)) = previous.as_ref()
+    if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
     {
         // previous background layer
-        for (layer, mut location, alpha, blur_alpha) in
+        for (layer, mut location, alpha) in
             layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
         {
             location += offset.as_global();
@@ -475,7 +637,7 @@ fn render_input_order_internal<R: 'static>(
                 layer,
                 location,
                 alpha,
-                blur_alpha,
+                workspace_idx: **idx,
             })?;
         }
     }
@@ -486,12 +648,12 @@ fn render_input_order_internal<R: 'static>(
 fn layer_popups<'a>(
     output: &'a Output,
     layer: Layer,
-    element_filter: &'a ElementFilter,
+    element_filter: ElementFilter,
     home_visibility: &'a HomeVisibilityContext,
 ) -> impl Iterator<Item = (LayerSurface, PopupKind, Point<i32, Global>, f32)> + 'a {
     let output_geo = output.geometry();
     layer_surfaces(output, layer, element_filter, home_visibility).flat_map(
-        move |(surface, location, alpha, _home_only)| {
+        move |(surface, location, alpha)| {
             let location_clone = location;
             let surface_clone = surface.clone();
             PopupManager::popups_for_surface(surface.wl_surface()).map(
@@ -554,55 +716,17 @@ fn layer_popups<'a>(
     )
 }
 
-/// Get the z-order level of a layer (higher = closer to viewer)
-/// Background=0, Bottom=1, Top=2, Overlay=3
-fn layer_z_level(layer: Layer) -> u8 {
-    match layer {
-        Layer::Background => 0,
-        Layer::Bottom => 1,
-        Layer::Top => 2,
-        Layer::Overlay => 3,
-    }
-}
-
+// MERGE: `layer_z_level` and the cached/skipped layer paths went away with our
+// blur implementation (they only existed to feed BlurCapture/LayerBlurCapture);
+// upstream's frosted glass blits from the live framebuffer instead.
 fn layer_surfaces<'a>(
     output: &'a Output,
     layer: Layer,
-    element_filter: &'a ElementFilter,
+    element_filter: ElementFilter,
     home_visibility: &'a HomeVisibilityContext,
-) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>, f32, f32)> + 'a {
-    // For BlurCapture and LayerBlurCapture modes, use cached layer surfaces to prevent deadlocks
-    let use_cache = matches!(
-        element_filter,
-        ElementFilter::BlurCapture(_) | ElementFilter::LayerBlurCapture(_, _)
-    );
-
-    // Skip layers based on blur capture mode:
-    // - BlurCapture (window blur): Always skip Top and Overlay layers (they render above windows)
-    // - LayerBlurCapture: Skip layers at or above the requesting layer's z-level
-    let skip_layer = match element_filter {
-        ElementFilter::BlurCapture(_) => {
-            // Window blur should only capture Background and Bottom layers
-            // Top and Overlay are above windows and should never appear in window blur
-            matches!(layer, Layer::Top | Layer::Overlay)
-        }
-        ElementFilter::LayerBlurCapture(requesting_layer, _) => {
-            layer_z_level(layer) >= layer_z_level(*requesting_layer)
-        }
-        _ => false,
-    };
-
+) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>, f32)> + 'a {
     // we want to avoid deadlocks on the layer-map in callbacks, so we need to clone the layer surfaces
-    let layers = if skip_layer {
-        // Skip this entire layer for layer blur capture
-        Vec::new()
-    } else if use_cache {
-        // Use cached layer surfaces (populated by main thread)
-        crate::backend::render::get_cached_layer_surfaces(&output.name(), layer)
-            .into_iter()
-            .map(|cached| (cached.surface, cached.location))
-            .collect::<Vec<_>>()
-    } else {
+    let layers = {
         let layer_map = layer_map_for_output(output);
         layer_map
             .layers_on(layer)
@@ -613,7 +737,7 @@ fn layer_surfaces<'a>(
 
     layers.into_iter().filter_map(move |(s, loc)| {
         // Filter out workspace overview namespace
-        if *element_filter == ElementFilter::ExcludeWorkspaceOverview
+        if element_filter == ElementFilter::ExcludeWorkspaceOverview
             && s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE
         {
             return None;
@@ -626,59 +750,32 @@ fn layer_surfaces<'a>(
             home_visibility.surface_visibility(&surface_id, Some(layer), Some(namespace));
 
         // Apply layer fade-in alpha if this surface is still fading in
-        let is_fading_in =
-            if let Some(&fade_alpha) = home_visibility.layer_fade_in_alphas.get(&surface_id) {
-                tracing::trace!(
-                    surface_protocol_id = s.wl_surface().id().protocol_id(),
-                    fade_alpha = format!("{:.3}", fade_alpha),
-                    original_alpha = format!("{:.3}", alpha),
-                    "layer_surfaces: applying fade-IN alpha"
-                );
-                alpha *= fade_alpha;
-                true
-            } else {
-                false
-            };
+        if let Some(&fade_alpha) = home_visibility.layer_fade_in_alphas.get(&surface_id) {
+            tracing::trace!(
+                surface_protocol_id = s.wl_surface().id().protocol_id(),
+                fade_alpha = format!("{:.3}", fade_alpha),
+                original_alpha = format!("{:.3}", alpha),
+                "layer_surfaces: applying fade-IN alpha"
+            );
+            alpha *= fade_alpha;
+        }
 
         // Apply layer fade-out alpha if this surface is fading out.
         // During fade-out the surface is still visible (not yet in hidden_surfaces)
         // but with decreasing alpha.
-        let is_fading_out =
-            if let Some(&fade_alpha) = home_visibility.layer_fade_out_alphas.get(&surface_id) {
-                tracing::trace!(
-                    surface_protocol_id = s.wl_surface().id().protocol_id(),
-                    fade_alpha = format!("{:.3}", fade_alpha),
-                    "layer_surfaces: applying fade-OUT alpha"
-                );
-                visible = true;
-                alpha = fade_alpha;
-                true
-            } else {
-                false
-            };
-
-        // Compute blur alpha: same as surface alpha for fade-in/out (both fade together),
-        // but squared during home visibility animation for a softer blur transition
-        let blur_alpha = if is_fading_in || is_fading_out {
-            let result = alpha;
+        if let Some(&fade_alpha) = home_visibility.layer_fade_out_alphas.get(&surface_id) {
             tracing::trace!(
                 surface_protocol_id = s.wl_surface().id().protocol_id(),
-                blur_alpha = format!("{:.3}", result),
-                is_fading_in,
-                is_fading_out,
-                "layer_surfaces: blur_alpha during fade"
+                fade_alpha = format!("{:.3}", fade_alpha),
+                "layer_surfaces: applying fade-OUT alpha"
             );
-            result
-        } else {
-            let is_animating = alpha < 1.0;
-            let has_home_visibility = home_visibility.home_only_surfaces.contains(&surface_id)
-                || home_visibility.hide_on_home_surfaces.contains(&surface_id);
-            if has_home_visibility && is_animating {
-                alpha * alpha
-            } else {
-                alpha
-            }
-        };
+            visible = true;
+            alpha = fade_alpha;
+        }
+
+        // MERGE: the separate `blur_alpha` (surface alpha squared during a home
+        // visibility animation, for a softer backdrop fade) fed our blur backdrop
+        // and went away with it — upstream drives blur from the live framebuffer.
 
         // Filter out completely invisible surfaces
         if !visible {
@@ -686,7 +783,6 @@ fn layer_surfaces<'a>(
         }
 
         // Use the surface-specific alpha (which considers home_alpha for home-only surfaces)
-        // blur_alpha may be more aggressively reduced during home visibility animations
-        Some((s, loc.as_local().to_global(output), alpha, blur_alpha))
+        Some((s, loc.as_local().to_global(output), alpha))
     })
 }

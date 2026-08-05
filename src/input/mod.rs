@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{
-    backend::render::{ElementFilter, cursor::notify_cursor_activity},
+    backend::render::{
+        ElementFilter,
+        cursor::{hide_cursor, notify_cursor_activity},
+    },
     config::{
         Action, Config, PrivateAction,
         key_bindings::{
@@ -25,9 +28,10 @@ use crate::{
         zoom::ZoomState,
     },
     state::BackendData,
-    utils::{prelude::*, quirks::workspace_overview_is_open},
+    utils::{prelude::*, process::workspaces_enabled, quirks::workspace_overview_is_open},
     wayland::handlers::{
-        image_copy_capture::SessionHolder, xwayland_keyboard_grab::XWaylandGrabSeat,
+        image_copy_capture::{SessionHolder, cursor_capture_constraints},
+        xwayland_keyboard_grab::XWaylandGrabSeat,
     },
 };
 use calloop::{
@@ -37,14 +41,15 @@ use calloop::{
 use cosmic_comp_config::{NumlockState, workspace::WorkspaceLayout};
 use cosmic_settings_config::shortcuts;
 use cosmic_settings_config::shortcuts::action::{Direction, ResizeDirection};
+#[cfg(feature = "logind")]
+use smithay::backend::input::{Switch, SwitchState, SwitchToggleEvent};
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisRelativeDirection, AxisSource, Device, DeviceCapability,
         GestureBeginEvent, GestureEndEvent, GesturePinchUpdateEvent as _,
         GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState, KeyboardKeyEvent,
-        PointerAxisEvent, ProximityState, Switch, SwitchState, SwitchToggleEvent,
-        TabletToolButtonEvent, TabletToolEvent, TabletToolProximityEvent, TabletToolTipEvent,
-        TabletToolTipState, TouchEvent,
+        PointerAxisEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
+        TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent,
     },
     desktop::{PopupKeyboardGrab, WindowSurfaceType, utils::under_from_surface_tree},
     input::{
@@ -61,22 +66,19 @@ use smithay::{
     output::Output,
     reexports::{
         input::Device as InputDevice,
-        wayland_server::{
-            Resource as _,
-            protocol::{wl_shm::Format as ShmFormat, wl_surface::WlSurface},
-        },
+        wayland_server::{Resource as _, protocol::wl_surface::WlSurface},
     },
-    utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size},
+    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial},
     wayland::{
         compositor::CompositorHandler,
-        image_copy_capture::{BufferConstraints, CursorSessionRef},
+        image_copy_capture::CursorSessionRef,
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
         pointer_constraints::{PointerConstraint, with_pointer_constraint},
         seat::WaylandFocus,
         tablet_manager::{TabletDescriptor, TabletSeatTrait},
     },
 };
-use tracing::{error, trace, warn};
+use tracing::{error, trace};
 use xkbcommon::xkb::{Keycode, Keysym};
 
 use std::{
@@ -390,7 +392,7 @@ impl State {
                                 // Constraint does not apply if not within region
                                 if !constraint.region().is_none_or(|x| {
                                     x.contains(
-                                        (ptr.current_location() - *surface_loc).to_i32_round(),
+                                        (ptr.current_location() - *surface_loc).to_i32_floor(),
                                     )
                                 }) {
                                     return;
@@ -418,14 +420,27 @@ impl State {
                         .unwrap_or(current_output.clone());
 
                     let output_geometry = output.geometry();
-                    position.x = position.x.clamp(
-                        output_geometry.loc.x as f64,
-                        (output_geometry.loc.x + output_geometry.size.w - 1) as f64,
-                    );
-                    position.y = position.y.clamp(
-                        output_geometry.loc.y as f64,
-                        (output_geometry.loc.y + output_geometry.size.h - 1) as f64,
-                    );
+
+                    let scale = output.current_scale().fractional_scale();
+                    let physical = output
+                        .current_mode()
+                        .map(|mode| output.current_transform().transform_size(mode.size))
+                        .unwrap_or_default();
+                    let logical = physical.to_f64().to_logical(scale);
+                    let output_geometry_loc = output_geometry.loc.to_f64();
+                    // output_geometry.size is a rounded value and may undershoot/overshoot the accurate logical size
+                    // We constrain the position with:
+                    // - output_geometry.size so that we don't send leave events to a fullscreen app
+                    // - logical size so that the position doesn't end up outside the actual size of the output
+                    // See https://github.com/pop-os/cosmic-comp/pull/2568
+                    let max_x = (output_geometry_loc.x
+                        + logical.w.min(output_geometry.size.w as f64))
+                    .next_down();
+                    let max_y = (output_geometry_loc.y
+                        + logical.h.min(output_geometry.size.h as f64))
+                    .next_down();
+                    position.x = position.x.clamp(output_geometry_loc.x, max_x);
+                    position.y = position.y.clamp(output_geometry_loc.y, max_y);
 
                     // Begin hover check cycle — focus_under will mark if a window is hit.
                     // Skip hover tracking when pointer is grabbed (e.g. dragging a window),
@@ -491,6 +506,11 @@ impl State {
                         return;
                     }
 
+                    // MERGE: upstream recomputes `original_position`/`position`/`output` here,
+                    // after `relative_motion`. Our fork needs them earlier (hover checks,
+                    // auto-hide cursor and tooltip hit-testing all run before `relative_motion`),
+                    // so they are computed above instead — including upstream's PR #2568
+                    // logical-size clamp.
                     if ptr.is_grabbed() {
                         if seat
                             .user_data()
@@ -642,7 +662,7 @@ impl State {
 
                             if let Some(region) = &confine_region
                                 && !region
-                                    .contains((pos.as_logical() - *surface_loc).to_i32_round())
+                                    .contains((pos.as_logical() - *surface_loc).to_i32_floor())
                             {
                                 return (false, None);
                             }
@@ -713,7 +733,7 @@ impl State {
                                         PointerConstraint::Confined(confined) => confined.region(),
                                     };
                                     let point =
-                                        (ptr.current_location() - surface_location).to_i32_round();
+                                        (ptr.current_location() - surface_location).to_i32_floor();
                                     if region.is_none_or(|region| region.contains(point)) {
                                         constraint.activate();
                                     }
@@ -738,37 +758,13 @@ impl State {
                         seat.set_active_output(&output);
                     }
 
-                    for session in cursor_sessions_for_output(&shell, &output) {
-                        if let Some((geometry, offset)) = seat.cursor_geometry(
-                            (position - output_geometry.loc.to_f64())
-                                .as_logical()
-                                .to_buffer(
-                                    output.current_scale().fractional_scale(),
-                                    output.current_transform(),
-                                    &output_geometry.size.to_f64().as_logical(),
-                                ),
-                            self.common.clock.now(),
-                        ) {
-                            if session
-                                .current_constraints()
-                                .map(|constraint| constraint.size != geometry.size)
-                                .unwrap_or(true)
-                            {
-                                let mut cursor_size = geometry.size;
-                                // Client shouldn't try to allocate 0x0 buffer
-                                if cursor_size == Size::new(0, 0) {
-                                    cursor_size = Size::new(1, 1);
-                                }
-                                session.update_constraints(BufferConstraints {
-                                    size: cursor_size,
-                                    shm: vec![ShmFormat::Argb8888],
-                                    dma: None,
-                                });
-                            }
-                            session.set_cursor_hotspot(offset);
-                            session.set_cursor_pos(Some(geometry.loc));
-                        }
-                    }
+                    update_output_image_copy_cursor_position(
+                        &shell,
+                        &self.common.clock,
+                        &output,
+                        &seat,
+                        position,
+                    );
 
                     drop(shell);
                     self.update_edge_resize_hover(&seat);
@@ -856,37 +852,13 @@ impl State {
                     self.record_pointer_latency(smithay::backend::input::Event::time(&event));
 
                     let shell = self.common.shell.read();
-                    for session in cursor_sessions_for_output(&shell, &output) {
-                        if let Some((geometry, offset)) = seat.cursor_geometry(
-                            (position - output_geometry.loc.to_f64())
-                                .as_logical()
-                                .to_buffer(
-                                    output.current_scale().fractional_scale(),
-                                    output.current_transform(),
-                                    &output_geometry.size.to_f64().as_logical(),
-                                ),
-                            self.common.clock.now(),
-                        ) {
-                            if session
-                                .current_constraints()
-                                .map(|constraint| constraint.size != geometry.size)
-                                .unwrap_or(true)
-                            {
-                                let mut cursor_size = geometry.size;
-                                // Client shouldn't try to allocate 0x0 buffer
-                                if cursor_size == Size::new(0, 0) {
-                                    cursor_size = Size::new(1, 1);
-                                }
-                                session.update_constraints(BufferConstraints {
-                                    size: cursor_size,
-                                    shm: vec![ShmFormat::Argb8888],
-                                    dma: None,
-                                });
-                            }
-                            session.set_cursor_hotspot(offset);
-                            session.set_cursor_pos(Some(geometry.loc));
-                        }
-                    }
+                    update_output_image_copy_cursor_position(
+                        &shell,
+                        &self.common.clock,
+                        &output,
+                        &seat,
+                        position,
+                    );
 
                     drop(shell);
                     self.update_edge_resize_hover(&seat);
@@ -1124,7 +1096,12 @@ impl State {
                             }
                         }
 
-                        if let Some(target) = under {
+                        // Grabbing a tiling resize handle (the gap between tiles) must not change keyboard focus
+                        let on_resize_fork = matches!(
+                            seat.get_pointer().unwrap().current_focus(),
+                            Some(PointerFocusTarget::ResizeFork(_))
+                        );
+                        if let Some(target) = under.filter(|_| !on_resize_fork) {
                             if let Some(surface) = target.toplevel().map(Cow::into_owned)
                                 && seat.get_keyboard().unwrap().modifier_state().logo
                                 && !shortcuts_inhibited
@@ -1339,6 +1316,10 @@ impl State {
                         if let Some(horizontal_amount) = event.amount(Axis::Horizontal) {
                             if horizontal_amount != 0.0 {
                                 frame = frame
+                                    .relative_direction(
+                                        Axis::Horizontal,
+                                        event.relative_direction(Axis::Horizontal),
+                                    )
                                     .value(Axis::Horizontal, scroll_factor * horizontal_amount);
                                 if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
                                     frame = frame.v120(
@@ -1352,8 +1333,12 @@ impl State {
                         }
                         if let Some(vertical_amount) = event.amount(Axis::Vertical) {
                             if vertical_amount != 0.0 {
-                                frame =
-                                    frame.value(Axis::Vertical, scroll_factor * vertical_amount);
+                                frame = frame
+                                    .relative_direction(
+                                        Axis::Vertical,
+                                        event.relative_direction(Axis::Vertical),
+                                    )
+                                    .value(Axis::Vertical, scroll_factor * vertical_amount);
                                 if let Some(discrete) = event.amount_v120(Axis::Vertical) {
                                     frame = frame.v120(
                                         Axis::Vertical,
@@ -1381,7 +1366,13 @@ impl State {
                     .cloned();
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
-                    if event.fingers() >= 3 && !workspace_overview_is_open(&seat.active_output()) {
+                    // With workspaces disabled the multi-finger swipe has nothing to switch
+                    // to, so don't claim the gesture - hand it to the client instead. This
+                    // also disables the update/end arms, which both key off `gesture_state`.
+                    if event.fingers() >= 3
+                        && workspaces_enabled()
+                        && !workspace_overview_is_open(&seat.active_output())
+                    {
                         self.common.gesture_state = Some(GestureState::new(event.fingers()));
                     } else {
                         let serial = SERIAL_COUNTER.next_serial();
@@ -1670,6 +1661,15 @@ impl State {
                     let under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
 
+                    // Determine which window/surface should receive keyboard focus.
+                    // `surface_under`/`touch.down` only route touch events to the
+                    // surface under the finger; they never change the keyboard focus
+                    // or raise/activate the tapped window. Without this, tapping a
+                    // window behind the currently focused one does nothing (HUM-165).
+                    // Mirror the pointer-button path, which calls `Shell::set_focus`.
+                    let keyboard_focus_target =
+                        State::element_under(position, &output, &shell, &seat);
+
                     // Check for layer surface dismiss on touch down (with whether the
                     // touch landed on layer-shell chrome, for opted-in controllers).
                     let clicked_surface_id = under
@@ -1707,7 +1707,23 @@ impl State {
                     }
 
                     let serial = SERIAL_COUNTER.next_serial();
+
+                    // Hide the mouse cursor while interacting via touch (as Windows
+                    // does). It stays hidden until the next real pointer/mouse activity,
+                    // which reveals it again via `notify_cursor_activity`.
+                    hide_cursor(self, &seat);
+
                     let touch = seat.get_touch().unwrap();
+
+                    // Change keyboard focus to the tapped window, unless touch is
+                    // already grabbed (e.g. an in-progress client touch gesture),
+                    // in which case focus must stay with the grab owner.
+                    if !touch.is_grabbed()
+                        && let Some(target) = keyboard_focus_target
+                    {
+                        Shell::set_focus(self, Some(&target), &seat, Some(serial), false);
+                    }
+
                     touch.down(
                         self,
                         under,
@@ -1970,6 +1986,7 @@ impl State {
                 }
             }
             InputEvent::Special(_) => {}
+            #[allow(unused_variables)]
             InputEvent::SwitchToggle { event } => {
                 #[cfg(feature = "logind")]
                 if event.switch() == Some(Switch::Lid) && self.common.inhibit_lid_fd.is_some() {
@@ -1991,7 +2008,7 @@ impl State {
 
                     if let Err(err) = self.refresh_output_config() {
                         if !closed {
-                            warn!(?err, "Failed to re-enable internal connector");
+                            tracing::warn!(?err, "Failed to re-enable internal connector");
                             if let Some(output) = output {
                                 use cosmic_comp_config::output::comp::OutputState;
 
@@ -2071,6 +2088,22 @@ impl State {
             voice_enabled = voice_config.enabled,
             "Voice key check - incoming key event"
         );
+        // In game mode, on the game's own output, the Super key is the LAUNCHER
+        // key: forward its raw press AND release to the launcher over the
+        // one.playtron.GameMode D-Bus interface (both edges, so the launcher can
+        // distinguish tap vs hold or change behavior later) and consume it, so it
+        // neither opens the start menu nor reaches the game. The controller GUIDE
+        // button reaches Grid directly via InputPlumber; only Super comes here.
+        if shell.game_mode.active
+            && shell.game_mode.output.as_ref() == Some(&focused_output)
+            && matches!(keysym, Keysym::Super_L | Keysym::Super_R)
+        {
+            let pressed = event.state() == KeyState::Pressed;
+            drop(shell);
+            self.common.game_mode_bridge.notify_launcher_key(pressed);
+            return FilterResult::Intercept(None);
+        }
+
         let matches = voice_config.matches_binding(keysym, modifiers);
 
         // Hard-coded F18 check: always treat F18 as voice key regardless of config
@@ -2096,7 +2129,14 @@ impl State {
         // Ctrl+Alt+Super+Shift+F1x must not also trigger voice. (The activation
         // hold-timer below has the same guard, to cover any key-press order.)
         let perf_chord_mods = modifiers.ctrl && modifiers.alt && modifiers.shift;
-        if voice_config.enabled && !perf_chord_mods && (matches || is_f18 || is_voice_key_release) {
+        // Skip voice/chat handling while a keyboard-shortcuts inhibitor is active,
+        // so the Super press is forwarded to the focused client instead. Mirrors the
+        // `!shortcuts_inhibited` gate on global compositor shortcuts below.
+        if voice_config.enabled
+            && !perf_chord_mods
+            && !shortcuts_inhibited
+            && (matches || is_f18 || is_voice_key_release)
+        {
             // Block voice key handling entirely during session lock (idle/login screen)
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
@@ -2867,7 +2907,7 @@ impl State {
             output,
             previous_workspace,
             workspace,
-            &element_filter,
+            element_filter,
             |stage| {
                 match stage {
                     Stage::ZoomUI => {}
@@ -2880,6 +2920,7 @@ impl State {
                         layer,
                         popup,
                         location,
+                        ..
                     } => {
                         if layer.can_receive_keyboard_focus() {
                             let surface = popup.wl_surface();
@@ -2938,6 +2979,11 @@ impl State {
                         // Override redirect windows take a grab on their own via
                         // the Xwayland keyboard grab protocol. Don't focus them via click.
                     }
+                    Stage::OverlaySurface { .. } => {
+                        // Keyboard input to a blocking game-mode overlay is routed
+                        // by the input grab (SetOverlay blocking); pointer falls
+                        // through to the game.
+                    }
                     Stage::StickyPopups(layout) => {
                         if let Some(element) =
                             layout.popup_element_under(global_pos.to_local(output), seat)
@@ -2952,32 +2998,50 @@ impl State {
                             return ControlFlow::Break(Ok(Some(element)));
                         }
                     }
-                    Stage::WorkspacePopups { workspace, offset } => {
+                    Stage::WorkspacePopups {
+                        workspace,
+                        offset,
+                        game_mode_only: _,
+                    } => {
                         let location = global_pos + offset.as_global().to_f64();
                         let output = workspace.output();
                         let output_geo = output.geometry().to_local(output);
                         if Rectangle::new(offset.as_local(), output_geo.size)
                             .intersection(output_geo)
                             .is_some_and(|geometry| {
-                                geometry.contains(global_pos.to_local(output).to_i32_round())
+                                geometry.contains(global_pos.to_local(output).to_i32_floor())
                             })
                             && let Some(element) = workspace.popup_element_under(location, seat)
                         {
                             return ControlFlow::Break(Ok(Some(element)));
                         }
                     }
-                    Stage::Workspace { workspace, offset } => {
+                    Stage::Workspace {
+                        workspace,
+                        offset,
+                        alpha: _,
+                        game_mode_only,
+                    } => {
                         let location = global_pos + offset.as_global().to_f64();
                         let output = workspace.output();
                         let output_geo = output.geometry().to_local(output);
                         if Rectangle::new(offset.as_local(), output_geo.size)
                             .intersection(output_geo)
                             .is_some_and(|geometry| {
-                                geometry.contains(global_pos.to_local(output).to_i32_round())
+                                geometry.contains(global_pos.to_local(output).to_i32_floor())
                             })
-                            && let Some(element) = workspace.toplevel_element_under(location, seat)
                         {
-                            return ControlFlow::Break(Ok(Some(element)));
+                            // Input must match what game mode actually RENDERS: only
+                            // the controlled surface is drawn, so only it may be hit.
+                            let element = match game_mode_only {
+                                Some(controlled) => {
+                                    workspace.controlled_element_under(location, controlled, seat)
+                                }
+                                None => workspace.toplevel_element_under(location, seat),
+                            };
+                            if let Some(element) = element {
+                                return ControlFlow::Break(Ok(Some(element)));
+                            }
                         }
                     }
                 }
@@ -3017,7 +3081,7 @@ impl State {
             output,
             previous_workspace,
             workspace,
-            &element_filter,
+            element_filter,
             |stage| {
                 match stage {
                     Stage::ZoomUI => {
@@ -3121,6 +3185,26 @@ impl State {
                             ))));
                         }
                     }
+                    Stage::OverlaySurface { surface } => {
+                        // A BLOCKING game-mode overlay (the QAM / launcher asserting
+                        // SetOverlay{blocking}) is composited over the game at the
+                        // output origin. Route the pointer to it so it is actually
+                        // clickable — the input grab only redirects the keyboard, so
+                        // without this the overlay renders but swallows no pointer
+                        // events and clicks fall through to the game behind it.
+                        // A non-blocking overlay is passive and keeps falling through.
+                        if shell.game_mode.input_grab.is_some()
+                            && let Some((target, surface_offset)) = surface.focus_under(
+                                global_pos.to_local(output).as_logical(),
+                                WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                            )
+                        {
+                            return ControlFlow::Break(Ok(Some((
+                                target,
+                                surface_offset.as_local().to_global(output),
+                            ))));
+                        }
+                    }
                     Stage::StickyPopups(floating_layer) => {
                         if let Some(under) = floating_layer
                             .popup_surface_under(relative_pos, seat)
@@ -3137,7 +3221,11 @@ impl State {
                             return ControlFlow::Break(Ok(Some(under)));
                         }
                     }
-                    Stage::WorkspacePopups { workspace, offset } => {
+                    Stage::WorkspacePopups {
+                        workspace,
+                        offset,
+                        game_mode_only: _,
+                    } => {
                         let global_pos = global_pos + offset.to_f64().as_global();
                         if let Some(under) =
                             workspace.popup_surface_under(global_pos, overview.clone(), seat)
@@ -3145,11 +3233,24 @@ impl State {
                             return ControlFlow::Break(Ok(Some(under)));
                         }
                     }
-                    Stage::Workspace { workspace, offset } => {
+                    Stage::Workspace {
+                        workspace,
+                        offset,
+                        alpha: _,
+                        game_mode_only,
+                    } => {
                         let global_pos = global_pos + offset.to_f64().as_global();
-                        if let Some(under) =
-                            workspace.toplevel_surface_under(global_pos, overview.clone(), seat)
-                        {
+                        // Pointer must match what game mode actually RENDERS (see the
+                        // element_under arm above).
+                        let under = match game_mode_only {
+                            Some(controlled) => {
+                                workspace.controlled_surface_under(global_pos, controlled, seat)
+                            }
+                            None => {
+                                workspace.toplevel_surface_under(global_pos, overview.clone(), seat)
+                            }
+                        };
+                        if let Some(under) = under {
                             return ControlFlow::Break(Ok(Some(under)));
                         }
                     }
@@ -3195,7 +3296,7 @@ impl State {
                         if let Some(constraint) = constraint
                             && let Some(region) = constraint.region()
                         {
-                            let point_in_surface = (p - surface_offset.to_f64()).to_i32_round();
+                            let point_in_surface = (p - surface_offset.to_f64()).to_i32_floor();
                             return region.contains(point_in_surface);
                         }
                         true
@@ -3208,7 +3309,7 @@ impl State {
                 if is_legal(pos_in_element) {
                     let x = workspace_origin.x + origin.x + pos_in_element.x;
                     let y = workspace_origin.y + origin.y + pos_in_element.y;
-                    Some((Point::new(x, y), output.clone()))
+                    Some((Point::<_, Global>::new(x, y), output.clone()))
                 } else {
                     None
                 }
@@ -3218,11 +3319,34 @@ impl State {
         };
 
         if let Some((point, output)) = point_and_output {
+            // TODO: Replace with `wl_pointer.warp`
             let original_position = pointer.current_location();
-            pointer.set_location(point);
+            let serial = SERIAL_COUNTER.next_serial();
+            let under = State::surface_under(point, &output, &self.common.shell.write())
+                .map(|(target, pos)| (target, pos.as_logical()));
+            let time = self.common.clock.now();
+            pointer.relative_motion(
+                self,
+                under.clone(),
+                &RelativeMotionEvent {
+                    delta: (0., 0.).into(),
+                    delta_unaccel: (0., 0.).into(),
+                    utime: time.as_micros(),
+                },
+            );
+            pointer.motion(
+                self,
+                under,
+                &MotionEvent {
+                    location: point.as_logical(),
+                    serial,
+                    time: time.as_millis(),
+                },
+            );
+            pointer.frame(self);
 
             let mut shell = self.common.shell.write();
-            shell.update_pointer_position(point.as_global().to_local(&output), &output);
+            shell.update_pointer_position(point.to_local(&output), &output);
 
             let seat = shell
                 .seats
@@ -3237,31 +3361,13 @@ impl State {
                     self.common.config.cosmic_conf.accessibility_zoom.view_moves,
                 );
 
-                let output_geometry = output.geometry();
-                for session in cursor_sessions_for_output(&shell, &output) {
-                    if let Some((geometry, offset)) = seat.cursor_geometry(
-                        point.to_buffer(
-                            output.current_scale().fractional_scale(),
-                            output.current_transform(),
-                            &output_geometry.size.to_f64().as_logical(),
-                        ),
-                        self.common.clock.now(),
-                    ) {
-                        if session
-                            .current_constraints()
-                            .map(|constraint| constraint.size != geometry.size)
-                            .unwrap_or(true)
-                        {
-                            session.update_constraints(BufferConstraints {
-                                size: geometry.size,
-                                shm: vec![ShmFormat::Argb8888],
-                                dma: None,
-                            });
-                        }
-                        session.set_cursor_hotspot(offset);
-                        session.set_cursor_pos(Some(geometry.loc));
-                    }
-                }
+                update_output_image_copy_cursor_position(
+                    &shell,
+                    &self.common.clock,
+                    &output,
+                    &seat,
+                    point,
+                );
             }
         }
     }
@@ -3321,4 +3427,37 @@ fn mapped_output_for_device<'a, D: Device + 'static>(
         None
     };
     map_to_output.or_else(|| shell.builtin_output())
+}
+
+pub fn update_output_image_copy_cursor_position(
+    shell: &Shell,
+    clock: &Clock<Monotonic>,
+    output: &Output,
+    seat: &Seat<State>,
+    position: Point<f64, Global>,
+) {
+    let output_geometry = output.geometry();
+    for session in cursor_sessions_for_output(shell, output) {
+        if let Some(cursor_geometry) = seat.cursor_geometry(
+            (position - output_geometry.loc.to_f64())
+                .as_logical()
+                .to_buffer(
+                    output.current_scale().fractional_scale(),
+                    output.current_transform(),
+                    &output_geometry.size.to_f64().as_logical(),
+                ),
+            clock.now(),
+        ) {
+            let constraints = cursor_capture_constraints(Some(cursor_geometry));
+            if session
+                .current_constraints()
+                .map(|current_constraints| current_constraints.size != constraints.size)
+                .unwrap_or(true)
+            {
+                session.update_constraints(constraints);
+            }
+            session.set_cursor_hotspot(cursor_geometry.hotspot);
+            session.set_cursor_pos(Some(cursor_geometry.geometry.loc));
+        }
+    }
 }

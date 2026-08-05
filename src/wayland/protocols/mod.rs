@@ -1,14 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod a11y;
+pub mod adaptive_foreground;
 pub mod animated_resize;
 pub mod backdrop_color;
+// Fork-only client-facing KDE blur protocol (org_kde_kwin_blur). Upstream's
+// `ext_background_effect_v1` is bound too, from smithay, but it is a staging
+// protocol that carries only a region -- strength, corner rounding, saturation,
+// tint and border have nowhere to go in it. Our clients speak this one instead;
+// both write the same per-surface state.
 pub mod blur;
 pub mod corner_radius;
 pub mod drm;
 pub mod exclusive_mode;
 pub mod home_visibility;
 pub mod image_capture_source;
+pub mod keyboard_layout;
 pub mod layer_auto_hide;
 pub mod layer_corner_radius;
 pub mod layer_edge_resize;

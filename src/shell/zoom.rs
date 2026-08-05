@@ -18,7 +18,7 @@ const SUBTRACT_LINE: &[u8] = icetron_themes::icons::MINUS.bytes;
 use icetron_p::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source, styled_text};
 use keyframe::{ease, functions::Linear};
 use smithay::{
-    backend::renderer::{ImportMem, Renderer, element::AsRenderElements},
+    backend::renderer::ImportMem,
     desktop::space::SpaceElement,
     input::{
         Seat,
@@ -35,26 +35,26 @@ use smithay::{
         },
     },
     output::Output,
-    utils::{IsAlive, Point, Rectangle, Serial, Size},
+    utils::{FrameExtents, IsAlive, Point, Rectangle, Serial, Size},
 };
 use tracing::error;
 
 use crate::{
-    backend::render::cursor::CursorState,
+    backend::render::{cursor::CursorState, element::AsGlowRenderer},
     comp_theme::CompTheme,
     shell::element::window::mouse_interaction_to_cursor_icon,
     state::State,
     utils::{
         apply::Apply,
         iced::CompElement,
-        iced::{IcedElement, Program},
+        iced::{IcedElement, IcedRenderElement, Program},
         prelude::*,
         tween::EasePoint,
     },
 };
 
 use super::{
-    ANIMATION_DURATION, check_grab_preconditions,
+    check_grab_preconditions,
     focus::target::PointerFocusTarget,
     grabs::{ContextMenu, Item, MenuAlignment, MenuGrab},
 };
@@ -74,6 +74,8 @@ pub struct OutputZoomState {
     focal_point: Point<f64, Local>,
     previous_point: Option<(Point<f64, Local>, Instant)>,
     pub(super) element: ZoomElement,
+    /// Motion tokens captured from the theme at creation.
+    motion: crate::backend::render::animations::motion::Motion,
 }
 
 impl OutputZoomState {
@@ -84,45 +86,20 @@ impl OutputZoomState {
         increment: u32,
         movement: ZoomMovement,
         loop_handle: LoopHandle<'static, State>,
+        // MERGE: upstream flips `theme.transparent` to `frosted_system_interface` here; our
+        // `CompTheme` has no equivalent flag, its surface tokens already carry the frosted look.
         theme: CompTheme,
     ) -> OutputZoomState {
+        // Capture motion tokens before `theme` is moved into the IcedElement.
+        let motion = theme.motion;
         let cursor_position = seat.get_pointer().unwrap().current_location().as_global();
+        let focal_point = cursor_position.to_local(output);
         let output_geometry = output.geometry().to_f64();
-        let focal_point = if output_geometry.contains(cursor_position) {
-            match movement {
-                ZoomMovement::Continuously | ZoomMovement::OnEdge => {
-                    cursor_position.to_local(output)
-                }
-                ZoomMovement::Centered => {
-                    let mut zoomed_output_geometry = output.geometry().to_f64().downscale(level);
-                    zoomed_output_geometry.loc =
-                        cursor_position - zoomed_output_geometry.size.downscale(2.).to_point();
-
-                    let mut focal_point = zoomed_output_geometry
-                        .loc
-                        .to_local(output)
-                        .upscale(level)
-                        .to_global(output);
-                    focal_point.x = focal_point.x.clamp(
-                        output_geometry.loc.x,
-                        (output_geometry.loc.x + output_geometry.size.w).next_down(),
-                    );
-                    focal_point.y = focal_point.y.clamp(
-                        output_geometry.loc.y,
-                        (output_geometry.loc.y + output_geometry.size.h).next_down(),
-                    );
-                    focal_point.to_local(output)
-                }
-            }
-        } else {
-            (output_geometry.size.w / 2., output_geometry.size.h / 2.).into()
-        };
 
         let program = ZoomProgram::new(level, movement, increment);
         let element = IcedElement::new(program, Size::default(), loop_handle, theme);
         let mut size = element.minimum_size();
-        size.w = (size.w + 32/*TODO: figure out why iced is calculating too little*/)
-            .min(output_geometry.size.w.round() as i32);
+        size.w = size.w.min(output_geometry.size.w.round() as i32);
         element.set_activate(true);
         element.resize(size);
         element.output_enter(output, Rectangle::new(Point::from((0, 0)), size));
@@ -134,19 +111,20 @@ impl OutputZoomState {
             focal_point,
             previous_point: None,
             element,
+            motion,
         }
     }
 
     pub fn animating_focal_point(&mut self) -> Point<f64, Local> {
         if let Some((old_point, start)) = self.previous_point.as_ref() {
             let duration_since = Instant::now().duration_since(*start);
-            if duration_since > ANIMATION_DURATION {
+            if duration_since > self.motion.animation {
                 self.previous_point.take();
                 return self.focal_point;
             }
 
             let percentage =
-                duration_since.as_millis() as f32 / ANIMATION_DURATION.as_millis() as f32;
+                duration_since.as_millis() as f32 / self.motion.animation.as_millis() as f32;
             ease(
                 Linear,
                 EasePoint(*old_point),
@@ -170,7 +148,7 @@ impl OutputZoomState {
     pub fn animating_level(&self) -> f64 {
         if let Some((old_level, start)) = self.previous_level.as_ref() {
             let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                / ANIMATION_DURATION.as_millis() as f32;
+                / self.motion.animation.as_millis() as f32;
 
             ease(Linear, *old_level, self.level, percentage)
         } else {
@@ -186,7 +164,7 @@ impl OutputZoomState {
         if self
             .previous_level
             .as_ref()
-            .is_some_and(|(_, start)| Instant::now().duration_since(*start) > ANIMATION_DURATION)
+            .is_some_and(|(_, start)| Instant::now().duration_since(*start) > self.motion.animation)
         {
             self.previous_level.take();
         }
@@ -205,10 +183,13 @@ impl OutputZoomState {
         });
     }
 
-    fn render<R, C>(&mut self, renderer: &mut R, output: &Output) -> Vec<C>
-    where
-        C: From<<IcedElement<ZoomProgram> as AsRenderElements<R>>::RenderElement>,
-        R: Renderer + ImportMem,
+    fn render<R>(
+        &mut self,
+        renderer: &mut R,
+        output: &Output,
+        push: &mut dyn FnMut(IcedRenderElement<R>),
+    ) where
+        R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
         let size = self.element.current_size().to_f64();
@@ -221,8 +202,17 @@ impl OutputZoomState {
         .to_physical(scale.fractional_scale())
         .to_i32_round();
 
-        self.element
-            .render_elements(renderer, location, scale.fractional_scale().into(), 1.0)
+        self.element.push_render_elements(
+            renderer,
+            location,
+            scale.fractional_scale().into(),
+            1.0,
+            self.element
+                .with_theme(|theme| theme.radius_s())
+                .map(|x| x.round() as u8),
+            push,
+            None,
+        )
     }
 }
 
@@ -269,86 +259,101 @@ impl ZoomState {
         &mut self,
         output: &Output,
         cursor_position: Point<f64, Global>,
-        original_position: Point<f64, Global>,
+        _original_position: Point<f64, Global>,
         movement: ZoomMovement,
     ) {
-        let output_geometry = output.geometry().to_f64();
-        let mut zoomed_output_geometry = output.zoomed_geometry().unwrap().to_f64();
+        let output_geometry = output.geometry().to_f64().to_local(output);
+        let zoomed_output_geometry = output.zoomed_geometry().unwrap().to_f64().to_local(output);
 
         let output_state = output.user_data().get::<Mutex<OutputZoomState>>().unwrap();
         let mut output_state_ref = output_state.lock().unwrap();
 
-        // animate movement type changes
-        if self.movement != movement {
+        let level = output_state_ref.current_level();
+
+        let is_level_change = output_state_ref
+            .previous_level
+            .is_some_and(|prev| prev.0 != level);
+
+        // animate level and movement type changes
+        if is_level_change || self.movement != movement {
             output_state_ref.previous_point = Some((output_state_ref.focal_point, Instant::now()));
             self.movement = movement;
         }
 
         let cursor_position = cursor_position.to_local(output);
         match movement {
-            ZoomMovement::Continuously => output_state_ref.focal_point = cursor_position,
-            ZoomMovement::OnEdge => {
-                if !zoomed_output_geometry
-                    .overlaps_or_touches(Rectangle::new(original_position, Size::from((16., 16.))))
-                {
-                    zoomed_output_geometry.loc = cursor_position.to_global(output)
-                        - zoomed_output_geometry.size.downscale(2.).to_point();
-                    let mut focal_point = zoomed_output_geometry
-                        .loc
-                        .to_local(output)
-                        .upscale(output_state_ref.level)
-                        .to_global(output);
-                    focal_point.x = focal_point.x.clamp(
-                        output_geometry.loc.x,
-                        output_geometry.loc.x + output_geometry.size.w - 1.,
-                    );
-                    focal_point.y = focal_point.y.clamp(
-                        output_geometry.loc.y,
-                        output_geometry.loc.y + output_geometry.size.h - 1.,
-                    );
-                    output_state_ref.previous_point =
-                        Some((output_state_ref.focal_point, Instant::now()));
-                    output_state_ref.focal_point = focal_point.to_local(output);
-                } else if !zoomed_output_geometry.contains(cursor_position.to_global(output)) {
-                    let mut diff = output_state_ref.focal_point.to_global(output)
-                        + (cursor_position.to_global(output) - original_position)
-                            .upscale(output_state_ref.level);
-                    diff.x = diff.x.clamp(
-                        output_geometry.loc.x,
-                        (output_geometry.loc.x + output_geometry.size.w).next_down(),
-                    );
-                    diff.y = diff.y.clamp(
-                        output_geometry.loc.y,
-                        (output_geometry.loc.y + output_geometry.size.h).next_down(),
-                    );
-                    diff -= output_state_ref.focal_point.to_global(output);
-
-                    output_state_ref.focal_point += diff.as_logical().as_local();
-                }
+            ZoomMovement::Continuously => {
+                // Focal point is the cursor position
+                output_state_ref.focal_point = cursor_position;
             }
-            ZoomMovement::Centered => {
-                zoomed_output_geometry.loc = cursor_position.to_global(output)
-                    - zoomed_output_geometry.size.downscale(2.).to_point();
+            ZoomMovement::OnEdge => {
+                if is_level_change {
+                    // Ensure the cursor doesn't disappear off screen
+                    output_state_ref.focal_point = cursor_position;
+                    return;
+                }
 
-                let mut focal_point = zoomed_output_geometry
-                    .loc
-                    .to_local(output)
-                    .upscale(
-                        (output_geometry.size.w
-                            / (output_geometry.size.w - zoomed_output_geometry.size.w)
-                                .max(f64::EPSILON))
-                        .max(1.),
-                    )
-                    .to_global(output);
+                // Compute small margin relative to zoomed output to keep cursor within
+                // (can be user-configurable in the future)
+                let margin_size = zoomed_output_geometry.size.h * 0.02;
+                let margins = FrameExtents::new(margin_size, margin_size, margin_size, margin_size);
+                let inner_rect = zoomed_output_geometry - margins;
+
+                if inner_rect.contains(cursor_position) {
+                    // Do not move if cursor within margins
+                    return;
+                }
+
+                // Compute dx and dy to move the zoomed output based on cursor distance outside margin(s)
+                let dx = if cursor_position.x < inner_rect.loc.x {
+                    cursor_position.x - inner_rect.loc.x
+                } else if cursor_position.x > inner_rect.loc.x + inner_rect.size.w {
+                    cursor_position.x - (inner_rect.loc.x + inner_rect.size.w)
+                } else {
+                    0.0
+                };
+                let dy = if cursor_position.y < inner_rect.loc.y {
+                    cursor_position.y - inner_rect.loc.y
+                } else if cursor_position.y > inner_rect.loc.y + inner_rect.size.h {
+                    cursor_position.y - (inner_rect.loc.y + inner_rect.size.h)
+                } else {
+                    0.0
+                };
+
+                let mut focal_point = output_state_ref.focal_point + Point::new(dx, dy);
+
+                // Clamp the final focal point to output geometry
                 focal_point.x = focal_point.x.clamp(
                     output_geometry.loc.x,
-                    output_geometry.loc.x + output_geometry.size.w - 1.,
+                    output_geometry.loc.x + output_geometry.size.w - 1.0,
                 );
                 focal_point.y = focal_point.y.clamp(
                     output_geometry.loc.y,
-                    output_geometry.loc.y + output_geometry.size.h - 1.,
+                    output_geometry.loc.y + output_geometry.size.h - 1.0,
                 );
-                output_state_ref.focal_point = focal_point.to_local(output);
+
+                output_state_ref.focal_point = focal_point;
+            }
+            ZoomMovement::Centered => {
+                let center = (output_geometry.size / 2.).to_point();
+
+                if level == 1.0 {
+                    // Prevent focal point jumping to top-left corner (0, 0) on zoom out
+                    output_state_ref.focal_point = center;
+                    return;
+                }
+
+                // Compute translation to keep cursor at center of screen
+                let mut tx = center.x - cursor_position.x * level;
+                let mut ty = center.y - cursor_position.y * level;
+
+                // Clamp translation to keep viewport within screen bounds
+                tx = tx.clamp(output_geometry.size.w * (1.0 - level), 0.0);
+                ty = ty.clamp(output_geometry.size.h * (1.0 - level), 0.0);
+
+                // Convert translation back to focal point:  T = F * (1 - level)
+                output_state_ref.focal_point =
+                    Point::from((tx / (1.0 - level), ty / (1.0 - level)));
             }
         }
     }
@@ -395,14 +400,13 @@ impl ZoomState {
         None
     }
 
-    pub fn render<R, C>(renderer: &mut R, output: &Output) -> Vec<C>
+    pub fn render<R>(renderer: &mut R, output: &Output, push: &mut dyn FnMut(IcedRenderElement<R>))
     where
-        C: From<<IcedElement<ZoomProgram> as AsRenderElements<R>>::RenderElement>,
-        R: Renderer + ImportMem,
+        R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
         let output_state = output.user_data().get::<Mutex<OutputZoomState>>().unwrap();
-        output_state.lock().unwrap().render(renderer, output)
+        output_state.lock().unwrap().render(renderer, output, push)
     }
 }
 
@@ -594,6 +598,9 @@ impl Program for ZoomProgram {
         .align_y(Alignment::Center)
         .apply(container)
         .padding(8)
+        // MERGE: upstream swapped the cosmic component palette for the frosted variant
+        // (`cosmic.background(theme.transparent)`); our icetron `surface_container_style()`
+        // already provides the glass surface, so it stays.
         .class(Box::new(move |_: &iced_core::Theme| surface_style)
             as Box<dyn Fn(&iced_core::Theme) -> container::Style>)
         .into()
@@ -602,12 +609,12 @@ impl Program for ZoomProgram {
     fn update(
         &mut self,
         message: Self::Message,
-        loop_handle: &LoopHandle<'static, State>,
+        loop_handle: &crate::utils::iced::ProgramLoop,
         last_seat: Option<&(Seat<State>, Serial)>,
     ) -> iced_runtime::Task<Self::Message> {
         match message {
             ZoomMessage::Decrease => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     let seat = state.common.shell.read().seats.last_active().clone();
                     let increment =
                         state.common.config.cosmic_conf.accessibility_zoom.increment as f64 / 100.0;
@@ -616,7 +623,7 @@ impl Program for ZoomProgram {
                 });
             }
             ZoomMessage::Increase => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     let seat = state.common.shell.read().seats.last_active().clone();
                     let increment =
                         state.common.config.cosmic_conf.accessibility_zoom.increment as f64 / 100.0;
@@ -628,7 +635,7 @@ impl Program for ZoomProgram {
                 self.open_menu = OpenMenu::More;
                 let movement = self.movement;
                 if let Some((seat, serial)) = last_seat.cloned() {
-                    let _ = loop_handle.insert_idle(move |state| {
+                    loop_handle.insert_idle(move |state| {
                         if let Some(start_data) =
                             check_grab_preconditions(&seat, Some(serial), None)
                         {
@@ -660,6 +667,8 @@ impl Program for ZoomProgram {
                                 let zoom_element = output_state_ref.element.clone();
                                 std::mem::drop(output_state_ref);
 
+                                // MERGE: upstream forces the frosted cosmic palette on the menu
+                                // theme here; `CompTheme` has no `transparent` flag.
                                 let grab = MenuGrab::new(
                                     start_data,
                                     &seat,
@@ -667,7 +676,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-continuously"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -697,7 +706,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-onedge"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -727,7 +736,7 @@ impl Program for ZoomProgram {
                                         Item::new(
                                             crate::fl!("a11y-zoom-move-centered"),
                                             move |handle| {
-                                                let _ = handle.insert_idle(move |state| {
+                                                handle.insert_idle(move |state| {
                                                     state
                                                         .common
                                                         .config
@@ -756,7 +765,7 @@ impl Program for ZoomProgram {
                                         .toggled(movement == ZoomMovement::Centered),
                                         Item::Separator,
                                         Item::new(crate::fl!("a11y-zoom-settings"), |handle| {
-                                            let _ = handle.insert_idle(move |state| {
+                                            handle.insert_idle(move |state| {
                                                 state.spawn_command(format!(
                                                     "{} accessibility-magnifier",
                                                     crate::utils::process::settings_binary(),
@@ -799,7 +808,7 @@ impl Program for ZoomProgram {
                 self.open_menu = OpenMenu::Increment;
                 if let Some((seat, serial)) = last_seat.cloned() {
                     let increments = self.increments.clone();
-                    let _ = loop_handle.insert_idle(move |state| {
+                    loop_handle.insert_idle(move |state| {
                         if let Some(start_data) =
                             check_grab_preconditions(&seat, Some(serial), None)
                         {
@@ -831,12 +840,14 @@ impl Program for ZoomProgram {
                                 let zoom_element = output_state_ref.element.clone();
                                 std::mem::drop(output_state_ref);
 
+                                // MERGE: upstream forces the frosted cosmic palette on the menu
+                                // theme here; `CompTheme` has no `transparent` flag.
                                 let grab = MenuGrab::new(
                                     start_data,
                                     &seat,
                                     increments.into_iter().map(|val| {
                                         Item::new(format!("{}%", val), move |handle| {
-                                            let _ = handle.insert_idle(move |state| {
+                                            handle.insert_idle(move |state| {
                                                 state
                                                     .common
                                                     .config
@@ -890,7 +901,7 @@ impl Program for ZoomProgram {
                 }
             }
             ZoomMessage::Close => {
-                let _ = loop_handle.insert_idle(|state| {
+                loop_handle.insert_idle(|state| {
                     state
                         .common
                         .config

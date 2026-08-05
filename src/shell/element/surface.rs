@@ -1,8 +1,23 @@
+use iced_core::Shadow;
+use smithay::backend::renderer::gles::element::PixelShaderElement;
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface;
+
+use smithay::backend::renderer::utils::with_renderer_surface_state;
+
 use crate::{
-    shell::focus::target::PointerFocusTarget,
-    wayland::{
-        handlers::compositor::frame_time_filter_fn, protocols::corner_radius::CacheableCorners,
+    backend::render::{
+        element::AsGlowRenderer,
+        shadow::ShadowShader,
+        wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
     },
+    shell::focus::target::PointerFocusTarget,
+    utils::prelude::*,
+    wayland::handlers::{
+        background_effect::ComputedBlurRegionCachedState, compositor::frame_time_filter_fn,
+        corner_radius::surface_corners,
+    },
+    wayland::protocols::layer_shadow::surface_has_shadow,
 };
 use std::{
     borrow::Cow,
@@ -17,13 +32,8 @@ use smithay::{
     backend::{
         drm::DrmNode,
         renderer::{
-            ImportAll, Renderer,
-            element::{
-                AsRenderElements, Kind, RenderElementStates,
-                surface::{
-                    KindEvaluation, WaylandSurfaceRenderElement, render_elements_from_surface_tree,
-                },
-            },
+            ImportAll, Renderer, buffer_has_alpha,
+            element::{Kind, RenderElementStates, surface::KindEvaluation},
             utils::RendererSurfaceStateUserData,
         },
     },
@@ -51,6 +61,7 @@ use smithay::{
         IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size, user_data::UserDataMap,
     },
     wayland::{
+        alpha_modifier::AlphaModifierSurfaceCachedState,
         compositor::{
             SubsurfaceCachedState, SurfaceData, TraversalAction, get_parent, with_states,
             with_surface_tree_downward,
@@ -62,13 +73,15 @@ use smithay::{
             XdgToplevelSurfaceData,
         },
     },
-    xwayland::{X11Surface, xwm::X11Relatable},
+    xwayland::{
+        X11Surface,
+        xwm::{WmWindowType, X11Relatable},
+    },
 };
 use tracing::trace;
 
 use crate::{
     state::{State, SurfaceDmabufFeedback},
-    utils::prelude::*,
     wayland::handlers::{
         compositor::FRAME_TIME_FILTER,
         decoration::{KdeDecorationData, PreferredDecorationMode},
@@ -85,6 +98,39 @@ fn buffer_node(data: &SurfaceData) -> Option<DrmNode> {
         .and_then(|dmabuf| dmabuf.node())
 }
 
+fn is_likely_translucent(alpha: f32, data: &SurfaceData) -> bool {
+    if alpha < 1.0 {
+        return true;
+    }
+
+    let mut alpha_modifier_state = data.cached_state.get::<AlphaModifierSurfaceCachedState>();
+    let alpha_multiplier = alpha_modifier_state
+        .current()
+        .multiplier_f32()
+        .unwrap_or(1.0);
+    if alpha_multiplier < 1.0 {
+        return true;
+    }
+
+    let Some(surface_state) = data.data_map.get::<RendererSurfaceStateUserData>() else {
+        return false;
+    };
+    let surface_state = surface_state.lock().unwrap();
+    if surface_state
+        .buffer()
+        .is_none_or(|buffer| !buffer_has_alpha(buffer).unwrap_or(true))
+    {
+        return false;
+    }
+
+    let mut blur_state = data.cached_state.get::<ComputedBlurRegionCachedState>();
+    blur_state
+        .current()
+        .blur_region
+        .as_ref()
+        .is_some_and(|region| !region.is_empty())
+}
+
 /// Build the [`KindEvaluation`] for a window's surface tree.
 ///
 /// `scanout_node`, when set, is the scan-out target [`DrmNode`] of the output currently being
@@ -93,6 +139,7 @@ fn buffer_node(data: &SurfaceData) -> Option<DrmNode> {
 fn scanout_kind_eval(
     scanout_override: Option<bool>,
     scanout_node: Option<DrmNode>,
+    alpha: f32,
 ) -> KindEvaluation {
     match (scanout_override, scanout_node) {
         // Forced off.
@@ -102,14 +149,14 @@ fn scanout_kind_eval(
         (None, None) => FRAME_TIME_FILTER,
         // Node restriction in effect: only buffers on the scan-out node may be candidates.
         (Some(true), Some(node)) => KindEvaluation::Closure(Box::new(move |data| {
-            if buffer_node(data) == Some(node) {
+            if buffer_node(data) == Some(node) && !is_likely_translucent(alpha, data) {
                 Kind::ScanoutCandidate
             } else {
                 Kind::Unspecified
             }
         })),
         (None, Some(node)) => KindEvaluation::Closure(Box::new(move |data| {
-            if buffer_node(data) == Some(node) {
+            if buffer_node(data) == Some(node) && !is_likely_translucent(alpha, data) {
                 frame_time_filter_fn(data)
             } else {
                 Kind::Unspecified
@@ -175,6 +222,20 @@ struct Sticky(AtomicBool);
 #[derive(Default)]
 struct GlobalGeometry(Mutex<Option<Rectangle<i32, Global>>>);
 
+/// How to draw the shadow behind a popup that asked for one.
+///
+/// The element is built where the popup's geometry is worked out, but handed
+/// back rather than pushed: `SurfaceRenderElement` cannot carry a shader
+/// element, and the callers that can are the ones whose render element type
+/// already accepts one.
+pub struct PopupShadow<'a> {
+    /// Layers to draw, in the order the theme lists them — furthest from the
+    /// surface first, so later ones land on top.
+    pub layers: &'a [Shadow],
+    /// Where each element built goes.
+    pub push: &'a mut dyn FnMut(PixelShaderElement),
+}
+
 impl CosmicSurface {
     pub fn title(&self) -> String {
         match self.0.underlying_surface() {
@@ -193,31 +254,29 @@ impl CosmicSurface {
         }
     }
 
-    /// Check if this surface has KDE blur effect enabled
+    /// Whether this surface asked for a blurred backdrop.
+    ///
+    /// Kept across the move to the background-effect protocol because callers use
+    /// it for more than drawing the blur: a blurred window suppresses its drop
+    /// shadow and changes how its corners are clipped. Only the source of the
+    /// answer changed -- it now comes from the surface's computed blur region
+    /// rather than the old per-surface query.
     pub fn has_blur(&self) -> bool {
-        self.wl_surface()
-            .map(|surface| crate::wayland::protocols::blur::has_blur(&surface))
-            .unwrap_or(false)
+        self.wl_surface().is_some_and(|surface| {
+            with_states(&surface, |states| {
+                let mut blur_state = states.cached_state.get::<ComputedBlurRegionCachedState>();
+                blur_state
+                    .current()
+                    .blur_region
+                    .as_ref()
+                    .is_some_and(|region| !region.is_empty())
+            })
+        })
     }
 
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>) -> Option<[u8; 4]> {
         self.wl_surface().and_then(|surface| {
-            with_states(&surface, |states| {
-                let mut guard = states.cached_state.get::<CacheableCorners>();
-
-                // guard against corner radius being too large, potentially disconnecting the outline
-                let half_min_dim =
-                    u8::try_from(geometry_size.w.min(geometry_size.h) / 2).unwrap_or(u8::MAX);
-
-                let corners = guard.current().0?;
-
-                Some([
-                    corners.bottom_right.min(half_min_dim),
-                    corners.top_right.min(half_min_dim),
-                    corners.bottom_left.min(half_min_dim),
-                    corners.top_left.min(half_min_dim),
-                ])
-            })
+            with_states(&surface, |states| surface_corners(states, geometry_size))
         })
     }
 
@@ -278,6 +337,89 @@ impl CosmicSurface {
             WindowSurface::X11(surface) => surface.steam_bigpicture().is_some_and(|v| v != 0),
             WindowSurface::Wayland(_) => false,
         }
+    }
+
+    /// PID of the client owning this surface (`_NET_WM_PID`). `None` for native
+    /// Wayland toplevels. Game mode uses this to relate a window to the adopted
+    /// game: a popup may only composite over the game when it comes from the SAME
+    /// process.
+    pub fn pid(&self) -> Option<u32> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.pid(),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// The X11 window this surface is transient for (`WM_TRANSIENT_FOR`), if any.
+    pub fn transient_for(&self) -> Option<u32> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.is_transient_for(),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// This surface's X11 window id, if it is an XWayland window.
+    pub fn x11_window_id(&self) -> Option<u32> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => Some(surface.window_id()),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// Whether this is an X11 override-redirect window (menus, tooltips, the
+    /// Steam overlay) — it bypasses the window manager and positions itself.
+    pub fn is_override_redirect(&self) -> bool {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.is_override_redirect(),
+            WindowSurface::Wayland(_) => false,
+        }
+    }
+
+    /// `_NET_WM_WINDOW_TYPE`, if the client set one.
+    pub fn window_type(&self) -> Option<WmWindowType> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => surface.window_type(),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// Whether this window is too insubstantial to ever be the game or a popup
+    /// worth compositing: a 1x1/zero-area stub. Games map 1x1 IME/input helpers and
+    /// offscreen login stubs, which must never win focus.
+    pub fn is_useless(&self) -> bool {
+        let size = self.bbox().size;
+        size.w <= 1 || size.h <= 1
+    }
+
+    /// Whether this window looks like a menu/dropdown/transient artifact rather
+    /// than a real toplevel.
+    /// Override-redirect and the popup-ish `_NET_WM_WINDOW_TYPE`s count; so does
+    /// a non-fullscreen window hidden from BOTH the taskbar and the pager (a
+    /// helper surface), which is how Wine marks many of its transient widgets.
+    pub fn maybe_a_dropdown(&self) -> bool {
+        let WindowSurface::X11(surface) = self.0.underlying_surface() else {
+            // Native Wayland popups are xdg_popups, tracked separately.
+            return false;
+        };
+        if surface.is_override_redirect() {
+            return true;
+        }
+        if matches!(
+            surface.window_type(),
+            Some(
+                WmWindowType::DropdownMenu
+                    | WmWindowType::PopupMenu
+                    | WmWindowType::Menu
+                    | WmWindowType::Tooltip
+                    | WmWindowType::Combo
+                    | WmWindowType::Splash
+                    | WmWindowType::Notification
+                    | WmWindowType::Dnd
+            )
+        ) {
+            return true;
+        }
+        surface.is_skip_taskbar() && surface.is_skip_pager() && !surface.is_fullscreen()
     }
 
     pub fn pending_size(&self) -> Option<Size<i32, Logical>> {
@@ -355,8 +497,7 @@ impl CosmicSurface {
                 toplevel.with_pending_state(|state| state.size = Some(geo.size.as_logical()))
             }
             WindowSurface::X11(surface) => {
-                let _ =
-                    surface.configure_with_sync(geo.as_logical() + surface.frame_extents(), None);
+                let _ = surface.configure(geo.as_logical() + surface.frame_extents());
             }
         }
     }
@@ -914,10 +1055,7 @@ impl CosmicSurface {
         self.0
             .send_dmabuf_feedback(output, primary_scan_out_output, |_, data| {
                 if is_fullscreen {
-                    feedback
-                        .primary_scanout_feedback
-                        .as_ref()
-                        .unwrap_or(&feedback.render_feedback)
+                    &feedback.primary_scanout_feedback
                 } else if frame_time_filter_fn(data) == Kind::ScanoutCandidate {
                     feedback
                         .overlay_scanout_feedback
@@ -956,98 +1094,189 @@ impl CosmicSurface {
         self.0.user_data()
     }
 
-    pub fn popup_render_elements<R, C>(
+    pub fn push_popup_render_elements<R>(
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
         scale: Scale<f64>,
         alpha: f32,
         scanout_node: Option<DrmNode>,
-    ) -> Vec<C>
-    where
-        R: Renderer + ImportAll,
+        blur_strength: usize,
+        push: &mut dyn FnMut(SurfaceRenderElement<R>),
+        mut shadow: Option<PopupShadow<'_>>,
+    ) where
+        R: Renderer + ImportAll + AsGlowRenderer,
         R::TextureId: Clone + 'static,
-        C: From<WaylandSurfaceRenderElement<R>>,
     {
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
-                PopupManager::popups_for_surface(surface)
-                    .flat_map(move |(popup, popup_offset)| {
-                        // Check for compositor-driven tooltip position override
-                        let tooltip_override =
-                            crate::wayland::protocols::tooltip::get_tooltip_position(
-                                popup.wl_surface(),
-                            );
+                for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+                    // Check for compositor-driven tooltip position override
+                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
+                        popup.wl_surface(),
+                    );
 
-                        let render_pos = if let Some(override_data) = tooltip_override {
-                            // During show-delay the override has a future show_at —
-                            // produce zero elements so the popup is invisible until then.
-                            if let Some(show_at) = override_data.show_at
-                                && std::time::Instant::now() < show_at
-                            {
-                                return Vec::new();
-                            }
+                    let mut geometry = popup.geometry().to_f64();
+                    let offset = if let Some(override_data) = tooltip_override {
+                        // During show-delay the override has a future show_at —
+                        // push no elements so the popup is invisible until then.
+                        if let Some(show_at) = override_data.show_at
+                            && std::time::Instant::now() < show_at
+                        {
+                            continue;
+                        }
 
-                            let popup_geo = popup.geometry();
+                        let popup_geo = popup.geometry();
 
-                            let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
-                                popup_geo.size
-                            } else {
-                                with_states(popup.wl_surface(), |states| {
-                                    states
-                                        .data_map
-                                        .get::<XdgPopupSurfaceData>()
-                                        .and_then(|data| {
-                                            let attrs = data.lock().ok()?;
-                                            let size = attrs.current_server_state().geometry.size;
-                                            if size.w > 0 && size.h > 0 {
-                                                Some(size)
-                                            } else {
-                                                None
-                                            }
-                                        })
-                                        .unwrap_or_default()
-                                })
-                            };
-
-                            let mut pos = override_data.parent_relative;
-                            // Adjust for popup geometry offset
-                            pos.x -= popup_geo.loc.x;
-                            pos.y -= popup_geo.loc.y;
-
-                            // Apply anchor-based offset so the correct corner aligns.
-                            override_data.anchor.adjust_position(
-                                &mut pos.x,
-                                &mut pos.y,
-                                popup_size.w,
-                                popup_size.h,
-                            );
-
-                            location + pos.to_physical_precise_round(scale)
+                        let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
+                            popup_geo.size
                         } else {
-                            let offset = (self.0.geometry().loc + popup_offset
-                                - popup.geometry().loc)
-                                .to_physical_precise_round(scale);
-                            location + offset
+                            with_states(popup.wl_surface(), |states| {
+                                states
+                                    .data_map
+                                    .get::<XdgPopupSurfaceData>()
+                                    .and_then(|data| {
+                                        let attrs = data.lock().ok()?;
+                                        let size = attrs.current_server_state().geometry.size;
+                                        if size.w > 0 && size.h > 0 {
+                                            Some(size)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or_default()
+                            })
                         };
 
-                        render_elements_from_surface_tree(
+                        let mut pos = override_data.parent_relative;
+                        // Adjust for popup geometry offset
+                        pos.x -= popup_geo.loc.x;
+                        pos.y -= popup_geo.loc.y;
+
+                        // Apply anchor-based offset so the correct corner aligns.
+                        override_data.anchor.adjust_position(
+                            &mut pos.x,
+                            &mut pos.y,
+                            popup_size.w,
+                            popup_size.h,
+                        );
+
+                        // Mirror the non-overridden branch below, with the override
+                        // position standing in for the protocol popup offset.
+                        geometry.loc += location.to_f64().to_logical(scale) + pos.to_f64();
+                        pos.to_physical_precise_round(scale)
+                    } else {
+                        geometry.loc += location.to_f64().to_logical(scale) + popup_offset.to_f64();
+                        (self.0.geometry().loc + popup_offset - popup.geometry().loc)
+                            .to_physical_precise_round(scale)
+                    };
+
+                    let radii = with_states(popup.wl_surface(), |states| {
+                        surface_corners(states, geometry.size.to_i32_round())
+                    })
+                    .unwrap_or([0; 4]);
+
+                    // Behind the popup's own content, and only when the client
+                    // asked for it over the shadow protocol.
+                    //
+                    // Gated on the popup having a buffer as well. A popup is
+                    // created, told it wants a shadow, and committed before the
+                    // compositor has positioned it or the client has drawn
+                    // anything — and on that frame its geometry is still the
+                    // origin. The content elements come out empty, so without
+                    // this the shadow is the only thing drawn: it appears
+                    // alone at the top-left of the parent window and jumps to
+                    // the pointer once the first buffer lands.
+                    let drawn = with_renderer_surface_state(popup.wl_surface(), |state| {
+                        state.buffer().is_some()
+                    })
+                    .unwrap_or(false);
+
+                    if let Some(shadow) = shadow.as_mut()
+                        && drawn
+                        && surface_has_shadow(popup.wl_surface())
+                    {
+                        Self::push_popup_shadow(
                             renderer,
                             popup.wl_surface(),
-                            render_pos,
+                            geometry,
                             scale,
                             alpha,
-                            scanout_kind_eval(None, scanout_node),
-                        )
-                    })
-                    .collect()
+                            radii,
+                            shadow,
+                        );
+                    }
+
+                    push_render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        location + offset,
+                        geometry,
+                        scale,
+                        alpha,
+                        false,
+                        radii,
+                        None,
+                        blur_strength,
+                        scanout_kind_eval(None, scanout_node, alpha),
+                        push,
+                        None,
+                    )
+                }
             }
-            WindowSurface::X11(_) => Vec::new(),
+            WindowSurface::X11(_) => {}
         }
     }
 
-    pub fn render_elements<R, C>(
+    /// Build the shadow layers behind one popup.
+    ///
+    /// One element per layer, in the theme's order, so a multi-layer shadow
+    /// composites the way it does when an application draws it — taking only
+    /// the first layer, as the layer-shell paths do, leaves a menu shadow
+    /// almost invisible.
+    fn push_popup_shadow<R>(
+        renderer: &mut R,
+        surface: &wl_surface::WlSurface,
+        geometry: Rectangle<f64, Logical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        radii: [u8; 4],
+        shadow: &mut PopupShadow<'_>,
+    ) where
+        R: Renderer + AsGlowRenderer,
+        R::TextureId: Clone + 'static,
+    {
+        // The shader works in the same logical space the geometry is already
+        // in; `Local` is that space tagged as output-relative, which is what
+        // the caller has resolved by this point.
+        let geo = geometry.to_i32_round().as_local();
+        let surface_id = surface.id();
+
+        for (index, layer) in shadow.layers.iter().enumerate() {
+            let element = ShadowShader::layer_element(
+                renderer,
+                &surface_id,
+                // Its own cache slot, or each layer would evict the last and
+                // all three would be rebuilt every frame.
+                u8::try_from(index).unwrap_or(u8::MAX),
+                geo,
+                radii,
+                // The popup's own alpha, and only that. The shader multiplies
+                // the colour — which already carries the layer's opacity — by
+                // this, so folding the opacity in here as well would square it
+                // and leave a 4% shadow drawing at 0.16%.
+                alpha,
+                scale.x,
+                [layer.color.r, layer.color.g, layer.color.b, layer.color.a],
+                [layer.offset.x, layer.offset.y],
+                layer.blur_radius,
+            );
+            (shadow.push)(element);
+        }
+    }
+
+    pub fn push_render_elements<R>(
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
@@ -1055,37 +1284,57 @@ impl CosmicSurface {
         alpha: f32,
         scanout_override: Option<bool>,
         scanout_node: Option<DrmNode>,
-    ) -> Vec<C>
-    where
-        R: Renderer + ImportAll,
+        should_clip: bool,
+        radii: [u8; 4],
+        blur_strength: usize,
+        push_above: &mut dyn FnMut(SurfaceRenderElement<R>),
+        push_below: Option<&mut dyn FnMut(SurfaceRenderElement<R>)>,
+    ) where
+        R: Renderer + ImportAll + AsGlowRenderer,
         R::TextureId: Clone + 'static,
-        C: From<WaylandSurfaceRenderElement<R>>,
     {
+        let mut geometry = self.0.geometry().to_f64();
+        geometry.loc += location.to_f64().to_logical(scale);
+
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
 
-                render_elements_from_surface_tree(
+                push_render_elements_from_surface_tree(
                     renderer,
                     surface,
                     location,
+                    geometry,
                     scale,
                     alpha,
-                    scanout_kind_eval(scanout_override, scanout_node),
+                    should_clip,
+                    radii,
+                    None,
+                    blur_strength,
+                    scanout_kind_eval(scanout_override, scanout_node, alpha),
+                    push_above,
+                    push_below,
                 )
             }
             WindowSurface::X11(surface) => {
                 let Some(surface) = surface.wl_surface() else {
-                    return Vec::new();
+                    return;
                 };
 
-                render_elements_from_surface_tree(
+                push_render_elements_from_surface_tree(
                     renderer,
                     &surface,
                     location,
+                    geometry,
                     scale,
                     alpha,
-                    scanout_kind_eval(scanout_override, scanout_node),
+                    should_clip,
+                    radii,
+                    None,
+                    blur_strength,
+                    scanout_kind_eval(scanout_override, scanout_node, alpha),
+                    push_above,
+                    push_below,
                 )
             }
         }
@@ -1226,24 +1475,6 @@ impl WaylandFocus for CosmicSurface {
 impl X11Relatable for CosmicSurface {
     fn is_window(&self, window: &X11Surface) -> bool {
         self.x11_surface() == Some(window)
-    }
-}
-
-impl<R> AsRenderElements<R> for CosmicSurface
-where
-    R: Renderer + ImportAll,
-    R::TextureId: Clone + 'static,
-{
-    type RenderElement = WaylandSurfaceRenderElement<R>;
-
-    fn render_elements<C: From<Self::RenderElement>>(
-        &self,
-        renderer: &mut R,
-        location: Point<i32, Physical>,
-        scale: Scale<f64>,
-        alpha: f32,
-    ) -> Vec<C> {
-        self.0.render_elements(renderer, location, scale, alpha)
     }
 }
 

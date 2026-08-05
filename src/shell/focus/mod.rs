@@ -27,7 +27,7 @@ use self::target::{KeyboardFocusTarget, WindowGroup};
 
 use super::{SeatExt, grabs::SeatMoveGrabState, layout::floating::FloatingLayout};
 
-mod order;
+pub(crate) mod order;
 pub mod target;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +261,29 @@ impl Shell {
         state.common.shell.write().update_active();
     }
 
+    // We suppress Element(X) to Fullscreen(X) transition to avoid
+    // loss of focus by the X window when having a transition to fullscreen
+    // but in the case of X11 unmap/map the leave/enter needs to happen for the X11
+    // internal state to be focused on the window
+    pub fn set_focus_on_x11_map(
+        state: &mut State,
+        target: &KeyboardFocusTarget,
+        seat: &Seat<State>,
+        update_cursor: bool,
+    ) {
+        let need_reset = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .and_then(|current| current.x11_surface())
+            .is_some_and(|current| Some(current) == target.x11_surface());
+
+        if need_reset {
+            update_focus_state(seat, None, state, None, false);
+        }
+
+        Shell::set_focus(state, Some(target), seat, None, update_cursor);
+    }
+
     pub fn append_focus_stack(&mut self, target: impl Into<FocusTarget>, seat: &Seat<State>) {
         let target = target.into();
         if target.is_minimized() {
@@ -318,6 +341,17 @@ impl Shell {
             })
             .collect::<Vec<_>>();
 
+        // In game mode the game must stay "activated" even when an exclusive
+        // layer surface (e.g. the Super start-menu) takes keyboard focus —
+        // otherwise a client like a GTK/Flutter toplevel drops to its default
+        // size on deactivation and shrinks out of fullscreen. Keeping it
+        // activated does not affect where keys go (the layer still has focus).
+        let game_fullscreen = self
+            .game_mode
+            .active
+            .then(|| self.game_mode.game_surface.clone())
+            .flatten();
+
         for output in self.outputs().cloned().collect::<Vec<_>>().into_iter() {
             let set = self.workspaces.sets.get_mut(&output).unwrap();
             for focused in focused_windows.iter() {
@@ -338,15 +372,16 @@ impl Shell {
 
             let workspace = &mut set.workspaces[set.active];
             for fs in workspace.get_fullscreen_surfaces() {
-                let is_focused = self.seats.iter().any(|seat| {
-                    if let Some(KeyboardFocusTarget::Fullscreen(s)) =
-                        seat.get_keyboard().unwrap().current_focus()
-                    {
-                        s == fs.surface
-                    } else {
-                        false
-                    }
-                });
+                let is_focused = game_fullscreen.as_ref() == Some(&fs.surface)
+                    || self.seats.iter().any(|seat| {
+                        if let Some(KeyboardFocusTarget::Fullscreen(s)) =
+                            seat.get_keyboard().unwrap().current_focus()
+                        {
+                            s == fs.surface
+                        } else {
+                            false
+                        }
+                    });
                 fs.surface.set_activated(is_focused);
                 fs.surface.send_configure();
             }
@@ -426,6 +461,14 @@ fn update_focus_state(
                     .find(|output| output.geometry().to_f64().contains(new_pos))
                     .cloned()
                     .unwrap_or(seat.active_output());
+
+                crate::input::update_output_image_copy_cursor_position(
+                    &shell,
+                    &state.common.clock,
+                    &output,
+                    seat,
+                    new_pos,
+                );
 
                 let focus = State::surface_under(new_pos, &output, &shell)
                     .map(|(focus, loc)| (focus, loc.as_logical()));

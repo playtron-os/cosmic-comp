@@ -4,10 +4,13 @@
 //! without any libcosmic dependency. Uses `CompTheme` for theming.
 
 use std::{
+    any::Any,
     collections::{HashMap, HashSet},
     fmt,
     hash::{Hash, Hasher},
-    sync::{Arc, Mutex, mpsc::Receiver},
+    mem::ManuallyDrop,
+    sync::{Arc, Mutex, OnceLock, mpsc::Receiver},
+    thread::ThreadId,
     time::Instant,
 };
 
@@ -46,9 +49,9 @@ use smithay::{
         allocator::Fourcc,
         input::{ButtonState, KeyState},
         renderer::{
-            ImportMem, Renderer,
+            ImportMem,
             element::{
-                AsRenderElements, Kind,
+                Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
             },
         },
@@ -70,14 +73,31 @@ use smithay::{
     },
     output::Output,
     reexports::calloop::{self, LoopHandle, RegistrationToken, futures::Scheduler},
+    render_elements,
     utils::{
         Buffer as BufferCoords, IsAlive, Logical, Physical, Point, Rectangle, Scale, Serial, Size,
         Transform,
     },
 };
 
+// MERGE: upstream also imports `utils::iced::state::State`; the fork replaced that module
+// with `UserInterface` + `Cache` driven directly (iced 0.15, no libcosmic), so it is dropped.
+use crate::backend::render::{
+    element::AsGlowRenderer,
+    wayland::blur_effect::{BlurElement, BlurState},
+};
+
 // --- Theme ---
 pub use crate::comp_theme::CompTheme;
+
+/// Blur strength for the frosted backdrop drawn behind iced-rendered chrome
+/// (SSD headers, stack tabs, indicators, menus).
+///
+/// MERGE: upstream reads this off `cosmic::Theme` — `transparent` gates the pass and
+/// `frosted` picks 1 vs 2. `CompTheme` has neither flag, so the fork gates on the
+/// `header_backdrop_blur()` design token and uses the strong pass, matching
+/// `shell::element::window::WINDOW_BLUR_STRENGTH`.
+const CHROME_BLUR_STRENGTH: usize = 2;
 
 /// Type alias for iced elements rendered in the compositor.
 /// Uses `iced_core::Theme` so standard iced widgets and icetron components
@@ -95,8 +115,105 @@ impl<P: Program + Send + 'static> fmt::Debug for IcedElement<P> {
     }
 }
 
-// SAFETY: We must ensure this is never moved to another thread and dropped there.
+// SAFETY: `IcedElementInternal` is force-`Send` so window decorations can be
+// cached by KMS surface render threads (see `push_render_elements`). Two of its
+// fields are bound to the main event loop and are *not* thread-safe:
+// calloop's `LoopHandle` and `Scheduler` are both `Rc`-based, with `RefCell`
+// interiors, so dereferencing or dropping them off the loop thread races the
+// main loop's own borrows and refcount updates.
+//
+// Both are therefore kept behind guards that uphold the real invariant:
+//   * `handle` is a [`ProgramLoop`], whose only off-thread-reachable operation
+//     (`insert_idle`) parks the callback for the main loop instead of touching
+//     calloop directly.
+//   * `scheduler` is only reached through `schedule_task`, which refuses to
+//     touch it off the event-loop thread.
+//   * both are `ManuallyDrop` and are *moved* (never dereferenced) into
+//     [`PENDING_LOOP_TEARDOWN`] by `Drop`, so the refcount decrements happen on
+//     the main thread in [`drain_deferred_loop_work`].
+// A move does not touch a refcount, so every `Rc` mutation stays on one thread.
 unsafe impl<P: Program + Send + 'static> Send for IcedElementInternal<P> {}
+
+/// The thread running the compositor's event loop.
+static MAIN_THREAD: OnceLock<ThreadId> = OnceLock::new();
+
+/// Record the calling thread as the event-loop thread. Called once from
+/// `crate::run` before any element exists, so [`on_main_thread`] is accurate for
+/// the whole life of the process (including element construction during
+/// startup, which happens before the first `refresh()`).
+pub fn mark_main_thread() {
+    let _ = MAIN_THREAD.set(std::thread::current().id());
+}
+
+/// Whether the caller is on the compositor's event-loop thread. Conservatively
+/// `false` if the thread was never marked, so anything racing startup is
+/// deferred rather than run inline.
+fn on_main_thread() -> bool {
+    MAIN_THREAD.get() == Some(&std::thread::current().id())
+}
+
+/// Idle callbacks parked by [`ProgramLoop::insert_idle`] when it was called off
+/// the event-loop thread. Drained by [`drain_deferred_loop_work`].
+#[allow(clippy::type_complexity)]
+static PENDING_PROGRAM_IDLES: Mutex<Vec<Box<dyn FnOnce(&mut crate::state::State) + Send>>> =
+    Mutex::new(Vec::new());
+
+/// Thread-safe façade over the compositor's event-loop handle, handed to iced
+/// [`Program`]s.
+///
+/// A `Program`'s `update()` runs on the main loop *and* on KMS surface render
+/// threads, because [`IcedElement::push_render_elements`] drives animation frames
+/// from wherever the surface is being composited. calloop's `LoopHandle` is
+/// `Rc`/`RefCell`-based, so calling `insert_idle` on it from a render thread
+/// borrows a `RefCell` the main loop also borrows while dispatching — the
+/// corruption that surfaces as a "RefCell already borrowed" panic or, when the
+/// racing writes interleave differently, a silently wedged event loop.
+///
+/// This wrapper keeps main-thread behaviour byte-for-byte identical (the
+/// callback is handed straight to calloop) and only changes the off-thread case,
+/// where the callback is parked for the main loop to pick up in `refresh()`.
+pub struct ProgramLoop {
+    handle: LoopHandle<'static, crate::state::State>,
+}
+
+impl ProgramLoop {
+    fn new(handle: LoopHandle<'static, crate::state::State>) -> Self {
+        ProgramLoop { handle }
+    }
+
+    /// Run `callback` on the main loop with access to the compositor state.
+    ///
+    /// Dispatches inline when already on the event-loop thread; otherwise parks
+    /// it for the next [`drain_deferred_loop_work`].
+    pub fn insert_idle<F>(&self, callback: F)
+    where
+        F: FnOnce(&mut crate::state::State) + Send + 'static,
+    {
+        if on_main_thread() {
+            self.handle.insert_idle(callback);
+        } else {
+            // Poison-tolerant: the queue is only ever pushed/taken, so a panic
+            // elsewhere leaves it perfectly usable, and this path is reachable
+            // from `Drop` where a panic would abort.
+            PENDING_PROGRAM_IDLES
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(Box::new(callback));
+        }
+    }
+
+    /// The raw loop handle. Only sound on the event-loop thread — internal use
+    /// only (element construction and cloning, both main-thread operations).
+    pub(crate) fn raw(&self) -> &LoopHandle<'static, crate::state::State> {
+        &self.handle
+    }
+}
+
+impl fmt::Debug for ProgramLoop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ProgramLoop { .. }")
+    }
+}
 
 impl<P: Program + Send + 'static> Clone for IcedElement<P> {
     fn clone(&self) -> Self {
@@ -120,12 +237,14 @@ impl<P: Program + Send + 'static> Hash for IcedElement<P> {
 // --- Program trait (same interface, different Element type) ---
 
 pub trait Program {
-    type Message: std::fmt::Debug + Send;
+    // `'static` so a dropped element's loop-bound state can be type-erased into
+    // the main-thread teardown queue (see `PENDING_LOOP_TEARDOWN`).
+    type Message: std::fmt::Debug + Send + 'static;
 
     fn update(
         &mut self,
         message: Self::Message,
-        loop_handle: &LoopHandle<'static, crate::state::State>,
+        loop_handle: &ProgramLoop,
         last_seat: Option<&(Seat<crate::state::State>, Serial)>,
     ) -> Task<Self::Message> {
         let _ = (message, loop_handle, last_seat);
@@ -164,6 +283,7 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     outputs: HashSet<Output>,
     buffers: HashMap<OrderedFloat<f64>, (MemoryRenderBuffer, Option<(Vec<Layer>, Color)>)>,
     pending_realloc: bool,
+    blur: BlurState,
 
     // state
     size: Size<i32, Logical>,
@@ -186,15 +306,22 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     program: P,
 
     // futures
-    handle: LoopHandle<'static, crate::state::State>,
-    scheduler: Scheduler<Option<<P as Program>::Message>>,
+    //
+    // `handle` and `scheduler` are loop-bound (`Rc`-based) and must only ever be
+    // dropped on the event-loop thread; `Drop` moves them out of these guards
+    // into `PENDING_LOOP_TEARDOWN` for the main loop to reap. See the
+    // `unsafe impl Send` above for the full invariant.
+    handle: ManuallyDrop<ProgramLoop>,
+    scheduler: ManuallyDrop<Scheduler<Option<<P as Program>::Message>>>,
     executor_token: Option<RegistrationToken>,
     rx: Receiver<Option<<P as Program>::Message>>,
 }
 
 impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
     fn clone(&self) -> Self {
-        let handle = self.handle.clone();
+        // Cloning registers a new executor source, so this is a main-thread-only
+        // operation (it is reached from `IcedElement::deep_clone`).
+        let handle = self.handle.raw().clone();
         let (executor, scheduler) = calloop::futures::executor().expect("Out of file descriptors");
         let (tx, rx) = std::sync::mpsc::channel();
         let executor_token = handle
@@ -210,6 +337,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             outputs: self.outputs.clone(),
             buffers: self.buffers.clone(),
             pending_realloc: self.pending_realloc,
+            blur: BlurState::default(),
             size: self.size,
             last_seat: self.last_seat.clone(),
             cursor_pos: self.cursor_pos,
@@ -224,8 +352,8 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
             program: self.program.clone(),
-            handle,
-            scheduler,
+            handle: ManuallyDrop::new(ProgramLoop::new(handle)),
+            scheduler: ManuallyDrop::new(scheduler),
             executor_token,
             rx,
         }
@@ -254,16 +382,101 @@ impl<P: Program + Send + 'static> fmt::Debug for IcedElementInternal<P> {
             .field("event_queue_len", &self.event_queue.len())
             .field("mouse_interaction", &self.mouse_interaction)
             .field("handle", &self.handle)
-            .field("scheduler", &self.scheduler)
+            // Elided like `buffers`/`renderer`/`cache` above: Scheduler's Debug
+            // walks calloop's Rc<State<T>> and borrows its RefCell, which is
+            // only sound on the loop thread. Nothing formats an element off it
+            // today, but printing it must not be the thing that breaks that.
+            .field("scheduler", &"...")
             .field("executor_token", &self.executor_token)
             .field("rx", &self.rx)
             .finish()
     }
 }
 
+/// The loop-bound remains of an `IcedElementInternal` that has been dropped,
+/// waiting to be torn down on the event-loop thread.
+///
+/// An element's `Drop` can run anywhere: a KMS surface render thread routinely
+/// holds the last `Arc` clone of a window's decoration in its cached frame, and
+/// releases it when the window is fullscreened or unmapped (game-mode entry does
+/// this in bulk). Everything in here is `Rc`-based, so releasing it on that
+/// thread races the main loop's own refcount updates and `RefCell` borrows —
+/// undefined behaviour that shows up either as a "RefCell already borrowed"
+/// panic or as a silently wedged event loop.
+struct LoopTeardown {
+    /// The element's executor source. `LoopHandle::remove` borrows a `RefCell`
+    /// the main loop also borrows while dispatching, so it must run at a
+    /// post-dispatch point on the loop thread.
+    token: Option<RegistrationToken>,
+    /// The element's `ProgramLoop` and `Scheduler`, type-erased so one queue can
+    /// serve every `P`. Only ever dropped — never dereferenced.
+    loop_bound: Box<dyn Any>,
+}
+
+// SAFETY: a `LoopTeardown` is only ever *moved* between threads, which does not
+// touch the refcounts inside it, and is only ever dropped by
+// `drain_deferred_loop_work` on the event-loop thread. Nothing dereferences
+// `loop_bound` off that thread.
+unsafe impl Send for LoopTeardown {}
+
+static PENDING_LOOP_TEARDOWN: Mutex<Vec<LoopTeardown>> = Mutex::new(Vec::new());
+
+/// Run the work that `IcedElement`s deferred to the event-loop thread: idle
+/// callbacks parked by [`ProgramLoop::insert_idle`], and the teardown of
+/// elements dropped on a render thread.
+///
+/// Must be called from the event loop at a post-dispatch point (see
+/// `crate::refresh`), where `LoopHandle::remove`/`insert_idle` are safe.
+pub fn drain_deferred_loop_work(handle: &LoopHandle<'static, crate::state::State>) {
+    // Only ever reached from `crate::refresh`, so this is the loop thread —
+    // belt and braces in case `mark_main_thread` was ever missed.
+    mark_main_thread();
+
+    // Take before running: anything queued *by* this drain lands in a fresh Vec
+    // and is picked up next time, rather than being iterated mid-drain.
+    let idles = std::mem::take(
+        &mut *PENDING_PROGRAM_IDLES
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()),
+    );
+    for callback in idles {
+        handle.insert_idle(callback);
+    }
+
+    let teardowns = std::mem::take(
+        &mut *PENDING_LOOP_TEARDOWN
+            .lock()
+            .unwrap_or_else(|err| err.into_inner()),
+    );
+    for teardown in teardowns {
+        if let Some(token) = teardown.token {
+            handle.remove(token);
+        }
+        // Explicit for emphasis: *this* is the refcount decrement that must
+        // happen here rather than on whichever thread dropped the element.
+        drop(teardown.loop_bound);
+    }
+}
+
 impl<P: Program + Send + 'static> Drop for IcedElementInternal<P> {
     fn drop(&mut self) {
-        self.handle.remove(self.executor_token.take().unwrap());
+        // May run on any thread (typically a surface render thread that held the
+        // last Arc to this element), so nothing here may dereference or release
+        // the loop-bound fields — move them out intact and let the main loop do
+        // it. See `LoopTeardown`.
+        //
+        // SAFETY: `drop` runs exactly once and neither field is read afterwards.
+        let handle = unsafe { ManuallyDrop::take(&mut self.handle) };
+        let scheduler = unsafe { ManuallyDrop::take(&mut self.scheduler) };
+
+        // Poison-tolerant: a panic in `drop` would abort the process.
+        PENDING_LOOP_TEARDOWN
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push(LoopTeardown {
+                token: self.executor_token.take(),
+                loop_bound: Box::new((handle, scheduler)),
+            });
     }
 }
 
@@ -303,6 +516,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             outputs: HashSet::new(),
             buffers: HashMap::new(),
             pending_realloc: false,
+            blur: BlurState::default(),
             size,
             cursor_pos: None,
             last_seat,
@@ -317,8 +531,8 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
             program,
-            handle,
-            scheduler,
+            handle: ManuallyDrop::new(ProgramLoop::new(handle)),
+            scheduler: ManuallyDrop::new(scheduler),
             executor_token,
             rx,
         };
@@ -349,8 +563,19 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         Size::from((node.width.ceil() as i32, node.height.ceil() as i32))
     }
 
+    /// The raw event-loop handle.
+    ///
+    /// Cloning an `Rc`-based handle is only sound on the event-loop thread, so
+    /// callers must already be there — which every current caller is (element
+    /// construction and input/grab handling). Program code reached from
+    /// `update()` must use the [`ProgramLoop`] it is handed instead, since that
+    /// can also run on a render thread.
     pub fn loop_handle(&self) -> LoopHandle<'static, crate::state::State> {
-        self.0.lock().unwrap().handle.clone()
+        debug_assert!(
+            on_main_thread(),
+            "IcedElement::loop_handle() off the event-loop thread races calloop's Rc"
+        );
+        self.0.lock().unwrap().handle.raw().clone()
     }
 
     pub fn resize(&self, size: Size<i32, Logical>) {
@@ -380,6 +605,13 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
     pub fn force_update(&self) {
         self.0.lock().unwrap().update(UpdateSource::Forced);
+    }
+
+    /// Read the element's theme. Ported from upstream (which hands out a `cosmic::Theme`)
+    /// onto the fork's [`CompTheme`].
+    pub fn with_theme<R: 'static>(&self, f: impl FnOnce(&CompTheme) -> R) -> R {
+        let guard = self.0.lock().unwrap();
+        f(&guard.theme)
     }
 
     pub fn set_theme(&self, theme: CompTheme) {
@@ -437,6 +669,24 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
     /// Schedule a Task returned by program.update() onto the calloop executor.
     fn schedule_task(&self, task: Task<P::Message>) {
         if let Some(stream) = into_stream(task) {
+            // `Scheduler::schedule` borrows `active_tasks`, a `RefCell` shared
+            // with the executor source running on the event loop — sound only on
+            // that thread. `update()` also runs on KMS surface render threads
+            // (see `push_render_elements`), so refuse rather than race.
+            //
+            // Unreachable today: every `Program::update` returns `Task::none()`,
+            // so `into_stream` yields `None`. This exists so that stops being a
+            // silent trap the moment a program returns a real `Task`.
+            if !on_main_thread() {
+                tracing::error!(
+                    program = P::program_name(),
+                    "iced Task returned off the event-loop thread; dropping it \
+                     rather than racing calloop's executor. Defer the work with \
+                     ProgramLoop::insert_idle instead."
+                );
+                return;
+            }
+
             let _ = self
                 .scheduler
                 .schedule(stream.into_future().map(|f| match f.0 {
@@ -1089,22 +1339,24 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
 }
 
 // --- Render elements (rasterization via iced_tiny_skia) ---
+//
+// MERGE: upstream replaced the `AsRenderElements` impl with this push-based API so the
+// frosted-glass backdrop can be ordered below the rasterized UI buffer.
 
-impl<P, R> AsRenderElements<R> for IcedElement<P>
-where
-    P: Program + Send + 'static,
-    R: Renderer + ImportMem,
-    R::TextureId: Send + Clone + 'static,
-{
-    type RenderElement = MemoryRenderBufferRenderElement<R>;
-
-    fn render_elements<C: From<Self::RenderElement>>(
+impl<P: Program + Send + 'static> IcedElement<P> {
+    pub fn push_render_elements<R>(
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
         mut scale: Scale<f64>,
         alpha: f32,
-    ) -> Vec<C> {
+        mut radii: [u8; 4],
+        push_above: &mut dyn FnMut(IcedRenderElement<R>),
+        push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
+    ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
         let mut internal = self.0.lock().unwrap();
         let internal_ref = &mut *internal;
 
@@ -1275,11 +1527,55 @@ where
                 Kind::Unspecified,
             ) {
                 Ok(buffer) => {
-                    return vec![C::from(buffer)];
+                    push_above(buffer.into());
                 }
                 Err(err) => tracing::warn!("What? {:?}", err),
             }
+
+            // MERGE: upstream gates this on `cosmic::Theme::transparent`, which callers set from
+            // `frosted_windows`/`frosted_system_interface`. `CompTheme` has no such flag, so the
+            // fork gates on the `header_backdrop_blur()` design token instead.
+            if internal_ref.theme.header_backdrop_blur() {
+                for radius in radii.iter_mut() {
+                    *radius = ((*radius as f64) * internal_ref.additional_scale).round() as u8;
+                }
+
+                match BlurElement::from_state(
+                    renderer,
+                    &mut internal_ref.blur,
+                    Rectangle::new(
+                        location
+                            .to_f64()
+                            .to_logical(scale)
+                            .upscale(internal_ref.additional_scale),
+                        internal_ref
+                            .size
+                            .to_f64()
+                            .upscale(internal_ref.additional_scale)
+                            .to_i32_round(),
+                    ),
+                    scale.x,
+                    radii,
+                    CHROME_BLUR_STRENGTH,
+                    alpha,
+                ) {
+                    Ok(Some(elem)) => {
+                        if let Some(push_below) = push_below {
+                            push_below(elem.into())
+                        } else {
+                            push_above(elem.into())
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(err) => tracing::warn!("Blur elem error: {:?}", err),
+                }
+            }
         }
-        Vec::new()
     }
+}
+
+render_elements! {
+    pub IcedRenderElement<R> where R: ImportMem + AsGlowRenderer, R::TextureId: Send;
+    UI=MemoryRenderBufferRenderElement<R>,
+    Blur=BlurElement,
 }

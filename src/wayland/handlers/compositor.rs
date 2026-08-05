@@ -40,6 +40,12 @@ use smithay::{
 };
 use std::{collections::VecDeque, sync::Mutex, time::Duration};
 
+/// Largest buffer edge, in logical pixels, still treated as a placeholder rather
+/// than real content. Layer-shell toolkits commit a 1-2px buffer while they
+/// resolve their auto-size geometry; nothing a user is meant to see is this
+/// small, and the entrance animation would otherwise play out entirely on it.
+const PLACEHOLDER_BUFFER_MAX: i32 = 4;
+
 fn toplevel_ensure_initial_configure(
     toplevel: &ToplevelSurface,
     size: Option<Size<i32, Logical>>,
@@ -161,15 +167,18 @@ pub fn recursive_frame_time_estimation(
     overall_estimate
 }
 
-/// True when this surface requests client blur (`org_kde_kwin_blur`).
+/// True when this surface has ever carried blur state.
+///
+/// Deliberately only asks whether the slot exists rather than whether there is
+/// an area right now. `has` is lock-free; `get` takes a `MutexGuard` on the
+/// surface's cached state, and this runs inside the render traversal where
+/// other holders of that same guard are hard to rule out. A surface that
+/// enabled blur and later dropped it therefore stays off overlay planes, which
+/// is the conservative direction: it costs a composite, not a hang.
 fn surface_is_blur_backed(states: &SurfaceData) -> bool {
-    use crate::wayland::protocols::blur::CacheableBlurState;
-    states.cached_state.has::<CacheableBlurState>()
-        && states
-            .cached_state
-            .get::<CacheableBlurState>()
-            .current()
-            .enabled
+    states
+        .cached_state
+        .has::<crate::wayland::handlers::background_effect::ComputedBlurRegionCachedState>()
 }
 
 pub fn frame_time_filter_fn(states: &SurfaceData) -> Kind {
@@ -325,6 +334,27 @@ impl CompositorHandler for State {
             }
         }
 
+        // A wallpaper commit is the one event that invalidates every backdrop
+        // reading without anything client-side moving, so re-sample then.
+        // Checked before the `mapped` early return below, since a wallpaper that
+        // has just been mapped is exactly when the first reading matters.
+        let is_background = shell
+            .visible_output_for_surface(surface)
+            .map(|output| {
+                smithay::desktop::layer_map_for_output(output)
+                    .layers()
+                    .any(|l| {
+                        l.wl_surface() == surface
+                            && l.layer() == smithay::wayland::shell::wlr_layer::Layer::Background
+                    })
+            })
+            .unwrap_or(false);
+        if is_background {
+            std::mem::drop(shell);
+            self.adaptive_foreground_backdrop_changed();
+            shell = self.common.shell.write();
+        }
+
         if mapped {
             return;
         }
@@ -365,8 +395,7 @@ impl CompositorHandler for State {
                         .then(|| state.element())
                 });
             if let Some(window) = moved_window {
-                if window.is_stack() {
-                    let stack = window.stack_ref().unwrap();
+                if let Some(stack) = window.stack_ref() {
                     if let Some(i) = stack.surfaces().position(|s| {
                         s.wl_surface()
                             .as_deref()
@@ -495,7 +524,9 @@ impl CompositorHandler for State {
                         }
                     }
                     for id in &greeter_ids {
-                        shell.activate_pending_fade_in(id);
+                        // Greeter is repainting on logout-return; treat it as content-ready so
+                        // the crossfade starts now (upstream added the has_content gate).
+                        shell.activate_pending_fade_in(id, true);
                     }
                     shell.start_greeter_fade_in();
                     shell.logout_hold = false;
@@ -551,18 +582,32 @@ impl CompositorHandler for State {
             // start the blur animation now that the client has committed
             // a fresh buffer with actual content.
             let surface_id = surface.id();
+            // Whether this commit carries the surface's real content, rather
+            // than the buffer-less commit and 1-2px placeholder that layer-shell
+            // toolkits send while they are still resolving their auto-size
+            // geometry. The entrance animation waits for this so it fades in
+            // something the user can actually see -- see
+            // `Shell::activate_pending_fade_in`.
+            let buffer_size =
+                with_renderer_surface_state(surface, |state| state.buffer_size()).flatten();
+            let has_content = buffer_size.is_some_and(|size| {
+                size.w > PLACEHOLDER_BUFFER_MAX && size.h > PLACEHOLDER_BUFFER_MAX
+            });
+            tracing::trace!(
+                surface_protocol_id = surface_id.protocol_id(),
+                ?buffer_size,
+                has_content,
+                pending_fade_in = shell.is_layer_fade_in_pending(&surface_id),
+                "layer_commit: layer surface committed a buffer"
+            );
             // ...but NOT the greeter during a logout crossfade: it's held at alpha 0 until
             // EVERY greeter output has painted.
             if !(committing_is_greeter && shell.greeter_logout_return()) {
-                shell.activate_pending_fade_in(&surface_id);
+                shell.activate_pending_fade_in(&surface_id, has_content);
             }
 
             // Update layer blur cache when layer surfaces are committed
             // (blur protocol state may have changed)
-            crate::wayland::handlers::layer_shell::update_layer_blur_state(
-                output,
-                shell.hidden_surfaces(),
-            );
         }
 
         // Re-evaluate keyboard focus for layer surfaces whose
@@ -1032,21 +1077,6 @@ impl State {
         {
             // compute initial dimensions by mapping
             let target = shell.map_layer(&layer_surface);
-
-            let map_output = shell
-                .outputs()
-                .find(|o| {
-                    let map = layer_map_for_output(o);
-                    map.layer_for_surface(layer_surface.wl_surface(), WindowSurfaceType::ALL)
-                        .is_some()
-                })
-                .cloned();
-            if let Some(output) = map_output {
-                crate::wayland::handlers::layer_shell::update_layer_blur_state(
-                    &output,
-                    shell.hidden_surfaces(),
-                );
-            }
 
             if let Some(target) = target {
                 let seat = shell.seats.last_active().clone();

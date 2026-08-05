@@ -1,6 +1,6 @@
 use std::{borrow::Borrow, cell::RefCell, collections::HashMap};
 
-use cgmath::{Matrix3, Vector2};
+use glam::{Affine2, Mat3, Vec2};
 use smithay::{
     backend::renderer::{
         element::Kind,
@@ -32,8 +32,14 @@ pub struct ShadowParameters {
     shadow_softness: f32,
 }
 type ShadowCache = RefCell<HashMap<CosmicMappedKey, (ShadowParameters, PixelShaderElement)>>;
-/// Cache for layer surface shadows (keyed by WlSurface ObjectId)
-type LayerShadowCache = RefCell<HashMap<ObjectId, (ShadowParameters, PixelShaderElement)>>;
+/// Cache for layer surface shadows.
+///
+/// Keyed by surface *and* layer index: a multi-layer shadow calls this several
+/// times for one surface with different parameters, and a key of the surface
+/// alone would have each call evict the last. Every element would then be
+/// rebuilt every frame with a fresh id, which reads as damage and repaints the
+/// popup continuously.
+type LayerShadowCache = RefCell<HashMap<(ObjectId, u8), (ShadowParameters, PixelShaderElement)>>;
 
 impl ShadowShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
@@ -122,6 +128,9 @@ impl ShadowShader {
             let win_radius = radius;
             let radius = radius.map(|r| if r > 0. { r.saturating_add(spread) } else { 0. });
 
+            // MERGE: upstream anchors the shader rect at the window and translates it by the
+            // (fixed) shadow offset. We keep the rect anchored at the window and instead grow it
+            // by |offset| so an arbitrary theme-supplied offset can't clip the shadow.
             let shader_size = geo.size
                 + Size::from((width + offset.x.abs(), width + offset.y.abs())).upscale(2.)
                 + Size::new(spread, spread).upscale(2.);
@@ -132,26 +141,29 @@ impl ShadowShader {
 
             // Primary shadow transforms
             let window_geo = Rectangle::new(Point::new(0., 0.) - shader_geo.loc, geo.size);
-            let area_size = Vector2::new(shader_geo.size.w, shader_geo.size.h);
-            let geo_loc = Vector2::new(-shader_geo.loc.x + offset.x, -shader_geo.loc.y + offset.y);
+            let area_size = Vec2::new(shader_geo.size.w as f32, shader_geo.size.h as f32);
+            let geo_loc = Vec2::new(
+                (-shader_geo.loc.x + offset.x) as f32,
+                (-shader_geo.loc.y + offset.y) as f32,
+            );
 
-            let input_to_geo = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -geo_loc.x / area_size.x,
-                    -geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
+            let input_to_geo = Mat3::from(
+                Affine2::from_scale(area_size)
+                    * Affine2::from_translation(Vec2::new(
+                        -geo_loc.x / area_size.x,
+                        -geo_loc.y / area_size.y,
+                    )),
+            );
 
             // Window cutout transforms
-            let window_geo_loc = Vector2::new(window_geo.loc.x, window_geo.loc.y);
-            let window_input_to_geo = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -window_geo_loc.x / area_size.x,
-                    -window_geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
+            let window_geo_loc = Vec2::new(window_geo.loc.x as f32, window_geo.loc.y as f32);
+            let window_input_to_geo = Mat3::from(
+                Affine2::from_scale(area_size)
+                    * Affine2::from_translation(Vec2::new(
+                        -window_geo_loc.x / area_size.x,
+                        -window_geo_loc.y / area_size.y,
+                    )),
+            );
 
             shader_geo.loc += geo.loc;
 
@@ -216,6 +228,9 @@ impl ShadowShader {
     pub fn layer_element<R: AsGlowRenderer>(
         renderer: &R,
         surface_id: &ObjectId,
+        // Which layer of a multi-layer shadow this is, so each keeps its own
+        // cache slot. Callers drawing a single shadow pass 0.
+        layer: u8,
         geo: Rectangle<i32, Local>,
         radius: [u8; 4],
         alpha: f32,
@@ -249,8 +264,9 @@ impl ShadowShader {
         user_data.insert_if_missing(|| LayerShadowCache::new(HashMap::new()));
         let mut cache = user_data.get::<LayerShadowCache>().unwrap().borrow_mut();
 
+        let key = (surface_id.clone(), layer);
         if cache
-            .get(surface_id)
+            .get(&key)
             .filter(|(old_params, _)| &params == old_params)
             .is_none()
         {
@@ -298,26 +314,29 @@ impl ShadowShader {
 
             // Primary shadow transforms
             let window_geo = Rectangle::new(Point::new(0., 0.) - shader_geo.loc, geo.size);
-            let area_size = Vector2::new(shader_geo.size.w, shader_geo.size.h);
-            let geo_loc = Vector2::new(-shader_geo.loc.x + offset.x, -shader_geo.loc.y + offset.y);
+            let area_size = Vec2::new(shader_geo.size.w as f32, shader_geo.size.h as f32);
+            let geo_loc = Vec2::new(
+                (-shader_geo.loc.x + offset.x) as f32,
+                (-shader_geo.loc.y + offset.y) as f32,
+            );
 
-            let input_to_geo = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -geo_loc.x / area_size.x,
-                    -geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
+            let input_to_geo = Mat3::from(
+                Affine2::from_scale(area_size)
+                    * Affine2::from_translation(Vec2::new(
+                        -geo_loc.x / area_size.x,
+                        -geo_loc.y / area_size.y,
+                    )),
+            );
 
             // Window cutout transforms
-            let window_geo_loc = Vector2::new(window_geo.loc.x, window_geo.loc.y);
-            let window_input_to_geo = (Matrix3::from_nonuniform_scale(area_size.x, area_size.y)
-                * Matrix3::from_translation(Vector2::new(
-                    -window_geo_loc.x / area_size.x,
-                    -window_geo_loc.y / area_size.y,
-                )))
-            .cast::<f32>()
-            .unwrap();
+            let window_geo_loc = Vec2::new(window_geo.loc.x as f32, window_geo.loc.y as f32);
+            let window_input_to_geo = Mat3::from(
+                Affine2::from_scale(area_size)
+                    * Affine2::from_translation(Vec2::new(
+                        -window_geo_loc.x / area_size.x,
+                        -window_geo_loc.y / area_size.y,
+                    )),
+            );
 
             shader_geo.loc += geo.loc;
 
@@ -372,9 +391,9 @@ impl ShadowShader {
                 Kind::Unspecified,
             );
 
-            cache.insert(surface_id.clone(), (params, element));
+            cache.insert(key.clone(), (params, element));
         }
 
-        cache.get(surface_id).unwrap().1.clone()
+        cache.get(&key).unwrap().1.clone()
     }
 }

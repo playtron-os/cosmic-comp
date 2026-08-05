@@ -8,6 +8,8 @@
 
 use std::{
     borrow::Borrow,
+    cell::RefCell,
+    collections::HashMap,
     sync::atomic::{AtomicU64, Ordering},
     time::Instant,
 };
@@ -126,6 +128,31 @@ impl OrbWindowMetrics {
 
 /// Voice orb shader wrapper
 pub struct VoiceOrbShader(pub GlesPixelProgram);
+
+/// Identifies which orb a cached render element belongs to.
+///
+/// There is at most one floating orb (`target_output` gates it to a single
+/// output) and at most one window-level orb per attached surface, so this is
+/// enough to keep the two from sharing an element.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum VoiceOrbKey {
+    Floating,
+    Attached(String),
+}
+
+/// Cache of the orb's render element, keyed by [`VoiceOrbKey`].
+///
+/// This exists purely to keep the element's smithay `Id` stable across frames.
+/// `PixelShaderElement::new` mints a fresh `Id::new()`, so rebuilding the orb
+/// every frame made the damage tracker see the previous frame's orb as a *gone*
+/// element, which sets `force_effect_redraw` — and that re-captures and re-blurs
+/// every framebuffer-effect element on the output, and punches their rects out
+/// of every opaque region, for as long as the orb is visible.
+///
+/// Every other `PixelShaderElement` in this tree (`IndicatorShader`,
+/// `BackdropShader`, `ShadowShader`) already memoizes this way; the orb was the
+/// only one that did not. Cloning preserves the `Id` — it shares an `Arc`.
+type VoiceOrbCache = RefCell<HashMap<VoiceOrbKey, PixelShaderElement>>;
 
 /// Animation state for the voice orb
 #[derive(Debug, Clone)]
@@ -838,6 +865,9 @@ impl VoiceOrbState {
                 self.animation = None;
                 self.shrinking_from_attached = false;
                 self.orb_state = OrbState::Hidden;
+                // Reaches Hidden without an animation, so `update()` never runs
+                // the completion branch that would otherwise restart the clock.
+                self.reset_shader_time();
             } else {
                 // Track if we're shrinking from attached state (for render layer)
                 self.shrinking_from_attached = stay_in_place;
@@ -1056,6 +1086,8 @@ impl VoiceOrbState {
                     self.opacity = 1.0;
                     // Clear target output so next show picks current cursor output
                     self.target_output = None;
+                    // Safe here: scale is 0, so the phase jump is not on screen.
+                    self.reset_shader_time();
                 }
                 // If transitioning (attach_and_transition), complete -> hidden
                 if self.orb_state == OrbState::Transitioning {
@@ -1070,6 +1102,8 @@ impl VoiceOrbState {
                     self.target_output = None;
                     // Set flag for external state sync
                     self.transition_just_completed = true;
+                    // Safe here: scale is 0, so the phase jump is not on screen.
+                    self.reset_shader_time();
                 }
                 // If attached, ensure we're at burst scale
                 if self.orb_state == OrbState::Attached {
@@ -1263,6 +1297,26 @@ impl VoiceOrbState {
         self.shader_time_start.elapsed().as_secs_f32()
     }
 
+    /// Restart the shader clock.
+    ///
+    /// `shader_time_start` is set once at construction, so without this the
+    /// `time` uniform is compositor *uptime*. That degrades two ways: an f32
+    /// holding a day's worth of seconds quantizes to ~8ms, which is half a frame
+    /// at 60Hz and shows up as the animation stepping rather than flowing; and
+    /// `sin`/`cos` range reduction on the GPU loses precision badly once the
+    /// argument reaches the tens of thousands of radians (`animTime` is
+    /// `time * 1.5`).
+    ///
+    /// Only ever called while the orb is fully hidden. The shader's noise term
+    /// walks the z axis of a 3D simplex field and is not periodic, so there is
+    /// no phase this can be reset to without a visible jump — it is only safe
+    /// when nothing is on screen. In particular this must NOT move to
+    /// `show_floating`/`show_attached`, which are reachable mid-animation when a
+    /// show interrupts a hide.
+    fn reset_shader_time(&mut self) {
+        self.shader_time_start = Instant::now();
+    }
+
     /// Check if the orb is attached to a window and in burst phase,
     /// or if we're shrinking from an attached state
     /// When true, the orb should be rendered at the window level (between blur and content)
@@ -1345,6 +1399,7 @@ impl VoiceOrbShader {
                 UniformName::new("border_radius", UniformType::_1f),
                 UniformName::new("viewport_scale", UniformType::_1f),
                 UniformName::new("thinking", UniformType::_1f),
+                UniformName::new("opacity", UniformType::_1f),
             ],
         )?;
 
@@ -1512,29 +1567,58 @@ impl VoiceOrbShader {
             (1.0, 0.0, 0.0)
         };
 
-        // Create the shader element
-        let elem = PixelShaderElement::new(
-            shader,
-            geo,
-            None,
-            orb_state.opacity, // Use opacity from orb state for fade effects
-            vec![
-                Uniform::new("time", time),
-                Uniform::new("scale", effective_scale),
-                Uniform::new("iLowIntensity", low_intensity),
-                Uniform::new("iHighIntensity", high_intensity),
-                Uniform::new("attached", is_attached),
-                Uniform::new("target_center", [position.x, position.y]),
-                Uniform::new("morph_progress", 0.0f32), // Deprecated, kept for compatibility
-                Uniform::new("cover_scale", orb_scale_in_shader),
-                Uniform::new("window_aspect", window_aspect),
-                Uniform::new("border_radius", effective_border_radius),
-                Uniform::new("viewport_scale", viewport_scale),
-                Uniform::new("thinking", orb_state.thinking_progress),
-            ],
-            Kind::Unspecified,
-        );
+        let uniforms = vec![
+            Uniform::new("time", time),
+            Uniform::new("scale", effective_scale),
+            Uniform::new("iLowIntensity", low_intensity),
+            Uniform::new("iHighIntensity", high_intensity),
+            Uniform::new("attached", is_attached),
+            Uniform::new("target_center", [position.x, position.y]),
+            Uniform::new("morph_progress", 0.0f32), // Deprecated, kept for compatibility
+            Uniform::new("cover_scale", orb_scale_in_shader),
+            Uniform::new("window_aspect", window_aspect),
+            Uniform::new("border_radius", effective_border_radius),
+            Uniform::new("viewport_scale", viewport_scale),
+            Uniform::new("thinking", orb_state.thinking_progress),
+            // Carried as a uniform, not as the element's alpha: the element has
+            // no alpha setter, so folding the fade in here is what lets the
+            // element below be reused instead of rebuilt.
+            Uniform::new("opacity", orb_state.opacity),
+        ];
 
-        Some(elem)
+        // Reuse the element across frames so its `Id` stays stable — see
+        // `VoiceOrbCache`. Only the geometry and uniforms change per frame, and
+        // both `resize` and `update_uniforms` bump the commit counter, so the
+        // orb still damages its own quad exactly as before.
+        let key = match orb_state.attached_surface_id.as_deref() {
+            Some(id) if in_burst_phase => VoiceOrbKey::Attached(id.to_string()),
+            _ => VoiceOrbKey::Floating,
+        };
+
+        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
+            .egl_context()
+            .user_data();
+        user_data.insert_if_missing(|| VoiceOrbCache::new(HashMap::new()));
+        let mut cache = user_data.get::<VoiceOrbCache>().unwrap().borrow_mut();
+        // Only one orb exists at a time, so anything under another key belongs
+        // to a previous floating/attached role and will never be reused.
+        cache.retain(|k, _| k == &key);
+
+        let elem = cache.entry(key).or_insert_with(|| {
+            PixelShaderElement::new(
+                shader,
+                geo,
+                None,
+                // Always 1.0; the fade rides on the `opacity` uniform instead.
+                1.0,
+                // Uniforms are set by `update_uniforms` below, before any draw.
+                Vec::new(),
+                Kind::Unspecified,
+            )
+        });
+        elem.resize(geo, None);
+        elem.update_uniforms(uniforms);
+
+        Some(elem.clone())
     }
 }

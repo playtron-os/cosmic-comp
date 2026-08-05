@@ -9,15 +9,42 @@ use smithay::{
 use std::os::unix::io::OwnedFd;
 use tracing::warn;
 
+/// User data attached to compositor-owned selections, identifying who owns the
+/// data so [`SelectionHandler::send_selection`] knows how to serve it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionUserData {
+    /// The selection is owned by an Xwayland (X11) client; serve it through the
+    /// XWM bridge.
+    Xwayland(XwmId),
+    /// The selection is a compositor-cached copy kept alive by clipboard
+    /// persistence; serve it from [`crate::clipboard`].
+    Persisted,
+}
+
 impl SelectionHandler for State {
-    type SelectionUserData = XwmId;
+    type SelectionUserData = SelectionUserData;
 
     fn new_selection(
         &mut self,
         target: SelectionTarget,
         source: Option<SelectionSource>,
-        _seat: Seat<State>,
+        seat: Seat<State>,
     ) {
+        // Clipboard persistence: snapshot client-set clipboard selections so the
+        // contents survive the source client exiting. Runs before the Xwayland
+        // bridge below (which early-returns when Xwayland is absent), and only
+        // for the regular clipboard — never the primary selection.
+        if target == SelectionTarget::Clipboard
+            && self.common.config.cosmic_conf.clipboard_persistence
+        {
+            match source.as_ref() {
+                Some(source) => {
+                    crate::clipboard::on_new_clipboard(self, seat.clone(), source.mime_types())
+                }
+                None => crate::clipboard::on_clipboard_cleared(self),
+            }
+        }
+
         let Some(xwm_id) = self
             .common
             .xwayland_state
@@ -63,16 +90,21 @@ impl SelectionHandler for State {
         mime_type: String,
         fd: OwnedFd,
         _seat: Seat<State>,
-        _user_data: &Self::SelectionUserData,
+        user_data: &Self::SelectionUserData,
     ) {
-        if let Some(xwm) = self
-            .common
-            .xwayland_state
-            .as_mut()
-            .and_then(|xstate| xstate.xwm.as_mut())
-            && let Err(err) = xwm.send_selection(target, mime_type, fd)
-        {
-            warn!(?err, "Failed to send selection (X11 -> Wayland).");
+        match user_data {
+            SelectionUserData::Persisted => crate::clipboard::serve(self, &mime_type, fd),
+            SelectionUserData::Xwayland(_) => {
+                if let Some(xwm) = self
+                    .common
+                    .xwayland_state
+                    .as_mut()
+                    .and_then(|xstate| xstate.xwm.as_mut())
+                    && let Err(err) = xwm.send_selection(target, mime_type, fd)
+                {
+                    warn!(?err, "Failed to send selection (X11 -> Wayland).");
+                }
+            }
         }
     }
 }

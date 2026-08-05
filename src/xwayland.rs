@@ -13,7 +13,7 @@ use crate::{
     },
     state::State,
     utils::prelude::*,
-    wayland::handlers::xdg_activation::ActivationContext,
+    wayland::handlers::{selection::SelectionUserData, xdg_activation::ActivationContext},
 };
 use cosmic_comp_config::{EavesdroppingKeyboardMode, XwaylandDescaling};
 use smithay::{
@@ -56,7 +56,9 @@ use smithay::{
         xwm::{Reorder, WmWindowProperty, XwmId},
     },
 };
-use tracing::{error, trace, warn};
+use tracing::{debug, error, trace, warn};
+
+use crate::logger::GAMING_TARGET;
 use xcursor::parser::Image;
 use xkbcommon::xkb::Keysym;
 
@@ -853,6 +855,12 @@ impl XwmHandler for State {
     fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
     fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        debug!(
+            target: GAMING_TARGET,
+            window_id = window.window_id(),
+            class = %window.class(),
+            "x11 window destroyed"
+        );
         let mut shell = self.common.shell.write();
         shell
             .pending_windows
@@ -874,13 +882,47 @@ impl XwmHandler for State {
         }
     }
 
+    fn baselayer_changed(&mut self, _xwm: XwmId, appids: Vec<u32>, _window: Option<X11Window>) {
+        // The session manager publishes base-layer priority on the root window to
+        // say which app should be on top WITHOUT focusing it — that is how a custom
+        // webview is shown over a still-running game. Record the order; game mode's
+        // refresh applies it when it resolves what to render.
+        debug!(
+            target: GAMING_TARGET,
+            ?appids,
+            "base-layer priority changed"
+        );
+        let mut shell = self.common.shell.write();
+        if shell.game_mode.baselayer_appids != appids {
+            shell.game_mode.baselayer_appids = appids;
+        }
+    }
+
     fn property_notify(&mut self, _xwm: XwmId, window: X11Surface, property: WmWindowProperty) {
         // Live Steam window-role changes drive game mode. These run with no shell
         // lock held (XWM dispatch), so the handlers can take their own.
+        // STEAM_GAME / STEAM_OVERLAY / STEAM_INPUT_FOCUS retagging underlies every
+        // game-mode transition; logging the atom change is the first link.
+        trace!(
+            target: GAMING_TARGET,
+            window_id = window.window_id(),
+            class = %window.class(),
+            ?property,
+            "x11 property_notify"
+        );
         match property {
             // STEAM_GAME changed — a deferred game-mode enter may now resolve to it
-            // (e.g. the launcher tags the game window after it maps).
-            WmWindowProperty::SteamGame => self.try_resolve_pending_game_mode(),
+            // (e.g. the launcher tags the game window after it maps), or the active
+            // game surface may have been retagged onto a different window. Defer to
+            // an idle: these can enter/exit game mode (fullscreen/minimize), which
+            // drops decoration iced elements that unregister calloop sources —
+            // unsafe while this XWM dispatch borrows the loop's source registry.
+            WmWindowProperty::SteamGame => {
+                self.common.event_loop_handle.insert_idle(|state| {
+                    state.try_resolve_pending_game_mode();
+                    state.refresh_active_game_surface();
+                });
+            }
             // An overlay marker toggled — recompute overlay-visible + the fast-path gate.
             WmWindowProperty::SteamOverlay | WmWindowProperty::ExternalOverlay => {
                 self.refresh_overlay_visible();
@@ -919,9 +961,17 @@ impl XwmHandler for State {
                 *context,
             );
         }
-        if !shell.pending_windows.iter().any(|w| w.surface == window) {
-            let fullscreen = window.is_fullscreen().then(|| seat.active_output());
-            let maximized = window.is_maximized();
+        let fullscreen = window.is_fullscreen().then(|| seat.active_output());
+        let maximized = window.is_maximized();
+        if let Some(pending) = shell
+            .pending_windows
+            .iter_mut()
+            .find(|w| w.surface == window)
+        {
+            pending.seat = seat;
+            pending.fullscreen = fullscreen;
+            pending.maximized = maximized;
+        } else {
             let surface = CosmicSurface::from(window);
             shell.pending_windows.push(PendingWindow {
                 surface,
@@ -976,6 +1026,15 @@ impl XwmHandler for State {
         // would otherwise be all-black (e.g. Zoom's OpenGL init clear).
         let geo = surface.geometry();
         let sync_supported = surface.sync_request_supported();
+        debug!(
+            target: GAMING_TARGET,
+            window_id = surface.window_id(),
+            class = %surface.class(),
+            sync_supported,
+            geo_w = geo.size.w,
+            geo_h = geo.size.h,
+            "x11 map_window_notify (forced-sync waits for first frame; otherwise maps on buffer)"
+        );
         if sync_supported {
             let _ = surface.configure_with_forced_sync(geo, None);
             // Sync pending: sync_request_acked / sync_request_timeout will map.
@@ -1042,6 +1101,12 @@ impl XwmHandler for State {
 
     fn sync_request_timeout(&mut self, _xwm: XwmId, surface: X11Surface) {
         // Client didn't ack within the timeout — map it anyway so it's not stuck forever.
+        warn!(
+            target: GAMING_TARGET,
+            window_id = surface.window_id(),
+            class = %surface.class(),
+            "x11 sync_request TIMEOUT — mapping without a confirmed first frame (grey-frame risk)"
+        );
         let shell = self.common.shell.read();
         let window = shell
             .pending_windows
@@ -1073,6 +1138,14 @@ impl XwmHandler for State {
         if already_present {
             return;
         }
+        // A real Steam/external overlay (Shift+Tab, MangoHud) is an OR window; its
+        // presence gates overlay_window_present() and the game-mode overlay path (bug 2).
+        debug!(
+            target: GAMING_TARGET,
+            window_id = window.window_id(),
+            class = %window.class(),
+            "x11 override-redirect window mapped"
+        );
         shell.map_override_redirect(window.clone());
         drop(shell);
 
@@ -1082,6 +1155,13 @@ impl XwmHandler for State {
     }
 
     fn unmapped_window(&mut self, _xwm: XwmId, window: X11Surface) {
+        debug!(
+            target: GAMING_TARGET,
+            window_id = window.window_id(),
+            class = %window.class(),
+            override_redirect = window.is_override_redirect(),
+            "x11 window unmapped"
+        );
         let mut shell = self.common.shell.write();
         if window.is_override_redirect() {
             shell.override_redirect_windows.retain(|or| or != &window);
@@ -1461,7 +1541,15 @@ impl XwmHandler for State {
         let seat = self.common.shell.read().seats.last_active().clone();
         match selection {
             SelectionTarget::Clipboard => {
-                if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd) {
+                // A persisted (compositor-owned) clipboard can't be read back
+                // via `request_data_device_client_selection` — serve it from our
+                // own cache instead.
+                if current_data_device_selection_userdata(&seat).as_deref()
+                    == Some(&SelectionUserData::Persisted)
+                {
+                    crate::clipboard::serve(self, &mime_type, fd);
+                } else if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd)
+                {
                     error!(
                         ?err,
                         "Failed to request current wayland clipboard for Xwayland.",
@@ -1488,12 +1576,18 @@ impl XwmHandler for State {
 
         let seat = self.common.shell.read().seats.last_active().clone();
         match selection {
-            SelectionTarget::Clipboard => {
-                set_data_device_selection(&self.common.display_handle, &seat, mime_types, xwm)
-            }
-            SelectionTarget::Primary => {
-                set_primary_selection(&self.common.display_handle, &seat, mime_types, xwm)
-            }
+            SelectionTarget::Clipboard => set_data_device_selection(
+                &self.common.display_handle,
+                &seat,
+                mime_types,
+                SelectionUserData::Xwayland(xwm),
+            ),
+            SelectionTarget::Primary => set_primary_selection(
+                &self.common.display_handle,
+                &seat,
+                mime_types,
+                SelectionUserData::Xwayland(xwm),
+            ),
         }
     }
 
@@ -1502,12 +1596,16 @@ impl XwmHandler for State {
         for seat in shell.seats.iter() {
             match selection {
                 SelectionTarget::Clipboard => {
-                    if current_data_device_selection_userdata(seat).as_deref() == Some(&xwm) {
+                    if current_data_device_selection_userdata(seat).as_deref()
+                        == Some(&SelectionUserData::Xwayland(xwm))
+                    {
                         clear_data_device_selection(&self.common.display_handle, seat)
                     }
                 }
                 SelectionTarget::Primary => {
-                    if current_primary_selection_userdata(seat).as_deref() == Some(&xwm) {
+                    if current_primary_selection_userdata(seat).as_deref()
+                        == Some(&SelectionUserData::Xwayland(xwm))
+                    {
                         clear_primary_selection(&self.common.display_handle, seat)
                     }
                 }
@@ -1564,7 +1662,10 @@ impl State {
             let shell = self.common.shell.read();
             let seat = shell.seats.last_active().clone();
             std::mem::drop(shell);
-            Shell::set_focus(self, Some(&target), &seat, None, false);
+            // MERGE: upstream moved the X11 map focus path to set_focus_on_x11_map (it forces a
+            // leave/enter so the X client sees focus across unmap/map). Our fork defers mapping to
+            // this helper, so the upstream call-site change lands here instead of map_window_notify.
+            Shell::set_focus_on_x11_map(self, &target, &seat, false);
         }
 
         if let Some(x11) = window.x11_surface().cloned() {
