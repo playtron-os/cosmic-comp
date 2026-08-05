@@ -25,13 +25,48 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use tracing::{error, info, warn};
 
-// sd-login (libsystemd). The pure-Rust `libsystemd` crate only wraps sd_notify, so we bind the
-// functions we need directly. Requires linking libsystemd (present on any systemd target).
-#[link(name = "systemd")]
-unsafe extern "C" {
-    fn sd_pid_get_session(pid: libc::pid_t, session: *mut *mut libc::c_char) -> libc::c_int;
-    fn sd_session_is_remote(session: *const libc::c_char) -> libc::c_int;
-    fn sd_uid_get_display(uid: libc::uid_t, session: *mut *mut libc::c_char) -> libc::c_int;
+// sd-login (libsystemd). Resolved via dlopen at runtime, not `#[link]`: the build then needs no
+// libsystemd-dev (CI/cross sysroots lack the `.so` symlink) and the runtime lib is always present
+// on a systemd target. If it can't be loaded the gate fails open (see `evaluate`).
+type SdPidGetSession = unsafe extern "C" fn(libc::pid_t, *mut *mut libc::c_char) -> libc::c_int;
+type SdSessionIsRemote = unsafe extern "C" fn(*const libc::c_char) -> libc::c_int;
+type SdUidGetDisplay = unsafe extern "C" fn(libc::uid_t, *mut *mut libc::c_char) -> libc::c_int;
+
+struct SdLogin {
+    pid_get_session: SdPidGetSession,
+    session_is_remote: SdSessionIsRemote,
+    uid_get_display: SdUidGetDisplay,
+}
+
+/// dlopen libsystemd once and resolve the sd-login symbols; `None` if the lib or any symbol is
+/// missing. The handle is intentionally never dlclosed — it lives for the process.
+fn sd_login() -> Option<&'static SdLogin> {
+    static SD: std::sync::OnceLock<Option<SdLogin>> = std::sync::OnceLock::new();
+    SD.get_or_init(|| unsafe {
+        let handle = libc::dlopen(
+            c"libsystemd.so.0".as_ptr(),
+            libc::RTLD_NOW | libc::RTLD_GLOBAL,
+        );
+        if handle.is_null() {
+            return None;
+        }
+        let sym = |name: &std::ffi::CStr| {
+            let p = libc::dlsym(handle, name.as_ptr());
+            if p.is_null() { None } else { Some(p) }
+        };
+        Some(SdLogin {
+            pid_get_session: std::mem::transmute::<*mut libc::c_void, SdPidGetSession>(sym(
+                c"sd_pid_get_session",
+            )?),
+            session_is_remote: std::mem::transmute::<*mut libc::c_void, SdSessionIsRemote>(sym(
+                c"sd_session_is_remote",
+            )?),
+            uid_get_display: std::mem::transmute::<*mut libc::c_void, SdUidGetDisplay>(sym(
+                c"sd_uid_get_display",
+            )?),
+        })
+    })
+    .as_ref()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +165,11 @@ impl WaylandAuthz {
         if Some(uid) == self.greeter_uid {
             return (true, "greeter uid");
         }
-        match pid_session(pid) {
+        let Some(sd) = sd_login() else {
+            // libsystemd unavailable: can't classify sessions, so fail open rather than brick.
+            return (true, "sd-login unavailable");
+        };
+        match pid_session(sd, pid) {
             // Its OWN session is remote (ssh) — this is what blocks the desktop user's own ssh.
             SessionKind::Remote => (false, "remote (ssh) session"),
             // A login-session-scope process (cosmic-session, cosmic-comp, panel, Xwayland).
@@ -141,7 +180,7 @@ impl WaylandAuthz {
             // locally logged-in graphical user (owns a non-remote Display session); that still
             // rejects cron / system daemons / logged-out uids.
             SessionKind::None => {
-                if uid_has_local_display(uid) {
+                if uid_has_local_display(sd, uid) {
                     (true, "local desktop user (user service)")
                 } else {
                     (false, "no local graphical session for uid")
@@ -199,16 +238,16 @@ enum SessionKind {
 /// login-session scope (`user@uid.service`, cron, or a system daemon) — the caller then falls
 /// back to the uid's Display session. An error on the remoteness check is folded into `None`
 /// (defer to that fallback) rather than guessed as local or remote.
-fn pid_session(pid: libc::pid_t) -> SessionKind {
+fn pid_session(sd: &SdLogin, pid: libc::pid_t) -> SessionKind {
     let mut session: *mut libc::c_char = std::ptr::null_mut();
-    let ret = unsafe { sd_pid_get_session(pid, &mut session) };
+    let ret = unsafe { (sd.pid_get_session)(pid, &mut session) };
     if ret < 0 || session.is_null() {
         if !session.is_null() {
             unsafe { libc::free(session as *mut libc::c_void) };
         }
         return SessionKind::None; // -ENXIO etc. => no login-session scope
     }
-    let remote = unsafe { sd_session_is_remote(session) };
+    let remote = unsafe { (sd.session_is_remote)(session) };
     unsafe { libc::free(session as *mut libc::c_void) };
     match remote {
         r if r > 0 => SessionKind::Remote, // ssh
@@ -222,16 +261,16 @@ fn pid_session(pid: libc::pid_t) -> SessionKind {
 /// clients (portals, launched apps) that are outside any login-session scope. A Display session
 /// that exists but whose remoteness can't be read is treated as local (fail-open) since a
 /// Display session is the local desktop by construction; absence of one rejects.
-fn uid_has_local_display(uid: u32) -> bool {
+fn uid_has_local_display(sd: &SdLogin, uid: u32) -> bool {
     let mut session: *mut libc::c_char = std::ptr::null_mut();
-    let ret = unsafe { sd_uid_get_display(uid as libc::uid_t, &mut session) };
+    let ret = unsafe { (sd.uid_get_display)(uid as libc::uid_t, &mut session) };
     if ret < 0 || session.is_null() {
         if !session.is_null() {
             unsafe { libc::free(session as *mut libc::c_void) };
         }
         return false; // no graphical session for this uid
     }
-    let remote = unsafe { sd_session_is_remote(session) };
+    let remote = unsafe { (sd.session_is_remote)(session) };
     unsafe { libc::free(session as *mut libc::c_void) };
     remote <= 0
 }
