@@ -10,9 +10,12 @@ Source0:        %{name}.tar.gz
 
 %global debug_package %{nil}
 
-# Runtime dependencies (from upstream cosmic-comp)
-# cosmic-icon-theme is noarch icon assets with no ABI coupling — bind to COSMIC 1.x
-# (< 2.0.0), not a single minor, so a Fedora icon-theme bump can't downgrade this fork.
+# SELinux module, compiled + loaded at %post (see scriptlets).
+%global selinuxtype    targeted
+%global selinuxmodule  agentos_greeter_compositor
+
+# Runtime dependencies (from upstream cosmic-comp).
+# cosmic-icon-theme: noarch, no ABI coupling — pin to COSMIC 1.x so a Fedora bump can't downgrade.
 Requires:       (cosmic-icon-theme >= 1.0.0 with cosmic-icon-theme < 2.0.0)
 Requires:       mesa-libEGL
 Requires:       libwayland-server
@@ -23,6 +26,13 @@ Requires:       mesa-libgbm
 # libdisplay-info is statically linked into the binary (see Dockerfile); no runtime dep.
 Requires:       pixman
 Requires:       systemd-udev
+
+# SELinux: base policy for the module's required types; checkpolicy + policycoreutils compile
+# and load the module at %post (compose).
+Requires:         selinux-policy-%{selinuxtype}
+Requires(post):   checkpolicy
+Requires(post):   policycoreutils
+Requires(postun): policycoreutils
 
 # Override the upstream cosmic-comp from cosmic-desktop
 Provides:       cosmic-comp = %{epoch}:%{version}-%{release}
@@ -49,9 +59,7 @@ install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/fallback_binding" "%
 install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/chat_app_id" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
 install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/enabled" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled"
 
-# --- Persistent-compositor deployment kit (global-compositor login model).
-# One persistent cosmic-comp hosts the greeter + desktop as wayland clients; these
-# artifacts deploy that model.
+# Persistent-compositor login kit: one cosmic-comp hosts the greeter + desktop as wayland clients.
 install -Dm4755 "usr/libexec/agentos-session-launch"        "%{buildroot}%{_libexecdir}/agentos-session-launch"
 install -Dm0755 "usr/libexec/agentos-greeter-launch"        "%{buildroot}%{_libexecdir}/agentos-greeter-launch"
 install -Dm0755 "usr/libexec/agentos-session-logout"        "%{buildroot}%{_libexecdir}/agentos-session-logout"
@@ -66,26 +74,22 @@ install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.fc"     "
 # boot (first boot + every image update) — no scriptlet: a raw systemd-sysusers call writes
 # /etc in the rpm-ostree compose sandbox and may not reach the target.
 #
-# Build + load the SELinux module (greeter -> compositor socket); guarded so a bare install is safe.
-if command -v checkmodule >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1; then
-    m=/usr/share/selinux/packages/agentos_greeter_compositor
-    # Non-fatal (image build must not abort), but NOT silenced: a silent module/relabel failure
-    # ships fake confinement (compositor keeps running unconfined_t while looking hardened).
-    if checkmodule -M -m -o "$m.mod" "$m.te" && \
-       semodule_package -o "$m.pp" -m "$m.mod" -f "$m.fc" && \
-       semodule -i "$m.pp"; then
-        # Apply cosmic_comp_exec_t so the binary triggers the transition into cosmic_comp_t
-        # (the runtime dir is labeled by systemd's RuntimeDirectory at boot).
-        restorecon -F /usr/bin/cosmic-comp || :
-        semodule -l | grep -q agentos_greeter_compositor || \
-            echo "WARNING: agentos_greeter_compositor SELinux module did not load" >&2
-        matchpathcon /usr/bin/cosmic-comp 2>/dev/null | grep -q cosmic_comp_exec_t || \
-            echo "WARNING: /usr/bin/cosmic-comp fcontext is not cosmic_comp_exec_t" >&2
-    else
-        echo "WARNING: failed to build/load agentos_greeter_compositor SELinux module" >&2
-    fi
-    rm -f "$m.mod" "$m.pp"
+# Compile the SELinux module (greeter -> compositor socket) at compose — checkpolicy is pulled
+# in via Requires(post) — then load it at priority 200 (admin overrides still win) and label the
+# binary cosmic_comp_exec_t. Non-fatal but WARNs loudly; a silent skip would ship fake confinement.
+m=%{_datadir}/selinux/packages/%{selinuxmodule}
+if checkmodule -M -m -o "$m.mod" "$m.te" && semodule_package -o "$m.pp" -m "$m.mod" -f "$m.fc"; then
+%selinux_modules_install -s %{selinuxtype} "$m.pp"
+    restorecon -F %{_bindir}/cosmic-comp || :
+    semodule -l | grep -q %{selinuxmodule} || echo "WARNING: %{selinuxmodule} SELinux module not loaded" >&2
+else
+    echo "WARNING: failed to build %{selinuxmodule} SELinux module" >&2
 fi
+rm -f "$m.mod" "$m.pp"
+
+%postun
+# Remove the module on final uninstall (the macro guards on $1 -eq 0 internally).
+%selinux_modules_uninstall -s %{selinuxtype} %{selinuxmodule}
 
 %files
 %license %{_datadir}/licenses/cosmic-comp/LICENSE

@@ -1,23 +1,10 @@
 module agentos_greeter_compositor 1.2;
 
-# Lets greetd's greeter (xdm_t) reach the persistent cosmic-comp wayland socket in
-# /run/cosmic-comp so the global-compositor login works in ENFORCING — but ONLY that
-# socket, not all of /run.
-#
-# Hardened (was: a broad grant to the generic `var_run_t`). Now /run/cosmic-comp gets a
-# PRIVATE type, cosmic_comp_runtime_t:
-#   * the dir is labeled by the accompanying .fc (systemd's RuntimeDirectory applies it);
-#   * the runtime-created socket + wayland-N.lock inherit the private type via the
-#     type_transitions below;
-#   * marking the type `file_type` gives the UNCONFINED compositor + desktop their normal
-#     access, so only xdm_t (the one CONFINED accessor) needs an explicit, narrow rule.
-#
-#   sock_file write   -> connect to the wayland socket
-#   sock_file getattr -> stat it
-#   file r/w/getattr/map -> the wayland-N.lock (libwayland locks the socket)
-#
-# Build + install (RPM %post): checkmodule -M -m -o X.mod X.te ;
-#   semodule_package -o X.pp -m X.mod -f X.fc ; semodule -i X.pp
+# Lets the greeter (xdm_t) reach the cosmic-comp wayland socket in /run/cosmic-comp for the
+# global-compositor login under ENFORCING — that socket only, not all of /run. /run/cosmic-comp
+# gets a PRIVATE type (cosmic_comp_runtime_t) via the .fc; the socket + wayland-N.lock inherit it
+# through the type_transitions below. `file_type` keeps the unconfined compositor + desktop
+# working, so only xdm_t needs an explicit rule.
 
 require {
 	attribute file_type;
@@ -48,25 +35,15 @@ allow xdm_t cosmic_comp_runtime_t:dir search;
 allow xdm_t cosmic_comp_runtime_t:sock_file { getattr write };
 allow xdm_t cosmic_comp_runtime_t:file { getattr map read write };
 
-# ==========================================================================================
-# Confined domain for the compositor process itself (was: unconfined_t).
+# Confined domain for the compositor process. Shipped PERMISSIVE (denials logged, not enforced):
+# this pass only makes the domain ENTER. Harvest the allow set on-device, then flip to enforcing:
+#   semodule -DB ; (login/logout/lock/launch apps) ; ausearch -m avc -c cosmic-comp | audit2allow ; semodule -B
+# Verify entry: `ps -eZ | grep cosmic-comp` shows cosmic_comp_t, not unconfined_t.
 #
-# PERMISSIVE-FIRST: shipped `permissive` — denials are LOGGED, not enforced. This pass only
-# makes the domain ENTER; harvest the full allow set (DRM/KMS, input, dbus/logind, udev, shm…)
-# on-device, then flip to enforcing:
-#   semodule -DB                                   # disable dontaudit, else suppressed denials hide
-#   (exercise login / logout / lock / launch apps)
-#   ausearch -m avc -c cosmic-comp | audit2allow   # -> paste the rules below
-#   semodule -B                                    # restore dontaudit
-# Verify entry: `ps -eZ | grep cosmic-comp` must show cosmic_comp_t (not unconfined_t).
-#
-# Entry path: `PAMName=login` lands the ExecStart shell in unconfined_t (agentos-display maps
-# via __default__ -> unconfined_u); its `sh -c 'exec /usr/bin/cosmic-comp'` execs the labeled
-# binary and the type_transition below enters cosmic_comp_t. INVARIANT: keyed to unconfined_t /
-# unconfined_r. If agentos-display is ever remapped to a confined seuser, add the parallel
-# type_transition + `role <r> types cosmic_comp_t` for that source, or the transition silently
-# stops (or computes an invalid context that fails exec).
-# ==========================================================================================
+# INVARIANT: entry is keyed to unconfined_t/unconfined_r (agentos-display maps __default__ ->
+# unconfined_u; its ExecStart shell execs the labeled binary -> transition). If agentos-display is
+# remapped to a confined seuser, add the parallel type_transition + `role <r> types cosmic_comp_t`,
+# or the transition silently breaks.
 
 require {
 	attribute domain;
