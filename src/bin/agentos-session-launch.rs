@@ -59,7 +59,7 @@ fn main() -> ExitCode {
             .arg(format!("user@{uid}.service"))
             .status()
             .map_err(|e| {
-                eprintln!("agentos-session-launch: warning: failed to start user@{uid}: {e}")
+                eprintln!("agentos-session-launch: warning: failed to start user service: {e}")
             });
         let bus = format!("/run/user/{uid}/bus");
         for _ in 0..40 {
