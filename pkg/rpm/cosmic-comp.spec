@@ -62,11 +62,11 @@ install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.te"     "
 install -Dm0644 "usr/share/selinux/packages/agentos_greeter_compositor.fc"     "%{buildroot}%{_datadir}/selinux/packages/agentos_greeter_compositor.fc"
 
 %post
-# Persistent-compositor model: create the agentos-display + greeter users + compositor
-# group, then compile+load the SELinux module that lets the greeter (xdm_t) reach the
-# compositor's wayland socket in /run/cosmic-comp. Runs at install (image build), where
-# systemd-sysusers + the SELinux build tools are present; guarded so a bare install is safe.
-systemd-sysusers /usr/lib/sysusers.d/agentos-compositor.conf >/dev/null 2>&1 || :
+# Users/group come from the shipped sysusers.d file, created by systemd-sysusers.service at
+# boot (first boot + every image update) — no scriptlet: a raw systemd-sysusers call writes
+# /etc in the rpm-ostree compose sandbox and may not reach the target.
+#
+# Build + load the SELinux module (greeter -> compositor socket); guarded so a bare install is safe.
 if command -v checkmodule >/dev/null 2>&1 && command -v semodule >/dev/null 2>&1; then
     m=/usr/share/selinux/packages/agentos_greeter_compositor
     # Non-fatal (image build must not abort), but NOT silenced: a silent module/relabel failure
