@@ -267,10 +267,28 @@ fn domain_dir(domain: &str) -> Option<std::path::PathBuf> {
 /// and the watcher sees a single rename rather than a growing file.
 fn write_atomic(dir: &std::path::Path, key: &str, value: &str) -> std::io::Result<()> {
     use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
     std::fs::create_dir_all(dir)?;
+    // Explicit modes rather than trusting the process umask: this store is the compositor's own
+    // configuration, and anything writable by another user is a way to change what the compositor
+    // does. The dir is under /run/cosmic-comp, which the whole `compositor` group can traverse.
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     let tmp = dir.join(format!(".{key}.tmp"));
     {
-        let mut f = std::fs::File::create(&tmp)?;
+        // O_EXCL so a pre-planted temp path is an error rather than something we write through.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .or_else(|_| {
+                let _ = std::fs::remove_file(&tmp);
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp)
+            })?;
         f.write_all(value.as_bytes())?;
         f.sync_all()?;
     }

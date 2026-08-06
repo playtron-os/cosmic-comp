@@ -71,7 +71,7 @@ impl Common {
         );
 
         // add a special socket for the gpu
-        let listener = ListeningSocketSource::with_name(&socket_name)
+        let listener = crate::with_socket_umask(|| ListeningSocketSource::with_name(&socket_name))
             .with_context(|| format!("Failed to bind socket to {}", socket_name))?;
         let socket_name_clone = socket_name.clone();
         let token = self

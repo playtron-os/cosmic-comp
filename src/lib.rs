@@ -128,6 +128,14 @@ impl State {
 }
 
 pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
+    // The global-comp unit starts us with `umask 0` so libwayland can create a world-accessible
+    // socket. Left alone that applies to everything else we write too -- including our own config
+    // store, where a world-writable file is a code-execution path (shortcut actions carry shell
+    // commands). Take a normal umask here and relax it only around socket creation
+    // (`with_socket_umask`). Done in the binary rather than the unit so an older binary paired
+    // with a newer unit still gets a connectable socket.
+    unsafe { libc::umask(0o022) };
+
     let raw_args = RawArgs::from_args();
     let mut cursor = raw_args.cursor();
     raw_args.next_os(&mut cursor);
@@ -370,13 +378,29 @@ Options:
     );
 }
 
+/// Create a wayland socket with a permissive mode, without leaving the process umask permissive.
+///
+/// The socket must be world-accessible: the greeter and the desktop run as different users from
+/// the compositor and both have to connect. The unit therefore starts us with `umask 0` -- but
+/// that also applies to every other file the compositor creates, including its own config store,
+/// and a writable config store is a code-execution path into the compositor (shortcut actions
+/// carry shell commands). So relax the umask only across the call that creates the socket.
+///
+/// Single-threaded at init, which is what makes a process-global umask safe to touch here.
+pub(crate) fn with_socket_umask<T>(f: impl FnOnce() -> T) -> T {
+    let prev = unsafe { libc::umask(0) };
+    let out = f();
+    unsafe { libc::umask(prev) };
+    out
+}
+
 fn init_wayland_display(
     event_loop: &mut EventLoop<state::State>,
 ) -> Result<(DisplayHandle, OsString)> {
     let display = Display::new().unwrap();
     let handle = display.handle();
 
-    let source = ListeningSocketSource::new_auto().unwrap();
+    let source = with_socket_umask(|| ListeningSocketSource::new_auto()).unwrap();
     let socket_name = source.socket_name().to_os_string();
     info!("Listening on {:?}", socket_name);
 
