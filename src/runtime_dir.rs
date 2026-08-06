@@ -97,6 +97,9 @@ impl RuntimeDirGate {
             );
         }
         if self.mode == NarrowMode::Monitor {
+            // Track state in monitor too, or restore/deadman have nothing to react to and the
+            // dry-run silently cannot exercise the half that matters.
+            self.narrowed_for = Some(uid);
             info!(uid, "runtime-dir gate: would narrow (monitor)");
             return;
         }
@@ -125,13 +128,13 @@ impl RuntimeDirGate {
         if self.mode == NarrowMode::Off {
             return;
         }
+        let was = self.narrowed_for.take();
         if self.mode == NarrowMode::Monitor {
-            if self.narrowed_for.take().is_some() {
+            if was.is_some() {
                 info!("runtime-dir gate: would restore (monitor)");
             }
             return;
         }
-        let was = self.narrowed_for.take();
         if self.clear_acl() && was.is_some() {
             info!("runtime-dir gate: restored group access");
         }
