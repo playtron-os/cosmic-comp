@@ -47,7 +47,7 @@ Wayland compositor for the COSMIC desktop environment.
 %build
 
 %install
-# COSMIC_COMP_SOURCE is set by the Makefile to the source directory
+# Paths are relative to the unpacked Source0 tarball (staged usr/ tree; built by `go-task rpm`).
 install -Dm0755 "usr/bin/cosmic-comp" "%{buildroot}%{_bindir}/cosmic-comp"
 install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
 install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
