@@ -128,15 +128,22 @@ impl RuntimeDirGate {
         if self.mode == NarrowMode::Off {
             return;
         }
-        let was = self.narrowed_for.take();
         if self.mode == NarrowMode::Monitor {
-            if was.is_some() {
+            if self.narrowed_for.take().is_some() {
                 info!("runtime-dir gate: would restore (monitor)");
             }
             return;
         }
-        if self.clear_acl() && was.is_some() {
-            info!("runtime-dir gate: restored group access");
+        // Only forget that we narrowed once the syscalls actually succeeded. Clearing first meant
+        // a failed removexattr left the ACL on disk while is_narrowed() reported false -- which
+        // also drops the deadman, since it stops rearming once it believes there is nothing to
+        // undo. The greeter would then be locked out of the socket until the compositor restarted.
+        if self.clear_acl() {
+            if self.narrowed_for.take().is_some() {
+                info!("runtime-dir gate: restored group access");
+            }
+        } else {
+            error!("runtime-dir gate: restore failed; staying marked narrowed so it is retried");
         }
     }
 

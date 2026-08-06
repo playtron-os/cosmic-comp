@@ -779,6 +779,12 @@ impl State {
                         .session_config_state
                         .set_desktop_uid::<State>(None);
                     crate::xwayland::grant_xauth_read(None);
+                    // Keep ticking if the restore did not take: the gate leaves itself marked
+                    // narrowed when the syscalls fail, and dropping here would strand the ACL
+                    // with nothing left to retry it, locking the greeter out of the socket.
+                    if state.common.runtime_dir_gate.is_narrowed() {
+                        return TimeoutAction::ToDuration(Duration::from_secs(10));
+                    }
                     return TimeoutAction::Drop;
                 }
                 TimeoutAction::ToDuration(Duration::from_secs(10))
