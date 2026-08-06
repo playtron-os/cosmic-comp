@@ -803,7 +803,7 @@ impl State {
                 dh,
             );
         let session_config_state =
-            crate::wayland::protocols::session_config::SessionConfigState::new::<Self>(dh);
+            crate::wayland::protocols::session_config::SessionConfigState::new(dh);
 
         let idle_notifier_state = IdleNotifierState::<Self>::new(dh, handle.clone());
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<State>(dh);

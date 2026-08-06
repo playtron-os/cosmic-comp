@@ -56,8 +56,12 @@ const ALLOWED_DOMAINS: &[&str] = &[
 const NO_UID: i64 = -1;
 
 pub struct SessionConfigState {
-    global: GlobalId,
+    /// Created at login and removed at logout, NOT merely hidden: `can_view` is consulted only
+    /// when a client binds its registry and when a global is created, so flipping it cannot
+    /// advertise anything to a client that connected earlier — which every session client does.
+    global: Option<GlobalId>,
     desktop_uid: Arc<AtomicI64>,
+    dh: DisplayHandle,
 }
 
 impl std::fmt::Debug for SessionConfigState {
@@ -73,7 +77,21 @@ pub struct SessionConfigGlobalData {
 }
 
 impl SessionConfigState {
-    pub fn new<D>(dh: &DisplayHandle) -> SessionConfigState
+    pub fn new(dh: &DisplayHandle) -> SessionConfigState {
+        SessionConfigState {
+            global: None,
+            desktop_uid: Arc::new(AtomicI64::new(NO_UID)),
+            dh: dh.clone(),
+        }
+    }
+
+    /// Offer the protocol to the session that currently holds the screen; `None` withdraws it.
+    ///
+    /// Creating the global is what makes clients hear about it: an existing global is announced
+    /// only to registries bound afterwards, and session clients are already connected by the time
+    /// a login completes. Removing it at logout sends `global_remove`, stopping the outgoing
+    /// session from pushing.
+    pub fn set_desktop_uid<D>(&mut self, uid: Option<u32>)
     where
         D: GlobalDispatch<
                 agentos_session_config_v1::AgentosSessionConfigV1,
@@ -81,30 +99,34 @@ impl SessionConfigState {
             > + Dispatch<agentos_session_config_v1::AgentosSessionConfigV1, SessionConfigData>
             + 'static,
     {
-        let desktop_uid = Arc::new(AtomicI64::new(NO_UID));
-        let global = dh.create_global::<D, agentos_session_config_v1::AgentosSessionConfigV1, _>(
-            1,
-            SessionConfigGlobalData {
-                desktop_uid: desktop_uid.clone(),
-            },
-        );
-        SessionConfigState {
-            global,
-            desktop_uid,
+        self.desktop_uid
+            .store(uid.map_or(NO_UID, i64::from), Ordering::Relaxed);
+        match (uid, self.global.take()) {
+            (Some(uid), None) => {
+                self.global = Some(
+                    self.dh
+                        .create_global::<D, agentos_session_config_v1::AgentosSessionConfigV1, _>(
+                            1,
+                            SessionConfigGlobalData {
+                                desktop_uid: self.desktop_uid.clone(),
+                            },
+                        ),
+                );
+                debug!(uid, "session-config: offered to the session");
+            }
+            // Re-login as the same or a different user: the global stands, and can_view already
+            // keys on the uid we just stored.
+            (Some(_), Some(existing)) => self.global = Some(existing),
+            (None, Some(existing)) => {
+                self.dh.remove_global::<D>(existing);
+                debug!("session-config: withdrawn");
+            }
+            (None, None) => {}
         }
     }
 
-    /// Restrict the global to the session that currently holds the screen. `None` withdraws it.
-    /// Already-bound objects of a previous user are not force-destroyed; they stop mattering
-    /// because their session is gone, and the compositor drops the received entries at logout.
-    pub fn set_desktop_uid(&self, uid: Option<u32>) {
-        self.desktop_uid
-            .store(uid.map_or(NO_UID, i64::from), Ordering::Relaxed);
-        debug!(?uid, "session-config: visible to");
-    }
-
-    pub fn global_id(&self) -> &GlobalId {
-        &self.global
+    pub fn global_id(&self) -> Option<&GlobalId> {
+        self.global.as_ref()
     }
 }
 

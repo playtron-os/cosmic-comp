@@ -791,7 +791,9 @@ impl State {
                 self.arm_runtime_dir_deadman();
                 // Let this session push its settings in; the compositor reads its own config and
                 // would otherwise never see them.
-                self.common.session_config_state.set_desktop_uid(Some(uid));
+                self.common
+                    .session_config_state
+                    .set_desktop_uid::<State>(Some(uid));
             }
             other => tracing::warn!(
                 ?other,
@@ -913,7 +915,9 @@ impl State {
         if empty {
             // Confirmed no desktop content: the session is going away, so let the greeter back in.
             self.common.runtime_dir_gate.restore();
-            self.common.session_config_state.set_desktop_uid(None);
+            self.common
+                .session_config_state
+                .set_desktop_uid::<State>(None);
             self.arm_logout_hold(output);
         }
     }
