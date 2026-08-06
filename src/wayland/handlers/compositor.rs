@@ -483,7 +483,19 @@ impl CompositorHandler for State {
                 && with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
             if is_wallpaper_first_frame && every_greeter_output_has_wallpaper(&shell) {
                 should_dismiss_greeter = true;
-                // Whose wallpaper it is = who just logged in; used to narrow the runtime dir.
+                // Whose wallpaper it is = who just logged in.
+                //
+                // TRUST NOTE: this infers the session's owner from who paints the first Background
+                // surface, not from who greetd authenticated. `is_local_desktop_uid` narrows it to
+                // a uid holding a local graphical session, so an attacker needs one of those --
+                // in practice, to already be a logged-in desktop user, or to still hold a session
+                // that outlived its logout. Within that window the first painter wins.
+                //
+                // logind cannot settle it: with no seat there is no "session that owns the
+                // screen" to ask about, and a second greetd session reports the same service. The
+                // real fix is for greetd to hand the authenticated uid to the compositor over a
+                // trusted channel; until then, treat this uid as a strong hint, not proof, and
+                // keep the consequences of a wrong answer recoverable (see runtime_dir.rs).
                 wallpaper_client_uid = self
                     .common
                     .display_handle
