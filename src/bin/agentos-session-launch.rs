@@ -136,6 +136,13 @@ fn main() -> ExitCode {
         }
     }
 
+    // Re-activate the user's services. Logout stops app.slice rather than user@UID (which
+    // logind keeps alive whenever the user is also on ssh), so on a second login the manager is
+    // still running and would never re-trigger default.target on its own. No-op on first login.
+    let _ = Command::new("systemctl")
+        .args(["--user", "--no-block", "start", "default.target"])
+        .status();
+
     // exec the target with the inherited environment (preserves COSMIC_SESSION_ATTACH,
     // WAYLAND_DISPLAY, etc. that the greeter set). Only returns on failure.
     let err = Command::new(&args[1]).args(&args[2..]).exec();
