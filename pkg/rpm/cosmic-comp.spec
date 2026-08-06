@@ -64,6 +64,7 @@ install -Dm4755 "usr/libexec/agentos-session-launch"        "%{buildroot}%{_libe
 install -Dm0755 "usr/libexec/agentos-greeter-launch"        "%{buildroot}%{_libexecdir}/agentos-greeter-launch"
 install -Dm0755 "usr/libexec/agentos-session-logout"        "%{buildroot}%{_libexecdir}/agentos-session-logout"
 install -Dm0755 "usr/libexec/agentos-polkit-tier"           "%{buildroot}%{_libexecdir}/agentos-polkit-tier"
+install -Dm0755 "usr/libexec/agentos-x-cleanup"             "%{buildroot}%{_libexecdir}/agentos-x-cleanup"
 install -Dm0644 "usr/lib/systemd/system/cosmic-comp-global.service"            "%{buildroot}%{_prefix}/lib/systemd/system/cosmic-comp-global.service"
 install -Dm0644 "usr/lib/sysusers.d/agentos-compositor.conf"                    "%{buildroot}%{_prefix}/lib/sysusers.d/agentos-compositor.conf"
 install -Dm0644 "usr/share/polkit-1/rules.d/50-agentos-desktop.rules"          "%{buildroot}%{_datadir}/polkit-1/rules.d/50-agentos-desktop.rules"
@@ -106,6 +107,7 @@ rm -f "$m.mod" "$m.pp"
 %{_libexecdir}/agentos-greeter-launch
 %{_libexecdir}/agentos-session-logout
 %{_libexecdir}/agentos-polkit-tier
+%{_libexecdir}/agentos-x-cleanup
 %{_prefix}/lib/systemd/system/cosmic-comp-global.service
 %{_prefix}/lib/sysusers.d/agentos-compositor.conf
 %{_datadir}/polkit-1/rules.d/50-agentos-desktop.rules
