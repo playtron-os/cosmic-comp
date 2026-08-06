@@ -45,10 +45,20 @@ pub use generated::agentos_session_config_v1;
 
 /// Domains a session may push. Anything else is refused: the compositor writes what it receives
 /// into its own store, so an unbounded domain would let a client create arbitrary files there.
+///
+/// DELIBERATELY EXCLUDES com.system76.CosmicSettings.Shortcuts. Its `custom`/`defaults` keys
+/// deserialize into shortcut actions including `Action::Spawn(String)`, and `system_actions` is a
+/// map of raw shell commands; both reach spawn_command (src/input/actions.rs:1183,1187), which
+/// runs `/bin/sh -c` IN THE COMPOSITOR PROCESS. Since the compositor runs as agentos-display --
+/// holder of seat0, DRM master and the `input` group, i.e. raw evdev for every session including
+/// the greeter's password prompt -- accepting that domain would let any client of the desktop uid
+/// execute code across the exact privilege boundary this model exists to create.
+///
+/// Re-adding it requires parsing the value and rejecting every Spawn action first, not just
+/// trusting the sender.
 const ALLOWED_DOMAINS: &[&str] = &[
     "com.system76.CosmicComp",
     "com.system76.CosmicTk",
-    "com.system76.CosmicSettings.Shortcuts",
     "com.system76.CosmicSettings.WindowRules",
     "com.playtron.VoiceMode",
 ];
