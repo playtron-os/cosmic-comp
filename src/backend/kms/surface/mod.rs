@@ -1521,11 +1521,17 @@ impl SurfaceThreadState {
         // greeter being UP (its opaque Overlay covers the output, so the composited frame IS
         // the greeter cover). `dismiss_greeter` later holds+fades this over the wallpaper.
         // Skipped once the fade is in flight (already captured) or while locked.
+        //
+        // Captured far more often than the logout one: whatever is held here is what the user
+        // sees during the login crossfade, so a stale copy shows the greeter as it looked
+        // seconds ago -- typically mid-password. The logout snapshot rolls for the whole desktop
+        // session and stays at 1s because there a copy this frequent is pure overhead; this one
+        // only runs while the greeter is up, and only on frames it actually redrew.
         {
             let now = std::time::Instant::now();
             let due = self
                 .last_login_snapshot
-                .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1));
+                .is_none_or(|t| now.duration_since(t) >= Duration::from_millis(100));
             let want_snapshot = self.mirroring.is_none() && due && !game_mode_active && {
                 let shell = self.shell.read();
                 shell.session_lock.is_none()
