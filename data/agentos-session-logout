@@ -1,20 +1,25 @@
 #!/bin/bash
 # Fast, atomic logout for the persistent-compositor model.
 #
-# Panels call THIS instead of `loginctl terminate-user`: terminate-user first spends
-# seconds deactivating user@UID (staggered teardown / flicker) before the desktop
-# dies, and it would also end the user's ssh sessions. Here we end the desktop session
-# IMMEDIATELY — SIGTERM cosmic-session (the greetd session leader), which reaps its
-# components and lets greetd return to the greeter at once — then close the apps.
+# Panels call THIS instead of `loginctl terminate-user`: terminate-user spends seconds deactivating
+# user@UID before the desktop dies, and it needs org.freedesktop.login1.manage, which is
+# auth_admin_keep -- by the time cleanup runs the desktop session is already gone, so the request
+# can land in the allow_any tier and prompt. Here we end the session IMMEDIATELY -- SIGTERM
+# cosmic-session (the greetd session leader), which reaps its components and lets greetd return to
+# the greeter at once -- then tear the rest down.
 #
-# Apps are stopped by SLICE rather than by stopping user@UID: logind keeps the user manager
-# alive while the user has any other session, so stopping it silently fails whenever they are
-# also on ssh. app.slice holds the apps; session.slice (user bus) keeps running, and
-# agentos-session-launch re-starts default.target on the next login.
+# Cleanup runs via `systemd-run --user`, NOT a backgrounded subshell: `&` leaves the child in the
+# session cgroup, so logind kills it during teardown before it does anything.
+#
+# The teardown is `systemctl --user exit`, i.e. the user manager stopping its own units in order
+# and exiting. That needs no privileges, and unlike stopping app.slice it lets user@UID restart on
+# the next login -- which is what picks up group changes. A manager that survives logout keeps the
+# group set it started with forever, so a user added to `audio` or `video` would never gain access
+# without a reboot.
 set -u
 uid=$(id -u)
 
-# Cleanup pass. Re-entered as a transient unit (below) so it survives the session teardown —
+# Cleanup pass. Re-entered as a transient unit (below) so it survives the session teardown --
 # a `( ... ) &` subshell stays in the session cgroup and is killed before it can run.
 if [ "${1:-}" = "--cleanup" ]; then
     for _ in $(seq 1 20); do
@@ -23,20 +28,14 @@ if [ "${1:-}" = "--cleanup" ]; then
     done
     pkill -KILL -u "$uid" -x cosmic-session 2>/dev/null
 
-    # app.slice also holds SOCKET units — pipewire.socket among them, even though
-    # pipewire.service itself is in session.slice. Stopping the slice therefore takes the whole
-    # audio stack down (socket -> service -> wireplumber via BindsTo), and the next login cannot
-    # revive it: sockets.target stays active, so starting default.target skips a stopped socket.
-    # Remember what was listening and re-arm it after the stop.
-    socks=$(systemctl --user list-units --plain --no-legend --state=active '*.socket' 2>/dev/null |
-        awk '{print $1}')
-    systemctl --user stop app.slice
-    [ -n "$socks" ] && systemctl --user start $socks 2>/dev/null
+    # Stops every user service, including this unit, and exits the manager. systemd orders the
+    # shutdown itself, so nothing has to enumerate slices or re-arm sockets by hand.
+    systemctl --user exit 2>/dev/null
     exit 0
 fi
 
-# Detach the cleanup so it outlives the teardown triggered below. background.slice, not the
-# default app.slice — the cleanup stops app.slice and would otherwise kill itself mid-stop.
+# Detach the cleanup so it outlives the teardown triggered below. background.slice keeps it out of
+# app.slice, which is stopped early in the manager's shutdown.
 self=$(readlink -f "$0")
 systemd-run --user --no-block --quiet --slice=background.slice \
     --unit=agentos-logout-cleanup -- "$self" --cleanup 2>/dev/null

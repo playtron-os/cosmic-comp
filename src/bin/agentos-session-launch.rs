@@ -136,9 +136,10 @@ fn main() -> ExitCode {
         }
     }
 
-    // Re-activate the user's services. Logout stops app.slice rather than user@UID (which
-    // logind keeps alive whenever the user is also on ssh), so on a second login the manager is
-    // still running and would never re-trigger default.target on its own. No-op on first login.
+    // Re-activate the user's services. Normally a no-op: logout exits the user manager, so the
+    // next login starts it fresh and default.target activates on its own. This covers the case
+    // where the manager survived -- logind restarts it for any other session the user has, such
+    // as ssh -- in which case nothing else would re-trigger default.target.
     let _ = Command::new("systemctl")
         .args(["--user", "--no-block", "start", "default.target"])
         .status();
