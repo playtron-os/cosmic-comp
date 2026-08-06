@@ -828,8 +828,6 @@ impl State {
     /// in `commit`).
     /// fallback in `note_possible_logout`.
     pub(crate) fn arm_logout_hold(&mut self, output: &smithay::output::Output) {
-        // Restore BEFORE any early return: a missed restore locks the greeter out and bricks login.
-        self.common.runtime_dir_gate.restore();
         if self.common.greeter_present || self.common.should_stop {
             return;
         }
@@ -899,8 +897,6 @@ impl State {
     /// what actually holds a non-black frame; this only covers teardown orders / desktop
     /// shapes where the wallpaper is not present (e.g. a toplevel-only session).
     pub(crate) fn note_possible_logout(&mut self, output: &smithay::output::Output) {
-        // Restore BEFORE any early return: a missed restore locks the greeter out and bricks login.
-        self.common.runtime_dir_gate.restore();
         if self.common.greeter_present || self.common.should_stop {
             return;
         }
@@ -912,6 +908,8 @@ impl State {
             !output_has_desktop_content(&shell, output)
         };
         if empty {
+            // Confirmed no desktop content: the session is going away, so let the greeter back in.
+            self.common.runtime_dir_gate.restore();
             self.arm_logout_hold(output);
         }
     }
@@ -960,7 +958,6 @@ impl State {
 
     /// Persistent-compositor LOGIN handoff fallback
     pub(crate) fn note_possible_login_gap(&mut self, output: &smithay::output::Output) {
-        self.common.runtime_dir_gate.restore();
         if self.common.should_stop {
             return;
         }
