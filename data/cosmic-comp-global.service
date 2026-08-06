@@ -29,6 +29,8 @@ Environment=COSMIC_BACKEND=kms
 Environment=XDG_SESSION_CLASS=greeter
 Environment=XDG_SESSION_TYPE=wayland
 Environment=RUST_LOG=warn,cosmic_comp=info
+# Session gate on the wayland socket (validated on-device): remote (ssh) clients are rejected.
+Environment=AGENTOS_WAYLAND_AUTHZ=enforce
 ExecStartPre=+/usr/bin/chvt 1
 # Wrapper does two things PAM/pam_umask/pam_systemd would otherwise undo:
 #   umask 0     -> libwayland creates the socket 0777 so the greeter (greeter) and

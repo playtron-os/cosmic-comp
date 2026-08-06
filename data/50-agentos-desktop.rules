@@ -1,73 +1,181 @@
-// 50-agentos-desktop.rules — polkit authorization for the persistent-compositor login model.
+// 50-agentos-desktop.rules — polkit shim for the persistent-compositor (seatless) desktop.
 //
-// The desktop is a Wayland client of the persistent compositor, so its logind session is
-// `active` but SEATLESS → polkit treats it as non-local and evaluates every action at the
-// `allow_any` tier, not `allow_active`. Actions a normal active desktop allows silently
-// regress to an admin prompt (or denial). We restore normal active-desktop behaviour for the
-// single trusted operator (wheel + active session): seamless for routine actions, but a
-// one-time admin prompt for the catastrophic/irreversible few — so in-session malware can't
-// silently reflash the OS or firmware, wipe a disk, or delete an account.
+// Our desktop session has no seat, so polkit sees subject.local=false and evaluates EVERY action
+// at the allow_any tier. This rule restores seated-desktop behaviour without over-granting:
+//
+//   local subject  -> the action's real allow_active tier, read from its .policy
+//   ssh subject    -> the action's allow_any tier (explicit, so later rules can't grant it)
+//   daemon/cron    -> NOT_HANDLED (service-account rules keep working)
+//
+// Locality comes from logind (Remote=), not subject.local/active: seatless sessions are always
+// active, so subject.active does NOT exclude ssh.
+//
+// Residual, same as stock Fedora: an ssh-spawned sessionless process (systemd-run --user) looks
+// identical to a launcher app while that uid is logged in locally.
+
+// Catastrophic + irreversible: one admin prompt even for the local operator.
+var CONFIRM = [
+    "org.projectatomic.rpmostree1.deploy",
+    "org.projectatomic.rpmostree1.rebase",
+    "org.projectatomic.rpmostree1.install-local-packages",
+    "org.projectatomic.rpmostree1.install-uninstall-packages",
+    "org.projectatomic.rpmostree1.override",
+    "org.freedesktop.fwupd.update-internal",
+    "org.freedesktop.fwupd.update-hotplug",
+    "org.freedesktop.fwupd.downgrade-internal",
+    "org.freedesktop.fwupd.downgrade-hotplug",
+    "org.freedesktop.fwupd.device-unlock",
+    "org.freedesktop.udisks2.ata-secure-erase",
+    "org.freedesktop.udisks2.nvme-sanitize",
+    "org.freedesktop.udisks2.nvme-format-namespace",
+    "one.playtron.Settings.Users.Admin",
+    "one.playtron.accounts1.delete-credential"
+];
+
+// Silent grants for local subjects, carried over from the per-package rules files (those gate on
+// subject.local, so they are dead here). groups=[] means any user; prefix:true matches a prefix.
+var OS_GRANTS = [
+    { id: "org.freedesktop.hostname1.set-hostname",        groups: ["wheel"] },
+    { id: "org.freedesktop.hostname1.set-static-hostname", groups: ["wheel"] },
+    { id: "org.freedesktop.timedate1.set-timezone",        groups: [] },        // auto-timezone daemon
+    { id: "org.freedesktop.locale1.set-keyboard",          groups: ["wheel"] },
+    { id: "org.freedesktop.ModemManager1.Device.Control",  groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.system-update",           groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.upgrade-system",          groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.package-install",         groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.package-remove",          groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.trigger-offline-update",  groups: ["wheel"] },
+    { id: "org.freedesktop.packagekit.trigger-offline-upgrade", groups: ["wheel"] },
+    { id: "org.freedesktop.Flatpak.app-install",       groups: ["wheel"] },
+    { id: "org.freedesktop.Flatpak.runtime-install",   groups: ["wheel"] },
+    { id: "org.freedesktop.Flatpak.app-uninstall",     groups: ["wheel"] },
+    { id: "org.freedesktop.Flatpak.runtime-uninstall", groups: ["wheel"] },
+    { id: "org.freedesktop.Flatpak.modify-repo",       groups: ["wheel"] },
+    { id: "org.projectatomic.rpmostree1.upgrade",      groups: ["wheel"] },
+    { id: "one.playtron.FilesystemWatch.", prefix: true, groups: ["wheel", "fswatch"] }
+];
+
+// pkexec-wrapped OS helpers that stay seamless for the local wheel operator.
+var PKEXEC_OK = [
+    "/usr/libexec/playtron/agentos-update-helper",
+    "/usr/bin/hwctl"
+];
+
+var TTL_MS = 15000;
+var sessCache = {};
+var userCache = {};
+var tierCache = {};
+
+function fresh(e) {
+    return e && (new Date().getTime() - e.t) < TTL_MS;
+}
+
+// A session is local iff logind says it is not remote. Cached: polkit.spawn blocks all
+// authorization checks while it runs.
+function localSession(id) {
+    var e = sessCache[id];
+    if (!fresh(e)) {
+        var ok = false;
+        try {
+            ok = polkit.spawn(["/usr/bin/loginctl", "show-session", id,
+                               "--property=Remote", "--value"]).trim() == "no";
+        } catch (err) {}
+        e = sessCache[id] = { t: new Date().getTime(), ok: ok };
+    }
+    return e.ok;
+}
+
+// Sessionless subjects (launcher apps under user@uid.service) inherit locality from the uid's
+// display session; no display session -> not local.
+function localUser(user) {
+    var e = userCache[user];
+    if (!fresh(e)) {
+        var ok = false;
+        try {
+            var sid = polkit.spawn(["/usr/bin/loginctl", "show-user", user,
+                                    "--property=Display", "--value"]).trim();
+            ok = sid != "" && localSession(sid);
+        } catch (err) {}
+        e = userCache[user] = { t: new Date().getTime(), ok: ok };
+    }
+    return e.ok;
+}
+
+// "<allow_active> <allow_any>" from the action's .policy; ["", ""] if unknown. Cached for the
+// polkitd lifetime — restart polkit after installing new .policy files.
+function tiers(id) {
+    var t = tierCache[id];
+    if (t === undefined) {
+        var out = "";
+        try {
+            out = polkit.spawn(["/usr/libexec/agentos-polkit-tier", id]).trim();
+        } catch (err) {}
+        var parts = out.split(" ");
+        t = tierCache[id] = [parts[0] || "", parts[1] || ""];
+    }
+    return t;
+}
+
+function mapTier(t) {
+    switch (t) {
+        case "yes":             return polkit.Result.YES;
+        case "auth_self":       return polkit.Result.AUTH_SELF;
+        case "auth_self_keep":  return polkit.Result.AUTH_SELF_KEEP;
+        case "auth_admin":      return polkit.Result.AUTH_ADMIN;
+        case "auth_admin_keep": return polkit.Result.AUTH_ADMIN_KEEP;
+        case "no":              return polkit.Result.NO;
+    }
+    return null;
+}
+
+function inAnyGroup(subject, groups) {
+    if (groups.length == 0) {
+        return true;
+    }
+    for (var i = 0; i < groups.length; i++) {
+        if (subject.isInGroup(groups[i])) {
+            return true;
+        }
+    }
+    return false;
+}
 
 polkit.addRule(function(action, subject) {
-    // Require an ACTIVE session — the seatless desktop is active=true, but non-interactive
-    // wheel contexts (SSH, cron, system services) are active=false and must NOT get these
-    // grants. We drop only the `local` check (which the seatless session fails), not `active`.
-    if (!subject.isInGroup("wheel") || !subject.active) {
-        return polkit.Result.NOT_HANDLED;
+    if (CONFIRM.indexOf(action.id) >= 0) {
+        return polkit.Result.AUTH_ADMIN_KEEP;
     }
 
-    // Catastrophic + irreversible: still take one admin prompt (mirrors allow_active=auth_admin
-    // on a normal desktop). EXACT ids, not prefixes, so sibling actions like
-    // fwupd.update-internal-trusted (signed → seamless) are unaffected. Checked before `granted`.
-    var confirm = [
-        "org.projectatomic.rpmostree1.deploy",                    // boot an arbitrary OS image
-        "org.projectatomic.rpmostree1.rebase",
-        "org.projectatomic.rpmostree1.install-local-packages",
-        "org.projectatomic.rpmostree1.install-uninstall-packages",
-        "org.projectatomic.rpmostree1.override",
-        "org.freedesktop.fwupd.update-internal",                  // firmware flash (unsigned)
-        "org.freedesktop.fwupd.update-hotplug",
-        "org.freedesktop.fwupd.downgrade-internal",
-        "org.freedesktop.fwupd.downgrade-hotplug",
-        "org.freedesktop.fwupd.device-unlock",
-        "org.freedesktop.udisks2.ata-secure-erase",              // irreversible disk wipe
-        "org.freedesktop.udisks2.nvme-sanitize",
-        "org.freedesktop.udisks2.nvme-format-namespace",
-        "one.playtron.Settings.Users.Admin",                     // manage users
-        "one.playtron.accounts1.delete-credential"               // delete an account
-    ];
-    for (var i = 0; i < confirm.length; i++) {
-        if (action.id == confirm[i]) {
-            return polkit.Result.AUTH_ADMIN_KEEP;
-        }
-    }
+    var inSession = !!subject.session;
+    var local = inSession ? localSession(subject.session) : localUser(subject.user);
 
-    // Seamless for the trusted operator — appliance-relevant namespaces (allow_active=yes equiv).
-    var granted = [
-        "org.freedesktop.NetworkManager.",
-        "org.freedesktop.ModemManager1.",
-        "org.freedesktop.udisks2.",
-        "org.freedesktop.UPower.",
-        "org.freedesktop.login1.",           // power + inhibitors + chvt + reboot-to-firmware
-        "org.freedesktop.timedate1.",
-        "org.freedesktop.locale1.",
-        "org.freedesktop.hostname1.",
-        "org.freedesktop.color-manager.",
-        "org.freedesktop.RealtimeKit1.",
-        "org.freedesktop.packagekit.",
-        "net.reactivated.fprint.",
-        "com.system76.",
-        "one.playtron.",                     // own services (mail / accounts / settings)
-        "org.projectatomic.rpmostree1.",     // OS updates (deploy/rebase/… carved out above)
-        "org.freedesktop.Flatpak.",          // app updates
-        "org.freedesktop.fwupd.",            // firmware updates (flash carved out above)
-        "org.shadowblip."                    // InputPlumber gamepad control (any=no otherwise)
-    ];
-
-    for (var i = 0; i < granted.length; i++) {
-        if (action.id.indexOf(granted[i]) === 0) {
+    // pkexec runs the target as root, so gate it here: only the listed helpers, only for local
+    // wheel. Returning a result also stops the per-program rules files (no session check) firing.
+    if (action.id == "org.freedesktop.policykit.exec") {
+        if (local && subject.isInGroup("wheel") &&
+            PKEXEC_OK.indexOf(action.lookup("program")) >= 0) {
             return polkit.Result.YES;
         }
+        return polkit.Result.AUTH_ADMIN;
     }
+
+    if (local) {
+        for (var i = 0; i < OS_GRANTS.length; i++) {
+            var g = OS_GRANTS[i];
+            var hit = g.prefix ? action.id.indexOf(g.id) === 0 : action.id == g.id;
+            if (hit && inAnyGroup(subject, g.groups)) {
+                return polkit.Result.YES;
+            }
+        }
+        var t = mapTier(tiers(action.id)[0]);
+        return t !== null ? t : polkit.Result.NOT_HANDLED;
+    }
+
+    // ssh: allow_any tier, unknown actions prompt.
+    if (inSession) {
+        var t2 = mapTier(tiers(action.id)[1]);
+        return t2 !== null ? t2 : polkit.Result.AUTH_ADMIN_KEEP;
+    }
+
+    // Daemons, cron, logged-out uids: leave to the service-account rules (GeoClue, fswatch).
     return polkit.Result.NOT_HANDLED;
 });
