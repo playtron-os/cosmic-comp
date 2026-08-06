@@ -10,9 +10,12 @@ use std::time::Duration;
 /// Absolute paths: this binary is setuid root, so $PATH comes from whoever invoked it. Resolving
 /// a helper through it would run an attacker's binary as root while we hold euid=ruid=0.
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
-const XAUTH: &str = "/usr/bin/xauth";
 /// Handed to every child so nothing we spawn inherits the caller's search path either.
 const SAFE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+/// The compositor's X auth file, and the non-secret file naming the display it serves. The auth
+/// file is 0600 plus an ACL the compositor grants to the session that holds the screen.
+const XAUTH_SERVER: &str = "/run/cosmic-comp/xauth";
+const XDISPLAY_HANDOFF: &str = "/run/cosmic-comp/xcookie";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
@@ -42,12 +45,6 @@ fn main() -> ExitCode {
         } else {
             Some(CStr::from_ptr((*pw).pw_name).to_owned())
         };
-        let home: Option<String> = if pw.is_null() || (*pw).pw_dir.is_null() {
-            None
-        } else {
-            CStr::from_ptr((*pw).pw_dir).to_str().ok().map(String::from)
-        };
-
         // Become fully root (ruid too) so systemctl runs privileged — a shell drops
         // euid when ruid != euid. uid/gid captured above, so we can still drop back.
         if libc::setreuid(0, 0) < 0 {
@@ -76,10 +73,6 @@ fn main() -> ExitCode {
             }
             std::thread::sleep(Duration::from_millis(50)); // up to ~2s for the user bus
         }
-
-        // While root: read the X11 cookie the compositor handed off (0600 agentos-display).
-        // Installed into the user's ~/.Xauthority after we drop privileges, below.
-        let xcookie = std::fs::read_to_string("/run/cosmic-comp/xcookie").ok();
 
         // Drop privileges COMPLETELY back to the authenticated user.
         if let Some(ref u) = user
@@ -113,26 +106,23 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
 
-        // Now running as the desktop user. Install X11 cookie auth + fix DISPLAY propagation:
-        // write the cookie into the user's ~/.Xauthority (0600), export DISPLAY + XAUTHORITY for
-        // the session, and import them into THIS user's systemd manager so `user@uid` X clients
-        // get them too — the compositor's own import runs as agentos-display and never reaches
-        // this manager, which is why X clients currently have no DISPLAY.
-        if let (Some(line), Some(home)) = (xcookie.as_deref(), home.as_deref())
-            && let (Some(display), Some(hex)) = (
-                line.split_whitespace().next(),
-                line.split_whitespace().nth(1),
-            )
+        // Now running as the desktop user. Point the session at the compositor's X auth file and
+        // fix DISPLAY propagation: import both into THIS user's systemd manager so `user@uid` X
+        // clients get them too — the compositor's own import runs as agentos-display and never
+        // reaches this manager, which is why X clients otherwise have no DISPLAY.
+        //
+        // The cookie itself is never copied here. The compositor grants THIS uid read access to
+        // its own auth file once the session takes the screen; previously this code installed the
+        // cookie into ~/.Xauthority, which handed X access to anyone who ran this world-executable
+        // setuid binary, not just the person logging in.
+        if let Some(display) = std::fs::read_to_string(XDISPLAY_HANDOFF)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
         {
-            let xauthority = format!("{home}/.Xauthority");
             let disp = format!(":{display}");
-            let _ = Command::new(XAUTH)
-                .env("PATH", SAFE_PATH)
-                .args(["-f", &xauthority, "add", &disp, "MIT-MAGIC-COOKIE-1", hex])
-                .status();
             // Single-threaded here, so set_var is sound.
             std::env::set_var("DISPLAY", &disp);
-            std::env::set_var("XAUTHORITY", &xauthority);
+            std::env::set_var("XAUTHORITY", XAUTH_SERVER);
             let _ = Command::new(SYSTEMCTL)
                 .env("PATH", SAFE_PATH)
                 .args([

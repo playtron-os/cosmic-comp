@@ -33,6 +33,7 @@ impl WlrLayerShellHandler for State {
             self.common
                 .session_config_state
                 .set_desktop_uid::<State>(None);
+            crate::xwayland::grant_xauth_read(None);
         }
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();

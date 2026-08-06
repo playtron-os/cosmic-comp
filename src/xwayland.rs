@@ -107,9 +107,13 @@ fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: u32) {
     }
 }
 
-/// Server-side X11 auth file XWayland reads via `-auth` (readable only by the compositor uid),
-/// and the handoff file holding the hex cookie for the setuid session launcher to install into
-/// the desktop user's `~/.Xauthority` (0600, so only root/the compositor can read it).
+/// Server-side X11 auth file XWayland reads via `-auth`, and a handoff file naming the display.
+///
+/// The auth file stays 0600 and is granted to the logged-in user by ACL at login
+/// (`grant_xauth_read`) -- the session points XAUTHORITY straight at it. The handoff file holds
+/// only the display number: it used to carry the cookie itself for the setuid launcher to install
+/// into ~/.Xauthority, which meant anyone able to run that world-executable setuid binary got X
+/// access to whoever was at the screen.
 ///
 /// Derived from XDG_RUNTIME_DIR rather than hardcoded: under the global-comp unit that IS
 /// /run/cosmic-comp, but a classic per-session compositor has its own runtime dir, and hardcoding
@@ -155,10 +159,60 @@ fn setup_xauth(display: u32) -> Option<std::path::PathBuf> {
 
     // Handoff the cookie to the session launcher (`display hex`).
     if let Ok(mut h) = std::fs::File::create(&xcookie_handoff) {
-        let _ = h.set_permissions(std::fs::Permissions::from_mode(0o600));
-        let _ = writeln!(h, "{display} {hex}");
+        let _ = h.set_permissions(std::fs::Permissions::from_mode(0o644));
+        let _ = writeln!(h, "{display}");
     }
     Some(xauth_server)
+}
+
+/// Let the logged-in desktop user read the X auth file; `None` revokes.
+///
+/// The compositor owns the file, so it can set an ACL without privileges. Granting to exactly the
+/// uid holding the screen is what replaced handing the cookie to whoever ran the setuid launcher.
+pub fn grant_xauth_read(uid: Option<u32>) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Some((xauth_server, _)) = xauth_paths() else {
+        return;
+    };
+    let Ok(path) = std::ffi::CString::new(xauth_server.as_os_str().as_bytes()) else {
+        return;
+    };
+    const ACL: &[u8] = b"system.posix_acl_access\0";
+    let ret = match uid {
+        Some(uid) => {
+            // version, then tag-sorted entries: owner rw, the user r, group ---, mask r, other ---
+            let mut acl = Vec::with_capacity(44);
+            acl.extend_from_slice(&2u32.to_ne_bytes());
+            for (tag, perm, id) in [
+                (0x01u16, 6u16, u32::MAX),
+                (0x02, 4, uid),
+                (0x04, 0, u32::MAX),
+                (0x10, 4, u32::MAX),
+                (0x20, 0, u32::MAX),
+            ] {
+                acl.extend_from_slice(&tag.to_ne_bytes());
+                acl.extend_from_slice(&perm.to_ne_bytes());
+                acl.extend_from_slice(&id.to_ne_bytes());
+            }
+            unsafe {
+                libc::setxattr(
+                    path.as_ptr(),
+                    ACL.as_ptr() as *const _,
+                    acl.as_ptr() as *const _,
+                    acl.len(),
+                    0,
+                )
+            }
+        }
+        None => unsafe { libc::removexattr(path.as_ptr(), ACL.as_ptr() as *const _) },
+    };
+    if ret != 0 {
+        let err = std::io::Error::last_os_error();
+        // Revoking something that was never granted is the normal case at boot.
+        if uid.is_some() || err.raw_os_error() != Some(libc::ENODATA) {
+            warn!(?uid, %err, "xwayland: failed to set X auth ACL");
+        }
+    }
 }
 
 /// Restrict the X11 filesystem socket to the `compositor` group (0770) so non-group uids can't

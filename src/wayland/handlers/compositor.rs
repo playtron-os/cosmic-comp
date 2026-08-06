@@ -778,6 +778,7 @@ impl State {
                         .common
                         .session_config_state
                         .set_desktop_uid::<State>(None);
+                    crate::xwayland::grant_xauth_read(None);
                     return TimeoutAction::Drop;
                 }
                 TimeoutAction::ToDuration(Duration::from_secs(10))
@@ -798,6 +799,9 @@ impl State {
                 self.common
                     .session_config_state
                     .set_desktop_uid::<State>(Some(uid));
+                // Let this session read the X auth file directly, instead of the setuid launcher
+                // copying the cookie to whoever ran it.
+                crate::xwayland::grant_xauth_read(Some(uid));
             }
             other => tracing::warn!(
                 ?other,
@@ -922,6 +926,7 @@ impl State {
             self.common
                 .session_config_state
                 .set_desktop_uid::<State>(None);
+            crate::xwayland::grant_xauth_read(None);
             self.arm_logout_hold(output);
         }
     }
