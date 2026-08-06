@@ -22,8 +22,9 @@ use smithay::{
     },
     wayland::{Dispatch2, GlobalDispatch2},
 };
+use std::collections::HashSet;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicI64, Ordering},
 };
 use tracing::{debug, warn};
@@ -62,7 +63,12 @@ pub struct SessionConfigState {
     global: Option<GlobalId>,
     desktop_uid: Arc<AtomicI64>,
     dh: DisplayHandle,
+    /// What this session pushed, so logout removes exactly those and nothing the compositor
+    /// wrote for itself (autotile, pinned workspaces, zoom all live in the same store).
+    received: Received,
 }
+
+type Received = Arc<Mutex<HashSet<(String, String)>>>;
 
 impl std::fmt::Debug for SessionConfigState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -74,6 +80,7 @@ impl std::fmt::Debug for SessionConfigState {
 
 pub struct SessionConfigGlobalData {
     desktop_uid: Arc<AtomicI64>,
+    received: Received,
 }
 
 impl SessionConfigState {
@@ -82,6 +89,7 @@ impl SessionConfigState {
             global: None,
             desktop_uid: Arc::new(AtomicI64::new(NO_UID)),
             dh: dh.clone(),
+            received: Received::default(),
         }
     }
 
@@ -109,6 +117,7 @@ impl SessionConfigState {
                             1,
                             SessionConfigGlobalData {
                                 desktop_uid: self.desktop_uid.clone(),
+                                received: self.received.clone(),
                             },
                         ),
                 );
@@ -119,14 +128,33 @@ impl SessionConfigState {
             (Some(_), Some(existing)) => self.global = Some(existing),
             (None, Some(existing)) => {
                 self.dh.remove_global::<D>(existing);
+                self.discard_entries();
                 debug!("session-config: withdrawn");
             }
-            (None, None) => {}
+            (None, None) => self.discard_entries(),
         }
     }
 
     pub fn global_id(&self) -> Option<&GlobalId> {
         self.global.as_ref()
+    }
+
+    /// Drop everything the ending session pushed. Removing a key file makes the compositor's own
+    /// watcher fire and `get_config` fall back to the default, so the setting is actually undone
+    /// rather than merely forgotten -- otherwise the greeter, and any user who logs in next
+    /// without that key set, would silently inherit it.
+    fn discard_entries(&self) {
+        let Ok(mut received) = self.received.lock() else {
+            return;
+        };
+        for (domain, key) in received.drain() {
+            if let Some(dir) = domain_dir(&domain)
+                && let Err(err) = std::fs::remove_file(dir.join(&key))
+                && err.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(domain, key, ?err, "session-config: failed to discard entry");
+            }
+        }
     }
 }
 
@@ -143,7 +171,12 @@ where
         resource: New<agentos_session_config_v1::AgentosSessionConfigV1>,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(resource, SessionConfigData);
+        data_init.init(
+            resource,
+            SessionConfigData {
+                received: self.received.clone(),
+            },
+        );
     }
 
     /// The whole authorization model: only the session holding the screen ever sees the global.
@@ -162,7 +195,9 @@ where
     }
 }
 
-pub struct SessionConfigData;
+pub struct SessionConfigData {
+    received: Received,
+}
 
 impl<D> Dispatch2<agentos_session_config_v1::AgentosSessionConfigV1, D> for SessionConfigData
 where
@@ -179,7 +214,7 @@ where
     ) {
         match request {
             agentos_session_config_v1::Request::SetEntry { domain, key, value } => {
-                store_entry(&domain, &key, &value);
+                store_entry(&self.received, &domain, &key, &value);
             }
             agentos_session_config_v1::Request::Destroy => {}
         }
@@ -188,7 +223,7 @@ where
 
 /// Write one entry into the compositor's own cosmic-config store, which makes its existing
 /// watcher fire and the normal apply path run. Rejects anything that could escape the store.
-fn store_entry(domain: &str, key: &str, value: &str) {
+fn store_entry(received: &Received, domain: &str, key: &str, value: &str) {
     if !ALLOWED_DOMAINS.contains(&domain) {
         warn!(domain, "session-config: refusing unknown domain");
         return;
@@ -198,9 +233,7 @@ fn store_entry(domain: &str, key: &str, value: &str) {
         warn!(key, "session-config: refusing malformed key");
         return;
     }
-    // Mirrors cosmic_config::Config::new's layout (<config dir>/cosmic/<domain>/v<version>);
-    // it exposes no path accessor. The domain is from the allowlist above, never raw input.
-    let Some(dir) = dirs::config_dir().map(|d| d.join("cosmic").join(domain).join("v1")) else {
+    let Some(dir) = domain_dir(domain) else {
         warn!(domain, "session-config: no writable config path");
         return;
     };
@@ -208,7 +241,16 @@ fn store_entry(domain: &str, key: &str, value: &str) {
         warn!(domain, key, ?err, "session-config: failed to store entry");
         return;
     }
+    if let Ok(mut received) = received.lock() {
+        received.insert((domain.to_string(), key.to_string()));
+    }
     debug!(domain, key, "session-config: stored entry");
+}
+
+/// Mirrors cosmic_config::Config::new's layout (<config dir>/cosmic/<domain>/v<version>); it
+/// exposes no path accessor. Callers pass an allowlisted domain, never raw input.
+fn domain_dir(domain: &str) -> Option<std::path::PathBuf> {
+    dirs::config_dir().map(|d| d.join("cosmic").join(domain).join("v1"))
 }
 
 /// Temp file + rename, matching how cosmic-config writes, so a reader never sees a partial value

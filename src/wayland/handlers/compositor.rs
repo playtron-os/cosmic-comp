@@ -774,6 +774,10 @@ impl State {
                         "runtime-dir gate: deadman restore, no desktop content on any output"
                     );
                     state.common.runtime_dir_gate.restore();
+                    state
+                        .common
+                        .session_config_state
+                        .set_desktop_uid::<State>(None);
                     return TimeoutAction::Drop;
                 }
                 TimeoutAction::ToDuration(Duration::from_secs(10))

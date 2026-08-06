@@ -30,6 +30,9 @@ impl WlrLayerShellHandler for State {
             // Latch correction only: the greeter already connected, so the dir was open. Keeps
             // gate state honest if some logout path missed its restore.
             self.common.runtime_dir_gate.restore();
+            self.common
+                .session_config_state
+                .set_desktop_uid::<State>(None);
         }
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
