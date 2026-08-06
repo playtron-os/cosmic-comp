@@ -400,7 +400,7 @@ fn init_wayland_display(
     let display = Display::new().unwrap();
     let handle = display.handle();
 
-    let source = with_socket_umask(|| ListeningSocketSource::new_auto()).unwrap();
+    let source = with_socket_umask(ListeningSocketSource::new_auto).unwrap();
     let socket_name = source.socket_name().to_os_string();
     info!("Listening on {:?}", socket_name);
 
