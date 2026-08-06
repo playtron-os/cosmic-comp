@@ -749,13 +749,46 @@ fn output_has_greeter(output: &smithay::output::Output) -> bool {
 
 impl State {
     /// Close the login greeter's layer surface(s) so it crossfades out.
+    /// While the runtime dir is narrowed, poll for "no desktop content anywhere" and restore.
+    /// The explicit logout hooks cover the paths we know; this covers the ones we don't (session
+    /// crash, OOM-kill, terminate-user). A narrowed dir that outlives its session locks the
+    /// greeter out of the socket, and nothing else self-heals it.
+    fn arm_runtime_dir_deadman(&mut self) {
+        if !self.common.runtime_dir_gate.is_narrowed() {
+            return;
+        }
+        let _ = self.common.event_loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(10)),
+            |_now, _, state: &mut State| {
+                if !state.common.runtime_dir_gate.is_narrowed() {
+                    return TimeoutAction::Drop;
+                }
+                let dead = {
+                    let shell = state.common.shell.read();
+                    !shell
+                        .outputs()
+                        .any(|o| output_has_desktop_content(&shell, o))
+                };
+                if dead {
+                    tracing::warn!(
+                        "runtime-dir gate: deadman restore, no desktop content on any output"
+                    );
+                    state.common.runtime_dir_gate.restore();
+                    return TimeoutAction::Drop;
+                }
+                TimeoutAction::ToDuration(Duration::from_secs(10))
+            },
+        );
+    }
+
     fn dismiss_greeter(&mut self, desktop_uid: Option<u32>) {
         self.common.greeter_present = false;
         // Narrow /run/cosmic-comp to the user who just logged in. Guarded hard: narrowing to the
         // greeter (or to nobody) locks the desktop out, so anything unverified stays open.
         match desktop_uid {
             Some(uid) if self.common.wayland_authz.is_local_desktop_uid(uid) => {
-                self.common.runtime_dir_gate.narrow_to(uid)
+                self.common.runtime_dir_gate.narrow_to(uid);
+                self.arm_runtime_dir_deadman();
             }
             other => tracing::warn!(
                 ?other,
