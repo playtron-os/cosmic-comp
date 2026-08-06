@@ -7,6 +7,13 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
+/// Absolute paths: this binary is setuid root, so $PATH comes from whoever invoked it. Resolving
+/// a helper through it would run an attacker's binary as root while we hold euid=ruid=0.
+const SYSTEMCTL: &str = "/usr/bin/systemctl";
+const XAUTH: &str = "/usr/bin/xauth";
+/// Handed to every child so nothing we spawn inherits the caller's search path either.
+const SAFE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let prog = args
@@ -54,7 +61,8 @@ fn main() -> ExitCode {
         // makes pam_systemd fail, so /run/user/<uid> and user@<uid>.service are NOT
         // set up automatically — the desktop then dies creating /run/user/<uid>.
         // Start the user manager here, on auth, as root, then wait for the bus.
-        let _ = Command::new("systemctl")
+        let _ = Command::new(SYSTEMCTL)
+            .env("PATH", SAFE_PATH)
             .arg("start")
             .arg(format!("user@{uid}.service"))
             .status()
@@ -118,13 +126,15 @@ fn main() -> ExitCode {
         {
             let xauthority = format!("{home}/.Xauthority");
             let disp = format!(":{display}");
-            let _ = Command::new("xauth")
+            let _ = Command::new(XAUTH)
+                .env("PATH", SAFE_PATH)
                 .args(["-f", &xauthority, "add", &disp, "MIT-MAGIC-COOKIE-1", hex])
                 .status();
             // Single-threaded here, so set_var is sound.
             std::env::set_var("DISPLAY", &disp);
             std::env::set_var("XAUTHORITY", &xauthority);
-            let _ = Command::new("systemctl")
+            let _ = Command::new(SYSTEMCTL)
+                .env("PATH", SAFE_PATH)
                 .args([
                     "--user",
                     "import-environment",
@@ -140,7 +150,8 @@ fn main() -> ExitCode {
     // next login starts it fresh and default.target activates on its own. This covers the case
     // where the manager survived -- logind restarts it for any other session the user has, such
     // as ssh -- in which case nothing else would re-trigger default.target.
-    let _ = Command::new("systemctl")
+    let _ = Command::new(SYSTEMCTL)
+        .env("PATH", SAFE_PATH)
         .args(["--user", "--no-block", "start", "default.target"])
         .status();
 
