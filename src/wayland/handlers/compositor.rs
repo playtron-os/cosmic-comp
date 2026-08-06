@@ -483,19 +483,10 @@ impl CompositorHandler for State {
                 && with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
             if is_wallpaper_first_frame && every_greeter_output_has_wallpaper(&shell) {
                 should_dismiss_greeter = true;
-                // Whose wallpaper it is = who just logged in.
-                //
-                // TRUST NOTE: this infers the session's owner from who paints the first Background
-                // surface, not from who greetd authenticated. `is_local_desktop_uid` narrows it to
-                // a uid holding a local graphical session, so an attacker needs one of those --
-                // in practice, to already be a logged-in desktop user, or to still hold a session
-                // that outlived its logout. Within that window the first painter wins.
-                //
-                // logind cannot settle it: with no seat there is no "session that owns the
-                // screen" to ask about, and a second greetd session reports the same service. The
-                // real fix is for greetd to hand the authenticated uid to the compositor over a
-                // trusted channel; until then, treat this uid as a strong hint, not proof, and
-                // keep the consequences of a wrong answer recoverable (see runtime_dir.rs).
+                // Whose wallpaper painted first. Only a fallback for identifying the session:
+                // `dismiss_greeter` prefers the uid greetd authenticated, because inferring it
+                // from rendering is a race a local client could win. Kept for a greetd that does
+                // not publish one.
                 wallpaper_client_uid = self
                     .common
                     .display_handle
@@ -806,6 +797,26 @@ impl State {
 
     fn dismiss_greeter(&mut self, desktop_uid: Option<u32>) {
         self.common.greeter_present = false;
+        // Prefer what greetd authenticated over what we inferred from rendering. greetd writes it
+        // as root, so it cannot be forged; the wallpaper paint then only decides WHEN to hand
+        // over, not to WHOM. Falls back to the inferred uid on a greetd without that patch.
+        let desktop_uid = match crate::wayland_authz::greetd_session_uid() {
+            Some(uid) => {
+                if desktop_uid.is_some_and(|painted| painted != uid) {
+                    tracing::warn!(
+                        greetd = uid,
+                        painted = ?desktop_uid,
+                        "login handoff: first wallpaper came from a different uid than greetd \
+                         authenticated; trusting greetd"
+                    );
+                }
+                Some(uid)
+            }
+            None => {
+                tracing::debug!("login handoff: no greetd session uid; using the painting client");
+                desktop_uid
+            }
+        };
         // Narrow /run/cosmic-comp to the user who just logged in. Guarded hard: narrowing to the
         // greeter (or to nobody) locks the desktop out, so anything unverified stays open.
         match desktop_uid {

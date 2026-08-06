@@ -200,6 +200,27 @@ impl WaylandAuthz {
     }
 }
 
+/// The uid greetd authenticated for the session now starting, if it published one.
+///
+/// Written by greetd as root before it drops privileges, in a directory only root can write.
+/// That makes it the one statement of "whose session this is" a local client cannot forge --
+/// unlike inferring it from which client draws first, which is a race.
+///
+/// `None` on a greetd without that patch, in which case the caller falls back to inference.
+pub fn greetd_session_uid() -> Option<u32> {
+    let meta = std::fs::metadata("/run/greetd/session-uid").ok()?;
+    // Root-written by construction; refuse anything else rather than trust a planted file.
+    if std::os::unix::fs::MetadataExt::uid(&meta) != 0 {
+        warn!("greetd session-uid file is not root-owned; ignoring");
+        return None;
+    }
+    std::fs::read_to_string("/run/greetd/session-uid")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 fn resolve_greeter_uid() -> Option<u32> {
     if let Ok(v) = std::env::var("AGENTOS_GREETER_UID")
         && let Ok(uid) = v.parse::<u32>()
