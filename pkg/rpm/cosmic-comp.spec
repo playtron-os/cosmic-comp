@@ -83,7 +83,14 @@ m=%{_datadir}/selinux/packages/%{selinuxmodule}
 if checkmodule -M -m -o "$m.mod" "$m.te" && semodule_package -o "$m.pp" -m "$m.mod" -f "$m.fc"; then
 %selinux_modules_install -s %{selinuxtype} "$m.pp"
     restorecon -F %{_bindir}/cosmic-comp || :
-    semodule -l | grep -q %{selinuxmodule} || echo "WARNING: %{selinuxmodule} SELinux module not loaded" >&2
+    semodule -l | grep -q %{selinuxmodule} || echo "WARNING: %{selinuxmodule} not in the module store" >&2
+    # Store presence is not enough: if the deployed policy binary is a NEWER format than local
+    # libsepol can write, semodule rebuilds a lower version that load_policy never picks up, and
+    # the domain silently never exists. Check the RUNNING policy (only meaningful when active).
+    if selinuxenabled 2>/dev/null; then
+        runcon -t cosmic_comp_t /bin/true 2>/dev/null || \
+            echo "WARNING: cosmic_comp_t absent from the running policy; compositor stays unconfined" >&2
+    fi
 else
     echo "WARNING: failed to build %{selinuxmodule} SELinux module" >&2
 fi

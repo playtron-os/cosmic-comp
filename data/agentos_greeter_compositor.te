@@ -70,5 +70,112 @@ role unconfined_r types cosmic_comp_t;
 type_transition cosmic_comp_t cosmic_comp_runtime_t:sock_file cosmic_comp_runtime_t;
 type_transition cosmic_comp_t cosmic_comp_runtime_t:file cosmic_comp_runtime_t;
 
-# Log, don't block, until the harvested allow set (above note) is complete.
+# ------------------------------------------------------------------------------------------
+# Harvested allow set (on-device AVC capture, greeter + login). Incomplete: captured with
+# dontaudit still ON and without a full app/game/lock/logout cycle, so KEEP permissive until a
+# complete pass under `semodule -DB` shows no new denials.
+# ------------------------------------------------------------------------------------------
+
+require {
+	type bin_t, shell_exec_t, xauth_exec_t, xserver_exec_t, systemd_systemctl_exec_t;
+	type systemd_unit_file_t, usr_t, passwd_file_t, cgroup_t, kernel_t;
+	type init_t, init_var_run_t, unconfined_t, snappy_var_lib_t, syslogd_var_run_t;
+	type dri_device_t, event_device_t, user_tty_device_t, udev_var_run_t;
+	type systemd_logind_t, systemd_logind_var_run_t, systemd_logind_sessions_t;
+	type systemd_userdbd_t, systemd_userdbd_runtime_t, systemd_homed_t;
+	type system_dbusd_t, system_dbusd_var_run_t, unconfined_dbusd_t, session_dbusd_tmp_t;
+	type tmp_t, tmpfs_t, user_tmp_t;
+	class dir { add_name create getattr open read remove_name search watch write };
+	class file { create getattr ioctl link lock map open read rename setattr unlink write execute execute_no_trans entrypoint };
+	class lnk_file read;
+	class sock_file { create setattr write };
+	class chr_file { getattr ioctl map open read write };
+	class unix_stream_socket { connectto getattr ioctl };
+	class unix_dgram_socket { connect create getopt setopt sendto };
+	class netlink_kobject_uevent_socket { bind create getattr getopt setopt };
+	class filesystem getattr;
+	class process setsched;
+	class dbus { acquire_svc send_msg };
+}
+
+# GPU/KMS + input devices.
+allow cosmic_comp_t dri_device_t:chr_file { getattr ioctl map open read write };
+allow cosmic_comp_t event_device_t:chr_file { getattr ioctl read write };
+allow cosmic_comp_t user_tty_device_t:chr_file { read write };
+
+# Its own runtime dir: the socket, lock, and log.
+allow cosmic_comp_t cosmic_comp_runtime_t:dir { add_name create getattr open read remove_name search watch write };
+allow cosmic_comp_t cosmic_comp_runtime_t:file { create getattr link lock map open read rename setattr unlink write };
+allow cosmic_comp_t cosmic_comp_runtime_t:sock_file create;
+
+# udev enumeration (device discovery + hotplug).
+allow cosmic_comp_t udev_var_run_t:dir search;
+allow cosmic_comp_t udev_var_run_t:file { getattr open read };
+allow cosmic_comp_t self:netlink_kobject_uevent_socket { bind create getattr getopt setopt };
+
+# logind (session/seat state) + userdb/homed lookups.
+allow cosmic_comp_t systemd_logind_t:dbus send_msg;
+allow cosmic_comp_t systemd_logind_var_run_t:dir search;
+allow cosmic_comp_t systemd_logind_var_run_t:file { getattr open read };
+allow cosmic_comp_t systemd_logind_sessions_t:dir search;
+allow cosmic_comp_t systemd_logind_sessions_t:file { getattr open read };
+allow cosmic_comp_t systemd_userdbd_t:unix_stream_socket connectto;
+allow cosmic_comp_t systemd_userdbd_runtime_t:dir { getattr open read search };
+allow cosmic_comp_t systemd_userdbd_runtime_t:lnk_file read;
+allow cosmic_comp_t systemd_userdbd_runtime_t:sock_file write;
+allow cosmic_comp_t systemd_homed_t:unix_stream_socket connectto;
+allow cosmic_comp_t passwd_file_t:file { getattr open read };
+
+# D-Bus (system + session bus).
+allow cosmic_comp_t system_dbusd_t:{ dbus } send_msg;
+allow cosmic_comp_t system_dbusd_t:unix_stream_socket connectto;
+allow cosmic_comp_t system_dbusd_var_run_t:dir search;
+allow cosmic_comp_t system_dbusd_var_run_t:sock_file write;
+allow cosmic_comp_t unconfined_dbusd_t:dbus { acquire_svc send_msg };
+allow cosmic_comp_t unconfined_dbusd_t:unix_stream_socket connectto;
+allow cosmic_comp_t session_dbusd_tmp_t:sock_file write;
+
+# Helpers it execs: the launch shell, xauth, Xwayland, systemctl (env import).
+allow cosmic_comp_t bin_t:file { entrypoint execute execute_no_trans map };
+allow cosmic_comp_t shell_exec_t:file { execute execute_no_trans map };
+allow cosmic_comp_t xauth_exec_t:file { execute execute_no_trans map open read };
+allow cosmic_comp_t xserver_exec_t:file { execute execute_no_trans map open read };
+allow cosmic_comp_t systemd_systemctl_exec_t:file { execute execute_no_trans map open read };
+allow cosmic_comp_t systemd_unit_file_t:dir getattr;
+
+# Temp dirs (shm buffers, X sockets).
+allow cosmic_comp_t tmp_t:dir add_name;
+allow cosmic_comp_t tmp_t:file { create open write };
+allow cosmic_comp_t tmpfs_t:file { map read write };
+allow cosmic_comp_t tmpfs_t:filesystem getattr;
+allow cosmic_comp_t user_tmp_t:dir { add_name search };
+allow cosmic_comp_t user_tmp_t:file { map write };
+allow cosmic_comp_t user_tmp_t:sock_file { create setattr };
+
+# systemd notify, cgroup + /proc reads, misc.
+allow cosmic_comp_t kernel_t:unix_dgram_socket sendto;
+allow cosmic_comp_t kernel_t:unix_stream_socket connectto;
+allow cosmic_comp_t self:unix_dgram_socket { connect create getopt setopt };
+allow cosmic_comp_t self:process setsched;
+allow cosmic_comp_t cgroup_t:dir search;
+allow cosmic_comp_t cgroup_t:file read;
+allow cosmic_comp_t cgroup_t:filesystem getattr;
+allow cosmic_comp_t init_t:dir search;
+allow cosmic_comp_t init_t:file { getattr ioctl open read };
+allow cosmic_comp_t init_t:lnk_file read;
+allow cosmic_comp_t init_t:unix_stream_socket { getattr ioctl };
+allow cosmic_comp_t init_var_run_t:dir search;
+allow cosmic_comp_t init_var_run_t:sock_file write;
+allow cosmic_comp_t unconfined_t:dir search;
+allow cosmic_comp_t unconfined_t:file { getattr ioctl open read };
+allow cosmic_comp_t syslogd_var_run_t:dir search;
+allow cosmic_comp_t syslogd_var_run_t:sock_file write;
+allow cosmic_comp_t snappy_var_lib_t:dir search;
+allow cosmic_comp_t usr_t:dir watch;
+
+# Inbound: logind talks back, and the greeter connects to the compositor socket.
+allow systemd_logind_t cosmic_comp_t:dbus send_msg;
+allow xdm_t cosmic_comp_t:unix_stream_socket connectto;
+
+# Log, don't block, until the harvested allow set above is complete.
 permissive cosmic_comp_t;
