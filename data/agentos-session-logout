@@ -7,25 +7,39 @@
 # IMMEDIATELY — SIGTERM cosmic-session (the greetd session leader), which reaps its
 # components and lets greetd return to the greeter at once — then close the apps.
 #
-# Cleanup runs via `systemd-run --user`, NOT a backgrounded subshell: `&` leaves the child
-# in the session cgroup, so logind kills it during teardown before it does anything.
-#
 # Apps are stopped by SLICE rather than by stopping user@UID: logind keeps the user manager
 # alive while the user has any other session, so stopping it silently fails whenever they are
-# also on ssh. app.slice holds the apps; session.slice (user bus, pipewire) keeps running, and
+# also on ssh. app.slice holds the apps; session.slice (user bus) keeps running, and
 # agentos-session-launch re-starts default.target on the next login.
 set -u
 uid=$(id -u)
 
-# Detach FIRST so the cleanup survives the teardown triggered below. background.slice, not the
-# default app.slice — the cleanup stops app.slice, and would otherwise kill itself mid-stop.
-systemd-run --user --no-block --quiet --slice=background.slice --unit=agentos-logout-cleanup -- \
-    /bin/bash -c 'for _ in $(seq 1 20); do
-                      pgrep -u "$(id -u)" -x cosmic-session >/dev/null || break
-                      sleep 0.1
-                  done
-                  pkill -KILL -u "$(id -u)" -x cosmic-session 2>/dev/null
-                  systemctl --user stop app.slice' 2>/dev/null
+# Cleanup pass. Re-entered as a transient unit (below) so it survives the session teardown —
+# a `( ... ) &` subshell stays in the session cgroup and is killed before it can run.
+if [ "${1:-}" = "--cleanup" ]; then
+    for _ in $(seq 1 20); do
+        pgrep -u "$uid" -x cosmic-session >/dev/null || break
+        sleep 0.1
+    done
+    pkill -KILL -u "$uid" -x cosmic-session 2>/dev/null
+
+    # app.slice also holds SOCKET units — pipewire.socket among them, even though
+    # pipewire.service itself is in session.slice. Stopping the slice therefore takes the whole
+    # audio stack down (socket -> service -> wireplumber via BindsTo), and the next login cannot
+    # revive it: sockets.target stays active, so starting default.target skips a stopped socket.
+    # Remember what was listening and re-arm it after the stop.
+    socks=$(systemctl --user list-units --plain --no-legend --state=active '*.socket' 2>/dev/null |
+        awk '{print $1}')
+    systemctl --user stop app.slice
+    [ -n "$socks" ] && systemctl --user start $socks 2>/dev/null
+    exit 0
+fi
+
+# Detach the cleanup so it outlives the teardown triggered below. background.slice, not the
+# default app.slice — the cleanup stops app.slice and would otherwise kill itself mid-stop.
+self=$(readlink -f "$0")
+systemd-run --user --no-block --quiet --slice=background.slice \
+    --unit=agentos-logout-cleanup -- "$self" --cleanup 2>/dev/null
 
 # End the desktop session now. cosmic-session tears down its components and exits;
 # greetd sees the session close and shows the greeter.
