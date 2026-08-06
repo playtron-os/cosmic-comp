@@ -96,22 +96,32 @@ tasks:
   dist:archive:
     desc: Build a tar archive of the project
     deps:
-      - dist:prepare
+      - task: dist:prepare
+        vars:
+          PROFILE: '{{.PROFILE}}'
+    vars:
+      # Debug and release must not share an artifact name: they stage identical paths, so a
+      # shared name lets the up-to-date check package the other profile's tree.
+      SUFFIX: '{{if eq .PROFILE "debug"}}-debug{{end}}'
     sources:
       - .cache/{{.NAME}}/**/*
     generates:
-      - dist/{{.NAME}}-{{.ARCH}}.tar.gz
+      - dist/{{.NAME}}-{{.ARCH}}{{.SUFFIX}}.tar.gz
     cmds:
-      - tar cvfz dist/{{.NAME}}-{{.ARCH}}.tar.gz -C .cache {{.NAME}}
+      - tar cvfz dist/{{.NAME}}-{{.ARCH}}{{.SUFFIX}}.tar.gz -C .cache {{.NAME}}
 
   dist:rpm:
     desc: Build an RPM package
     aliases:
       - rpm
     deps:
-      - dist:archive
+      - task: dist:archive
+        vars:
+          PROFILE: '{{.PROFILE}}'
+    vars:
+      SUFFIX: '{{if eq .PROFILE "debug"}}-debug{{end}}'
     sources:
-      - dist/{{.NAME}}-{{.ARCH}}.tar.gz
+      - dist/{{.NAME}}-{{.ARCH}}{{.SUFFIX}}.tar.gz
       - pkg/rpm/{{.NAME}}.spec
     generates:
       - dist/{{.NAME}}-{{.VERSION}}-*.{{.ARCH}}.rpm
@@ -121,9 +131,20 @@ tasks:
     cmds:
       - mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
       - cp ./pkg/rpm/{{.NAME}}.spec ~/rpmbuild/SPECS
-      - cp dist/{{.NAME}}-{{.ARCH}}.tar.gz ~/rpmbuild/SOURCES/{{.NAME}}.tar.gz
+      - cp dist/{{.NAME}}-{{.ARCH}}{{.SUFFIX}}.tar.gz ~/rpmbuild/SOURCES/{{.NAME}}.tar.gz
       - rpmbuild -bb --target {{.ARCH}} --define '_prefix /usr' ~/rpmbuild/SPECS/{{.NAME}}.spec
       - cp ~/rpmbuild/RPMS/{{.ARCH}}/{{.NAME}}-{{.VERSION}}-*.{{.ARCH}}.rpm dist
+
+  dist:rpm:debug:
+    desc: "Build a debug RPM (unoptimized + the debug feature) - much faster to iterate than rpm"
+    aliases:
+      - rpm:debug
+    cmds:
+      # Same NVR as the release RPM, so it installs straight over one. The binary is far larger
+      # and slower; rebuild with `rpm` before measuring anything or shipping.
+      - task: dist:rpm
+        vars:
+          PROFILE: debug
 
   dist:all:
     desc: Build all supported distributable packages
