@@ -31,6 +31,10 @@ Environment=XDG_SESSION_TYPE=wayland
 Environment=RUST_LOG=warn,cosmic_comp=info
 # Session gate on the wayland socket (validated on-device): remote (ssh) clients are rejected.
 Environment=AGENTOS_WAYLAND_AUTHZ=enforce
+# Runtime-dir narrowing: monitor logs the uid it WOULD narrow to without touching the dir.
+# Do not set enforce until the deadman restore lands (see runtime_dir.rs) — a missed restore
+# locks the greeter out of the socket and bricks login.
+Environment=AGENTOS_RUNTIME_DIR_NARROW=monitor
 ExecStartPre=+/usr/bin/chvt 1
 # Root: reap stale X locks a non-root compositor can't unlink from sticky /tmp.
 ExecStartPre=+/usr/libexec/agentos-x-cleanup

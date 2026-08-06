@@ -84,17 +84,17 @@ require {
 	type systemd_logind_t, systemd_logind_var_run_t, systemd_logind_sessions_t;
 	type systemd_userdbd_t, systemd_userdbd_runtime_t, systemd_homed_t;
 	type system_dbusd_t, system_dbusd_var_run_t, unconfined_dbusd_t, session_dbusd_tmp_t;
-	type tmp_t, tmpfs_t, user_tmp_t;
-	class dir { add_name create getattr open read remove_name search watch write };
+	type tmp_t, tmpfs_t, user_tmp_t, proc_t, rtkit_daemon_t;
+	class dir { add_name create getattr open read remove_name search setattr watch write };
 	class file { create getattr ioctl link lock map open read rename setattr unlink write execute execute_no_trans entrypoint };
 	class lnk_file read;
 	class sock_file { create setattr write };
 	class chr_file { getattr ioctl map open read write };
-	class unix_stream_socket { connectto getattr ioctl };
-	class unix_dgram_socket { connect create getopt setopt sendto };
+	class unix_stream_socket { connectto getattr ioctl write };
+	class unix_dgram_socket { connect create getopt setopt sendto write };
 	class netlink_kobject_uevent_socket { bind create getattr getopt setopt };
 	class filesystem getattr;
-	class process setsched;
+	class process { setsched setrlimit };
 	class dbus { acquire_svc send_msg };
 }
 
@@ -104,7 +104,8 @@ allow cosmic_comp_t event_device_t:chr_file { getattr ioctl read write };
 allow cosmic_comp_t user_tty_device_t:chr_file { read write };
 
 # Its own runtime dir: the socket, lock, and log.
-allow cosmic_comp_t cosmic_comp_runtime_t:dir { add_name create getattr open read remove_name search watch write };
+# setattr: the runtime-dir gate sets/clears a POSIX ACL on this dir (see runtime_dir.rs).
+allow cosmic_comp_t cosmic_comp_runtime_t:dir { add_name create getattr open read remove_name search setattr watch write };
 allow cosmic_comp_t cosmic_comp_runtime_t:file { create getattr link lock map open read rename setattr unlink write };
 allow cosmic_comp_t cosmic_comp_runtime_t:sock_file create;
 
@@ -155,15 +156,17 @@ allow cosmic_comp_t user_tmp_t:sock_file { create setattr };
 # systemd notify, cgroup + /proc reads, misc.
 allow cosmic_comp_t kernel_t:unix_dgram_socket sendto;
 allow cosmic_comp_t kernel_t:unix_stream_socket connectto;
-allow cosmic_comp_t self:unix_dgram_socket { connect create getopt setopt };
-allow cosmic_comp_t self:process setsched;
+allow cosmic_comp_t self:unix_dgram_socket { connect create getopt setopt write };
+allow cosmic_comp_t self:process { setsched setrlimit };
+allow cosmic_comp_t proc_t:file { open read };
+allow cosmic_comp_t rtkit_daemon_t:dbus send_msg;   # realtime scheduling for the render thread
 allow cosmic_comp_t cgroup_t:dir search;
 allow cosmic_comp_t cgroup_t:file read;
 allow cosmic_comp_t cgroup_t:filesystem getattr;
 allow cosmic_comp_t init_t:dir search;
 allow cosmic_comp_t init_t:file { getattr ioctl open read };
 allow cosmic_comp_t init_t:lnk_file read;
-allow cosmic_comp_t init_t:unix_stream_socket { getattr ioctl };
+allow cosmic_comp_t init_t:unix_stream_socket { getattr ioctl write };
 allow cosmic_comp_t init_var_run_t:dir search;
 allow cosmic_comp_t init_var_run_t:sock_file write;
 allow cosmic_comp_t unconfined_t:dir search;

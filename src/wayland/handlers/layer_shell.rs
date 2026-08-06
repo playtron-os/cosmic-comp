@@ -27,6 +27,9 @@ impl WlrLayerShellHandler for State {
     ) {
         if namespace == crate::utils::quirks::GREETER_NAMESPACE {
             self.common.greeter_present = true;
+            // Latch correction only: the greeter already connected, so the dir was open. Keeps
+            // gate state honest if some logout path missed its restore.
+            self.common.runtime_dir_gate.restore();
         }
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();

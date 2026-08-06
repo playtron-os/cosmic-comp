@@ -59,6 +59,7 @@ pub mod hooks;
 pub mod input;
 mod logger;
 pub mod perf;
+pub mod runtime_dir;
 pub mod session;
 pub mod shell;
 pub mod state;

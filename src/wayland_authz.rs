@@ -155,6 +155,16 @@ impl WaylandAuthz {
         }
     }
 
+    /// Whether `uid` is a real logged-in desktop user — not us, not the greeter, and owning a
+    /// local graphical session. Gate for narrowing the runtime dir to that uid; a wrong `true`
+    /// locks the desktop out, so every unknown answers `false`.
+    pub fn is_local_desktop_uid(&self, uid: u32) -> bool {
+        if uid == self.self_uid || uid == 0 || Some(uid) == self.greeter_uid {
+            return false;
+        }
+        sd_login().is_some_and(|sd| uid_has_local_display(sd, uid))
+    }
+
     fn evaluate(&self, pid: libc::pid_t, uid: u32) -> (bool, &'static str) {
         if uid == self.self_uid {
             return (true, "self uid");

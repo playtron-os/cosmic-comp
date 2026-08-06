@@ -447,6 +447,7 @@ impl CompositorHandler for State {
         // Deferred: set when the desktop wallpaper paints its first frame behind a
         // covering login greeter.
         let mut should_dismiss_greeter = false;
+        let mut wallpaper_client_uid: Option<u32> = None;
         // Deferred (logout handoff): set when the fresh greeter paints over the held
         // desktop frame, so we can resume rendering after the shell guard is dropped.
         let mut release_logout_hold = false;
@@ -482,6 +483,14 @@ impl CompositorHandler for State {
                 && with_renderer_surface_state(surface, |s| s.buffer().is_some()).unwrap_or(false);
             if is_wallpaper_first_frame && every_greeter_output_has_wallpaper(&shell) {
                 should_dismiss_greeter = true;
+                // Whose wallpaper it is = who just logged in; used to narrow the runtime dir.
+                wallpaper_client_uid = self
+                    .common
+                    .display_handle
+                    .get_client(surface.id())
+                    .ok()
+                    .and_then(|c| c.get_credentials(&self.common.display_handle).ok())
+                    .map(|c| c.uid);
             }
 
             let committing_is_greeter = layer_map_for_output(output)
@@ -650,7 +659,7 @@ impl CompositorHandler for State {
         }
 
         if should_dismiss_greeter {
-            self.dismiss_greeter();
+            self.dismiss_greeter(wallpaper_client_uid);
         }
 
         if release_logout_hold {
@@ -740,8 +749,19 @@ fn output_has_greeter(output: &smithay::output::Output) -> bool {
 
 impl State {
     /// Close the login greeter's layer surface(s) so it crossfades out.
-    fn dismiss_greeter(&mut self) {
+    fn dismiss_greeter(&mut self, desktop_uid: Option<u32>) {
         self.common.greeter_present = false;
+        // Narrow /run/cosmic-comp to the user who just logged in. Guarded hard: narrowing to the
+        // greeter (or to nobody) locks the desktop out, so anything unverified stays open.
+        match desktop_uid {
+            Some(uid) if self.common.wayland_authz.is_local_desktop_uid(uid) => {
+                self.common.runtime_dir_gate.narrow_to(uid)
+            }
+            other => tracing::warn!(
+                ?other,
+                "runtime-dir gate: no verified desktop uid; staying open"
+            ),
+        }
         {
             let mut shell = self.common.shell.write();
             shell.clear_greeter_fade_in();
@@ -775,6 +795,8 @@ impl State {
     /// in `commit`).
     /// fallback in `note_possible_logout`.
     pub(crate) fn arm_logout_hold(&mut self, output: &smithay::output::Output) {
+        // Restore BEFORE any early return: a missed restore locks the greeter out and bricks login.
+        self.common.runtime_dir_gate.restore();
         if self.common.greeter_present || self.common.should_stop {
             return;
         }
@@ -844,6 +866,8 @@ impl State {
     /// what actually holds a non-black frame; this only covers teardown orders / desktop
     /// shapes where the wallpaper is not present (e.g. a toplevel-only session).
     pub(crate) fn note_possible_logout(&mut self, output: &smithay::output::Output) {
+        // Restore BEFORE any early return: a missed restore locks the greeter out and bricks login.
+        self.common.runtime_dir_gate.restore();
         if self.common.greeter_present || self.common.should_stop {
             return;
         }
@@ -903,6 +927,7 @@ impl State {
 
     /// Persistent-compositor LOGIN handoff fallback
     pub(crate) fn note_possible_login_gap(&mut self, output: &smithay::output::Output) {
+        self.common.runtime_dir_gate.restore();
         if self.common.should_stop {
             return;
         }

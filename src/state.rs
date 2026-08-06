@@ -288,6 +288,7 @@ pub struct Common {
 
     /// Admits/rejects connecting wayland clients by their logind session (desktop vs ssh/service).
     pub wayland_authz: crate::wayland_authz::WaylandAuthz,
+    pub runtime_dir_gate: crate::runtime_dir::RuntimeDirGate,
 
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
@@ -872,6 +873,7 @@ impl State {
                 should_stop: false,
                 greeter_present: false,
                 wayland_authz: crate::wayland_authz::WaylandAuthz::new(),
+                runtime_dir_gate: crate::runtime_dir::RuntimeDirGate::new(),
                 kiosk_exit_code: None,
                 gesture_state: None,
                 coldstart: Default::default(),
