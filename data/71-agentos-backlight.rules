@@ -1,0 +1,11 @@
+# Backlight access for the persistent-compositor (seatless) desktop session.
+#
+# logind refuses SetBrightness for a session with no seat, and systemd's own uaccess rules only
+# ACL devices to the active SEAT session — which here is the compositor, not the desktop. Grant
+# the video group direct write instead. sysfs has no ACL support, so chgrp+chmod, not GROUP=/MODE=.
+#
+# Brightness still persists across reboots: systemd-backlight saves whatever sysfs holds at
+# shutdown, regardless of who wrote it.
+ACTION=="add", SUBSYSTEM=="backlight", \
+    RUN+="/usr/bin/chgrp video /sys/class/backlight/%k/brightness", \
+    RUN+="/usr/bin/chmod g+w /sys/class/backlight/%k/brightness"
