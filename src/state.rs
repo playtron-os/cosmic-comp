@@ -363,6 +363,10 @@ pub struct Common {
     pub adaptive_foreground_state:
         crate::wayland::protocols::adaptive_foreground::AdaptiveForegroundState,
 
+    /// Lets the logged-in session push its settings in; the compositor runs as its own user and
+    /// would otherwise never see them. Visible only to the session holding the screen.
+    pub session_config_state: crate::wayland::protocols::session_config::SessionConfigState,
+
     // shell-related wayland state
     pub xdg_shell_state: XdgShellState,
     pub layer_shell_state: WlrLayerShellState,
@@ -795,6 +799,8 @@ impl State {
             crate::wayland::protocols::adaptive_foreground::AdaptiveForegroundState::new::<Self>(
                 dh,
             );
+        let session_config_state =
+            crate::wayland::protocols::session_config::SessionConfigState::new::<Self>(dh);
 
         let idle_notifier_state = IdleNotifierState::<Self>::new(dh, handle.clone());
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<State>(dh);
@@ -942,6 +948,7 @@ impl State {
                 background_effect_state,
                 blur_state,
                 adaptive_foreground_state,
+                session_config_state,
                 a11y_state,
                 game_mode_bridge,
                 xwayland_scale: None,

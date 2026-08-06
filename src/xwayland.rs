@@ -107,11 +107,17 @@ fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: u32) {
     }
 }
 
-/// Server-side X11 auth file XWayland reads via `-auth` (readable only by the compositor uid).
-const XAUTH_SERVER: &str = "/run/cosmic-comp/xauth";
-/// Handoff file: the hex cookie for the setuid session launcher (runs as root) to install into
-/// the desktop user's `~/.Xauthority`. 0600, so only root/the compositor can read it.
-const XCOOKIE_HANDOFF: &str = "/run/cosmic-comp/xcookie";
+/// Server-side X11 auth file XWayland reads via `-auth` (readable only by the compositor uid),
+/// and the handoff file holding the hex cookie for the setuid session launcher to install into
+/// the desktop user's `~/.Xauthority` (0600, so only root/the compositor can read it).
+///
+/// Derived from XDG_RUNTIME_DIR rather than hardcoded: under the global-comp unit that IS
+/// /run/cosmic-comp, but a classic per-session compositor has its own runtime dir, and hardcoding
+/// silently dropped X cookie auth there.
+fn xauth_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let dir = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+    Some((dir.join("xauth"), dir.join("xcookie")))
+}
 
 /// Generate an MIT-MAGIC-COOKIE-1 for display `:display`: write the server auth file (for
 /// XWayland's `-auth`) plus the handoff file the session launcher installs per-user. Best-effort:
@@ -127,9 +133,17 @@ fn setup_xauth(display: u32) -> Option<std::path::PathBuf> {
     let hex: String = cookie.iter().map(|b| format!("{b:02x}")).collect();
     let disp = format!(":{display}");
 
-    let _ = std::fs::remove_file(XAUTH_SERVER);
+    let (xauth_server, xcookie_handoff) = xauth_paths()?;
+    let _ = std::fs::remove_file(&xauth_server);
     let ok = std::process::Command::new("xauth")
-        .args(["-f", XAUTH_SERVER, "add", &disp, "MIT-MAGIC-COOKIE-1", &hex])
+        .args([
+            "-f",
+            &xauth_server.to_string_lossy(),
+            "add",
+            &disp,
+            "MIT-MAGIC-COOKIE-1",
+            &hex,
+        ])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -137,14 +151,14 @@ fn setup_xauth(display: u32) -> Option<std::path::PathBuf> {
         warn!("xwayland: failed to write server xauth; X11 will run without auth");
         return None;
     }
-    let _ = std::fs::set_permissions(XAUTH_SERVER, std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::set_permissions(&xauth_server, std::fs::Permissions::from_mode(0o600));
 
     // Handoff the cookie to the session launcher (`display hex`).
-    if let Ok(mut h) = std::fs::File::create(XCOOKIE_HANDOFF) {
+    if let Ok(mut h) = std::fs::File::create(&xcookie_handoff) {
         let _ = h.set_permissions(std::fs::Permissions::from_mode(0o600));
         let _ = writeln!(h, "{display} {hex}");
     }
-    Some(std::path::PathBuf::from(XAUTH_SERVER))
+    Some(xauth_server)
 }
 
 /// Restrict the X11 filesystem socket to the `compositor` group (0770) so non-group uids can't

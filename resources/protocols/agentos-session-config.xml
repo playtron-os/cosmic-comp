@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="agentos_session_config_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="push the logged-in user's settings to a shared compositor">
+    In the persistent-compositor model the compositor runs as its own system
+    user and outlives every session, so it never sees the config of whoever is
+    logged in: it reads its own, and nothing the user changes reaches it.
+
+    This protocol lets the logged-in user's session push settings in. The
+    compositor stores what it receives in its own configuration and applies it
+    through the same path as a local change, so senders need no access to the
+    compositor's files and the compositor needs none to theirs.
+
+    The global is advertised ONLY to clients owned by the user whose session
+    currently holds the screen. A client of any other user never sees it, so
+    one user cannot reconfigure another's session, and it disappears at logout.
+  </description>
+
+  <interface name="agentos_session_config_v1" version="1">
+    <description summary="settings channel for the active session">
+      Pushes settings for the sending user's session.
+
+      A sender should push everything it manages once after binding, then a
+      single entry whenever a value changes. The compositor keeps the last
+      value it received for each entry until the session ends, at which point
+      it returns to its own defaults.
+    </description>
+
+    <request name="set_entry">
+      <description summary="set one configuration entry">
+        Sets one entry, replacing any previous value for the same domain and
+        key. The value is the serialized form the domain already uses on disk,
+        so senders can forward what they read without re-encoding it.
+
+        An unknown domain, or a value the compositor cannot parse, is ignored:
+        the compositor keeps its current value rather than falling back to a
+        default, so a malformed push cannot disturb a working session.
+      </description>
+      <arg name="domain" type="string" summary="configuration domain, e.g. com.system76.CosmicComp"/>
+      <arg name="key" type="string" summary="entry name within the domain"/>
+      <arg name="value" type="string" summary="serialized value"/>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop pushing settings">
+        Destroys the object. Entries already applied stay in effect for the
+        rest of the session; the compositor discards them when the session
+        ends.
+      </description>
+    </request>
+  </interface>
+</protocol>
