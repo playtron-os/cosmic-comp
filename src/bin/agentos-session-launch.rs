@@ -3,7 +3,7 @@
 
 use std::ffi::{CStr, CString};
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
@@ -104,6 +104,37 @@ fn main() -> ExitCode {
         if libc::setuid(0) == 0 {
             eprintln!("agentos-session-launch: refused to drop root");
             return ExitCode::from(1);
+        }
+
+        // Expose the compositor's socket at the standard $XDG_RUNTIME_DIR/wayland-0.
+        //
+        // WAYLAND_DISPLAY is an absolute path here (the socket lives in the compositor's runtime
+        // dir, not the user's). libwayland accepts that, so native clients work -- but flatpak
+        // builds $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY itself, which for an absolute value yields a
+        // path that cannot exist, so it silently skips binding the socket and every flatpak app
+        // loses wayland. Give it the relative name it expects and point it here with a symlink.
+        //
+        // Runs as the user, in the user's own 0700 runtime dir; logind removes it at logout.
+        if let Some(sock) = std::env::var_os("WAYLAND_DISPLAY")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+        {
+            let link = PathBuf::from(format!("/run/user/{uid}/wayland-0"));
+            // Replace via rename so a client never observes a missing link.
+            let tmp = PathBuf::from(format!("/run/user/{uid}/.wayland-0.new"));
+            let _ = std::fs::remove_file(&tmp);
+            match std::os::unix::fs::symlink(&sock, &tmp)
+                .and_then(|()| std::fs::rename(&tmp, &link))
+            {
+                Ok(()) => std::env::set_var("WAYLAND_DISPLAY", "wayland-0"),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp);
+                    eprintln!(
+                        "agentos-session-launch: link {}: {e}; leaving WAYLAND_DISPLAY absolute (flatpak apps will have no wayland)",
+                        link.display()
+                    );
+                }
+            }
         }
 
         // Now running as the desktop user. Point the session at the compositor's X auth file and
