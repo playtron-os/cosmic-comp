@@ -85,24 +85,6 @@ uninstall:
 uninstall-bare-session:
 	rm "$(DESTDIR)$(sharedir)/wayland-sessions/cosmic.desktop"
 
-# RPM packaging
-VERSION = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-RPM_ROOT = $(CARGO_TARGET_DIR)/rpm-root
-RPM_BUILD = $(CARGO_TARGET_DIR)/rpm-build
-
-rpm: all
-	@echo "Building RPM for $(BINARY) version $(VERSION)..."
-	rm -rf "$(RPM_ROOT)" "$(RPM_BUILD)"
-	mkdir -p "$(RPM_ROOT)" "$(RPM_BUILD)"/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
-	COSMIC_COMP_SOURCE="$(CURDIR)" COSMIC_COMP_VERSION="$(VERSION)" rpmbuild -bb --nodeps \
-		--define "_topdir $(CURDIR)/$(RPM_BUILD)" \
-		--define "_binary_payload w2.xzdio" \
-		--buildroot "$(CURDIR)/$(RPM_ROOT)" \
-		packaging/rpm/cosmic-comp.spec
-	mkdir -p dist
-	cp -v $(RPM_BUILD)/RPMS/*/*.rpm dist/
-	@echo "RPM copied to dist/"
-
 run-debug:
 	WAYLAND_DISPLAY=wayland-2 \
 	COSMIC_BACKEND=kms \

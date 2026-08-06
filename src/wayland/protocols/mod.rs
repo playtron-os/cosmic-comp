@@ -4,6 +4,7 @@ pub mod a11y;
 pub mod adaptive_foreground;
 pub mod animated_resize;
 pub mod backdrop_color;
+pub mod session_config;
 // Fork-only client-facing KDE blur protocol (org_kde_kwin_blur). Upstream's
 // `ext_background_effect_v1` is bound too, from smithay, but it is a staging
 // protocol that carries only a region -- strength, corner rounding, saturation,

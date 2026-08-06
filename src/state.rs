@@ -173,6 +173,9 @@ macro_rules! fl {
 
 pub struct ClientState {
     pub compositor_client_state: CompositorClientState,
+    /// Peer uid, captured at accept. Read from here rather than asking the wayland backend,
+    /// which deadlocks when queried from a global's `can_view`.
+    pub uid: Option<u32>,
     pub advertised_drm_node: Option<DrmNode>,
     pub evlh: LoopHandle<'static, State>,
     pub evls: LoopSignal,
@@ -282,6 +285,14 @@ pub struct Common {
     pub should_stop: bool,
     pub kiosk_exit_code: Option<i32>,
 
+    /// True while the login greeter (`GREETER_NAMESPACE`) has a mapped
+    /// layer surface.
+    pub greeter_present: bool,
+
+    /// Admits/rejects connecting wayland clients by their logind session (desktop vs ssh/service).
+    pub wayland_authz: crate::wayland_authz::WaylandAuthz,
+    pub runtime_dir_gate: crate::runtime_dir::RuntimeDirGate,
+
     pub gesture_state: Option<GestureState>,
     pub coldstart: crate::perf::coldstart::ColdStart,
     pub loop_health: crate::perf::LoopHealth,
@@ -354,6 +365,10 @@ pub struct Common {
     /// the wallpaper and have to stay legible against whatever it happens to be.
     pub adaptive_foreground_state:
         crate::wayland::protocols::adaptive_foreground::AdaptiveForegroundState,
+
+    /// Lets the logged-in session push its settings in; the compositor runs as its own user and
+    /// would otherwise never see them. Visible only to the session holding the screen.
+    pub session_config_state: crate::wayland::protocols::session_config::SessionConfigState,
 
     // shell-related wayland state
     pub xdg_shell_state: XdgShellState,
@@ -787,6 +802,8 @@ impl State {
             crate::wayland::protocols::adaptive_foreground::AdaptiveForegroundState::new::<Self>(
                 dh,
             );
+        let session_config_state =
+            crate::wayland::protocols::session_config::SessionConfigState::new(dh);
 
         let idle_notifier_state = IdleNotifierState::<Self>::new(dh, handle.clone());
         let idle_inhibit_manager_state = IdleInhibitManagerState::new::<State>(dh);
@@ -863,6 +880,9 @@ impl State {
                 clock,
                 startup_done: Arc::new(AtomicBool::new(false)),
                 should_stop: false,
+                greeter_present: false,
+                wayland_authz: crate::wayland_authz::WaylandAuthz::new(),
+                runtime_dir_gate: crate::runtime_dir::RuntimeDirGate::new(),
                 kiosk_exit_code: None,
                 gesture_state: None,
                 coldstart: Default::default(),
@@ -931,6 +951,7 @@ impl State {
                 background_effect_state,
                 blur_state,
                 adaptive_foreground_state,
+                session_config_state,
                 a11y_state,
                 game_mode_bridge,
                 xwayland_scale: None,
@@ -962,6 +983,7 @@ impl State {
             evlh: self.common.event_loop_handle.clone(),
             evls: self.common.event_loop_signal.clone(),
             security_context: None,
+            uid: None,
         }
     }
 
@@ -1591,7 +1613,12 @@ impl Common {
             && shell.game_mode.output.as_ref() == Some(output)
             && let Some(overlay) = shell.game_mode.overlay_surface.as_ref()
         {
-            overlay.send_frame(output, time, window_throttle(voice_faded, overlay), should_send);
+            overlay.send_frame(
+                output,
+                time,
+                window_throttle(voice_faded, overlay),
+                should_send,
+            );
         }
 
         if let Some(active) = shell.active_space(output) {

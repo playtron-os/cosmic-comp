@@ -71,16 +71,22 @@ impl Common {
         );
 
         // add a special socket for the gpu
-        let listener = ListeningSocketSource::with_name(&socket_name)
+        let listener = crate::with_socket_umask(|| ListeningSocketSource::with_name(&socket_name))
             .with_context(|| format!("Failed to bind socket to {}", socket_name))?;
         let socket_name_clone = socket_name.clone();
         let token = self
             .event_loop_handle
             .insert_source(listener, move |client_stream, _, state: &mut State| {
+                // Same session gate as the primary socket (see wayland_authz).
+                if !state.common.wayland_authz.admit(&client_stream) {
+                    return;
+                }
+                let uid = crate::wayland_authz::peer_uid(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
                         advertised_drm_node: Some(render_node),
+                        uid,
                         ..state.new_client_state()
                     }),
                 ) {

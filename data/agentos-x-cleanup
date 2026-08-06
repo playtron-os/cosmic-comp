@@ -1,0 +1,20 @@
+#!/bin/sh
+# Remove stale X display locks/sockets before the compositor claims :0.
+#
+# /tmp is sticky, so the compositor cannot unlink a lock left by another uid
+# — a leftover from a previous boot or from the classic per-session model makes Xwayland fail
+# with "Could not find a free socket for the XServer" and no X11 app can run. Runs as root from
+# the unit's ExecStartPre. Only removes locks whose recorded pid is dead.
+set -eu
+
+for d in 0 1; do
+    lock="/tmp/.X${d}-lock"
+    [ -e "$lock" ] || continue
+    pid=$(tr -d ' \n' < "$lock" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "agentos-x-cleanup: :$d held by live pid $pid, leaving alone" >&2
+        continue
+    fi
+    rm -f "$lock" "/tmp/.X11-unix/X${d}"
+    echo "agentos-x-cleanup: removed stale :$d (dead pid ${pid:-none})" >&2
+done

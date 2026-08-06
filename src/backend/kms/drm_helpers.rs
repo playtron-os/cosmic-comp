@@ -18,6 +18,10 @@ use std::{collections::HashMap, ops::Range};
 
 pub fn display_configuration(
     device: &mut DrmDevice,
+    // false when the fd is muted (inactive VT): the stale-state cleanup below issues
+    // DRM_MASTER-gated commits (atomic_commit / set_crtc / set_cursor) that EACCES on a
+    // muted fd. Skip it while inactive; it is deferred to the first session activation.
+    run_cleanup: bool,
 ) -> Result<HashMap<connector::Handle, Option<crtc::Handle>>> {
     let res_handles = device.resource_handles()?;
     let connectors = res_handles.connectors();
@@ -70,6 +74,12 @@ pub fn display_configuration(
         }
 
         map.entry(conn.handle()).or_insert(None);
+    }
+
+    // Muted fd on an inactive VT: the cleanup below is master-gated and would EACCES.
+    // Return the read-only connector→crtc map now; cleanup is deferred to activation.
+    if !run_cleanup {
+        return Ok(map);
     }
 
     // And then cleanup

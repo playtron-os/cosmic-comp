@@ -1,0 +1,17 @@
+# Global compositor runs as this dedicated, non-root system user.
+# It owns seat0 + DRM from boot via seatd (which passes the device fds), so it
+# needs no root and no CAP_SYS_ADMIN — only access to the seatd socket (group
+# `seat`) plus video/render/input for GPU/udev enumeration paths seatd doesn't
+# mediate.
+u  agentos-display  -  "Global compositor"  /run/cosmic-comp  /usr/sbin/nologin
+m  agentos-display  seat
+m  agentos-display  video
+m  agentos-display  render
+m  agentos-display  input
+
+# greeter: the unprivileged nologin user greetd runs the login greeter as.
+# compositor: the group gating /run/cosmic-comp (mode 0750) — members are the greeter
+# + every human desktop user.
+g  compositor  -
+u  greeter     -  "Login greeter"  /var/lib/greeter  /usr/sbin/nologin
+m  greeter     compositor

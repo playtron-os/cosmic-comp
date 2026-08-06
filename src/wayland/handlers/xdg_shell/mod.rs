@@ -399,6 +399,8 @@ impl XdgShellHandler for State {
 
         if let Some(output) = output.as_ref() {
             self.backend.schedule_render(output);
+            // Logout handoff START
+            self.note_possible_logout(output);
         }
     }
 

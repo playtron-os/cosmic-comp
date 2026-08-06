@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Launch the login greeter (the AGENTOS_GREETER_BIN binary, default agentos-greeter) as a
+# CLIENT of the persistent global cosmic-comp.
+#
+# Run by greetd (vt="none"/Stdin mode) as the `greeter` user. Finds the compositor's
+# wayland socket by ABSOLUTE path (works cross-UID: compositor=agentos-display,
+# greeter=greeter) using a `[ -S ]` test — which only needs dir *traverse*, not
+# *read*, so it works regardless of the runtime-dir's list permission. Waits for the
+# socket (compositor GPU init can take longer than greetd's first spawn). Sets
+# AGENTOS_GLOBAL_COMPOSITOR so the greeter tells the chosen session to ATTACH.
+set -u
+
+find_sock() {
+  for n in 1 0 2 3; do
+    if [ -S "/run/cosmic-comp/wayland-$n" ]; then
+      echo "/run/cosmic-comp/wayland-$n"
+      return 0
+    fi
+  done
+  return 1
+}
+
+sock="$(find_sock || true)"
+if [ -z "${sock:-}" ]; then
+  # up to ~60s for the compositor to create its socket
+  for _ in $(seq 1 600); do
+    sleep 0.1
+    sock="$(find_sock || true)"
+    [ -n "${sock:-}" ] && break
+  done
+fi
+[ -n "${sock:-}" ] || { echo "greeter-launch: no compositor wayland socket in /run/cosmic-comp" >&2; exit 1; }
+
+export WAYLAND_DISPLAY="$sock"
+export AGENTOS_GLOBAL_COMPOSITOR=1
+exec "${AGENTOS_GREETER_BIN:-/usr/bin/agentos-greeter}"
