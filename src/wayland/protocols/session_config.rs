@@ -66,6 +66,13 @@ const ALLOWED_DOMAINS: &[&str] = &[
 /// Sentinel for "no session owns the screen" — no uid may bind.
 const NO_UID: i64 = -1;
 
+/// Bounds on what one session may push. The store lives in /run, which is tmpfs, so an unbounded
+/// sender spends the machine's RAM and the shared inode pool -- and every write wakes the
+/// compositor's own config watcher, so it costs main-loop time too. A real sender pushes a handful
+/// of small keys; these are far above that and only bite a runaway or hostile client.
+const MAX_ENTRIES: usize = 256;
+const MAX_VALUE_BYTES: usize = 64 * 1024;
+
 pub struct SessionConfigState {
     /// Created at login and removed at logout, NOT merely hidden: `can_view` is consulted only
     /// when a client binds its registry and when a global is created, so flipping it cannot
@@ -185,28 +192,37 @@ where
             resource,
             SessionConfigData {
                 received: self.received.clone(),
+                desktop_uid: self.desktop_uid.clone(),
             },
         );
     }
 
-    /// The whole authorization model: only the session holding the screen ever sees the global.
-    ///
-    /// The uid comes from the client's own data, captured at accept. Asking the backend here
-    /// (get_credentials) deadlocks: can_view runs while the backend holds its state lock.
+    /// Only the session holding the screen ever sees the global. Re-checked per request, since
+    /// binding is not a lasting permission -- see `is_desktop_client`.
     fn can_view(&self, client: &Client) -> bool {
-        let target = self.desktop_uid.load(Ordering::Relaxed);
-        if target == NO_UID {
-            return false;
-        }
-        client
-            .get_data::<crate::state::ClientState>()
-            .and_then(|s| s.uid)
-            .is_some_and(|uid| i64::from(uid) == target)
+        is_desktop_client(&self.desktop_uid, client)
     }
+}
+
+/// Whether `client` belongs to the session that currently holds the screen.
+///
+/// The uid comes from the client's own data, captured at accept. Asking the backend instead
+/// (get_credentials) deadlocks: this runs from `can_view`, which the backend calls while holding
+/// its state lock.
+fn is_desktop_client(desktop_uid: &AtomicI64, client: &Client) -> bool {
+    let target = desktop_uid.load(Ordering::Relaxed);
+    if target == NO_UID {
+        return false;
+    }
+    client
+        .get_data::<crate::state::ClientState>()
+        .and_then(|s| s.uid)
+        .is_some_and(|uid| i64::from(uid) == target)
 }
 
 pub struct SessionConfigData {
     received: Received,
+    desktop_uid: Arc<AtomicI64>,
 }
 
 impl<D> Dispatch2<agentos_session_config_v1::AgentosSessionConfigV1, D> for SessionConfigData
@@ -216,7 +232,7 @@ where
     fn request(
         &self,
         _state: &mut D,
-        _client: &Client,
+        client: &Client,
         _resource: &agentos_session_config_v1::AgentosSessionConfigV1,
         request: <agentos_session_config_v1::AgentosSessionConfigV1 as Resource>::Request,
         _dh: &DisplayHandle,
@@ -224,6 +240,16 @@ where
     ) {
         match request {
             agentos_session_config_v1::Request::SetEntry { domain, key, value } => {
+                // Re-checked here, not just at bind: an object outlives the session that created
+                // it, so without this a client from the previous login keeps writing into the
+                // greeter and into whoever logs in next.
+                if !is_desktop_client(&self.desktop_uid, client) {
+                    warn!(
+                        domain,
+                        key, "session-config: ignoring entry from a stale session"
+                    );
+                    return;
+                }
                 store_entry(&self.received, &domain, &key, &value);
             }
             agentos_session_config_v1::Request::Destroy => {}
@@ -241,6 +267,23 @@ fn store_entry(received: &Received, domain: &str, key: &str, value: &str) {
     // The key becomes a filename. Anything but a plain name could escape the domain directory.
     if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         warn!(key, "session-config: refusing malformed key");
+        return;
+    }
+    if value.len() > MAX_VALUE_BYTES {
+        warn!(
+            domain,
+            key,
+            bytes = value.len(),
+            "session-config: refusing oversized value"
+        );
+        return;
+    }
+    // Counted on distinct keys, so repeatedly updating one key stays free.
+    if let Ok(received) = received.lock()
+        && received.len() >= MAX_ENTRIES
+        && !received.contains(&(domain.to_string(), key.to_string()))
+    {
+        warn!(domain, key, "session-config: entry limit reached, refusing");
         return;
     }
     let Some(dir) = domain_dir(domain) else {
