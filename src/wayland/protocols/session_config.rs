@@ -269,6 +269,15 @@ fn store_entry(received: &Received, domain: &str, key: &str, value: &str) {
         warn!(key, "session-config: refusing malformed key");
         return;
     }
+    // The protocol promises a value we cannot parse is ignored rather than applied. Without this
+    // the opposite happens: the watcher fires, `get_config` fails to deserialize and falls back to
+    // T::default(), so a truncated or hostile push RESETS the setting instead of being dropped.
+    // Syntactic only -- it catches corruption and garbage, not a well-formed value of the wrong
+    // type, which would need per-key types to detect.
+    if ron::from_str::<ron::Value>(value).is_err() {
+        warn!(domain, key, "session-config: refusing unparseable value");
+        return;
+    }
     if value.len() > MAX_VALUE_BYTES {
         warn!(
             domain,
