@@ -81,10 +81,12 @@ impl Common {
                 if !state.common.wayland_authz.admit(&client_stream) {
                     return;
                 }
+                let uid = crate::wayland_authz::peer_uid(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
                         advertised_drm_node: Some(render_node),
+                        uid,
                         ..state.new_client_state()
                     }),
                 ) {

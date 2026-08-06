@@ -173,6 +173,9 @@ macro_rules! fl {
 
 pub struct ClientState {
     pub compositor_client_state: CompositorClientState,
+    /// Peer uid, captured at accept. Read from here rather than asking the wayland backend,
+    /// which deadlocks when queried from a global's `can_view`.
+    pub uid: Option<u32>,
     pub advertised_drm_node: Option<DrmNode>,
     pub evlh: LoopHandle<'static, State>,
     pub evls: LoopSignal,
@@ -980,6 +983,7 @@ impl State {
             evlh: self.common.event_loop_handle.clone(),
             evls: self.common.event_loop_signal.clone(),
             security_context: None,
+            uid: None,
         }
     }
 

@@ -70,7 +70,6 @@ impl std::fmt::Debug for SessionConfigState {
 
 pub struct SessionConfigGlobalData {
     desktop_uid: Arc<AtomicI64>,
-    dh: DisplayHandle,
 }
 
 impl SessionConfigState {
@@ -87,7 +86,6 @@ impl SessionConfigState {
             1,
             SessionConfigGlobalData {
                 desktop_uid: desktop_uid.clone(),
-                dh: dh.clone(),
             },
         );
         SessionConfigState {
@@ -127,15 +125,18 @@ where
     }
 
     /// The whole authorization model: only the session holding the screen ever sees the global.
+    ///
+    /// The uid comes from the client's own data, captured at accept. Asking the backend here
+    /// (get_credentials) deadlocks: can_view runs while the backend holds its state lock.
     fn can_view(&self, client: &Client) -> bool {
         let target = self.desktop_uid.load(Ordering::Relaxed);
         if target == NO_UID {
             return false;
         }
         client
-            .get_credentials(&self.dh)
-            .ok()
-            .is_some_and(|c| i64::from(c.uid) == target)
+            .get_data::<crate::state::ClientState>()
+            .and_then(|s| s.uid)
+            .is_some_and(|uid| i64::from(uid) == target)
     }
 }
 

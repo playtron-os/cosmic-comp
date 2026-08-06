@@ -216,6 +216,13 @@ fn resolve_greeter_uid() -> Option<u32> {
     }
 }
 
+/// Peer uid of a connecting client, for stashing in ClientState. Must be read HERE, at accept:
+/// asking the wayland backend later (get_credentials) deadlocks if called from `can_view`, which
+/// runs while the backend already holds its state lock.
+pub fn peer_uid(stream: &UnixStream) -> Option<u32> {
+    peer_cred(stream).map(|(_, uid)| uid)
+}
+
 fn peer_cred(stream: &UnixStream) -> Option<(libc::pid_t, u32)> {
     let mut cred = libc::ucred {
         pid: 0,

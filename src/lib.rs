@@ -388,7 +388,8 @@ fn init_wayland_display(
             if !state.common.wayland_authz.admit(&client_stream) {
                 return;
             }
-            let client_state = state.new_client_state();
+            let mut client_state = state.new_client_state();
+            client_state.uid = crate::wayland_authz::peer_uid(&client_stream);
             match state
                 .common
                 .display_handle
