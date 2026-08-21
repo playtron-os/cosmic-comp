@@ -1,3 +1,11 @@
+## [1.40.1](https://github.com/playtron-os/cosmic-comp/compare/v1.40.0...v1.40.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* crash during display mirroring ([fc80a6a](https://github.com/playtron-os/cosmic-comp/commit/fc80a6a631c34aea9110be71a7a963cd9a346afc))
+* scale mirrored output by its own scale, not the source's ([82c3211](https://github.com/playtron-os/cosmic-comp/commit/82c3211ed6231641dbe817ad7a0d4d1feee8b3cb))
+
 # [1.40.0](https://github.com/playtron-os/cosmic-comp/compare/v1.39.2...v1.40.0) (2026-08-21)
 
 
