@@ -1,3 +1,10 @@
+## [1.40.2](https://github.com/playtron-os/cosmic-comp/compare/v1.40.1...v1.40.2) (2026-08-23)
+
+
+### Bug Fixes
+
+* use touch position correctly when starting window drag while window is maximized ([1c380ee](https://github.com/playtron-os/cosmic-comp/commit/1c380eeabae803df11758d4ea0b00e964152b160))
+
 ## [1.40.1](https://github.com/playtron-os/cosmic-comp/compare/v1.40.0...v1.40.1) (2026-08-21)
 
 
