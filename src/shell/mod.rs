@@ -624,6 +624,20 @@ pub struct Shell {
     /// started waiting. Moved to `layer_opens` when the surface commits a buffer
     /// with real content (see `activate_pending_fade_in`).
     pending_layer_opens: std::collections::HashMap<ObjectId, Instant>,
+    /// Surfaces that have completed an entrance at least once.
+    ///
+    /// A first show is deferred until the client commits real content, because
+    /// layer-shell toolkits map with a buffer-less commit and a 1-2px
+    /// placeholder while they resolve auto-size — animating those spends the
+    /// entrance on nothing. But the deferral is only ever resolved from the
+    /// commit handler, so a surface that is shown again and has nothing new to
+    /// draw never commits, never activates, and stays held at alpha 0 forever:
+    /// hidden for good, from the client's point of view, with no way back.
+    ///
+    /// Once a surface has opened once we know it renders real content, so every
+    /// later show animates immediately and no longer depends on the client
+    /// happening to produce a frame.
+    layer_opened_once: std::collections::HashSet<ObjectId>,
 
     /// Layer surfaces currently playing the compositor-side CLOSE animation (the
     /// reverse of the open: 160ms easeInOut slide-down + scale-down + fade-out).
@@ -2270,6 +2284,7 @@ impl Shell {
             // Fade+rise open/close animations (the default layer transition)
             layer_opens: Vec::new(),
             pending_layer_opens: std::collections::HashMap::new(),
+            layer_opened_once: std::collections::HashSet::new(),
             layer_closes: Vec::new(),
             rise_surfaces: std::collections::HashSet::new(),
 
@@ -4961,10 +4976,23 @@ impl Shell {
                     "set_surface_hidden(false): starting open (slide-up) animation"
                 );
                 if was_hidden {
-                    // Defer the rise-in until the surface commits its first buffer
-                    // (so neither content nor blur shows a stale frame). Held at
-                    // alpha 0 until then by `layer_fade_in_alphas`.
-                    self.pending_layer_opens.insert(surface_id, Instant::now());
+                    if self.layer_opened_once.contains(&surface_id) {
+                        // Already proved it renders content, so animate now.
+                        // Waiting for a commit that may never come is what left
+                        // a re-shown surface invisible for good.
+                        self.layer_opens.retain(|o| o.surface_id != surface_id);
+                        self.layer_opens.push(layer_open::LayerOpen::styled(
+                            surface_id.clone(),
+                            motion,
+                            style,
+                        ));
+                    } else {
+                        // First show: defer the rise-in until the surface commits
+                        // real content (so neither content nor blur shows a stale
+                        // or placeholder frame). Held at alpha 0 until then by
+                        // `layer_fade_in_alphas`.
+                        self.pending_layer_opens.insert(surface_id, Instant::now());
+                    }
                 } else if let Some(close_progress) = reversing_close {
                     // Reverse the in-flight close into an open. Back-date the open
                     // so its first frame matches the close's current alpha/scale/
@@ -5568,6 +5596,7 @@ impl Shell {
                 "activate_pending_fade_in: starting open (slide-up) animation on buffer commit"
             );
             self.layer_opens.retain(|o| o.surface_id != *surface_id);
+            let _ = self.layer_opened_once.insert(surface_id.clone());
             let motion = self.theme.motion;
             // Honour whatever transition this surface asked for. Deferred opens
             // come through here, so reading the default would have the chat
