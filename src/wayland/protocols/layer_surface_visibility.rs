@@ -46,6 +46,13 @@ pub enum LayerTransition {
     /// Fade in/out with a subtle upward slide + scale (the default for
     /// non-edge-anchored surfaces) — the agentos-panel popover animation.
     Fade,
+    /// The design's `fluidReveal` / `fluidDismiss`: rises further than [`Self::Fade`]
+    /// and overshoots on the way in, accelerates away on the way out.
+    ///
+    /// Asked for by the chat input, which needs its BACKDROP BLUR to travel with
+    /// it — a client animating its own pixels cannot move the blur, which is a
+    /// property of the surface and stays behind as a rectangle.
+    FluidReveal,
 }
 
 /// User data for the visibility controller
@@ -87,7 +94,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(2, ());
+        >(3, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -262,6 +269,9 @@ where
                     WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Fade) => {
                         LayerTransition::Fade
                     }
+                    WEnum::Value(
+                        zcosmic_layer_surface_visibility_v1::Transition::FluidReveal,
+                    ) => LayerTransition::FluidReveal,
                     other => {
                         warn!(?other, "SetTransition called with unknown transition value");
                         return;

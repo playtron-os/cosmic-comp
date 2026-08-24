@@ -875,7 +875,7 @@ version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fe6d2e5af09e8c8ad56c969f2157a3d4238cebc7c55f0a517728c38f7b200f81"
 dependencies = [
- "unicode-width 0.2.2",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1526,7 +1526,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/playtron-os/winit.git?branch=feat%2Frebase-v0.30.12#2464750021eea357d91793414c436bed51aa1fe1"
+source = "git+https://github.com/playtron-os/winit.git?branch=feat%2Frebase-v0.30.12#f20e09877ce9209706d97d5c18c4fec11d886965"
 
 [[package]]
 name = "dpi"
@@ -2739,7 +2739,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_debug",
@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "bitflags 2.13.1",
  "bytes",
@@ -2796,7 +2796,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_futures 0.15.0-dev",
@@ -2819,7 +2819,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "futures",
  "iced_core 0.15.0-dev",
@@ -2833,7 +2833,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
@@ -2855,7 +2855,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -2864,7 +2864,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2876,7 +2876,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "bytes",
  "iced_core 0.15.0-dev",
@@ -2889,7 +2889,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "bytemuck",
  "cosmic-text 0.18.0",
@@ -2906,7 +2906,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
@@ -2927,7 +2927,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "iced_renderer",
  "log",
@@ -2941,7 +2941,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#11382d8bc1da5b9fa1faad9404c4fc8e02e2c5fe"
+source = "git+https://github.com/playtron-os/iced.git#f91a2a2dfaae27516ee8ab57926c3c04516ffeca"
 dependencies = [
  "arboard",
  "iced_debug",
@@ -2960,7 +2960,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#61e7f9e484ca23e0fec8867627cff049658819b4"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#d1e0efe1c2f63af5f141d271e4372da58360a49f"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -2991,7 +2991,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#3115d52b1e6bfc07b65d908537c2b5feebc84b74"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#6c0ca1aa9bb99dbcd66a87370f11022eb1a14655"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -4082,7 +4082,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
 dependencies = [
  "cfg-if",
- "unicode-width 0.1.14",
+ "unicode-width",
 ]
 
 [[package]]
@@ -7427,12 +7427,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
 
 [[package]]
-name = "unicode-width"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
-
-[[package]]
 name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8336,7 +8330,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.12"
-source = "git+https://github.com/playtron-os/winit.git?branch=feat%2Frebase-v0.30.12#2464750021eea357d91793414c436bed51aa1fe1"
+source = "git+https://github.com/playtron-os/winit.git?branch=feat%2Frebase-v0.30.12#f20e09877ce9209706d97d5c18c4fec11d886965"
 dependencies = [
  "ahash",
  "android-activity",

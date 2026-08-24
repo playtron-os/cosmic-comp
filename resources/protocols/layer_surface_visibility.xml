@@ -36,7 +36,7 @@
     - Can be shown instantly without Wayland roundtrip overhead
   </description>
 
-  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="2">
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="3">
     <description summary="manager for layer surface visibility">
       This interface allows layer-shell clients to control the visibility
       of their surfaces.
@@ -62,7 +62,7 @@
     </request>
   </interface>
 
-  <interface name="zcosmic_layer_surface_visibility_v1" version="2">
+  <interface name="zcosmic_layer_surface_visibility_v1" version="3">
     <description summary="visibility controller for a layer surface">
       This interface controls whether a layer surface is visible or hidden.
 
@@ -77,6 +77,7 @@
       </description>
       <entry name="slide" value="0" summary="slide the whole surface in/out from its anchored screen edge"/>
       <entry name="fade" value="1" summary="fade in/out with a subtle upward slide + scale (the default)"/>
+      <entry name="fluid_reveal" value="2" since="3" summary="rise further and overshoot on the way in, accelerate away on the way out"/>
     </enum>
 
     <request name="destroy" type="destructor">

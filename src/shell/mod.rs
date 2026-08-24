@@ -4798,8 +4798,16 @@ impl Shell {
         // `Fade` never slides (even if edge-anchored); otherwise fall back to
         // the anchor-based heuristic.
         let slide_edge = match self.layer_transitions.get(&surface_id) {
-            Some(LayerTransition::Fade) => None,
+            Some(LayerTransition::Fade | LayerTransition::FluidReveal) => None,
             _ => self.detect_layer_slide_edge(&surface_id),
+        };
+
+        // Which of the non-sliding motions this surface asked for. Everything
+        // below drives the same render path; the style only says how far, how
+        // long, and on what curve.
+        let style = match self.layer_transitions.get(&surface_id) {
+            Some(LayerTransition::FluidReveal) => layer_open::Style::FluidReveal,
+            _ => layer_open::Style::FadeRise,
         };
 
         // Hiding cancels any in-flight OPEN (entrance) animation. For a fade+rise
@@ -4924,10 +4932,11 @@ impl Shell {
                 self.rise_surfaces.insert(surface_id.clone());
                 self.layer_closes.retain(|c| c.surface_id != surface_id);
                 self.layer_closes
-                    .push(layer_open::LayerClose::new_backdated(
+                    .push(layer_open::LayerClose::styled_backdated(
                         surface_id.clone(),
                         close_backdate_ms,
                         motion,
+                        style,
                     ));
             } else {
                 let was_hidden = self.hidden_surfaces.remove(&surface_id);
@@ -4965,16 +4974,17 @@ impl Shell {
                         ((1.0 - close_progress) * motion.layer_open.as_millis() as f32) as u64;
                     self.layer_closes.retain(|c| c.surface_id != surface_id);
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
-                    self.layer_opens.push(layer_open::LayerOpen::new_backdated(
+                    self.layer_opens.push(layer_open::LayerOpen::styled_backdated(
                         surface_id.clone(),
                         backdate,
                         motion,
+                        style,
                     ));
                 } else if was_fading_out {
                     // Legacy plain fade-out still in flight — rise in from scratch.
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
                     self.layer_opens
-                        .push(layer_open::LayerOpen::new(surface_id, motion));
+                        .push(layer_open::LayerOpen::styled(surface_id, motion, style));
                 }
             }
         }
@@ -5558,8 +5568,18 @@ impl Shell {
             );
             self.layer_opens.retain(|o| o.surface_id != *surface_id);
             let motion = self.theme.motion;
+            // Honour whatever transition this surface asked for. Deferred opens
+            // come through here, so reading the default would have the chat
+            // input rise the popover distance on every re-show and only travel
+            // properly when it happened to take the immediate path.
+            let style = match self.layer_transitions.get(surface_id) {
+                Some(
+                    crate::wayland::protocols::layer_surface_visibility::LayerTransition::FluidReveal,
+                ) => layer_open::Style::FluidReveal,
+                _ => layer_open::Style::FadeRise,
+            };
             self.layer_opens
-                .push(layer_open::LayerOpen::new(surface_id.clone(), motion));
+                .push(layer_open::LayerOpen::styled(surface_id.clone(), motion, style));
         }
     }
 
