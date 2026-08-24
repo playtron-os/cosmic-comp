@@ -269,9 +269,9 @@ where
                     WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Fade) => {
                         LayerTransition::Fade
                     }
-                    WEnum::Value(
-                        zcosmic_layer_surface_visibility_v1::Transition::FluidReveal,
-                    ) => LayerTransition::FluidReveal,
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::FluidReveal) => {
+                        LayerTransition::FluidReveal
+                    }
                     other => {
                         warn!(?other, "SetTransition called with unknown transition value");
                         return;

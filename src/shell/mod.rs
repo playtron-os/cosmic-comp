@@ -4974,12 +4974,13 @@ impl Shell {
                         ((1.0 - close_progress) * motion.layer_open.as_millis() as f32) as u64;
                     self.layer_closes.retain(|c| c.surface_id != surface_id);
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
-                    self.layer_opens.push(layer_open::LayerOpen::styled_backdated(
-                        surface_id.clone(),
-                        backdate,
-                        motion,
-                        style,
-                    ));
+                    self.layer_opens
+                        .push(layer_open::LayerOpen::styled_backdated(
+                            surface_id.clone(),
+                            backdate,
+                            motion,
+                            style,
+                        ));
                 } else if was_fading_out {
                     // Legacy plain fade-out still in flight — rise in from scratch.
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
@@ -5578,8 +5579,11 @@ impl Shell {
                 ) => layer_open::Style::FluidReveal,
                 _ => layer_open::Style::FadeRise,
             };
-            self.layer_opens
-                .push(layer_open::LayerOpen::styled(surface_id.clone(), motion, style));
+            self.layer_opens.push(layer_open::LayerOpen::styled(
+                surface_id.clone(),
+                motion,
+                style,
+            ));
         }
     }
 
