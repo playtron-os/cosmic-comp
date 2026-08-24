@@ -302,28 +302,14 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         }
 
         // trigger routines
-        // Check for pending will_stop timeout
-        {
-            use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-            state.check_pending_stop_timeout();
-            state.check_frozen_timeout();
-        }
-
-        // Poll audio levels from shared memory
-        let (clients, transition_completed, edge_resize_active) = {
+        let (clients, edge_resize_active) = {
             let mut shell = state.common.shell.write();
-            shell.voice_orb_state.poll_shmem_audio_levels();
-            let transition_completed = shell.voice_orb_state.transition_just_completed;
             // Captured before update_animations: if a side-panel resize spring or its
             // post-resize settle is in flight, the panel edge may come to rest under a
             // stationary pointer, so re-evaluate the hover sash/cursor below.
             let edge_resize_active =
                 shell.active_layer_resize_anim.is_some() || shell.layer_resize_settle.is_some();
-            (
-                shell.update_animations(),
-                transition_completed,
-                edge_resize_active,
-            )
+            (shell.update_animations(), edge_resize_active)
         };
 
         // Re-evaluate the side-panel edge hover after a resize tick: the edge can
@@ -332,21 +318,6 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         if edge_resize_active {
             let seat = state.common.shell.read().seats.last_active().clone();
             state.update_edge_resize_hover(&seat);
-        }
-
-        // Sync protocol state when attach_and_transition animation completes
-        if transition_completed {
-            use crate::wayland::protocols::voice_mode::OrbState;
-            state
-                .common
-                .voice_mode_state
-                .set_orb_state(OrbState::Hidden);
-            state
-                .common
-                .shell
-                .write()
-                .voice_orb_state
-                .close_shmem_reader();
         }
 
         {

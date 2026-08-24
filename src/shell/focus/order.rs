@@ -745,9 +745,7 @@ fn layer_surfaces<'a>(
 
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id();
-        let namespace = s.namespace();
-        let (mut visible, mut alpha) =
-            home_visibility.surface_visibility(&surface_id, Some(layer), Some(namespace));
+        let (mut visible, mut alpha) = home_visibility.surface_visibility(&surface_id);
 
         // Apply layer fade-in alpha if this surface is still fading in
         if let Some(&fade_alpha) = home_visibility.layer_fade_in_alphas.get(&surface_id) {

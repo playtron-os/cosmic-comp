@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Voice mode configuration
+//! Voice key configuration
 //!
-//! This module provides shared configuration for voice mode keybindings
-//! that can be used by both cosmic-comp.
+//! Which key summons home for voice input. The compositor's whole involvement in
+//! voice is now this one binding: it brings home forward, and home reads the
+//! push-to-talk hold off its own keyboard focus. It used to own the entire
+//! gesture — tap versus hold, an orb overlay, and a per-surface Wayland protocol
+//! telling clients where that orb was — all of which now lives in the apps.
 
 use cosmic_config::{Config, ConfigGet, ConfigSet, CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
@@ -66,8 +69,6 @@ pub struct VoiceConfig {
     pub primary_binding: VoiceKeyBinding,
     /// Fallback voice key binding (e.g., F6 for development/testing)
     pub fallback_binding: Option<VoiceKeyBinding>,
-    /// App ID for the chat window to attach orb to
-    pub chat_app_id: String,
     /// Whether voice mode is enabled
     pub enabled: bool,
 }
@@ -80,7 +81,6 @@ impl Default for VoiceConfig {
                 modifiers: VoiceModifiers::none(),
             },
             fallback_binding: None,
-            chat_app_id: "chat-ui".to_string(),
             enabled: true,
         }
     }
@@ -92,7 +92,6 @@ impl CosmicConfigEntry for VoiceConfig {
     fn write_entry(&self, config: &Config) -> Result<(), cosmic_config::Error> {
         config.set("primary_binding", &self.primary_binding)?;
         config.set("fallback_binding", &self.fallback_binding)?;
-        config.set("chat_app_id", &self.chat_app_id)?;
         config.set("enabled", self.enabled)?;
         Ok(())
     }
@@ -111,11 +110,6 @@ impl CosmicConfigEntry for VoiceConfig {
             default.fallback_binding.clone()
         });
 
-        let chat_app_id = config.get("chat_app_id").unwrap_or_else(|e| {
-            errors.push(e);
-            default.chat_app_id.clone()
-        });
-
         let enabled = config.get("enabled").unwrap_or_else(|e| {
             errors.push(e);
             default.enabled
@@ -124,7 +118,6 @@ impl CosmicConfigEntry for VoiceConfig {
         let config = Self {
             primary_binding,
             fallback_binding,
-            chat_app_id,
             enabled,
         };
 
@@ -161,13 +154,6 @@ impl CosmicConfigEntry for VoiceConfig {
                         Err(e) => errors.push(e),
                     }
                 }
-                "chat_app_id" => match config.get::<String>("chat_app_id") {
-                    Ok(v) => {
-                        self.chat_app_id = v;
-                        updated.push("chat_app_id");
-                    }
-                    Err(e) => errors.push(e),
-                },
                 "enabled" => match config.get::<bool>("enabled") {
                     Ok(v) => {
                         self.enabled = v;

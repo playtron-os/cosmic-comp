@@ -2,10 +2,7 @@
 
 use crate::{
     backend::render::{
-        BackdropShader, IndicatorShader, Key, Usage,
-        cursor::CursorState,
-        element::AsGlowRenderer,
-        voice_orb::{VoiceOrbShader, VoiceOrbState},
+        BackdropShader, IndicatorShader, Key, Usage, cursor::CursorState, element::AsGlowRenderer,
     },
     shell::{
         CosmicMapped, CosmicSurface, Direction, ManagedLayer,
@@ -95,7 +92,6 @@ impl MoveGrabState {
         output: &Output,
         theme: &CompTheme,
         embedded_children: &[(CosmicMapped, EmbedRenderInfo)],
-        attached_orb_state: Option<&VoiceOrbState>,
         scanout_node: Option<DrmNode>,
         push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
     ) where
@@ -289,50 +285,6 @@ impl MoveGrabState {
         }
         for elem in lower_elements.into_iter() {
             push(elem);
-        }
-
-        // Voice orb, if it is attached to the window being dragged.
-        if let Some(orb_state) = attached_orb_state
-            && let Some(attached_surface_id) = orb_state.attached_surface_id_for_render()
-        {
-            let window_surface_id = self
-                .window
-                .active_window()
-                .wl_surface()
-                .map(|s| s.id().to_string());
-
-            if window_surface_id.as_deref() == Some(attached_surface_id) {
-                let output_geo = output.geometry().as_logical();
-
-                // Current (scaled) geometry of the grabbed window
-                let current_window_geo = Rectangle::new(
-                    render_location,
-                    self.window
-                        .geometry()
-                        .size
-                        .to_f64()
-                        .upscale(scale)
-                        .to_i32_round(),
-                );
-
-                // Compute window corner radius from theme: radius_s + 4 for values >= 4
-                let radius_s = theme.radius_s()[0];
-                let window_border_radius = if radius_s < 4.0 {
-                    radius_s
-                } else {
-                    radius_s + 4.0
-                };
-
-                if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
-                    renderer,
-                    orb_state,
-                    output_geo,
-                    Some(current_window_geo),
-                    Some(window_border_radius),
-                ) {
-                    push(orb_element.into());
-                }
-            }
         }
 
         // Backdrop color for windows using the backdrop_color protocol.

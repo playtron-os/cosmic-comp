@@ -38,11 +38,7 @@ use smithay::{
 
 use crate::shell::element::surface::PopupShadow;
 use crate::{
-    backend::render::{
-        BackdropShader, IndicatorShader, Key, Usage,
-        element::AsGlowRenderer,
-        voice_orb::{VoiceOrbShader, VoiceOrbState},
-    },
+    backend::render::{BackdropShader, IndicatorShader, Key, Usage, element::AsGlowRenderer},
     shell::{
         CosmicSurface, Direction, ManagedLayer, MoveResult, ResizeMode,
         element::{
@@ -3269,7 +3265,6 @@ impl FloatingLayout {
         indicator_thickness: u8,
         alpha: f32,
         theme: &crate::comp_theme::CompTheme,
-        attached_orb_state: Option<&VoiceOrbState>,
         scanout_node: Option<DrmNode>,
         push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
     ) where
@@ -3458,39 +3453,6 @@ impl FloatingLayout {
             });
 
             let render_location = geometry.loc - elem.geometry().loc.as_local();
-
-            // Compute window border radius from theme (used by the voice orb)
-            let radius_s = theme.radius_s()[0];
-            let window_border_radius = if radius_s < 4.0 {
-                radius_s
-            } else {
-                radius_s + 4.0
-            };
-
-            // If this window has the attached voice orb, render it behind window content
-            if let Some(orb_state) = attached_orb_state
-                && let Some(attached_surface_id) = orb_state.attached_surface_id_for_render()
-            {
-                let window_surface_id = elem
-                    .active_window()
-                    .wl_surface()
-                    .map(|s| s.id().to_string());
-
-                if window_surface_id.as_deref() == Some(attached_surface_id) {
-                    let output_geo = output.geometry().as_logical();
-                    let current_window_geo = geometry.as_logical();
-
-                    if let Some(orb_element) = VoiceOrbShader::element_with_window_override(
-                        renderer,
-                        orb_state,
-                        output_geo,
-                        Some(current_window_geo),
-                        Some(window_border_radius),
-                    ) {
-                        lower_elements.push(orb_element.into());
-                    }
-                }
-            }
 
             // Render backdrop color for windows that set the backdrop_color protocol.
             // MERGE: this used to be gated on `!elem.has_blur()`; our blur is gone and

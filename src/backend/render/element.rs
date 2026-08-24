@@ -54,8 +54,12 @@ where
     // and behaviour). Our `BlurBackground` variant was dropped along with the fork blur pipeline,
     // which upstream's frosted-glass implementation replaces.
     Damage(DamageElement),
-    /// Voice mode orb visual indicator
-    VoiceOrb(PixelShaderElement),
+    /// A raw GLES pixel-shader pass — currently window drop shadows.
+    ///
+    /// Named for the voice orb when that was the only thing drawn this way; the
+    /// orb is an app-side widget now, and `shadow.rs` is what reaches the
+    /// `From<PixelShaderElement>` impl below.
+    PixelShader(PixelShaderElement),
     /// Frozen previous-session frame (KMS handoff): a fullscreen texture imported from
     /// the outgoing compositor's CLOSEFB'd scanout, composited as a backdrop/crossfade
     /// so login/logout adopt the held frame instead of clearing to grey.
@@ -79,7 +83,7 @@ where
             CosmicElement::Postprocess(elem) => elem.id(),
             CosmicElement::Zoom(elem) => elem.id(),
             CosmicElement::Damage(elem) => elem.id(),
-            CosmicElement::VoiceOrb(elem) => elem.id(),
+            CosmicElement::PixelShader(elem) => elem.id(),
             CosmicElement::Adopt(elem) => elem.id(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.id(),
@@ -95,7 +99,7 @@ where
             CosmicElement::Postprocess(elem) => elem.current_commit(),
             CosmicElement::Zoom(elem) => elem.current_commit(),
             CosmicElement::Damage(elem) => elem.current_commit(),
-            CosmicElement::VoiceOrb(elem) => elem.current_commit(),
+            CosmicElement::PixelShader(elem) => elem.current_commit(),
             CosmicElement::Adopt(elem) => elem.current_commit(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.current_commit(),
@@ -111,7 +115,7 @@ where
             CosmicElement::Postprocess(elem) => elem.src(),
             CosmicElement::Zoom(elem) => elem.src(),
             CosmicElement::Damage(elem) => elem.src(),
-            CosmicElement::VoiceOrb(elem) => elem.src(),
+            CosmicElement::PixelShader(elem) => elem.src(),
             CosmicElement::Adopt(elem) => elem.src(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.src(),
@@ -127,7 +131,7 @@ where
             CosmicElement::Postprocess(elem) => elem.geometry(scale),
             CosmicElement::Zoom(elem) => elem.geometry(scale),
             CosmicElement::Damage(elem) => elem.geometry(scale),
-            CosmicElement::VoiceOrb(elem) => elem.geometry(scale),
+            CosmicElement::PixelShader(elem) => elem.geometry(scale),
             CosmicElement::Adopt(elem) => elem.geometry(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.geometry(scale),
@@ -143,7 +147,7 @@ where
             CosmicElement::Postprocess(elem) => elem.location(scale),
             CosmicElement::Zoom(elem) => elem.location(scale),
             CosmicElement::Damage(elem) => elem.location(scale),
-            CosmicElement::VoiceOrb(elem) => elem.location(scale),
+            CosmicElement::PixelShader(elem) => elem.location(scale),
             CosmicElement::Adopt(elem) => elem.location(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.location(scale),
@@ -159,7 +163,7 @@ where
             CosmicElement::Postprocess(elem) => elem.transform(),
             CosmicElement::Zoom(elem) => elem.transform(),
             CosmicElement::Damage(elem) => elem.transform(),
-            CosmicElement::VoiceOrb(elem) => elem.transform(),
+            CosmicElement::PixelShader(elem) => elem.transform(),
             CosmicElement::Adopt(elem) => elem.transform(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.transform(),
@@ -179,7 +183,7 @@ where
             CosmicElement::Postprocess(elem) => elem.damage_since(scale, commit),
             CosmicElement::Zoom(elem) => elem.damage_since(scale, commit),
             CosmicElement::Damage(elem) => elem.damage_since(scale, commit),
-            CosmicElement::VoiceOrb(elem) => elem.damage_since(scale, commit),
+            CosmicElement::PixelShader(elem) => elem.damage_since(scale, commit),
             CosmicElement::Adopt(elem) => elem.damage_since(scale, commit),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.damage_since(scale, commit),
@@ -195,7 +199,7 @@ where
             CosmicElement::Postprocess(elem) => elem.opaque_regions(scale),
             CosmicElement::Zoom(elem) => elem.opaque_regions(scale),
             CosmicElement::Damage(elem) => elem.opaque_regions(scale),
-            CosmicElement::VoiceOrb(elem) => elem.opaque_regions(scale),
+            CosmicElement::PixelShader(elem) => elem.opaque_regions(scale),
             CosmicElement::Adopt(elem) => elem.opaque_regions(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.opaque_regions(scale),
@@ -211,7 +215,7 @@ where
             CosmicElement::Postprocess(elem) => elem.alpha(),
             CosmicElement::Zoom(elem) => elem.alpha(),
             CosmicElement::Damage(elem) => elem.alpha(),
-            CosmicElement::VoiceOrb(elem) => elem.alpha(),
+            CosmicElement::PixelShader(elem) => elem.alpha(),
             CosmicElement::Adopt(elem) => elem.alpha(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.alpha(),
@@ -227,7 +231,7 @@ where
             CosmicElement::Postprocess(elem) => elem.kind(),
             CosmicElement::Zoom(elem) => elem.kind(),
             CosmicElement::Damage(elem) => elem.kind(),
-            CosmicElement::VoiceOrb(elem) => elem.kind(),
+            CosmicElement::PixelShader(elem) => elem.kind(),
             CosmicElement::Adopt(elem) => elem.kind(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.kind(),
@@ -243,7 +247,7 @@ where
             CosmicElement::Postprocess(elem) => elem.is_framebuffer_effect(),
             CosmicElement::Zoom(elem) => elem.is_framebuffer_effect(),
             CosmicElement::Damage(elem) => elem.is_framebuffer_effect(),
-            CosmicElement::VoiceOrb(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::PixelShader(elem) => elem.is_framebuffer_effect(),
             CosmicElement::Adopt(elem) => elem.is_framebuffer_effect(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.is_framebuffer_effect(),
@@ -294,7 +298,7 @@ where
             CosmicElement::Damage(elem) => {
                 RenderElement::<R>::draw(elem, frame, src, dst, damage, opaque_regions, cache)
             }
-            CosmicElement::VoiceOrb(elem) => {
+            CosmicElement::PixelShader(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
                 RenderElement::<GlowRenderer>::draw(
                     elem,
@@ -349,7 +353,7 @@ where
             }
             CosmicElement::Zoom(elem) => elem.underlying_storage(renderer),
             CosmicElement::Damage(elem) => elem.underlying_storage(renderer),
-            CosmicElement::VoiceOrb(elem) => {
+            CosmicElement::PixelShader(elem) => {
                 let glow_renderer = renderer.glow_renderer_mut();
                 elem.underlying_storage(glow_renderer)
             }
@@ -388,7 +392,7 @@ where
             CosmicElement::Damage(elem) => {
                 RenderElement::<R>::capture_framebuffer(elem, frame, src, dst, cache)
             }
-            CosmicElement::VoiceOrb(elem) => {
+            CosmicElement::PixelShader(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
                 RenderElement::<GlowRenderer>::capture_framebuffer(
                     elem, glow_frame, src, dst, cache,
@@ -459,7 +463,7 @@ where
     CosmicMappedRenderElement<R>: RenderElement<R>,
 {
     fn from(elem: PixelShaderElement) -> Self {
-        Self::VoiceOrb(elem)
+        Self::PixelShader(elem)
     }
 }
 

@@ -1163,12 +1163,10 @@ impl State {
                     } else {
                         shell.enter_home();
 
-                        // Find the default voice receiver's layer surface and focus it
-                        let focus_target = self
-                            .common
-                            .voice_mode_state
-                            .get_default_receiver_surface()
-                            .and_then(|surface| shell.find_layer_surface_by_wl_surface(&surface))
+                        // Hand home the keyboard, or it comes up looking ready to
+                        // type while keystrokes go to whatever was focused before.
+                        let focus_target = shell
+                            .find_home_layer_surface()
                             .map(KeyboardFocusTarget::from);
 
                         drop(shell);

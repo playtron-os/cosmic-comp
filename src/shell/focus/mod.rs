@@ -203,12 +203,6 @@ impl Shell {
             _ => None,
         };
 
-        // Extract the focused element for voice mode handling
-        let focused_element = match target {
-            Some(KeyboardFocusTarget::Element(mapped)) => Some(mapped.clone()),
-            _ => None,
-        };
-
         if let Some(target) = focus_target {
             let mut shell = state.common.shell.write();
             shell.append_focus_stack(target, seat);
@@ -221,39 +215,6 @@ impl Shell {
             } else {
                 drop(shell);
             }
-        }
-
-        // Handle voice mode focus transitions and track last focused receiver
-        {
-            let output = seat.active_output();
-            // Check if focused surface has a registered voice mode receiver
-            // Use FocusTarget::wl_surface() which properly handles ownership
-            let focused_surface = focused_element.as_ref().and_then(|elem| elem.wl_surface());
-
-            let has_voice_receiver = focused_surface
-                .as_ref()
-                .map(|surface| {
-                    state
-                        .common
-                        .voice_mode_state
-                        .has_receiver_for_surface(surface)
-                })
-                .unwrap_or(false);
-
-            // Track the last focused non-default receiver (for tap-to-focus when unfocused)
-            if has_voice_receiver && let Some(ref surface) = focused_surface {
-                state
-                    .common
-                    .voice_mode_state
-                    .update_last_focused_receiver(Some(surface));
-            }
-
-            let mut shell = state.common.shell.write();
-            shell.handle_voice_mode_focus_change(
-                focused_element.as_ref(),
-                &output,
-                has_voice_receiver,
-            );
         }
 
         update_focus_state(seat, target, state, serial, update_cursor);

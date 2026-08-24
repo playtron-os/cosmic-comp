@@ -2080,20 +2080,22 @@ impl State {
             a11y_keyboard_monitor.key_event(modifiers, &handle, event.state());
         }
 
-        // Handle voice mode key bindings from configuration
-        // This enables:
-        // - Tap (short press < 300ms): Focus chat input field
-        // - Hold (press and hold): Push-to-talk voice mode
+        // The voice key summons home; it does not route voice input.
+        //
+        // The compositor used to own the whole gesture — tap to focus, hold to
+        // record — and drove an orb overlay plus a per-surface protocol to tell
+        // clients about it. The orb is an ordinary widget in home and chat-ui
+        // now, so all that is left here is bringing home forward. Once home has
+        // the keyboard the key is forwarded like any other, and home reads the
+        // press-and-hold itself.
         let voice_config = &self.common.config.voice_config;
         let keysym = handle.modified_sym();
-        tracing::debug!(
-            keysym_raw = keysym.raw(),
-            keysym_name = ?keysym,
-            key_code = u32::from(event.key_code()),
-            key_state = ?event.state(),
-            voice_enabled = voice_config.enabled,
-            "Voice key check - incoming key event"
-        );
+        // F18 is what the HUMAIN button reports, and is honoured whatever the
+        // binding says — the physical key is not something the user configured.
+        let is_voice_key = voice_config.matches_binding(keysym, modifiers)
+            || voice_config.matches_key_only(keysym)
+            || keysym == Keysym::F18;
+
         // In game mode, on the game's own output, the Super key is the LAUNCHER
         // key: forward its raw press AND release to the launcher over the
         // one.playtron.GameMode D-Bus interface (both edges, so the launcher can
@@ -2110,248 +2112,55 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
-        let matches = voice_config.matches_binding(keysym, modifiers);
-
-        // Hard-coded F18 check: always treat F18 as voice key regardless of config
-        let is_f18 = keysym == Keysym::F18;
-
-        // For key release, also check if the key matches without modifiers (since modifiers
-        // may have been released before the main key). Check if voice mode is active.
-        let voice_mode_active = shell.is_voice_mode_active();
-        let key_matches_without_mods = voice_config.matches_key_only(keysym) || is_f18;
-        let is_voice_key_release = event.state() == KeyState::Released && key_matches_without_mods;
-
-        tracing::trace!(
-            matches,
-            is_f18,
-            key_matches_without_mods,
-            is_voice_key_release,
-            voice_mode_active,
-            "Voice key check - binding match results"
-        );
-
-        // Don't let the voice-mode Super gesture fire while the perf-capture
-        // chord modifiers (Ctrl+Alt+Shift, alongside Super) are held — pressing
-        // Ctrl+Alt+Super+Shift+F1x must not also trigger voice. (The activation
-        // hold-timer below has the same guard, to cover any key-press order.)
+        // Don't let the voice gesture fire while the perf-capture chord modifiers
+        // (Ctrl+Alt+Shift, alongside Super) are held — pressing
+        // Ctrl+Alt+Super+Shift+F1x must not also summon home.
         let perf_chord_mods = modifiers.ctrl && modifiers.alt && modifiers.shift;
-        // Skip voice/chat handling while a keyboard-shortcuts inhibitor is active,
-        // so the Super press is forwarded to the focused client instead. Mirrors the
+        // Skip while a keyboard-shortcuts inhibitor is active, so the press is
+        // forwarded to the focused client instead. Mirrors the
         // `!shortcuts_inhibited` gate on global compositor shortcuts below.
-        if voice_config.enabled
-            && !perf_chord_mods
-            && !shortcuts_inhibited
-            && (matches || is_f18 || is_voice_key_release)
-        {
-            // Block voice key handling entirely during session lock (idle/login screen)
+        if voice_config.enabled && !perf_chord_mods && !shortcuts_inhibited && is_voice_key {
+            // Nothing to summon behind the lock screen.
             if shell.session_lock.is_some() {
                 tracing::debug!("Voice key ignored - session is locked");
                 return FilterResult::Intercept(None);
             }
 
-            tracing::debug!("Voice key binding matched! Processing...");
-            // When the orb is frozen (thinking) or transitioning, ignore the guide key entirely.
-            // Only Escape can dismiss the orb during these states.
-            if self
-                .common
-                .voice_mode_state
-                .orb_state()
-                .is_non_interruptible()
-            {
-                tracing::debug!(
-                    "Voice key ignored - orb is in non-interruptible state (use Escape to dismiss)"
-                );
-                return FilterResult::Intercept(None);
+            // Already home: the key belongs to home, which uses it for
+            // push-to-talk. Forwarding both edges is what makes the hold work.
+            if shell.is_home() {
+                drop(shell);
+                return FilterResult::Forward;
             }
-
-            // Check if voice mode was activated on demand (button click).
-            // When on-demand is active, any voice key press/release simply deactivates
-            // voice mode without triggering focus_input or tap detection.
-            let is_on_demand = self.common.voice_mode_state.is_activated_on_demand();
-
-            if is_on_demand && voice_mode_active {
-                std::mem::drop(shell); // Release shell lock before protocol calls
-
-                if event.state() == KeyState::Pressed {
-                    // Suppress the key press so we also get the release
-                    tracing::debug!(
-                        "Voice key pressed while on-demand voice active - suppressing for deactivation on release"
-                    );
-                    seat.supressed_keys().add(&handle, None);
-                } else if event.state() == KeyState::Released {
-                    // Deactivate voice mode - no focus_input, no tap detection
-                    tracing::debug!(
-                        "Voice key released while on-demand voice active - deactivating voice mode"
-                    );
-                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                    self.common.voice_mode_state.clear_key_press();
-                    self.deactivate_voice_mode();
-                }
-                return FilterResult::Intercept(None);
-            }
-
-            std::mem::drop(shell); // Release shell lock before protocol calls
 
             if event.state() == KeyState::Pressed {
-                // Record key press time for tap vs hold detection
-                // Do NOT activate voice mode immediately - wait to see if it's a tap or hold
-                self.common.voice_mode_state.record_key_press();
-                tracing::debug!("Voice key pressed - recording time for tap detection");
-
-                // Start a timer to activate voice mode after TAP_THRESHOLD_MS
-                // If the key is released before the timer fires, it's a tap
-                use crate::wayland::protocols::voice_mode::TAP_THRESHOLD_MS;
-                let delay =
-                    Timer::from_duration(std::time::Duration::from_millis(TAP_THRESHOLD_MS as u64));
-                let seat_name = seat.name().to_string();
-
-                let _ = self
-                    .common
-                    .event_loop_handle
-                    .insert_source(delay, move |_, _, state| {
-                        // If the perf-capture chord modifiers (Ctrl+Alt+Shift) are
-                        // held when the hold-timer fires, this is the F1x chord,
-                        // not a voice gesture — don't activate.
-                        let chord_held = state
-                            .common
-                            .shell
-                            .read()
-                            .seats
-                            .iter()
-                            .find(|s| s.name() == seat_name)
-                            .and_then(|s| s.get_keyboard())
-                            .map(|kb| kb.modifier_state())
-                            .map(|m| m.ctrl && m.alt && m.shift)
-                            .unwrap_or(false);
-                        if chord_held {
-                            return TimeoutAction::Drop;
-                        }
-                        // Check if key is still being held (press time still recorded)
-                        if state.common.voice_mode_state.should_activate_voice() {
-                            tracing::debug!(
-                                "Voice key held past threshold - activating voice mode"
-                            );
-
-                            // Re-fetch the current focused surface at activation time
-                            let focused_surface: Option<WlSurface> = state
-                                .common
-                                .shell
-                                .read()
-                                .seats
-                                .iter()
-                                .find(|s| s.name() == seat_name)
-                                .and_then(|seat| seat.get_keyboard())
-                                .and_then(|kb| kb.current_focus())
-                                .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
-
-                            use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                            let orb_state = state.activate_voice_mode(focused_surface.as_ref());
-                            if orb_state != crate::wayland::protocols::voice_mode::OrbState::Hidden
-                            {
-                                state.common.voice_mode_state.mark_voice_activated();
-                                tracing::debug!(
-                                    ?orb_state,
-                                    "Voice mode activated via timer (hold)"
-                                );
-                            }
-                        }
-                        TimeoutAction::Drop
-                    });
-
-                // Suppress the key so release is also handled
-                seat.supressed_keys().add(&handle, None);
-                return FilterResult::Intercept(None);
-            } else if event.state() == KeyState::Released {
-                // Check if this was a tap (short press < 300ms) vs hold
-                let was_tap = self.common.voice_mode_state.check_tap_without_clearing();
-
-                if was_tap {
-                    // Tap detected: send focus_input event to focused surface or default receiver
-                    // Don't activate voice mode at all
-                    tracing::debug!(
-                        "Voice key tap detected - sending focus_input (not activating voice)"
-                    );
-                    self.common.voice_mode_state.clear_key_press();
-
-                    // Get the currently focused surface to send focus_input to it
-                    // If it has a receiver, it gets the event; otherwise fall back to last focused or default
-                    let focused_surface: Option<WlSurface> = current_focus
-                        .as_ref()
-                        .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
-
-                    // send_focus_input_to_surface_or_default returns the surface that received the event
-                    if let Some(surface_to_focus) = self
-                        .common
-                        .voice_mode_state
-                        .send_focus_input_to_surface_or_default(focused_surface.as_ref())
-                    {
-                        // Check if this is a layer surface
-                        // Layer surfaces with OnDemand interactivity need explicit keyboard focus
-                        let shell = self.common.shell.read();
-                        if let Some(layer_surface) =
-                            shell.find_layer_surface_by_wl_surface(&surface_to_focus)
-                        {
-                            drop(shell);
-                            // Decide how to handle the tap:
-                            // - If HOME_ENABLED: enter full home mode (minimizes windows + triggers HideOnHome animations)
-                            // - If no voice windows: just minimize windows
-                            // - Otherwise: just set focus without minimizing
-                            let has_voice_windows =
-                                self.common.voice_mode_state.has_non_default_receivers();
-                            if crate::shell::home_enabled() {
-                                tracing::info!(
-                                    "Entering home mode and setting keyboard focus to default receiver layer surface"
-                                );
-                                self.common.shell.write().enter_home();
-                            } else if !has_voice_windows {
-                                tracing::info!(
-                                    "Minimizing windows (no voice windows open) and setting keyboard focus to layer surface"
-                                );
-                                self.common.shell.write().minimize_all_windows_only();
-                            } else {
-                                tracing::info!(
-                                    "Setting keyboard focus to layer surface (home mode disabled, voice windows exist)"
-                                );
-                            }
-                            let focus_target = KeyboardFocusTarget::from(layer_surface);
-                            Shell::set_focus(self, Some(&focus_target), seat, None, false);
-                        } else {
-                            drop(shell);
-                            // Regular window - activate it (unminimize, switch workspace, raise, focus)
-                            use crate::wayland::handlers::xdg_activation::ActivationContext;
-                            let output = seat.active_output();
-                            let workspace_handle = {
-                                let shell = self.common.shell.read();
-                                shell.active_space(&output).unwrap().handle
-                            };
-                            self.activate_surface(
-                                &surface_to_focus,
-                                Some((
-                                    crate::shell::ActivationKey::Wayland(surface_to_focus.clone()),
-                                    ActivationContext::Workspace(workspace_handle),
-                                )),
-                            );
-                            tracing::debug!("Activated window for voice focus_input");
-                        }
-                    }
-                } else if voice_mode_active {
-                    // Voice mode is active (was held long enough) - now deactivate
-                    use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-                    self.common.voice_mode_state.clear_key_press();
-                    self.deactivate_voice_mode();
-                    tracing::debug!("Voice mode deactivated via hotkey (hold release)");
+                let focus_target = if crate::shell::home_enabled() {
+                    shell.enter_home();
+                    shell
+                        .find_home_layer_surface()
+                        .map(KeyboardFocusTarget::from)
                 } else {
-                    // Hold detected but voice mode wasn't activated yet
-                    // This can happen if timer hasn't fired yet - just clear state
-                    tracing::debug!("Voice key released before timer fired");
-                    self.common.voice_mode_state.clear_key_press();
-                }
+                    // Home mode is off, so there is no home to focus; clearing the
+                    // screen is the closest thing to the old behaviour.
+                    shell.minimize_all_windows_only();
+                    None
+                };
+                drop(shell);
 
-                // Key was suppressed on press, intercept release too
-                return FilterResult::Intercept(None);
+                if crate::shell::home_enabled() {
+                    self.common.home_visibility_state.set_home(true);
+                }
+                if let Some(target) = focus_target {
+                    Shell::set_focus(self, Some(&target), seat, None, false);
+                }
+                tracing::info!("Voice key pressed - summoned home");
+            } else {
+                drop(shell);
             }
-            // Re-acquire shell lock for subsequent code
-            shell = self.common.shell.write();
+
+            // This press summoned home rather than reaching a client; the next
+            // hold is the one home records.
+            return FilterResult::Intercept(None);
         }
 
         // Forward Right Super key (KEY_RIGHTMETA, keycode 134) to specific apps
@@ -2516,24 +2325,6 @@ impl State {
 
         std::mem::drop(shell);
 
-        // Escape dismisses the orb when frozen (thinking mode)
-        if handle.modified_sym() == Keysym::Escape
-            && event.state() == KeyState::Pressed
-            && self
-                .common
-                .voice_mode_state
-                .orb_state()
-                .is_non_interruptible()
-        {
-            tracing::debug!(
-                "Escape pressed during frozen/transitioning orb - cancelling voice mode"
-            );
-            use crate::wayland::protocols::voice_mode::VoiceModeHandler;
-            self.cancel_voice_mode();
-            seat.supressed_keys().add(&handle, None);
-            return FilterResult::Intercept(None);
-        }
-
         // cancel grabs
         if is_grabbed
             && handle.modified_sym() == Keysym::Escape
@@ -2628,9 +2419,6 @@ impl State {
             && modifiers.shift
         {
             if handle.raw_syms().contains(&Keysym::F12) {
-                // Same as the shortcut handler below: the Super in this chord is
-                // a modifier, not a voice gesture.
-                self.common.voice_mode_state.clear_key_press();
                 seat.supressed_keys().add(&handle, None);
                 return FilterResult::Intercept(Some((
                     Action::Private(PrivateAction::PerfReport),
@@ -2638,7 +2426,6 @@ impl State {
                 )));
             }
             if handle.raw_syms().contains(&Keysym::F11) {
-                self.common.voice_mode_state.clear_key_press();
                 seat.supressed_keys().add(&handle, None);
                 return FilterResult::Intercept(Some((
                     Action::Private(PrivateAction::ColdStartBench),
@@ -2765,7 +2552,6 @@ impl State {
                     && key_matches(binding.key.unwrap())
                     && cosmic_modifiers_eq_smithay(&binding.modifiers, modifiers)
                 {
-                    self.common.voice_mode_state.clear_key_press();
                     modifiers_queue.clear();
                     seat.supressed_keys().add(&handle, None);
                     return FilterResult::Intercept(Some((

@@ -43,7 +43,6 @@ use crate::{
             tooltip::TooltipManagerState,
             toplevel_info::ToplevelInfoState,
             toplevel_management::{ManagementCapabilities, ToplevelManagementState},
-            voice_mode::VoiceModeState,
             workspace::{WorkspaceState, WorkspaceUpdateGuard},
         },
     },
@@ -312,7 +311,6 @@ pub struct Common {
     pub layer_surface_dismiss_state: LayerSurfaceDismissState,
     pub dismiss_controller_registry: DismissControllerRegistry,
     pub layer_surface_visibility_state: LayerSurfaceVisibilityState,
-    pub voice_mode_state: VoiceModeState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub output_state: OutputManagerState,
@@ -735,7 +733,6 @@ impl State {
         let layer_surface_dismiss_state = LayerSurfaceDismissState::new::<Self>(dh);
         let dismiss_controller_registry = DismissControllerRegistry::new();
         let layer_surface_visibility_state = LayerSurfaceVisibilityState::new::<Self>(dh);
-        let voice_mode_state = VoiceModeState::new::<Self>(dh);
         let fractional_scale_state = FractionalScaleManagerState::new::<State>(dh);
         let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(dh);
         let output_state = OutputManagerState::new_with_xdg_output::<Self>(dh);
@@ -895,7 +892,6 @@ impl State {
                 layer_surface_dismiss_state,
                 dismiss_controller_registry,
                 layer_surface_visibility_state,
-                voice_mode_state,
                 fractional_scale_state,
                 idle_notifier_state,
                 idle_inhibit_manager_state,
@@ -1512,26 +1508,6 @@ impl Common {
 
         let shell = self.shell.read();
 
-        // While voice mode holds windows at alpha 0 the renderer skips the whole
-        // workspace (see the `effective_alpha > 0.0` guard in
-        // `workspace_elements`), so those surfaces are absent from
-        // `RenderElementStates` and smithay clears their primary scanout output.
-        // `should_send` would then withhold callbacks and `throttle` would drop
-        // clients to ~1fps for the duration of voice mode. A zero throttle keeps
-        // every frame "overdue", so callbacks continue at exactly the cadence
-        // they had before the skip — the skip stays purely a rendering change.
-        fn window_throttle(
-            voice_faded: bool,
-            session_holder: &impl SessionHolder,
-        ) -> Option<Duration> {
-            if voice_faded {
-                Some(Duration::ZERO)
-            } else {
-                throttle(session_holder)
-            }
-        }
-        let voice_faded = shell.voice_mode_window_alpha() <= 0.0;
-
         if let Some(session_lock) = shell.session_lock.as_ref()
             && let Some(lock_surface) = session_lock.surfaces.get(output)
         {
@@ -1595,31 +1571,17 @@ impl Common {
             && shell.game_mode.output.as_ref() == Some(output)
             && let Some(overlay) = shell.game_mode.overlay_surface.as_ref()
         {
-            overlay.send_frame(
-                output,
-                time,
-                window_throttle(voice_faded, overlay),
-                should_send,
-            );
+            overlay.send_frame(output, time, throttle(overlay), should_send);
         }
 
         if let Some(active) = shell.active_space(output) {
             if let Some(fs) = active.get_fullscreen(shell.seats.last_active()) {
-                fs.surface.send_frame(
-                    output,
-                    time,
-                    window_throttle(voice_faded, &fs.surface),
-                    should_send,
-                );
+                fs.surface
+                    .send_frame(output, time, throttle(&fs.surface), should_send);
             }
             active.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
-                    window.send_frame(
-                        output,
-                        time,
-                        window_throttle(voice_faded, &window),
-                        should_send,
-                    );
+                    window.send_frame(output, time, throttle(&window), should_send);
                 }
             });
 

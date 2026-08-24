@@ -4,7 +4,7 @@ use crate::shell::focus::order::GameModeView;
 use crate::shell::layout::tiling::RestoreTilingState;
 use crate::wayland::handlers::xdg_activation::ActivationContext;
 use crate::{
-    backend::render::{BackdropShader, element::AsGlowRenderer, voice_orb::VoiceOrbState},
+    backend::render::{BackdropShader, element::AsGlowRenderer},
     shell::{
         OverviewMode, SeatMoveGrabState,
         layout::{
@@ -2322,7 +2322,6 @@ impl Workspace {
         indicator_thickness: u8,
         theme: &CompTheme,
         window_alpha: f32,
-        attached_orb_state: Option<&VoiceOrbState>,
         scanout_node: Option<DrmNode>,
         game_mode_only: Option<GameModeView<'_>>,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
@@ -2639,7 +2638,6 @@ impl Workspace {
                 indicator_thickness,
                 floating_alpha,
                 theme,
-                attached_orb_state,
                 scanout_node,
                 &mut |elem| push(elem.into()),
             );

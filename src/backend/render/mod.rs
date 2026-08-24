@@ -102,7 +102,6 @@ pub mod element;
 pub mod gpu_profiler;
 pub mod perf_badge;
 pub mod shadow;
-pub mod voice_orb;
 // MERGE: our `blur` + `clipped_surface` modules are replaced by upstream's
 // `wayland::{blur_effect, clipped_surface}` (PR #2179 frosted glass).
 pub mod wayland;
@@ -628,9 +627,6 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         .insert_if_missing(|| FsrRcasShader(fsr_rcas_shader));
     egl_context.user_data().insert_if_missing(|| blur_shaders);
 
-    // Initialize voice orb shader
-    voice_orb::VoiceOrbShader::init(renderer)?;
-
     Ok(())
 }
 
@@ -652,13 +648,12 @@ pub fn cursor_elements<'a, 'frame, R>(
     output: &Output,
     mode: CursorMode,
     exclude_dnd_icon: bool,
-    // Fork: embedded children follow their move-grabbed parent, and the voice orb
+    // Fork: embedded children follow their move-grabbed parent
     // can be attached to the grabbed window.
     embedded_children_for_grabbed: &[(
         CosmicMapped,
         crate::wayland::handlers::surface_embed::EmbedRenderInfo,
     )],
-    attached_orb_state: Option<&voice_orb::VoiceOrbState>,
     scanout_node: Option<DrmNode>,
     push: &mut dyn FnMut(CosmicElement<R>),
 ) where
@@ -735,7 +730,6 @@ pub fn cursor_elements<'a, 'frame, R>(
                 output,
                 theme,
                 embedded_children_for_grabbed,
-                attached_orb_state,
                 scanout_node,
                 &mut |elem| {
                     push(CosmicElement::MoveGrab(RescaleRenderElement::from_element(
@@ -793,11 +787,7 @@ pub struct HomeVisibilityContext {
     pub sliding_surfaces: std::collections::HashSet<ObjectId>,
     /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
     pub home_alpha: f32,
-    /// Current voice mode window alpha (1.0 = full opacity, 0.15 = faded for voice mode)
-    pub voice_mode_alpha: f32,
-    /// Current voice mode layer shell alpha (0 during burst transition, otherwise same as voice_mode_alpha)
     /// Layer shells wait until burst animation completes so windows fade in first
-    pub voice_mode_layer_alpha: f32,
     /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
     pub layer_fade_in_alphas: std::collections::HashMap<ObjectId, f32>,
     /// Layer surfaces currently fading out (surface ObjectId -> current alpha 1.0-0.0)
@@ -817,99 +807,43 @@ impl HomeVisibilityContext {
                 .map(|s| s.surface_id.clone())
                 .collect(),
             home_alpha: shell.home_alpha(),
-            voice_mode_alpha: shell.voice_mode_window_alpha(),
-            voice_mode_layer_alpha: shell.voice_mode_layer_shell_alpha(),
             layer_fade_in_alphas: shell.layer_fade_in_alphas(),
             layer_fade_out_alphas: shell.layer_fade_out_alphas(),
         }
     }
 
-    /// Get visibility and alpha for a surface based on home mode and voice mode
-    /// Returns (visible, alpha) where visible indicates if surface should be rendered
+    /// Get visibility and alpha for a surface based on home mode
     ///
-    /// The `layer` parameter specifies the layer shell layer (if this is a layer surface).
-    /// The `namespace` parameter is the app_id/namespace for layer surfaces.
-    /// Voice mode alpha is NOT applied to:
-    /// - Background layer surfaces (wallpaper should remain visible)
-    /// - cosmic-panel (system panel should remain visible)
-    /// All other surfaces (including Top layer like dock) fade during voice mode.
+    /// Returns (visible, alpha) where visible indicates if surface should be rendered.
     ///
-    /// Layer shell surfaces (layer is Some) use voice_mode_layer_alpha which stays at 0
-    /// during burst transition so windows fade in first.
-    pub fn surface_visibility(
-        &self,
-        surface_id: &ObjectId,
-        layer: Option<smithay::wayland::shell::wlr_layer::Layer>,
-        namespace: Option<&str>,
-    ) -> (bool, f32) {
-        use smithay::wayland::shell::wlr_layer::Layer;
-
+    /// Used to take the surface's layer and namespace too, to spare the wallpaper
+    /// and the panel from the voice-mode window fade. Nothing fades the whole
+    /// scene any more — the voice orb is drawn by the app that owns it — so home
+    /// mode is the only thing left that decides this.
+    pub fn surface_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
         // Check if surface is explicitly hidden via layer_surface_visibility protocol
         if self.hidden_surfaces.contains(surface_id) {
             return (false, 0.0);
         }
 
-        // Skip voice mode alpha for:
-        // - Background layer surfaces (wallpaper like cosmic-bg)
-        // - cosmic-panel (system panel should remain visible during voice mode)
-        let is_background = matches!(layer, Some(Layer::Background));
-        let is_cosmic_panel = namespace.is_some_and(|ns| ns == "cosmic-panel");
-        let skip_voice_mode_alpha = is_background || is_cosmic_panel;
-
-        // Use layer shell alpha for layer surfaces (waits until burst completes)
-        // Use window alpha for regular windows (fades in during burst)
-        let is_layer_shell = layer.is_some();
-        let effective_voice_alpha = if is_layer_shell {
-            self.voice_mode_layer_alpha
-        } else {
-            self.voice_mode_alpha
-        };
-
         if self.home_only_surfaces.contains(surface_id) {
             // Home-only surface: visible only when home_alpha > 0
             if self.home_alpha > 0.0 {
-                let alpha = if skip_voice_mode_alpha {
-                    self.home_alpha
-                } else {
-                    self.home_alpha * effective_voice_alpha
-                };
-                if alpha > 0.0 {
-                    (true, alpha)
-                } else {
-                    (false, 0.0)
-                }
+                (true, self.home_alpha)
             } else {
                 (false, 0.0)
             }
         } else if self.hide_on_home_surfaces.contains(surface_id) {
             // Hide-on-home surface: inverse of home_alpha
-            let base_alpha = 1.0 - self.home_alpha;
-            if base_alpha > 0.0 {
-                let alpha = if skip_voice_mode_alpha {
-                    base_alpha
-                } else {
-                    base_alpha * effective_voice_alpha
-                };
-                if alpha > 0.0 {
-                    (true, alpha)
-                } else {
-                    (false, 0.0)
-                }
+            let alpha = 1.0 - self.home_alpha;
+            if alpha > 0.0 {
+                (true, alpha)
             } else {
                 (false, 0.0)
             }
         } else {
             // Regular surface (not home-only or hide-on-home)
-            // Still respect skip_voice_mode_alpha for Background/Top layer surfaces like cosmic-bg
-            if skip_voice_mode_alpha {
-                // Background or Top layer surface - always visible, no voice mode fade
-                (true, 1.0)
-            } else if effective_voice_alpha > 0.0 {
-                // Apply voice mode alpha (fades during voice mode)
-                (true, effective_voice_alpha)
-            } else {
-                (false, 0.0)
-            }
+            (true, 1.0)
         }
     }
 }
@@ -1111,13 +1045,6 @@ where
             .unwrap_or_default()
     };
 
-    let grabbed_orb_state: Option<voice_orb::VoiceOrbState> =
-        if shell_ref.voice_orb_state.should_render_at_window_level() {
-            Some(shell_ref.voice_orb_state.clone())
-        } else {
-            None
-        };
-
     // we don't want to hold a shell lock across `cursor_elements`,
     // that is prone to deadlock with the main-thread on some grabs.
     std::mem::drop(shell_ref);
@@ -1133,38 +1060,13 @@ where
         cursor_mode,
         element_filter == ElementFilter::ExcludeWorkspaceOverview,
         &embedded_children_for_grabbed,
-        grabbed_orb_state.as_ref(),
         scanout_node,
         &mut |elem| elements.push(elem),
     );
 
-    // Render voice orb - either globally (floating) or defer to window level (attached)
-    let attached_orb_state: Option<voice_orb::VoiceOrbState>;
     {
         let shell_guard = shell.read();
         let output_geo = output.geometry().as_logical();
-
-        // Check if orb should render at window level (attached mode in burst phase)
-        if shell_guard.voice_orb_state.should_render_at_window_level() {
-            // Don't render globally - will be rendered at window level
-            attached_orb_state = Some(shell_guard.voice_orb_state.clone());
-        } else {
-            // Render globally (floating or not in burst phase yet)
-            attached_orb_state = None;
-
-            let target_output = shell_guard.voice_orb_state.target_output.as_deref();
-            let should_render_here = target_output.map(|t| t == output.name()).unwrap_or(false);
-
-            if should_render_here
-                && let Some(orb_element) = voice_orb::VoiceOrbShader::element(
-                    renderer,
-                    &shell_guard.voice_orb_state,
-                    output_geo,
-                )
-            {
-                elements.push(orb_element.into());
-            }
-        }
 
         // Performance badge (top-left) during an F12 capture or F11 cold-start.
         if (crate::perf::is_capturing() || crate::perf::is_coldstart())
@@ -1252,9 +1154,6 @@ where
             Rectangle::from_size(output_size),
         )
     };
-
-    // Get voice mode window alpha for fading windows during voice mode
-    let voice_mode_alpha = shell.voice_mode_window_alpha();
 
     // Fade factors for closing layer POPUPS (e.g. tooltips hidden via the
     // visibility protocol): 1.0→0.0 while fading, then 0.0 once parked in
@@ -1914,7 +1813,6 @@ where
                     active_hint,
                     alpha,
                     &theme,
-                    None, // No attached orb for sticky layer
                     scanout_node,
                     &mut |elem| {
                         if let Some(elem) = crop_to_output(elem.into()) {
@@ -1955,26 +1853,17 @@ where
                 alpha,
                 game_mode_only,
             } => {
-                // Multiply the workspace-transition opacity (1.0 except
-                // during a crossfade) into the existing window-alpha slot.
-                let effective_alpha = voice_mode_alpha * alpha;
-
-                // Voice mode holds windows at exactly 0.0 for the orb's entire
-                // life (`VoiceMode::window_alpha`: WaitingForOrbGrow | Active |
-                // WaitingForOrbShrink). Compositing them anyway costs a
-                // full-screen pass per window for zero pixels — and because a
-                // translucent surface reports no opaque region
-                // (`is_likely_translucent`), nothing in the scene occludes
-                // anything, so the wallpaper and every window below are drawn
-                // in full too. Skipping the workspace restores real opaque
+                // A workspace fully faded out by a crossfade has nothing to
+                // composite: drawing it anyway costs a full-screen pass per
+                // window for zero pixels, and because a translucent surface
+                // reports no opaque region (`is_likely_translucent`), nothing in
+                // the scene occludes anything, so the wallpaper and every window
+                // below are drawn in full too. Skipping it restores real opaque
                 // regions for what remains.
-                //
-                // The attached orb is rendered *inside* `workspace.render`, so
-                // never skip while it is live at window level.
                 //
                 // Clients keep their per-frame callbacks across this: see the
                 // matching zero-throttle in `Common::send_frames`.
-                if effective_alpha > 0.0 || attached_orb_state.is_some() {
+                if alpha > 0.0 {
                     workspace.render(
                         renderer,
                         last_active_seat,
@@ -1983,8 +1872,7 @@ where
                         resize_indicator.clone(),
                         active_hint,
                         &theme,
-                        effective_alpha,
-                        attached_orb_state.as_ref(),
+                        alpha,
                         scanout_node,
                         game_mode_only,
                         &mut |elem| {

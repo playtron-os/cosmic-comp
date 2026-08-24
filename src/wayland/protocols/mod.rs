@@ -32,5 +32,4 @@ pub mod surface_embed;
 pub mod tooltip;
 pub mod toplevel_info;
 pub mod toplevel_management;
-pub mod voice_mode;
 pub mod workspace;
