@@ -12,7 +12,6 @@ pub mod backdrop_color;
 pub mod blur;
 pub mod corner_radius;
 pub mod drm;
-pub mod exclusive_mode;
 pub mod home_visibility;
 pub mod image_capture_source;
 pub mod keyboard_layout;

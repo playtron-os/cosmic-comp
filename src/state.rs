@@ -23,7 +23,6 @@ use crate::{
             backdrop_color::BackdropColorState,
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
-            exclusive_mode::ExclusiveModeState,
             home_visibility::HomeVisibilityState,
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
@@ -306,7 +305,6 @@ pub struct Common {
     pub data_device_state: DataDeviceState,
     pub clipboard_state: crate::clipboard::ClipboardState,
     pub dmabuf_state: DmabufState,
-    pub exclusive_mode_state: ExclusiveModeState,
     pub home_visibility_state: HomeVisibilityState,
     pub layer_surface_dismiss_state: LayerSurfaceDismissState,
     pub dismiss_controller_registry: DismissControllerRegistry,
@@ -728,7 +726,6 @@ impl State {
         let tooltip_state = TooltipManagerState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let dmabuf_state = DmabufState::new();
-        let exclusive_mode_state = ExclusiveModeState::new::<Self>(dh);
         let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
         let layer_surface_dismiss_state = LayerSurfaceDismissState::new::<Self>(dh);
         let dismiss_controller_registry = DismissControllerRegistry::new();
@@ -887,7 +884,6 @@ impl State {
                 data_device_state,
                 clipboard_state: crate::clipboard::ClipboardState::default(),
                 dmabuf_state,
-                exclusive_mode_state,
                 home_visibility_state,
                 layer_surface_dismiss_state,
                 dismiss_controller_registry,
