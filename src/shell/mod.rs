@@ -5,22 +5,11 @@ use indexmap::IndexMap;
 use layout::TilingExceptions;
 use std::{
     collections::HashMap,
-    sync::{Mutex, OnceLock, atomic::Ordering},
+    sync::{Mutex, atomic::Ordering},
     thread,
     time::{Duration, Instant},
 };
 use wayland_backend::server::{ClientId, ObjectId};
-
-/// Check if home mode feature is enabled via HOME_ENABLED env var.
-/// This is cached on first access.
-pub fn home_enabled() -> bool {
-    static HOME_ENABLED: OnceLock<bool> = OnceLock::new();
-    *HOME_ENABLED.get_or_init(|| {
-        std::env::var("HOME_ENABLED")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
 
 use crate::{
     shell::{
@@ -256,101 +245,6 @@ impl ResizeMode {
             Some(*direction)
         } else {
             None
-        }
-    }
-}
-
-/// Home mode state for layer-shell home visibility
-/// Controls the visibility animation of "home-only" surfaces
-#[derive(Debug, Clone, Default)]
-pub enum HomeMode {
-    /// Not in home mode - home-only surfaces are hidden
-    #[default]
-    None,
-    /// Transitioning to home mode (fading in)
-    FadingIn(Instant),
-    /// Fully in home mode - home-only surfaces visible
-    Active,
-    /// Transitioning out of home mode (fading out)
-    FadingOut(Instant),
-}
-
-impl HomeMode {
-    /// Returns the current opacity for home-only surfaces (0.0 = hidden, 1.0 = visible)
-    pub fn alpha(&self, animation: Duration) -> f32 {
-        match self {
-            HomeMode::None => 0.0,
-            HomeMode::FadingIn(start) => {
-                let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / animation.as_millis() as f32;
-                ease(EaseInOutCubic, 0.0, 1.0, percentage.min(1.0))
-            }
-            HomeMode::Active => 1.0,
-            HomeMode::FadingOut(start) => {
-                let percentage = Instant::now().duration_since(*start).as_millis() as f32
-                    / animation.as_millis() as f32;
-                ease(EaseInOutCubic, 1.0, 0.0, percentage.min(1.0))
-            }
-        }
-    }
-
-    /// Returns true if home mode is active or transitioning to active
-    pub fn is_active(&self) -> bool {
-        matches!(self, HomeMode::FadingIn(_) | HomeMode::Active)
-    }
-
-    /// Returns true if an animation is in progress
-    pub fn is_animating(&self, animation: Duration) -> bool {
-        match self {
-            HomeMode::FadingIn(start) | HomeMode::FadingOut(start) => {
-                Instant::now().duration_since(*start) < animation
-            }
-            _ => false,
-        }
-    }
-
-    /// Start transition to home mode
-    pub fn enter(&mut self, animation: Duration) {
-        match self {
-            HomeMode::None => *self = HomeMode::FadingIn(Instant::now()),
-            HomeMode::FadingOut(start) => {
-                // Reverse the animation from current position
-                let elapsed = Instant::now().duration_since(*start);
-                let remaining = animation.saturating_sub(elapsed);
-                *self = HomeMode::FadingIn(Instant::now() - remaining);
-            }
-            _ => {} // Already active or fading in
-        }
-    }
-
-    /// Start transition out of home mode
-    pub fn exit(&mut self, animation: Duration) {
-        match self {
-            HomeMode::Active => *self = HomeMode::FadingOut(Instant::now()),
-            HomeMode::FadingIn(start) => {
-                // Reverse the animation from current position
-                let elapsed = Instant::now().duration_since(*start);
-                let remaining = animation.saturating_sub(elapsed);
-                *self = HomeMode::FadingOut(Instant::now() - remaining);
-            }
-            _ => {} // Already none or fading out
-        }
-    }
-
-    /// Update animation state, transitioning to final state when complete
-    pub fn update(&mut self, animation: Duration) {
-        match self {
-            HomeMode::FadingIn(start) => {
-                if Instant::now().duration_since(*start) >= animation {
-                    *self = HomeMode::Active;
-                }
-            }
-            HomeMode::FadingOut(start) => {
-                if Instant::now().duration_since(*start) >= animation {
-                    *self = HomeMode::None;
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -623,11 +517,7 @@ pub struct Shell {
     appearance_conf: AppearanceConfig,
     tiling_exceptions: TilingExceptions,
     /// Home mode state for animation (fading in/out of home screen)
-    home_mode: HomeMode,
     /// Surface IDs that should only be visible when in home mode
-    home_only_surfaces: std::collections::HashSet<ObjectId>,
-    /// Surface IDs that should be hidden when in home mode (inverse of home_only)
-    hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
     /// Surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     hidden_surfaces: std::collections::HashSet<ObjectId>,
     /// The last exclusive zone each layer surface's client actually committed,
@@ -638,7 +528,6 @@ pub struct Shell {
     client_exclusive_zones:
         std::collections::HashMap<ObjectId, smithay::wayland::shell::wlr_layer::ExclusiveZone>,
     /// Surfaces minimized by home mode (to restore when exiting)
-    home_minimized_surfaces: Vec<CosmicSurface>,
 
     /// Layer surfaces currently fading in (surface ObjectId -> map instant)
     /// Stop presenting once the outgoing session's UI dies, so the last real frame stays
@@ -2342,17 +2231,8 @@ impl Shell {
                 false,
             )),
             tiling_exceptions,
-            // Start in home mode only if HOME_ENABLED is set
-            home_mode: if home_enabled() {
-                HomeMode::Active
-            } else {
-                HomeMode::None
-            },
-            home_only_surfaces: std::collections::HashSet::new(),
-            hide_on_home_surfaces: std::collections::HashSet::new(),
             hidden_surfaces: std::collections::HashSet::new(),
             client_exclusive_zones: std::collections::HashMap::new(),
-            home_minimized_surfaces: Vec::new(),
 
             // Layer surface fade-in tracking
             layer_fade_in: std::collections::HashMap::new(),
@@ -2838,26 +2718,7 @@ impl Shell {
     }
 
     /// Find a layer surface by its wl_surface
-    /// The home surface, if it is mapped.
-    ///
-    /// Home marks itself home-only over the `home_visibility` protocol, which is
-    /// the only thing that distinguishes it from any other layer surface — there
-    /// is no app id on a layer shell surface to match against. Used to hand it
-    /// keyboard focus when the user asks for home, which is also what the voice
-    /// key now does: the compositor brings home forward, and home reads the
-    /// push-to-talk hold off its own keyboard focus.
-    pub fn find_home_layer_surface(&self) -> Option<LayerSurface> {
-        for output in self.outputs() {
-            let map = layer_map_for_output(output);
-            for layer in map.layers() {
-                if self.home_only_surfaces.contains(&layer.wl_surface().id()) {
-                    return Some(layer.clone());
-                }
-            }
-        }
-        None
-    }
-
+    /// Find a layer surface by its wl_surface
     pub fn find_layer_surface_by_wl_surface(&self, surface: &WlSurface) -> Option<LayerSurface> {
         for output in self.outputs() {
             let map = layer_map_for_output(output);
@@ -3309,7 +3170,6 @@ impl Shell {
             self.resize_mode,
             ResizeMode::None | ResizeMode::Active(_, _)
         );
-        let home = self.home_mode.is_animating(self.theme.motion.animation);
         let workspaces = self
             .workspaces
             .spaces()
@@ -3341,7 +3201,6 @@ impl Shell {
         workspace_sets
             || overview
             || resize
-            || home
             || workspaces
             || zoom
             || auto_hide
@@ -3365,8 +3224,6 @@ impl Shell {
         for workspace in self.workspaces.spaces_mut() {
             clients.extend(workspace.update_animations());
         }
-        // Update home mode animation
-        self.home_mode.update(self.theme.motion.animation);
         // Update auto-hide animations and send visibility events
         self.update_auto_hide_animations();
         // Update layer slide animations (visibility-protocol side panels)
@@ -4913,141 +4770,6 @@ impl Shell {
         (self.overview_mode.clone(), self.swap_indicator.clone())
     }
 
-    /// Check if compositor is in home mode (active or transitioning to active)
-    pub fn is_home(&self) -> bool {
-        self.home_mode.is_active()
-    }
-
-    /// Get the current home mode state
-    pub fn home_mode(&self) -> &HomeMode {
-        &self.home_mode
-    }
-
-    /// Get the current opacity for home-only surfaces (0.0-1.0)
-    pub fn home_alpha(&self) -> f32 {
-        self.home_mode.alpha(self.theme.motion.animation)
-    }
-
-    /// Exit home mode visually only (fade out home surfaces without restoring windows)
-    /// Use this when another full-screen mode takes over
-    pub fn exit_home_visual_only(&mut self) {
-        self.home_mode.exit(self.theme.motion.animation);
-    }
-
-    /// Enter home mode (with animation) and minimize all windows
-    pub fn enter_home(&mut self) {
-        self.home_mode.enter(self.theme.motion.animation);
-
-        // Minimize all visible windows across all workspaces
-        self.minimize_all_windows();
-    }
-
-    /// Minimize all visible windows without entering home mode.
-    ///
-    /// Use this when you want to clear the screen without triggering
-    /// the home mode animation.
-    pub fn minimize_all_windows_only(&mut self) {
-        // Minimize all visible windows across all workspaces
-        self.minimize_all_windows();
-    }
-
-    /// Minimize all visible windows across all workspaces
-    fn minimize_all_windows(&mut self) {
-        // Clear any previously tracked surfaces
-        self.home_minimized_surfaces.clear();
-
-        // Collect all surfaces to minimize first (to avoid borrow conflicts)
-        let mut surfaces_to_minimize = Vec::new();
-
-        for set in self.workspaces.sets.values() {
-            // Collect from sticky layer
-            for mapped in set.sticky_layer.mapped() {
-                surfaces_to_minimize.push(mapped.active_window());
-            }
-
-            // Collect from all workspaces
-            for workspace in &set.workspaces {
-                // Fullscreen windows
-                for fullscreen in &workspace.fullscreen_surfaces {
-                    surfaces_to_minimize.push(fullscreen.surface.clone());
-                }
-
-                // Mapped windows
-                for mapped in workspace.mapped() {
-                    surfaces_to_minimize.push(mapped.active_window());
-                }
-            }
-        }
-
-        // Store surfaces for restoration and minimize each one
-        self.home_minimized_surfaces = surfaces_to_minimize.clone();
-        for surface in surfaces_to_minimize {
-            self.minimize_request(&surface);
-        }
-    }
-
-    /// Exit home mode (with animation) and restore previously minimized windows
-    pub fn exit_home(&mut self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
-        self.home_mode.exit(self.theme.motion.animation);
-
-        // Restore windows that were minimized by home mode
-        let surfaces_to_restore = std::mem::take(&mut self.home_minimized_surfaces);
-        for surface in surfaces_to_restore {
-            self.unminimize_request(&surface, seat, loop_handle);
-        }
-    }
-
-    /// Update home mode animation state
-    pub fn update_home_animation(&mut self) {
-        self.home_mode.update(self.theme.motion.animation);
-    }
-
-    /// Check if home mode animation is in progress
-    pub fn home_animation_going(&self) -> bool {
-        self.home_mode.is_animating(self.theme.motion.animation)
-    }
-
-    /// Get the set of home-only surface IDs
-    pub fn home_only_surfaces(&self) -> &std::collections::HashSet<ObjectId> {
-        &self.home_only_surfaces
-    }
-
-    /// Get the set of hide-on-home surface IDs
-    pub fn hide_on_home_surfaces(&self) -> &std::collections::HashSet<ObjectId> {
-        &self.hide_on_home_surfaces
-    }
-
-    /// Set a surface's visibility mode
-    pub fn set_surface_visibility_mode(
-        &mut self,
-        surface_id: ObjectId,
-        mode: crate::wayland::protocols::home_visibility::VisibilityMode,
-    ) {
-        use crate::wayland::protocols::home_visibility::VisibilityMode;
-        // Remove from both sets first
-        self.home_only_surfaces.remove(&surface_id);
-        self.hide_on_home_surfaces.remove(&surface_id);
-
-        // Add to appropriate set based on mode
-        match mode {
-            VisibilityMode::HomeOnly => {
-                self.home_only_surfaces.insert(surface_id);
-            }
-            VisibilityMode::HideOnHome => {
-                self.hide_on_home_surfaces.insert(surface_id);
-            }
-            VisibilityMode::Always => {
-                // Already removed from both sets
-            }
-        }
-    }
-
-    /// Remove a surface from visibility tracking
-    pub fn remove_surface_visibility(&mut self, surface_id: ObjectId) {
-        self.home_only_surfaces.remove(&surface_id);
-        self.hide_on_home_surfaces.remove(&surface_id);
-    }
-
     // Client-hidden surface methods (layer_surface_visibility protocol)
 
     /// Get the set of explicitly hidden surface IDs
@@ -5881,37 +5603,6 @@ impl Shell {
             "restart_layer_fade_in: restarting fade-in for blur"
         );
         self.layer_fade_in.insert(surface_id, Instant::now());
-    }
-
-    /// Check if a surface should be rendered (for filtering)
-    /// Returns (visible, alpha) where alpha is for animation blending
-    pub fn surface_home_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
-        if self.home_only_surfaces.contains(surface_id) {
-            // Home-only surface: visible when at home or animating
-            let alpha = self.home_mode.alpha(self.theme.motion.animation);
-            (alpha > 0.0, alpha)
-        } else if self.hide_on_home_surfaces.contains(surface_id) {
-            // Hide-on-home surface: visible when NOT at home (inverse alpha)
-            let alpha = 1.0 - self.home_mode.alpha(self.theme.motion.animation);
-            (alpha > 0.0, alpha)
-        } else {
-            // Always-visible surface (default)
-            (true, 1.0)
-        }
-    }
-
-    /// Check if a surface should be rendered (for filtering)
-    pub fn should_surface_be_visible(&self, surface_id: &ObjectId, is_home: bool) -> bool {
-        if self.home_only_surfaces.contains(surface_id) {
-            // Home-only surface: visible when at home or during animation
-            is_home || self.home_mode.alpha(self.theme.motion.animation) > 0.0
-        } else if self.hide_on_home_surfaces.contains(surface_id) {
-            // Hide-on-home surface: visible when NOT at home or during animation
-            !is_home || self.home_mode.alpha(self.theme.motion.animation) < 1.0
-        } else {
-            // Always-visible surface (default)
-            true
-        }
     }
 
     pub fn set_resize_mode(

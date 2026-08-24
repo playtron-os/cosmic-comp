@@ -774,75 +774,42 @@ pub fn cursor_elements<'a, 'frame, R>(
 #[cfg(not(feature = "debug"))]
 pub type EguiState = ();
 
-/// Context for home visibility filtering in layer surfaces
+/// Per-frame snapshot of what decides a layer surface's visibility.
 #[derive(Clone, PartialEq)]
-pub struct HomeVisibilityContext {
-    /// Set of surface IDs that are "home-only" (only visible when in home mode)
-    pub home_only_surfaces: std::collections::HashSet<ObjectId>,
-    /// Set of surface IDs that are "hide-on-home" (hidden when in home mode)
-    pub hide_on_home_surfaces: std::collections::HashSet<ObjectId>,
+pub struct LayerVisibilityContext {
     /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     pub hidden_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that currently have active slide animations
     pub sliding_surfaces: std::collections::HashSet<ObjectId>,
-    /// Current home alpha (0.0 = home hidden, 1.0 = home fully visible)
-    pub home_alpha: f32,
-    /// Layer shells wait until burst animation completes so windows fade in first
     /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
     pub layer_fade_in_alphas: std::collections::HashMap<ObjectId, f32>,
     /// Layer surfaces currently fading out (surface ObjectId -> current alpha 1.0-0.0)
     pub layer_fade_out_alphas: std::collections::HashMap<ObjectId, f32>,
 }
 
-impl HomeVisibilityContext {
+impl LayerVisibilityContext {
     /// Create a new context from shell state
     pub fn from_shell(shell: &crate::shell::Shell) -> Self {
         Self {
-            home_only_surfaces: shell.home_only_surfaces().clone(),
-            hide_on_home_surfaces: shell.hide_on_home_surfaces().clone(),
             hidden_surfaces: shell.hidden_surfaces().clone(),
             sliding_surfaces: shell
                 .layer_slides
                 .iter()
                 .map(|s| s.surface_id.clone())
                 .collect(),
-            home_alpha: shell.home_alpha(),
             layer_fade_in_alphas: shell.layer_fade_in_alphas(),
             layer_fade_out_alphas: shell.layer_fade_out_alphas(),
         }
     }
 
-    /// Get visibility and alpha for a surface based on home mode
+    /// Whether a layer surface should be drawn, and at what alpha.
     ///
-    /// Returns (visible, alpha) where visible indicates if surface should be rendered.
-    ///
-    /// Used to take the surface's layer and namespace too, to spare the wallpaper
-    /// and the panel from the voice-mode window fade. Nothing fades the whole
-    /// scene any more — the voice orb is drawn by the app that owns it — so home
-    /// mode is the only thing left that decides this.
+    /// Only the `layer_surface_visibility` protocol decides this now; the
+    /// home-mode fade that used to share the call is gone.
     pub fn surface_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
-        // Check if surface is explicitly hidden via layer_surface_visibility protocol
         if self.hidden_surfaces.contains(surface_id) {
-            return (false, 0.0);
-        }
-
-        if self.home_only_surfaces.contains(surface_id) {
-            // Home-only surface: visible only when home_alpha > 0
-            if self.home_alpha > 0.0 {
-                (true, self.home_alpha)
-            } else {
-                (false, 0.0)
-            }
-        } else if self.hide_on_home_surfaces.contains(surface_id) {
-            // Hide-on-home surface: inverse of home_alpha
-            let alpha = 1.0 - self.home_alpha;
-            if alpha > 0.0 {
-                (true, alpha)
-            } else {
-                (false, 0.0)
-            }
+            (false, 0.0)
         } else {
-            // Regular surface (not home-only or hide-on-home)
             (true, 1.0)
         }
     }

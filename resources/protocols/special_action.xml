@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="cosmic_special_action_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="special action key routing">
+    Routes the device's special action key — the HUMAIN button — to a client.
+
+    The compositor owns the gesture, because the key is usually a modifier
+    (Super) that it must also keep for its own chords, and only the compositor
+    can tell a tap from the start of a chord. It resolves the gesture and sends
+    the client the meaning, not the key:
+
+    - a tap sends `activate`, which asks the surface to focus its input
+    - a hold sends `hold_start`, then `hold_end` on release, which brackets
+      push-to-talk voice input
+
+    Clients register surfaces as receivers. When the key is used, the focused
+    registered surface receives the event; if none is focused, the surface
+    registered as the default receiver does. That lets a chat window take the
+    key while it is focused and the home screen take it otherwise, without the
+    compositor needing to identify either by app id — which a layer surface
+    does not have.
+  </description>
+
+  <interface name="zcosmic_special_action_manager_v1" version="1">
+    <description summary="manager for special action routing">
+      Lets clients register surfaces to receive special action events.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy this manager object. Receivers created from it are unaffected.
+      </description>
+    </request>
+
+    <request name="get_special_action">
+      <description summary="register a surface as a receiver">
+        Create a receiver for the given wl_surface. The surface receives events
+        while it is focused.
+
+        If is_default is non-zero the surface also becomes the fallback
+        receiver, used whenever no registered surface is focused. Only one
+        default receiver exists at a time; registering a second replaces the
+        first.
+      </description>
+      <arg name="id" type="new_id" interface="zcosmic_special_action_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="is_default" type="uint" summary="1 to also be the fallback receiver, 0 otherwise"/>
+    </request>
+  </interface>
+
+  <interface name="zcosmic_special_action_v1" version="1">
+    <description summary="special action receiver for a surface">
+      Receives resolved special-key gestures for one surface.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="unregister this surface">
+        Stop receiving events for this surface.
+      </description>
+    </request>
+
+    <event name="activate">
+      <description summary="the key was tapped">
+        The user tapped the key. The surface should take focus of its text
+        input so the user can start typing. No voice input is involved.
+      </description>
+    </event>
+
+    <event name="hold_start">
+      <description summary="a hold began">
+        The user is holding the key. The surface should begin capturing audio.
+      </description>
+    </event>
+
+    <event name="hold_end">
+      <description summary="the hold ended">
+        The user released the key. The surface should stop capturing and
+        process what it captured.
+      </description>
+    </event>
+
+    <event name="cancel">
+      <description summary="the gesture was abandoned">
+        The gesture ended without completing — focus moved away, the session
+        locked, or the compositor took the key back. Any capture in progress
+        should be discarded rather than processed.
+      </description>
+    </event>
+  </interface>
+</protocol>

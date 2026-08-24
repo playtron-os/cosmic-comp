@@ -2080,21 +2080,16 @@ impl State {
             a11y_keyboard_monitor.key_event(modifiers, &handle, event.state());
         }
 
-        // The voice key summons home; it does not route voice input.
+        // The special key — the HUMAIN button — is a gesture the compositor has
+        // to resolve itself. It is bound to Super by default, which is also a
+        // chord prefix, so only this side can tell `Super` tapped from `Super`
+        // held from the start of `Super+L`. Clients are told the meaning, not
+        // the key, over zcosmic_special_action_v1:
         //
-        // The compositor used to own the whole gesture — tap to focus, hold to
-        // record — and drove an orb overlay plus a per-surface protocol to tell
-        // clients about it. The orb is an ordinary widget in home and chat-ui
-        // now, so all that is left here is bringing home forward. Once home has
-        // the keyboard the key is forwarded like any other, and home reads the
-        // press-and-hold itself.
+        //   tap  -> summon home and `activate` the receiver, which focuses its input
+        //   hold -> `hold_start` / `hold_end` around push-to-talk voice input
         let voice_config = &self.common.config.voice_config;
         let keysym = handle.modified_sym();
-        // F18 is what the HUMAIN button reports, and is honoured whatever the
-        // binding says — the physical key is not something the user configured.
-        let is_voice_key = voice_config.matches_binding(keysym, modifiers)
-            || voice_config.matches_key_only(keysym)
-            || keysym == Keysym::F18;
 
         // In game mode, on the game's own output, the Super key is the LAUNCHER
         // key: forward its raw press AND release to the launcher over the
@@ -2112,54 +2107,144 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
-        // Don't let the voice gesture fire while the perf-capture chord modifiers
+        // Only the bare key is the gesture. Once another key joins it the press
+        // was a chord prefix, not a tap — `Super+L` must reach the shortcut
+        // handler, and whatever the compositor had pencilled in is abandoned.
+        let is_special_key = voice_config.matches_key_only(keysym);
+        if !is_special_key && event.state() == KeyState::Pressed {
+            self.common.special_action_state.cancel();
+        }
+
+        // Don't let the gesture fire while the perf-capture chord modifiers
         // (Ctrl+Alt+Shift, alongside Super) are held — pressing
         // Ctrl+Alt+Super+Shift+F1x must not also summon home.
         let perf_chord_mods = modifiers.ctrl && modifiers.alt && modifiers.shift;
         // Skip while a keyboard-shortcuts inhibitor is active, so the press is
         // forwarded to the focused client instead. Mirrors the
         // `!shortcuts_inhibited` gate on global compositor shortcuts below.
-        if voice_config.enabled && !perf_chord_mods && !shortcuts_inhibited && is_voice_key {
-            // Nothing to summon behind the lock screen.
+        if voice_config.enabled && !perf_chord_mods && !shortcuts_inhibited && is_special_key {
+            // Nothing to summon behind the lock screen, and a hold that was in
+            // flight when the screen locked must not come back as a result.
             if shell.session_lock.is_some() {
-                tracing::debug!("Voice key ignored - session is locked");
+                self.common.special_action_state.cancel();
                 return FilterResult::Intercept(None);
             }
 
-            // Already home: the key belongs to home, which uses it for
-            // push-to-talk. Forwarding both edges is what makes the hold work.
-            if shell.is_home() {
-                drop(shell);
-                return FilterResult::Forward;
-            }
+            let focused_surface: Option<WlSurface> = current_focus
+                .as_ref()
+                .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
 
             if event.state() == KeyState::Pressed {
-                let focus_target = if crate::shell::home_enabled() {
-                    shell.enter_home();
-                    shell
-                        .find_home_layer_surface()
-                        .map(KeyboardFocusTarget::from)
-                } else {
-                    // Home mode is off, so there is no home to focus; clearing the
-                    // screen is the closest thing to the old behaviour.
-                    shell.minimize_all_windows_only();
-                    None
-                };
                 drop(shell);
+                self.common.special_action_state.key_pressed();
 
-                if crate::shell::home_enabled() {
-                    self.common.home_visibility_state.set_home(true);
-                }
-                if let Some(target) = focus_target {
-                    Shell::set_focus(self, Some(&target), seat, None, false);
-                }
-                tracing::info!("Voice key pressed - summoned home");
-            } else {
-                drop(shell);
+                // Nothing is decided yet: wait out the tap threshold, and if the
+                // key is still down by then it is a hold.
+                use crate::wayland::protocols::special_action::TAP_THRESHOLD;
+                let seat_name = seat.name().to_string();
+                let timer = Timer::from_duration(TAP_THRESHOLD);
+                let _ = self
+                    .common
+                    .event_loop_handle
+                    .insert_source(timer, move |_, _, state| {
+                        // The perf-capture chord holds Super too; if those
+                        // modifiers arrived while we waited this is that chord,
+                        // not a hold.
+                        let chord_held = state
+                            .common
+                            .shell
+                            .read()
+                            .seats
+                            .iter()
+                            .find(|s| s.name() == seat_name)
+                            .and_then(|s| s.get_keyboard())
+                            .map(|kb| kb.modifier_state())
+                            .is_some_and(|m| m.ctrl && m.alt && m.shift);
+                        if chord_held {
+                            state.common.special_action_state.cancel();
+                            return TimeoutAction::Drop;
+                        }
+
+                        let focused = state
+                            .common
+                            .shell
+                            .read()
+                            .seats
+                            .iter()
+                            .find(|s| s.name() == seat_name)
+                            .and_then(|seat| seat.get_keyboard())
+                            .and_then(|kb| kb.current_focus())
+                            .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
+
+                        if state
+                            .common
+                            .special_action_state
+                            .hold_elapsed(focused.as_ref())
+                        {
+                            tracing::debug!("Special key held - voice input started");
+                        }
+                        TimeoutAction::Drop
+                    });
+
+                // Suppressed so the release reaches us too rather than being
+                // delivered to a client on its own.
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(None);
             }
 
-            // This press summoned home rather than reaching a client; the next
-            // hold is the one home records.
+            // Release. Only a still-pending gesture is a tap: a hold was closed
+            // out by `key_released`, and a chord cancelled it long before this.
+            use crate::wayland::protocols::special_action::KeyOutcome;
+            let outcome = self.common.special_action_state.key_released();
+            if outcome != KeyOutcome::Tap {
+                drop(shell);
+                return FilterResult::Intercept(None);
+            }
+
+            // Routing picks the receiver: the focused one, else the default. The
+            // compositor deliberately does not minimize anything or enter home
+            // mode — a receiver decides for itself what to show. All it owes the
+            // receiver is the keyboard, because `activate` asks it to take the
+            // caret and that is worthless on a surface keystrokes do not reach.
+            let target_surface = self
+                .common
+                .special_action_state
+                .routed_surface(focused_surface.as_ref());
+            let Some(target_surface) = target_surface else {
+                drop(shell);
+                tracing::debug!("Special key tapped with no receiver registered");
+                return FilterResult::Intercept(None);
+            };
+
+            // Already focused (the usual chat-ui case) means the keyboard is
+            // where it needs to be; moving it would be a no-op at best.
+            let already_focused = focused_surface.as_ref() == Some(&target_surface);
+            let focus_target = (!already_focused)
+                .then(|| {
+                    shell
+                        .find_layer_surface_by_wl_surface(&target_surface)
+                        .map(KeyboardFocusTarget::from)
+                        .or_else(|| {
+                            shell
+                                .element_for_surface(&target_surface)
+                                .cloned()
+                                .map(KeyboardFocusTarget::from)
+                        })
+                })
+                .flatten();
+            drop(shell);
+
+            if let Some(target) = focus_target {
+                Shell::set_focus(self, Some(&target), seat, None, false);
+            }
+            self.common
+                .special_action_state
+                .send_activate(focused_surface.as_ref());
+            tracing::info!(
+                already_focused,
+                "Special key tapped - activated the routed receiver"
+            );
+
             return FilterResult::Intercept(None);
         }
 

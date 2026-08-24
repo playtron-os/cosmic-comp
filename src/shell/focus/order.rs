@@ -17,7 +17,7 @@ use smithay::{
 use tracing::trace;
 
 use crate::{
-    backend::render::{ElementFilter, HomeVisibilityContext},
+    backend::render::{ElementFilter, LayerVisibilityContext},
     logger::GAMING_TARGET,
     shell::{
         CosmicSurface, SeatExt, Shell, Workspace, WorkspaceDelta,
@@ -153,7 +153,7 @@ fn render_input_order_internal<R: 'static>(
     mut callback: impl FnMut(Stage) -> ControlFlow<Result<R, OutputNoMode>, ()>,
 ) -> ControlFlow<Result<R, OutputNoMode>, ()> {
     // Create home visibility context once for all layer surface filtering
-    let home_visibility = HomeVisibilityContext::from_shell(shell);
+    let layer_visibility = LayerVisibilityContext::from_shell(shell);
 
     // In game mode the fullscreen game is exclusive on its output: suppress all
     // desktop layer-shell surfaces (overlay/top/bottom/background) so the game is
@@ -233,7 +233,7 @@ fn render_input_order_internal<R: 'static>(
     // overlay is above everything (suppressed for an exclusive game).
     if !game_mode_exclusive {
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Overlay, element_filter, &home_visibility)
+            layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -243,7 +243,7 @@ fn render_input_order_internal<R: 'static>(
             })?;
         }
         for (layer, location, alpha) in
-            layer_surfaces(output, Layer::Overlay, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Overlay, element_filter, &layer_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
@@ -383,7 +383,7 @@ fn render_input_order_internal<R: 'static>(
     // Top-level layer shell popups
     if !has_focused_fullscreen {
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Top, element_filter, &home_visibility)
+            layer_popups(output, Layer::Top, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -454,7 +454,7 @@ fn render_input_order_internal<R: 'static>(
     if !has_focused_fullscreen {
         // bottom layer popups
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Bottom, element_filter, &home_visibility)
+            layer_popups(output, Layer::Bottom, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -470,7 +470,7 @@ fn render_input_order_internal<R: 'static>(
     {
         // previous bottom layer popups
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Bottom, element_filter, &home_visibility)
+            layer_popups(output, Layer::Bottom, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -484,7 +484,7 @@ fn render_input_order_internal<R: 'static>(
     if !has_fullscreen {
         // background layer popups
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Background, element_filter, &home_visibility)
+            layer_popups(output, Layer::Background, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -500,7 +500,7 @@ fn render_input_order_internal<R: 'static>(
     {
         // previous background layer popups
         for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Background, element_filter, &home_visibility)
+            layer_popups(output, Layer::Background, element_filter, &layer_visibility)
         {
             callback(Stage::LayerPopup {
                 layer,
@@ -514,7 +514,7 @@ fn render_input_order_internal<R: 'static>(
     if !has_focused_fullscreen {
         // top-layer shell
         for (layer, location, alpha) in
-            layer_surfaces(output, Layer::Top, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Top, element_filter, &layer_visibility)
         {
             callback(Stage::LayerSurface {
                 layer,
@@ -581,7 +581,7 @@ fn render_input_order_internal<R: 'static>(
     if !has_focused_fullscreen {
         // bottom layer
         for (layer, mut location, alpha) in
-            layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Bottom, element_filter, &layer_visibility)
         {
             location += current_offset.as_global();
             callback(Stage::LayerSurface {
@@ -598,7 +598,7 @@ fn render_input_order_internal<R: 'static>(
     {
         // previous bottom layer
         for (layer, mut location, alpha) in
-            layer_surfaces(output, Layer::Bottom, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Bottom, element_filter, &layer_visibility)
         {
             location += offset.as_global();
             callback(Stage::LayerSurface {
@@ -613,7 +613,7 @@ fn render_input_order_internal<R: 'static>(
     if !has_fullscreen {
         // background layer
         for (layer, mut location, alpha) in
-            layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Background, element_filter, &layer_visibility)
         {
             location += current_offset.as_global();
             callback(Stage::LayerSurface {
@@ -630,7 +630,7 @@ fn render_input_order_internal<R: 'static>(
     {
         // previous background layer
         for (layer, mut location, alpha) in
-            layer_surfaces(output, Layer::Background, element_filter, &home_visibility)
+            layer_surfaces(output, Layer::Background, element_filter, &layer_visibility)
         {
             location += offset.as_global();
             callback(Stage::LayerSurface {
@@ -649,10 +649,10 @@ fn layer_popups<'a>(
     output: &'a Output,
     layer: Layer,
     element_filter: ElementFilter,
-    home_visibility: &'a HomeVisibilityContext,
+    layer_visibility: &'a LayerVisibilityContext,
 ) -> impl Iterator<Item = (LayerSurface, PopupKind, Point<i32, Global>, f32)> + 'a {
     let output_geo = output.geometry();
-    layer_surfaces(output, layer, element_filter, home_visibility).flat_map(
+    layer_surfaces(output, layer, element_filter, layer_visibility).flat_map(
         move |(surface, location, alpha)| {
             let location_clone = location;
             let surface_clone = surface.clone();
@@ -723,7 +723,7 @@ fn layer_surfaces<'a>(
     output: &'a Output,
     layer: Layer,
     element_filter: ElementFilter,
-    home_visibility: &'a HomeVisibilityContext,
+    layer_visibility: &'a LayerVisibilityContext,
 ) -> impl Iterator<Item = (LayerSurface, Point<i32, Global>, f32)> + 'a {
     // we want to avoid deadlocks on the layer-map in callbacks, so we need to clone the layer surfaces
     let layers = {
@@ -745,10 +745,10 @@ fn layer_surfaces<'a>(
 
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id();
-        let (mut visible, mut alpha) = home_visibility.surface_visibility(&surface_id);
+        let (mut visible, mut alpha) = layer_visibility.surface_visibility(&surface_id);
 
         // Apply layer fade-in alpha if this surface is still fading in
-        if let Some(&fade_alpha) = home_visibility.layer_fade_in_alphas.get(&surface_id) {
+        if let Some(&fade_alpha) = layer_visibility.layer_fade_in_alphas.get(&surface_id) {
             tracing::trace!(
                 surface_protocol_id = s.wl_surface().id().protocol_id(),
                 fade_alpha = format!("{:.3}", fade_alpha),
@@ -761,7 +761,7 @@ fn layer_surfaces<'a>(
         // Apply layer fade-out alpha if this surface is fading out.
         // During fade-out the surface is still visible (not yet in hidden_surfaces)
         // but with decreasing alpha.
-        if let Some(&fade_alpha) = home_visibility.layer_fade_out_alphas.get(&surface_id) {
+        if let Some(&fade_alpha) = layer_visibility.layer_fade_out_alphas.get(&surface_id) {
             tracing::trace!(
                 surface_protocol_id = s.wl_surface().id().protocol_id(),
                 fade_alpha = format!("{:.3}", fade_alpha),
@@ -780,7 +780,7 @@ fn layer_surfaces<'a>(
             return None;
         }
 
-        // Use the surface-specific alpha (which considers home_alpha for home-only surfaces)
+        // Use the surface-specific alpha
         Some((s, loc.as_local().to_global(output), alpha))
     })
 }

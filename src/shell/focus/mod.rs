@@ -206,15 +206,7 @@ impl Shell {
         if let Some(target) = focus_target {
             let mut shell = state.common.shell.write();
             shell.append_focus_stack(target, seat);
-            // Exit home mode when focusing a window (only if HOME_ENABLED)
-            if super::home_enabled() {
-                shell.exit_home(seat, &state.common.event_loop_handle);
-                drop(shell);
-                // Notify protocol clients about home state change
-                state.common.home_visibility_state.set_home(false);
-            } else {
-                drop(shell);
-            }
+            drop(shell);
         }
 
         update_focus_state(seat, target, state, serial, update_cursor);

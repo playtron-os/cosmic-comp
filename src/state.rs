@@ -23,7 +23,6 @@ use crate::{
             backdrop_color::BackdropColorState,
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
-            home_visibility::HomeVisibilityState,
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
             layer_auto_hide::LayerAutoHideState,
@@ -38,6 +37,7 @@ use crate::{
             output_power::OutputPowerState,
             overlap_notify::OverlapNotifyState,
             session_hold::SessionHoldState,
+            special_action::SpecialActionState,
             surface_embed::SurfaceEmbedManagerState,
             tooltip::TooltipManagerState,
             toplevel_info::ToplevelInfoState,
@@ -305,7 +305,7 @@ pub struct Common {
     pub data_device_state: DataDeviceState,
     pub clipboard_state: crate::clipboard::ClipboardState,
     pub dmabuf_state: DmabufState,
-    pub home_visibility_state: HomeVisibilityState,
+    pub special_action_state: SpecialActionState,
     pub layer_surface_dismiss_state: LayerSurfaceDismissState,
     pub dismiss_controller_registry: DismissControllerRegistry,
     pub layer_surface_visibility_state: LayerSurfaceVisibilityState,
@@ -726,7 +726,7 @@ impl State {
         let tooltip_state = TooltipManagerState::new::<Self>(dh);
         let data_device_state = DataDeviceState::new::<Self>(dh);
         let dmabuf_state = DmabufState::new();
-        let home_visibility_state = HomeVisibilityState::new::<Self>(dh);
+        let special_action_state = SpecialActionState::new::<Self>(dh);
         let layer_surface_dismiss_state = LayerSurfaceDismissState::new::<Self>(dh);
         let dismiss_controller_registry = DismissControllerRegistry::new();
         let layer_surface_visibility_state = LayerSurfaceVisibilityState::new::<Self>(dh);
@@ -884,7 +884,7 @@ impl State {
                 data_device_state,
                 clipboard_state: crate::clipboard::ClipboardState::default(),
                 dmabuf_state,
-                home_visibility_state,
+                special_action_state,
                 layer_surface_dismiss_state,
                 dismiss_controller_registry,
                 layer_surface_visibility_state,

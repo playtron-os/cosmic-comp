@@ -1150,34 +1150,7 @@ impl State {
 
             // Gets the configured command for a given system action.
             Action::System(system) => {
-                use crate::shell::{Shell, home_enabled};
-                use shortcuts::action::System;
-
-                // If HOME_ENABLED is set and this is the Launcher action, toggle home mode instead
-                if home_enabled() && system == System::Launcher {
-                    let mut shell = self.common.shell.write();
-                    if shell.is_home() {
-                        shell.exit_home(seat, &self.common.event_loop_handle);
-                        drop(shell);
-                        self.common.home_visibility_state.set_home(false);
-                    } else {
-                        shell.enter_home();
-
-                        // Hand home the keyboard, or it comes up looking ready to
-                        // type while keystrokes go to whatever was focused before.
-                        let focus_target = shell
-                            .find_home_layer_surface()
-                            .map(KeyboardFocusTarget::from);
-
-                        drop(shell);
-                        self.common.home_visibility_state.set_home(true);
-
-                        // Set focus to the home layer surface if found
-                        if let Some(target) = focus_target {
-                            Shell::set_focus(self, Some(&target), seat, None, false);
-                        }
-                    }
-                } else if let Some(command) = self.common.config.system_actions.get(&system) {
+                if let Some(command) = self.common.config.system_actions.get(&system) {
                     self.spawn_command(command.clone());
                 }
             }
