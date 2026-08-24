@@ -18,6 +18,19 @@ vars:
   # channel bump has to invalidate the cached image just like a Dockerfile edit does.
   IMAGE_TAG:
     sh: cat Dockerfile rust-toolchain.toml | sha256sum | cut -d' ' -f1
+  # Directory name of this checkout. The remote copy keeps the same name so a
+  # relative `[patch]` path (`../iced/...`) still resolves there.
+  PROJECT:
+    sh: basename "$PWD"
+  PREFIX: '{{.PREFIX | default "/usr"}}'
+  DESTDIR: '{{.DESTDIR | default ""}}'
+  # Everything the device does not need, and must not have deleted out from
+  # under it: `target` is the remote build cache, `.cache` is the container
+  # build's cargo home, `vendor` only exists after `make vendor`.
+  RSYNC_EXCLUDES: >-
+    --exclude=.git --exclude=target --exclude=.cache --exclude=dist
+    --exclude=builder --exclude=node_modules --exclude=vendor
+    --exclude=vendor.tar
 
 tasks:
   default:
@@ -65,6 +78,92 @@ tasks:
     cmds:
       - ./target/{{.TARGET_ARCH}}/debug/{{.NAME}}
 
+  install:
+    desc: Install the debug build locally
+    deps:
+      - build:debug
+    cmds:
+      - sudo install -D -m 755 ./target/{{.TARGET_ARCH}}/debug/{{.NAME}}
+        {{.DESTDIR}}{{.PREFIX}}/bin/{{.NAME}}
+      - sudo install -Dm0644 data/keybindings.ron
+        {{.DESTDIR}}{{.PREFIX}}/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
+      - sudo install -Dm0644 data/tiling-exceptions.ron
+        {{.DESTDIR}}{{.PREFIX}}/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
+      - >-
+        for f in data/voice-mode/*; do
+        sudo install -Dm0644 "$f"
+        "{{.DESTDIR}}{{.PREFIX}}/share/cosmic/com.playtron.VoiceMode/v1/$(basename "$f")";
+        done
+      # restorecon, because a file installed from a user checkout inherits
+      # user_home_t and the session then cannot exec it under enforcing SELinux.
+      # Named files only — a recursive pass over the whole prefix is slow enough
+      # to look like a hang.
+      - sudo restorecon {{.DESTDIR}}{{.PREFIX}}/bin/{{.NAME}} 2>/dev/null || true
+      - echo "Installed {{.NAME}} to {{.DESTDIR}}{{.PREFIX}}/bin"
+
+  deploy:native:
+    desc: >-
+      Rsync this checkout to a device, build it natively there, and install the
+      debug build. E.g. go-task deploy:native HOST=playtron@192.168.1.115
+    aliases:
+      - deploy:device
+    requires:
+      vars:
+        - name: HOST
+    vars:
+      # Parent of the remote checkout. Sibling repos synced via WITH land beside
+      # it, so relative paths between them survive the trip.
+      REMOTE_ROOT: '{{.REMOTE_ROOT | default "~/src"}}'
+      REMOTE_DIR: "{{.REMOTE_ROOT}}/{{.PROJECT}}"
+      # Space-separated sibling directories to sync alongside, relative to this
+      # checkout's parent. Needed when Cargo.toml has an active `[patch]`
+      # pointing at one — e.g. WITH=iced, or WITH="iced smithay".
+      WITH: '{{.WITH | default ""}}'
+    preconditions:
+      - sh: which rsync
+        msg: "Prerequisite utility 'rsync' is not installed"
+      - sh: ssh -o BatchMode=yes -o ConnectTimeout=10 {{.HOST}} true
+        msg: "Cannot reach {{.HOST}} over SSH without a password. Set up key auth first."
+      - sh: ssh {{.HOST}} 'command -v cargo'
+        msg: >-
+          No cargo on {{.HOST}}. This target builds natively on the device, so it
+          needs a Rust toolchain and the compositor's -devel packages there
+          (libinput, libseat, libdisplay-info, wayland, mesa, pixman, udev).
+      - sh: ssh {{.HOST}} 'command -v go-task || command -v task'
+        msg: "No go-task on {{.HOST}}; it runs the build and install steps there."
+      # Cargo fetches private crates over ssh://git@github.com, so the device
+      # borrows the local agent (ssh -A below) rather than needing its own key.
+      - sh: ssh-add -l
+        msg: >-
+          No identities in the SSH agent. Run `ssh-add` first — the remote cargo
+          fetch authenticates to GitHub through the forwarded agent.
+    cmds:
+      - echo "Syncing {{.PROJECT}} to {{.HOST}}:{{.REMOTE_DIR}}"
+      - ssh {{.HOST}} 'mkdir -p {{.REMOTE_ROOT}}'
+      # --delete keeps the remote tree honest about removals; the excludes above
+      # are protected from it, so the remote `target` cache survives.
+      - rsync -az --delete {{.RSYNC_EXCLUDES}} ./ {{.HOST}}:{{.REMOTE_DIR}}/
+      - |
+        {{if .WITH}}
+        for d in {{.WITH}}; do
+          echo "Syncing sibling $d"
+          rsync -az --delete {{.RSYNC_EXCLUDES}} "../$d/" "{{.HOST}}:{{.REMOTE_ROOT}}/$d/"
+        done
+        {{end}}
+      - echo "Building and installing on {{.HOST}} (first run compiles from scratch)"
+      # -A forwards the agent for the git fetch; CARGO_NET_GIT_FETCH_WITH_CLI
+      # makes cargo shell out to git so it actually uses that agent.
+      - ssh -A -t {{.HOST}} 'cd {{.REMOTE_DIR}} &&
+        CARGO_NET_GIT_FETCH_WITH_CLI=true $(command -v go-task || command -v task) install'
+      # Deliberately no restart. This binary IS the session's compositor, so
+      # killing it takes down every window, the panel and the greeter with it —
+      # unlike the panel, nothing supervises it back up mid-session. The new
+      # binary is picked up on the next session start.
+      - echo ""
+      - echo "Done. {{.NAME}} installed on {{.HOST}}."
+      - echo "It is the running compositor, so it was NOT restarted — log out and"
+      - echo "back in (or reboot) on the device to pick up the new binary."
+
   dist:prepare:
     desc: Prepare the project for packaging (set PROFILE=debug for a debuggable build)
     vars:
@@ -78,10 +177,15 @@ tasks:
       - install -Dm0644 "data/keybindings.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
       - install -Dm0644 "data/tiling-exceptions.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
       - install -Dm0644 "LICENSE" ".cache/{{.NAME}}/usr/share/licenses/cosmic-comp/LICENSE"
-      - install -Dm0644 "data/voice-mode/primary_binding" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/primary_binding"
-      - install -Dm0644 "data/voice-mode/fallback_binding" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/fallback_binding"
-      - install -Dm0644 "data/voice-mode/chat_app_id" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
-      - install -Dm0644 "data/voice-mode/enabled" ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/enabled"
+      # Whatever keys `data/voice-mode` holds, rather than one line each: the
+      # list was already stale here once, staging a `chat_app_id` that had been
+      # deleted, which fails the packaging build rather than the build that
+      # removed it.
+      - >-
+        for f in data/voice-mode/*; do
+        install -Dm0644 "$f"
+        ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/$(basename "$f")";
+        done
       - mkdir -p dist
 
   dist:archive:
