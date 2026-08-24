@@ -953,6 +953,7 @@ impl Drop for MoveGrab {
         let _initial_window_location = self.initial_window_location;
 
         let _ = self.evlh.0.insert_idle(move |state| {
+            let mut shell = state.common.shell.write();
             let (position, parent_surface_id, _transient_children): (
                 Option<(CosmicMapped, Point<i32, Global>)>,
                 Option<String>,
@@ -977,7 +978,6 @@ impl Drop for MoveGrab {
                 let position = if grab_state.window.alive() {
                     let window_location =
                         (grab_state.location.to_i32_round() + grab_state.window_offset).as_global();
-                    let mut shell = state.common.shell.write();
 
                     let workspace_handle = shell.active_space(&output).unwrap().handle;
                     for old_output in window_outputs.iter().filter(|o| *o != &output) {
@@ -1124,7 +1124,6 @@ impl Drop for MoveGrab {
 
                     drop_result
                 } else {
-                    let mut shell = state.common.shell.write();
                     shell
                         .workspaces
                         .active_mut(&cursor_output)
@@ -1141,6 +1140,8 @@ impl Drop for MoveGrab {
             } else {
                 (None, None, Vec::new())
             };
+            // Everything below re-acquires the shell lock; the guard is not reentrant.
+            drop(shell);
 
             // Move embedded children to follow the parent to the new output
             if position.is_some()
