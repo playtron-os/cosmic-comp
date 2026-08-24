@@ -43,22 +43,20 @@ install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defau
 install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
 install -Dm0644 "usr/share/licenses/cosmic-comp/LICENSE" "%{buildroot}%{_datadir}/licenses/cosmic-comp/LICENSE"
 
-# Voice mode configuration (individual key files for cosmic-config)
-install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/primary_binding" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/primary_binding"
-install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/fallback_binding" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/fallback_binding"
-install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/chat_app_id" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id"
-install -Dm0644 "usr/share/cosmic/com.playtron.VoiceMode/v1/enabled" "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled"
+# Voice mode configuration (individual key files for cosmic-config). Whatever
+# keys the tarball holds, rather than one line each: this list went stale when
+# `chat_app_id` was dropped, failing packaging instead of the build that
+# removed it. The Taskfile and Makefile stage the same directory the same way.
+install -dm0755 "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1"
+install -m0644 usr/share/cosmic/com.playtron.VoiceMode/v1/* "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/"
 
 %files
 %license %{_datadir}/licenses/cosmic-comp/LICENSE
 %{_bindir}/cosmic-comp
 %{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
 %{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
-%{_datadir}/cosmic/com.playtron.VoiceMode/v1/primary_binding
-%{_datadir}/cosmic/com.playtron.VoiceMode/v1/fallback_binding
-%{_datadir}/cosmic/com.playtron.VoiceMode/v1/chat_app_id
-%{_datadir}/cosmic/com.playtron.VoiceMode/v1/enabled
+%{_datadir}/cosmic/com.playtron.VoiceMode/
 
 %changelog
-* Thu Jan 09 2026 Playtron <dev@playtron.one> - 1.0.0-1
+* Fri Jan 09 2026 Playtron <dev@playtron.one> - 1.0.0-1
 - Initial RPM package
