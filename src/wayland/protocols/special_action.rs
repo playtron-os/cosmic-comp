@@ -4,9 +4,16 @@
 //!
 //! The device's special key — the HUMAIN button — is a gesture the compositor
 //! has to resolve itself: it is usually bound to Super, which the compositor
-//! must also keep for its own chords, so only it can tell a tap from the start
-//! of `Super+L`. This protocol carries the *resolved* meaning to a client:
-//! `activate` for a tap, `hold_start`/`hold_end` around a hold.
+//! must also keep for its own chords, so only it can tell the key being held
+//! from the start of `Super+L`. This protocol carries the *resolved* meaning to
+//! a client, as `hold_start`/`hold_end` around a hold.
+//!
+//! Both gestures start the same way. The key going down is announced as
+//! `hold_start` at once, because the common case is speech and a threshold spent
+//! deciding is a threshold spoken into a microphone that has not been asked to
+//! listen. If the key then comes back up inside [`PRESS_THRESHOLD`] it was a
+//! press after all: the hold is `cancel`led — so whatever was captured is thrown
+//! away rather than transcribed — and `activate` follows.
 //!
 //! Clients register surfaces as receivers. The focused receiver wins; failing
 //! that the default receiver does. Registration is how the compositor avoids
@@ -38,14 +45,9 @@ use smithay::reexports::wayland_server::{
     backend::GlobalId, protocol::wl_surface::WlSurface,
 };
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::debug;
 
-/// How long the key may be held and still count as a tap.
-///
-/// Also the delay before a hold is announced: the compositor cannot know which
-/// gesture it is until either the key comes back up or this elapses.
-pub const TAP_THRESHOLD: Duration = Duration::from_millis(250);
 
 /// Per-receiver data attached to a `zcosmic_special_action_v1`.
 #[derive(Debug, Clone)]
@@ -64,15 +66,24 @@ struct Receiver {
     is_default: bool,
 }
 
+/// How quickly the key must come back up for the press to count as one.
+///
+/// Speech does not fit in this, so anything shorter is read as a press rather
+/// than as a very short thing said.
+pub const PRESS_THRESHOLD: Duration = Duration::from_millis(300);
+
 /// Where the current gesture has got to.
+///
+/// Two states, not three. There used to be a `Pending` for the window in which a
+/// press might still turn out to be a hold, and every hold paid that window
+/// before it could start. The key is now announced as a hold on the edge and
+/// reinterpreted on release if it did not last, so nothing waits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Gesture {
     /// Key is up; nothing in flight.
     #[default]
     Idle,
-    /// Key is down and it is still too early to say what it is.
-    Pending,
-    /// Key is down past the threshold, and `hold_start` has been sent.
+    /// Key is down and `hold_start` has been sent.
     Holding,
 }
 
@@ -88,6 +99,8 @@ struct Inner {
     /// The receiver a hold was announced to, so `hold_end` reaches the same one
     /// even if focus moved while the key was down.
     holding: Option<Weak<zcosmic_special_action_v1::ZcosmicSpecialActionV1>>,
+    /// When the key went down, for telling a press from a hold on release.
+    pressed_at: Option<Instant>,
     gesture: Gesture,
 }
 
@@ -102,29 +115,19 @@ impl std::fmt::Debug for SpecialActionState {
 }
 
 /// What the compositor should do with a key edge, decided by [`SpecialActionState`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum KeyOutcome {
-    /// The key went down. Ask again after [`TAP_THRESHOLD`] via
-    /// [`SpecialActionState::hold_elapsed`].
-    Pending,
-    /// A tap completed; the caller should summon home and focus the receiver.
-    Tap,
-    /// A hold ended. Nothing further is required of the caller.
+    /// A hold ran its course and ended. Nothing further is required.
     HoldEnded,
+    /// The key came back up inside [`PRESS_THRESHOLD`]: the hold was cancelled
+    /// and `activate` sent instead.
+    ///
+    /// Carries the surface that received it, because whoever is asked to take
+    /// the caret also needs the keyboard — a caret on a surface the keystrokes
+    /// never reach is worthless.
+    Pressed(WlSurface),
     /// Nothing was in flight; ignore the edge.
     Ignored,
-}
-
-/// What a release means, given where the gesture had got to.
-///
-/// A release only counts as a tap if the gesture is still pending — a chord
-/// cancels it first, so `Super+L` does not also summon home when Super comes up.
-fn outcome_for_release(gesture: Gesture) -> KeyOutcome {
-    match gesture {
-        Gesture::Pending => KeyOutcome::Tap,
-        Gesture::Holding => KeyOutcome::HoldEnded,
-        Gesture::Idle => KeyOutcome::Ignored,
-    }
 }
 
 impl SpecialActionState {
@@ -225,75 +228,92 @@ impl SpecialActionState {
             .any(|r| &r.surface == surface && r.resource.is_alive())
     }
 
-    /// Record that the key went down.
-    pub fn key_pressed(&self) -> KeyOutcome {
-        let mut inner = self.inner.lock().unwrap();
-        inner.gesture = Gesture::Pending;
-        KeyOutcome::Pending
-    }
-
-    /// Record that the key came up, sending `hold_end` if a hold was in flight.
-    pub fn key_released(&self) -> KeyOutcome {
-        let mut inner = self.inner.lock().unwrap();
-        let outcome = outcome_for_release(inner.gesture);
-        if outcome == KeyOutcome::HoldEnded
-            && let Some(resource) = inner.holding.take().and_then(|w| w.upgrade().ok())
-        {
-            resource.hold_end();
-        }
-        inner.gesture = Gesture::Idle;
-        inner.holding = None;
-        outcome
-    }
-
-    /// Called once [`TAP_THRESHOLD`] has passed with the key still down.
+    /// Record that the key went down, announcing the hold at once.
     ///
-    /// Sends `hold_start` to the routed receiver and returns whether a hold
-    /// actually began — `false` if the key came back up first, or if nothing is
-    /// registered to receive it.
-    pub fn hold_elapsed(&self, focused: Option<&WlSurface>) -> bool {
+    /// Returns whether a hold actually began — `false` if nothing is registered
+    /// to receive it.
+    ///
+    /// No threshold. The key means one thing now, so there is nothing to wait to
+    /// find out, and waiting was not free: every hold paid the tap threshold
+    /// before the receiver heard about it, which is a quarter of a second of
+    /// speech spoken into a microphone that had not been asked to listen yet.
+    pub fn key_pressed(&self, focused: Option<&WlSurface>) -> bool {
         let mut inner = self.inner.lock().unwrap();
-        if inner.gesture != Gesture::Pending {
+
+        // A second special key going down while one is already held is NOT a
+        // new gesture, and must not restart the one in flight.
+        //
+        // The bindings match by key rather than by keycode — the default
+        // `Super_L` answers to Super_R as well — so brushing the other Super
+        // mid-sentence arrives here as another press rather than as a joining
+        // key. Restarting on it announced a second `hold_start`, which the
+        // client reads as a new turn and which throws away everything captured
+        // so far; it also re-stamped the clock, so letting go of the second key
+        // read as a press and cancelled the dictation outright.
+        //
+        // Ignored rather than cancelled: the hold in flight is what the user is
+        // speaking into.
+        if inner.gesture == Gesture::Holding {
+            debug!("Special action pressed while a hold is in flight - ignored");
             return false;
         }
+
         Self::prune(&mut inner);
         let Some(resource) = Self::target(&inner, focused) else {
-            debug!("Special action held with no receiver registered");
+            debug!("Special action pressed with no receiver registered");
             return false;
         };
         resource.hold_start();
         inner.holding = Some(resource.downgrade());
+        // Stamped even though the hold has already been announced: the release
+        // is where a press is told from a hold, and it needs to know how long
+        // ago this was.
+        inner.pressed_at = Some(Instant::now());
         inner.gesture = Gesture::Holding;
         true
     }
 
-    /// Which surface a gesture would go to right now, without sending anything.
+    /// Record that the key came up, closing out whatever was in flight.
     ///
-    /// The caller needs this before it acts: whoever receives the action also
-    /// needs the keyboard, or the caret they are about to take sits on a surface
-    /// the keystrokes never reach.
-    pub fn routed_surface(&self, focused: Option<&WlSurface>) -> Option<WlSurface> {
+    /// A hold that lasted is ended. One that did not was a press: it is
+    /// `cancel`led rather than ended, so the receiver throws away what it
+    /// captured instead of sending a fraction of a second of nothing off to be
+    /// transcribed, and `activate` follows.
+    pub fn key_released(&self) -> KeyOutcome {
         let mut inner = self.inner.lock().unwrap();
-        Self::prune(&mut inner);
-        let resource = Self::target(&inner, focused)?;
-        inner
-            .receivers
-            .iter()
-            .find(|r| r.resource == resource)
-            .map(|r| r.surface.clone())
-    }
+        let held_for = inner.pressed_at.take().map(|at| at.elapsed());
+        // `holding` is set only by an announced hold and cleared by `cancel`, so
+        // its presence IS "a hold is live" — there is no second flag to check.
+        let resource = inner.holding.take().and_then(|w| w.upgrade().ok());
+        inner.gesture = Gesture::Idle;
 
-    /// Send `activate` for a completed tap. Returns the surface that got it.
-    pub fn send_activate(&self, focused: Option<&WlSurface>) -> Option<WlSurface> {
-        let mut inner = self.inner.lock().unwrap();
-        Self::prune(&mut inner);
-        let resource = Self::target(&inner, focused)?;
-        resource.activate();
-        inner
-            .receivers
-            .iter()
-            .find(|r| r.resource == resource)
-            .map(|r| r.surface.clone())
+        let Some(resource) = resource else {
+            // A chord cancelled the gesture, nothing was registered when the key
+            // went down, or the receiver died mid-hold. No hold left to close.
+            return KeyOutcome::Ignored;
+        };
+
+        // `None` cannot happen alongside a live hold, and if it somehow did,
+        // reading it as a hold is the safe way round: the recording is kept.
+        if held_for.is_some_and(|held| held < PRESS_THRESHOLD) {
+            resource.cancel();
+            resource.activate();
+            let surface = inner
+                .receivers
+                .iter()
+                .find(|r| r.resource == resource)
+                .map(|r| r.surface.clone());
+            debug!(?held_for, "Special action released quickly - read as a press");
+            return match surface {
+                Some(surface) => KeyOutcome::Pressed(surface),
+                // The receiver answered the hold but its surface has since gone;
+                // `activate` is sent either way, there is just nobody to focus.
+                None => KeyOutcome::Ignored,
+            };
+        }
+
+        resource.hold_end();
+        KeyOutcome::HoldEnded
     }
 
     /// Abandon whatever is in flight, telling a mid-hold receiver to discard.
@@ -306,6 +326,7 @@ impl SpecialActionState {
         }
         inner.gesture = Gesture::Idle;
         inner.holding = None;
+        inner.pressed_at = None;
     }
 
     /// Whether a hold is currently in flight.
@@ -432,33 +453,34 @@ macro_rules! delegate_special_action {
 mod tests {
     use super::*;
 
-    /// A release only summons home when the gesture is still pending. A chord
-    /// cancels first (back to `Idle`), so `Super+L` must not also fire a tap
-    /// when Super finally comes up.
+    /// The press window is short enough that a deliberate hold is never
+    /// mistaken for one, and long enough to be reachable by a human finger.
     #[test]
-    fn only_a_pending_gesture_releases_into_a_tap() {
-        assert_eq!(outcome_for_release(Gesture::Pending), KeyOutcome::Tap);
-        assert_eq!(outcome_for_release(Gesture::Idle), KeyOutcome::Ignored);
-        assert_eq!(outcome_for_release(Gesture::Holding), KeyOutcome::HoldEnded);
-    }
-
-    /// The tap window is short enough to feel like a press, long enough that a
-    /// deliberate hold is not mistaken for one.
-    #[test]
-    fn tap_threshold_is_in_a_sane_range() {
-        assert!(TAP_THRESHOLD >= Duration::from_millis(150));
-        assert!(TAP_THRESHOLD <= Duration::from_millis(400));
+    fn press_threshold_is_in_a_sane_range() {
+        assert!(PRESS_THRESHOLD >= Duration::from_millis(150));
+        assert!(PRESS_THRESHOLD <= Duration::from_millis(400));
     }
 
     /// Nothing in flight is the resting state, so a stray release is ignored
-    /// rather than read as a tap.
+    /// rather than read as either gesture.
     #[test]
     fn gesture_defaults_to_idle() {
         assert_eq!(Gesture::default(), Gesture::Idle);
         assert_eq!(Inner::default().gesture, Gesture::Idle);
-        assert_eq!(
-            outcome_for_release(Inner::default().gesture),
-            KeyOutcome::Ignored
-        );
+        assert!(Inner::default().pressed_at.is_none());
+        assert!(Inner::default().holding.is_none());
+    }
+
+    /// Which side of the threshold a release falls on is the whole decision, so
+    /// pin the comparison rather than only the constant's range.
+    #[test]
+    fn a_release_is_a_press_only_inside_the_threshold() {
+        let press = |held: Duration| held < PRESS_THRESHOLD;
+        assert!(press(Duration::from_millis(0)));
+        assert!(press(PRESS_THRESHOLD - Duration::from_millis(1)));
+        // The boundary itself is a hold: speech is the common case, and keeping
+        // a recording that was not wanted costs less than dropping one that was.
+        assert!(!press(PRESS_THRESHOLD));
+        assert!(!press(Duration::from_secs(2)));
     }
 }
