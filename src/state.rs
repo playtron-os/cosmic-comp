@@ -264,6 +264,57 @@ pub struct State {
 }
 smithay::delegate_dispatch2!(State);
 
+#[cfg(feature = "logind")]
+#[derive(Debug, Default)]
+pub struct LidInhibitState {
+    next_request_id: u64,
+    pending_request: Option<u64>,
+    fd: Option<OwnedFd>,
+}
+
+#[cfg(feature = "logind")]
+impl LidInhibitState {
+    fn begin_request(&mut self) -> Option<u64> {
+        if self.pending_request.is_some() || self.fd.is_some() {
+            return None;
+        }
+
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.pending_request = Some(self.next_request_id);
+        self.pending_request
+    }
+
+    fn cancel_pending_request(&mut self) {
+        self.pending_request = None;
+    }
+
+    fn fail_request(&mut self, request_id: u64) -> bool {
+        if self.pending_request == Some(request_id) {
+            self.pending_request = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn complete_request(&mut self, request_id: u64, fd: OwnedFd) -> bool {
+        if !self.fail_request(request_id) {
+            return false;
+        }
+
+        self.fd = Some(fd);
+        true
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.fd.is_some()
+    }
+
+    fn take_held(&mut self) -> Option<OwnedFd> {
+        self.fd.take()
+    }
+}
+
 #[derive(Debug)]
 pub struct Common {
     pub config: Config,
@@ -368,7 +419,7 @@ pub struct Common {
     pub pointer_focus_state: Option<PointerFocusState>,
 
     #[cfg(feature = "logind")]
-    pub inhibit_lid_fd: Option<OwnedFd>,
+    pub lid_inhibit_state: LidInhibitState,
 
     pub with_xwayland: bool,
 }
@@ -937,7 +988,7 @@ impl State {
                 keyboard_layout_state,
 
                 #[cfg(feature = "logind")]
-                inhibit_lid_fd: None,
+                lid_inhibit_state: LidInhibitState::default(),
 
                 with_xwayland,
             },
@@ -964,92 +1015,127 @@ impl State {
     fn update_inhibitor_locks(&mut self) {
         #[cfg(feature = "logind")]
         {
-            use smithay::backend::session::Session;
-            use tracing::{debug, error, warn};
+            use tracing::{debug, error};
 
-            let outputs = self.backend.lock().all_outputs();
-            let is_active = match &self.backend {
-                BackendData::Kms(kms) => kms.session.is_active(),
-                _ => true,
-            };
-
-            let should_handle_lid =
-                is_active && outputs.iter().any(|o| o.is_internal()) && outputs.len() >= 2;
-
-            if should_handle_lid {
-                if self.common.inhibit_lid_fd.is_none() {
-                    match crate::dbus::logind::inhibit_lid(&self.common) {
-                        Ok(fd) => {
-                            debug!("Inhibiting lid switch");
-                            self.common.inhibit_lid_fd = Some(fd);
-
-                            let backend = self.backend.lock();
-                            let output = backend
-                                .all_outputs()
-                                .iter()
-                                .find(|o| o.is_internal())
-                                .cloned();
-                            let closed =
-                                crate::dbus::logind::lid_closed(&self.common).unwrap_or(false);
-
-                            if closed {
-                                backend.disable_internal_output(
-                                    &mut self.common.output_configuration_state,
-                                );
-                            } else {
-                                backend.enable_internal_output(
-                                    &mut self.common.output_configuration_state,
-                                );
-                            }
-                            std::mem::drop(backend);
-
-                            if let Err(err) = self.refresh_output_config() {
-                                if !closed {
-                                    warn!(?err, "Failed to re-enable internal connector");
-                                    if let Some(output) = output {
-                                        output.config_mut().enabled = OutputState::Disabled;
-                                        if let Err(err) = self.refresh_output_config() {
-                                            error!(
-                                                "Unrecoverable output configuration error: {}",
-                                                err
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    // Disabling an output should never fail.
-                                    error!("Unrecoverable output configuration error: {}", err);
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            error!("Failed to inhibit lid switch: {}", err);
-                        }
-                    }
+            if self.should_handle_lid() {
+                if let Some(request_id) = self.common.lid_inhibit_state.begin_request()
+                    && !crate::dbus::logind::request_lid_inhibitor(&self.common, request_id)
+                {
+                    self.common.lid_inhibit_state.fail_request(request_id);
+                    error!("Failed to schedule the logind lid-inhibitor request");
                 }
-            } else if let Some(_fd) = self.common.inhibit_lid_fd.take() {
-                debug!("Removing inhibitor-lock on lid switch");
-
-                let backend = self.backend.lock();
-                let output = backend
-                    .all_outputs()
-                    .iter()
-                    .find(|o| o.is_internal())
-                    .cloned();
-                backend.enable_internal_output(&mut self.common.output_configuration_state);
-                std::mem::drop(backend);
-
-                if let Err(err) = self.refresh_output_config() {
-                    warn!(?err, "Failed to re-enable internal connector");
-                    if let Some(output) = output {
-                        output.config_mut().enabled = OutputState::Disabled;
-                        if let Err(err) = self.refresh_output_config() {
-                            error!("Unrecoverable output configuration error: {}", err);
-                        }
-                    }
+            } else {
+                self.common.lid_inhibit_state.cancel_pending_request();
+                if let Some(_fd) = self.common.lid_inhibit_state.take_held() {
+                    debug!("Removing inhibitor-lock on lid switch");
+                    self.apply_lid_state(false);
+                    // drop _fd
                 }
-                // drop _fd
             }
         }
+    }
+
+    #[cfg(feature = "logind")]
+    fn should_handle_lid(&mut self) -> bool {
+        use smithay::backend::session::Session;
+
+        let outputs = self.backend.lock().all_outputs();
+        let is_active = match &self.backend {
+            BackendData::Kms(kms) => kms.session.is_active(),
+            _ => true,
+        };
+
+        is_active && outputs.iter().any(|output| output.is_internal()) && outputs.len() >= 2
+    }
+
+    #[cfg(feature = "logind")]
+    pub(crate) fn complete_lid_inhibitor_request(
+        &mut self,
+        request_id: u64,
+        result: anyhow::Result<crate::dbus::logind::LidInhibitor>,
+    ) {
+        use tracing::{debug, error};
+
+        let inhibitor = match result {
+            Ok(inhibitor) => inhibitor,
+            Err(err) => {
+                if self.common.lid_inhibit_state.fail_request(request_id) {
+                    error!("Failed to inhibit lid switch: {err:#}");
+                }
+                return;
+            }
+        };
+
+        if !self.should_handle_lid() {
+            self.common.lid_inhibit_state.fail_request(request_id);
+            debug!("Discarding stale lid-inhibitor response");
+            return;
+        }
+
+        if !self
+            .common
+            .lid_inhibit_state
+            .complete_request(request_id, inhibitor.fd)
+        {
+            debug!("Discarding stale lid-inhibitor response");
+            return;
+        }
+
+        debug!("Inhibiting lid switch");
+        self.apply_lid_state(inhibitor.lid_closed);
+    }
+
+    #[cfg(feature = "logind")]
+    pub(crate) fn apply_lid_state(&mut self, closed: bool) {
+        use tracing::{error, warn};
+
+        let backend = self.backend.lock();
+        let output = backend
+            .all_outputs()
+            .iter()
+            .find(|output| output.is_internal())
+            .cloned();
+
+        if closed {
+            backend.disable_internal_output(&mut self.common.output_configuration_state);
+        } else {
+            backend.enable_internal_output(&mut self.common.output_configuration_state);
+        }
+        std::mem::drop(backend);
+
+        if let Err(err) = self.refresh_output_config() {
+            if !closed {
+                warn!(?err, "Failed to re-enable internal connector");
+                if let Some(output) = output {
+                    output.config_mut().enabled = OutputState::Disabled;
+                    if let Err(err) = self.refresh_output_config() {
+                        error!("Unrecoverable output configuration error: {}", err);
+                    }
+                }
+            } else {
+                // Disabling an output should never fail.
+                error!("Unrecoverable output configuration error: {}", err);
+            }
+        }
+    }
+}
+
+#[cfg(all(test, feature = "logind"))]
+mod lid_inhibit_tests {
+    use super::LidInhibitState;
+
+    #[test]
+    fn suppresses_duplicate_requests_and_rejects_stale_completions() {
+        let mut state = LidInhibitState::default();
+
+        let first = state.begin_request().unwrap();
+        assert_eq!(state.begin_request(), None);
+
+        state.cancel_pending_request();
+        let second = state.begin_request().unwrap();
+        assert_ne!(first, second);
+        assert!(!state.fail_request(first));
+        assert!(state.fail_request(second));
     }
 }
 

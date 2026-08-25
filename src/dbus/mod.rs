@@ -78,6 +78,11 @@ impl DBusState {
     fn spawn(&self, fut: impl Future<Output = ()> + 'static) {
         let _ = self.0.executor.schedule(fut);
     }
+
+    #[cfg(feature = "logind")]
+    fn try_spawn(&self, fut: impl Future<Output = ()> + 'static) -> bool {
+        self.0.executor.schedule(fut).is_ok()
+    }
 }
 
 async fn init_session(state: &DBusState) -> zbus::Result<()> {

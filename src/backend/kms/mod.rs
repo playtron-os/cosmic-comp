@@ -32,7 +32,7 @@ use smithay::{
         calloop::{Dispatcher, EventLoop, LoopHandle},
         drm::{
             Device as _,
-            control::{Device as _, connector::Interface, crtc},
+            control::{Device as _, connector::Interface, crtc, plane},
         },
         input::{self, Libinput},
         wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags,
@@ -226,16 +226,45 @@ fn prime_handle_to_fd(
     Ok(unsafe { std::os::fd::FromRawFd::from_raw_fd(arg.fd) })
 }
 
+/// Find the primary plane that is already scanning out on `crtc`.
+///
+/// A previous compositor deliberately leaves its CRTCs active for the visual
+/// handoff. On hardware where primary planes can drive multiple CRTCs, picking
+/// the first compatible plane can therefore steal a plane that is still owned
+/// by another output.
+fn current_primary_plane<'a>(
+    dev: &smithay::backend::drm::DrmDevice,
+    crtc: crtc::Handle,
+    planes: &'a smithay::backend::drm::Planes,
+) -> Option<&'a smithay::backend::drm::PlaneInfo> {
+    planes.primary.iter().find(|primary| {
+        dev.get_plane(primary.handle)
+            .is_ok_and(|info| info.crtc() == Some(crtc) && info.framebuffer().is_some())
+    })
+}
+
+fn handoff_surface_order_key(
+    crtc: crtc::Handle,
+    current_plane: Option<plane::Handle>,
+) -> (bool, u32, u32) {
+    (
+        current_plane.is_none(),
+        current_plane.map(u32::from).unwrap_or(u32::MAX),
+        u32::from(crtc),
+    )
+}
+
 /// Capture the previous compositor's still-scanning-out frame as a Dmabuf. Must run
 /// BEFORE `initialize_output` modesets. `None` on any failure (falls back to grey).
 fn capture_frozen_frame(
     dev: &smithay::backend::drm::DrmDevice,
+    crtc: crtc::Handle,
     planes: &smithay::backend::drm::Planes,
 ) -> Option<Dmabuf> {
     use smithay::backend::allocator::dmabuf::DmabufFlags;
     use smithay::reexports::drm::control::Device as _;
 
-    let primary = planes.primary.first()?;
+    let primary = current_primary_plane(dev, crtc, planes)?;
     let fb = dev.get_plane(primary.handle).ok()?.framebuffer()?;
     let p = dev.get_planar_framebuffer(fb).ok()?;
     let handle = p.buffers()[0]?;
@@ -1243,8 +1272,39 @@ impl KmsGuard<'_> {
                 .map(|(crtc, surface)| (*crtc, surface.output.clone()))
                 .collect::<HashMap<_, _>>();
 
+            // A previous compositor leaves all CRTCs scanning out for the visual
+            // handoff. Smithay claims the first compatible primary plane when it
+            // creates a surface, so preserve the old assignment order: claim the
+            // plane with the lowest handle first, then the next, before initializing
+            // outputs that had no active plane. Iterating the HashMap directly made
+            // this nondeterministic and could pair DP's CRTC with eDP's live plane.
+            let mut surface_order = device
+                .inner
+                .surfaces
+                .keys()
+                .copied()
+                .map(|crtc| {
+                    let current_plane = device.drm.device().planes(&crtc).ok().and_then(|planes| {
+                        current_primary_plane(device.drm.device(), crtc, &planes)
+                            .map(|plane| plane.handle)
+                    });
+                    (crtc, current_plane)
+                })
+                .collect::<Vec<_>>();
+            surface_order.sort_by_key(|(crtc, plane)| handoff_surface_order_key(*crtc, *plane));
+
             // reconfigure existing
-            for (crtc, surface) in device.inner.surfaces.iter_mut() {
+            for (surface_crtc, previous_primary_plane) in surface_order {
+                debug!(
+                    crtc = ?surface_crtc,
+                    plane = ?previous_primary_plane,
+                    "handoff: initializing output in existing primary-plane order"
+                );
+                let surface = device
+                    .inner
+                    .surfaces
+                    .get_mut(&surface_crtc)
+                    .expect("surface disappeared while ordering outputs");
                 let output_config = CompOutputConfig(surface.output.config());
 
                 let drm = &mut device.drm;
@@ -1269,7 +1329,7 @@ impl KmsGuard<'_> {
                     if !surface.is_active() {
                         let mut planes = drm
                             .device()
-                            .planes(crtc)
+                            .planes(&surface_crtc)
                             .with_context(|| "Failed to enumerate planes")?;
 
                         let driver = drm.device().get_driver().ok();
@@ -1299,7 +1359,7 @@ impl KmsGuard<'_> {
                         // Capture the previous session's frozen frame BEFORE initialize_output
                         // modesets, to hand to the render thread as a handoff backdrop.
                         let adopt_dmabuf = if crate::freeze_on_exit_enabled() {
-                            capture_frozen_frame(drm.device(), &planes)
+                            capture_frozen_frame(drm.device(), surface_crtc, &planes)
                         } else {
                             None
                         };
@@ -1325,7 +1385,7 @@ impl KmsGuard<'_> {
                                 )
                                 .with_context(|| "Failed to render outputs")?;
 
-                                if loop_crtc == crtc
+                                if loop_crtc == &surface_crtc
                                     && let Some(dmabuf) = adopt_dmabuf.as_ref()
                                     && let Some(elem) =
                                         adopt_backdrop_element(&mut renderer, dmabuf, output)
@@ -1349,12 +1409,12 @@ impl KmsGuard<'_> {
                                 debug!(
                                     "handoff: adding backdrop directly to establishing crtc (output_map did not cover it)"
                                 );
-                                elements.add_output(crtc, *CLEAR_COLOR, vec![elem]);
+                                elements.add_output(&surface_crtc, *CLEAR_COLOR, vec![elem]);
                             }
 
                             let compositor = drm
                                 .initialize_output(
-                                    *crtc,
+                                    surface_crtc,
                                     *mode,
                                     &[conn],
                                     &surface.output,
@@ -1384,7 +1444,12 @@ impl KmsGuard<'_> {
                         let vrr = output_config.0.vrr;
                         std::mem::drop(output_config);
 
-                        let compositor_ref = drm.compositors().get(crtc).unwrap().lock().unwrap();
+                        let compositor_ref = drm
+                            .compositors()
+                            .get(&surface_crtc)
+                            .unwrap()
+                            .lock()
+                            .unwrap();
                         let vrr_support = compositor_ref
                             .vrr_supported(
                                 compositor_ref
@@ -1454,7 +1519,7 @@ impl KmsGuard<'_> {
                         // rendering the fallback element set for every output.
                         let mode_changed = drm
                             .compositors()
-                            .get(crtc)
+                            .get(&surface_crtc)
                             .is_none_or(|c| c.lock().unwrap().surface().pending_mode() != *mode);
 
                         if mode_changed {
@@ -1572,5 +1637,34 @@ impl KmsGuard<'_> {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod handoff_plane_tests {
+    use super::handoff_surface_order_key;
+    use smithay::reexports::drm::control::{crtc, from_u32, plane};
+
+    #[test]
+    fn existing_plane_assignment_wins_over_hashmap_order() {
+        let edp_crtc = from_u32::<crtc::Handle>(112).unwrap();
+        let dp_crtc = from_u32::<crtc::Handle>(113).unwrap();
+        let new_crtc = from_u32::<crtc::Handle>(114).unwrap();
+        let edp_plane = from_u32::<plane::Handle>(52).unwrap();
+        let dp_plane = from_u32::<plane::Handle>(58).unwrap();
+
+        // Deliberately start in the order that reproduced the failure: external
+        // DP before the internal panel, followed by an output with no old frame.
+        let mut surfaces = [
+            (dp_crtc, Some(dp_plane)),
+            (new_crtc, None),
+            (edp_crtc, Some(edp_plane)),
+        ];
+        surfaces.sort_by_key(|(crtc, plane)| handoff_surface_order_key(*crtc, *plane));
+
+        assert_eq!(
+            surfaces.map(|(crtc, _)| crtc),
+            [edp_crtc, dp_crtc, new_crtc]
+        );
     }
 }

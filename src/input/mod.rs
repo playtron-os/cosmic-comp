@@ -1989,39 +1989,9 @@ impl State {
             #[allow(unused_variables)]
             InputEvent::SwitchToggle { event } => {
                 #[cfg(feature = "logind")]
-                if event.switch() == Some(Switch::Lid) && self.common.inhibit_lid_fd.is_some() {
-                    let backend = self.backend.lock();
-                    let output = backend
-                        .all_outputs()
-                        .iter()
-                        .find(|o| o.is_internal())
-                        .cloned();
+                if event.switch() == Some(Switch::Lid) && self.common.lid_inhibit_state.is_held() {
                     let closed = event.state() == SwitchState::On;
-
-                    if closed {
-                        backend
-                            .disable_internal_output(&mut self.common.output_configuration_state);
-                    } else {
-                        backend.enable_internal_output(&mut self.common.output_configuration_state);
-                    }
-                    std::mem::drop(backend);
-
-                    if let Err(err) = self.refresh_output_config() {
-                        if !closed {
-                            tracing::warn!(?err, "Failed to re-enable internal connector");
-                            if let Some(output) = output {
-                                use cosmic_comp_config::output::comp::OutputState;
-
-                                output.config_mut().enabled = OutputState::Disabled;
-                                if let Err(err) = self.refresh_output_config() {
-                                    error!("Unrecoverable output configuration error: {}", err);
-                                }
-                            }
-                        } else {
-                            // Disabling an output should never fail.
-                            error!("Unrecoverable output configuration error: {}", err);
-                        }
-                    }
+                    self.apply_lid_state(closed);
                 }
             }
         }
