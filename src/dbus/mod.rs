@@ -244,7 +244,7 @@ async fn power_hot_plug_task(
                         }
                     }
                     if let Err(err) = state.refresh_output_config() {
-                        warn!("Unable to load output config: {}", err);
+                        warn!("Unable to load output config: {:#}", err);
                         if !added.is_empty() {
                             for output in added {
                                 output.config_mut().enabled = OutputState::Disabled;

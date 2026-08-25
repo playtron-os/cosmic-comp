@@ -463,7 +463,7 @@ fn init_udev(
                 }
 
                 if let Err(err) = state.refresh_output_config() {
-                    warn!("Unable to load output config: {}", err);
+                    warn!("Unable to load output config: {:#}", err);
                     if !added.is_empty() {
                         for output in added {
                             output.config_mut().enabled = OutputState::Disabled;
@@ -495,13 +495,11 @@ impl State {
     ) {
         let backend = self.backend.kms();
 
-        // recreate all graphics contexts
-        backend
-            .clear_used_devices()
-            .expect("This should never fail");
-        if let Err(err) = backend.refresh_used_devices() {
-            warn!(?err, "Failed to re-create graphics contexts");
-        }
+        // No context rebuild here: a session pause doesn't invalidate EGL (the DRM fd and
+        // gbm_device survive; logind only drops/regains master). The idle below already runs
+        // `device_changed` -> `refresh_used_devices` for every known device, and `update_egl`
+        // short-circuits while `egl` is `Some`. Real context loss is caught reactively via
+        // `GlesError::ContextReset` -> `recover_from_gpu_reset`.
         // MERGE: dropped `blur::invalidate_all_blur_caches()` — our cached-texture blur is
         // replaced by upstream's framebuffer-capture blur, which holds no cross-resume cache.
 
@@ -587,7 +585,7 @@ impl State {
 
             // update outputs
             if let Err(err) = state.refresh_output_config() {
-                warn!("Unable to load output config: {}", err);
+                warn!("Unable to load output config: {:#}", err);
                 if !added.is_empty() {
                     for output in added {
                         output.config_mut().enabled = OutputState::Disabled;
@@ -611,10 +609,16 @@ impl State {
             if let Some(lease_state) = device.inner.leasing_global.as_mut() {
                 lease_state.suspend();
             }
+            // Must precede the `surface.suspend()` loop. That drops the last
+            // `Arc<DrmSurfaceInternal>`, and `AtomicDrmSurface::drop` is gated solely on the
+            // device's `active` flag — which `pause()` clears. With the old ordering the flag
+            // was still set, so drop ran `clear_state()`: a live ALLOW_MODESET commit zeroing
+            // ACTIVE/MODE_ID/FB_ID. That blanked the panel the kernel had just restored and
+            // destroyed the scanout buffer `capture_frozen_frame` needs for the handoff.
+            device.drm.pause();
             for surface in device.inner.surfaces.values_mut() {
                 surface.suspend();
             }
-            device.drm.pause();
         }
     }
 
