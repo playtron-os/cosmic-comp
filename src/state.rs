@@ -1619,7 +1619,30 @@ impl Common {
 
         let map = smithay::desktop::layer_map_for_output(output);
         for layer_surface in map.layers() {
-            layer_surface.send_frame(output, time, THROTTLE, should_send);
+            let surface_id = layer_surface.wl_surface().id();
+            let entrance_needs_frames =
+                shell.is_layer_fade_in_pending(&surface_id) || shell.is_layer_opening(&surface_id);
+
+            if entrance_needs_frames {
+                // A first show waits at alpha 0 for fresh client content before
+                // its compositor reveal begins. The normal primary-output
+                // predicate cannot pass in that state because an alpha-0
+                // surface was absent from the preceding render, creating a
+                // deadlock: no frame callback, no fresh commit, no reveal.
+                //
+                // Once the commit arrives, keep driving callbacks through the
+                // entrance so client-side motion (the voice orb, for example)
+                // advances together with the compositor animation. The layer
+                // map already scopes this surface to `output`, so bypassing the
+                // previous-render predicate here cannot duplicate callbacks on
+                // another output. Fully hidden surfaces take the normal path
+                // and remain throttled.
+                layer_surface.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
+            } else {
+                layer_surface.send_frame(output, time, THROTTLE, should_send);
+            }
         }
     }
 }
