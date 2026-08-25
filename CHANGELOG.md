@@ -1,3 +1,10 @@
+# [1.42.0](https://github.com/playtron-os/cosmic-comp/compare/v1.41.0...v1.42.0) (2026-08-25)
+
+
+### Features
+
+* trigger hold of special key immediatelly and handle cancel ([3e427d6](https://github.com/playtron-os/cosmic-comp/commit/3e427d656e1d6ebe975fa10bd40dad9429932f7b))
+
 # [1.41.0](https://github.com/playtron-os/cosmic-comp/compare/v1.40.2...v1.41.0) (2026-08-25)
 
 
