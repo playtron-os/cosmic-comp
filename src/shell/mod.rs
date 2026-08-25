@@ -639,17 +639,6 @@ pub struct Shell {
     /// happening to produce a frame.
     layer_opened_once: std::collections::HashSet<ObjectId>,
 
-    /// Surfaces that have committed real content at least once, whether or not
-    /// they were on screen at the time.
-    ///
-    /// Deliberately NOT the same question as `layer_opened_once`, and the two got
-    /// conflated once already. A show wants to know "is there something to
-    /// animate" — content exists, so start now rather than waiting for a commit
-    /// that may never come. A hide wants to know "was anything ever SEEN" —
-    /// content committed while hidden does not count, or a surface mapped
-    /// `start_hidden` animates out of a screen it was never on.
-    layer_has_content: std::collections::HashSet<ObjectId>,
-
     /// Layer surfaces currently playing the compositor-side CLOSE animation (the
     /// reverse of the open: 160ms easeInOut slide-down + scale-down + fade-out).
     /// The DEFAULT exit for every non-edge-sliding surface, triggered when it is
@@ -2296,7 +2285,6 @@ impl Shell {
             layer_opens: Vec::new(),
             pending_layer_opens: std::collections::HashMap::new(),
             layer_opened_once: std::collections::HashSet::new(),
-            layer_has_content: std::collections::HashSet::new(),
             layer_closes: Vec::new(),
             rise_surfaces: std::collections::HashSet::new(),
 
@@ -4821,39 +4809,6 @@ impl Shell {
         // Snapshot the theme's motion tokens once; the open/close animations
         // capture this so their sampling needs no theme handle.
         let motion = self.theme.motion;
-
-        // Hiding something that has never been on screen is not an animation at
-        // all — it is a fact. Record it and leave.
-        //
-        // Back-dating the close so it began already-finished was not enough, and
-        // the reason is that a close only becomes `hidden_surfaces` at the next
-        // `cleanup_layer_closes` pass. Until then `surface_visibility` still
-        // calls the surface visible and the only thing keeping it off screen is
-        // the animation's own alpha — so every ordering between this request, the
-        // next render and the next cleanup is a chance for a frame of it to be
-        // drawn. A client that maps a surface `start_hidden` hits exactly that on
-        // every start, which is the chat input appearing for a frame or two on
-        // each restart of the shell.
-        //
-        // There is nothing to play, so play nothing: no close, no slide, no
-        // window in which it can be mistaken for visible.
-        if hidden
-            && !self.layer_opened_once.contains(&surface_id)
-            && !self.hidden_surfaces.contains(&surface_id)
-        {
-            tracing::debug!(
-                ?surface_id,
-                "set_surface_hidden(true): never been on screen, hiding without animating"
-            );
-            self.remove_layer_open(&surface_id);
-            self.pending_layer_opens.remove(&surface_id);
-            self.pending_layer_fade_in.remove(&surface_id);
-            self.layer_fade_in.remove(&surface_id);
-            self.layer_closes.retain(|c| c.surface_id != surface_id);
-            self.layer_slides.retain(|s| s.surface_id != surface_id);
-            self.hidden_surfaces.insert(surface_id);
-            return;
-        }
         // Decide whether to slide or fade. A surface that explicitly requested
         // `Fade` never slides (even if edge-anchored); otherwise fall back to
         // the anchor-based heuristic.
@@ -4875,21 +4830,19 @@ impl Shell {
         // from there (a seamless reverse) instead of snapping to full-open and
         // popping. `close_backdate_ms` is how far to back-date the LayerClose:
         //   - mid-open at linear progress p → (1 - p) · motion.layer_open (symmetry)
-        //   - never on screen → motion.layer_open (starts already hidden)
+        //   - never shown (still pending first commit) → motion.layer_open (already hidden)
         //   - fully open / resting → 0 (full close from the top)
         let close_backdate_ms: u64 = if hidden {
-            let open_progress = self
-                .layer_opens
-                .iter()
-                .find(|o| o.surface_id == surface_id)
-                .map(|o| o.start.elapsed().as_secs_f32() / motion.layer_open.as_secs_f32());
-            // Past the early-out above this surface has been on screen before,
-            // so the only question left is whether anything is drawn RIGHT NOW:
-            // one waiting on its first commit after a re-show is not.
-            let on_screen_now = !self.pending_layer_opens.contains_key(&surface_id);
             let backdate =
-                layer_open::close_backdate(open_progress, on_screen_now, motion.layer_open)
-                    .as_millis() as u64;
+                if let Some(o) = self.layer_opens.iter().find(|o| o.surface_id == surface_id) {
+                    let p = (o.start.elapsed().as_secs_f32() / motion.layer_open.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                    ((1.0 - p) * motion.layer_open.as_millis() as f32) as u64
+                } else if self.pending_layer_opens.contains_key(&surface_id) {
+                    motion.layer_open.as_millis() as u64
+                } else {
+                    0
+                };
             self.remove_layer_open(&surface_id);
             backdate
         } else {
@@ -4989,13 +4942,7 @@ impl Shell {
                     ?surface_id,
                     was_fading_in,
                     was_pending,
-                    // Where the close STARTS, which is the whole question for a
-                    // surface that has never been on screen: back-dated by the
-                    // full duration it begins already hidden, and 0 means it
-                    // plays from fully-open — appearing in order to fade out.
-                    close_backdate_ms,
-                    ever_on_screen = self.layer_opened_once.contains(&surface_id),
-                    "set_surface_hidden(true): starting close animation"
+                    "set_surface_hidden(true): starting close (slide-down) animation"
                 );
                 self.rise_surfaces.insert(surface_id.clone());
                 self.layer_closes.retain(|c| c.surface_id != surface_id);
@@ -5029,17 +4976,10 @@ impl Shell {
                     "set_surface_hidden(false): starting open (slide-up) animation"
                 );
                 if was_hidden {
-                    if self.layer_has_content.contains(&surface_id) {
+                    if self.layer_opened_once.contains(&surface_id) {
                         // Already proved it renders content, so animate now.
                         // Waiting for a commit that may never come is what left
                         // a re-shown surface invisible for good.
-                        //
-                        // Content, NOT `layer_opened_once`: a surface mapped
-                        // `start_hidden` commits its content before it is ever
-                        // shown, so asking whether it had been SEEN deferred the
-                        // open behind a second commit that never came — which is
-                        // what stalled the dock's hover previews, created fresh
-                        // and shown immediately every time.
                         self.layer_opens.retain(|o| o.surface_id != surface_id);
                         self.layer_opens.push(layer_open::LayerOpen::styled(
                             surface_id.clone(),
@@ -5190,11 +5130,6 @@ impl Shell {
     pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
         self.hidden_surfaces.remove(surface_id);
         self.layer_transitions.remove(surface_id);
-        // Per-surface animation bookkeeping goes with the surface. The dock
-        // creates a new one per hover preview, so leaving these behind grows a
-        // set for the life of the session.
-        self.layer_opened_once.remove(surface_id);
-        self.layer_has_content.remove(surface_id);
     }
 
     /// Record the exclusive zone a layer surface's client last committed,
@@ -5614,24 +5549,6 @@ impl Shell {
     /// this starts the actual animation so the blur fades in together with the
     /// freshly rendered content.
     pub fn activate_pending_fade_in(&mut self, surface_id: &ObjectId, has_content: bool) {
-        // Committing real content while not hidden means this surface HAS been on
-        // screen — whether it got there by an animation or by being mapped
-        // visible in the first place.
-        //
-        // That is what `layer_opened_once` has to mean for a later hide to know
-        // whether there is anything to animate away. Recording it only where the
-        // deferred open fires (below) missed every surface that simply mapped
-        // visible, and a surface mapped HIDDEN was never recorded at all — which
-        // is the case that showed: created `start_hidden`, it had nothing on
-        // screen, yet its hide played a full close from fully-open, so the orb
-        // and the input appeared at startup purely in order to fade away again.
-        if has_content {
-            let _ = self.layer_has_content.insert(surface_id.clone());
-            if !self.hidden_surfaces.contains(surface_id) {
-                let _ = self.layer_opened_once.insert(surface_id.clone());
-            }
-        }
-
         // Layer-shell toolkits commit before they know their auto-size geometry:
         // first a buffer-less commit, then a 1-2px placeholder, and only ~220ms
         // later the real content. Starting the entrance animation on those spends
