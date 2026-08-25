@@ -1,3 +1,19 @@
+# [1.41.0](https://github.com/playtron-os/cosmic-comp/compare/v1.40.2...v1.41.0) (2026-08-25)
+
+
+### Bug Fixes
+
+* a re-shown layer surface could never come back ([2c32a30](https://github.com/playtron-os/cosmic-comp/commit/2c32a30e8348f63fed534924858355328c07f213))
+* drop a dragged window without a blank frame ([62ca920](https://github.com/playtron-os/cosmic-comp/commit/62ca920987a556ce7710648e29bd3cfd1cdcbbb1))
+* render frames while animating in from hidden in layer shells ([67b36e1](https://github.com/playtron-os/cosmic-comp/commit/67b36e16a21a290906b8736f1c8f9c23cccbb7c7))
+* update spec file for voice mode refactor ([b3899a2](https://github.com/playtron-os/cosmic-comp/commit/b3899a2e844180f396a67503319b970bf9da53b4))
+
+
+### Features
+
+* add FluidReveal animation type to layer surface visibility protocol ([c5b799d](https://github.com/playtron-os/cosmic-comp/commit/c5b799d7c85158719eee6bcd66e165250093c5f2))
+* **special-action:** route the HUMAIN key over a protocol, drop home mode ([da92667](https://github.com/playtron-os/cosmic-comp/commit/da926670ffcd3f5aed563cc85d649e1bbf85c06a))
+
 ## [1.40.2](https://github.com/playtron-os/cosmic-comp/compare/v1.40.1...v1.40.2) (2026-08-23)
 
 
