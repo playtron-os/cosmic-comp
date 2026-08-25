@@ -48,7 +48,6 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::debug;
 
-
 /// Per-receiver data attached to a `zcosmic_special_action_v1`.
 #[derive(Debug, Clone)]
 pub struct SpecialActionReceiverData {
@@ -303,7 +302,10 @@ impl SpecialActionState {
                 .iter()
                 .find(|r| r.resource == resource)
                 .map(|r| r.surface.clone());
-            debug!(?held_for, "Special action released quickly - read as a press");
+            debug!(
+                ?held_for,
+                "Special action released quickly - read as a press"
+            );
             return match surface {
                 Some(surface) => KeyOutcome::Pressed(surface),
                 // The receiver answered the hold but its surface has since gone;
