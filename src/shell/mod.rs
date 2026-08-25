@@ -4804,6 +4804,34 @@ impl Shell {
     }
 
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
+    /// Hide a surface at once, with no animation.
+    ///
+    /// For the case a compositor cannot recognise on its own: a surface hidden
+    /// before it was ever shown. There is nothing drawn to animate away, and
+    /// playing the transition anyway makes the surface appear for the length of
+    /// it purely in order to disappear — which is what the shell's chat input and
+    /// voice orb did on every restart, both mapped `start_hidden`.
+    ///
+    /// Reached ONLY from `set_hidden_immediately`. Inferring it instead — from
+    /// whether the surface had ever been on screen — also caught the dock's hover
+    /// previews, which map hidden and are shown a moment later and depend on the
+    /// close still being in flight when that happens. Two clients, the same
+    /// request, opposite wants: only they can say which.
+    pub fn set_surface_hidden_without_animating(&mut self, surface_id: ObjectId) {
+        if self.hidden_surfaces.contains(&surface_id) {
+            return;
+        }
+        // Everything in flight for this surface is abandoned rather than allowed
+        // to finish: it is not going to be seen either way.
+        self.remove_layer_open(&surface_id);
+        self.pending_layer_opens.remove(&surface_id);
+        self.pending_layer_fade_in.remove(&surface_id);
+        self.layer_fade_in.remove(&surface_id);
+        self.layer_closes.retain(|c| c.surface_id != surface_id);
+        self.layer_slides.retain(|s| s.surface_id != surface_id);
+        self.hidden_surfaces.insert(surface_id);
+    }
+
     pub fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
         use crate::wayland::protocols::layer_surface_visibility::LayerTransition;
         // Snapshot the theme's motion tokens once; the open/close animations

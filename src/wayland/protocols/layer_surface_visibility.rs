@@ -94,7 +94,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(3, ());
+        >(4, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -111,6 +111,13 @@ pub trait LayerSurfaceVisibilityHandler {
 
     /// Set a surface's hidden state in the Shell
     fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool);
+
+    /// Hide with no animation, for a surface that has never been on screen.
+    ///
+    /// The client is telling us something we cannot see for ourselves: there is
+    /// nothing drawn to animate away. Only it knows — a surface mapped hidden and
+    /// a surface hidden while on screen send the same `set_hidden`.
+    fn set_surface_hidden_immediately(&mut self, surface_id: ObjectId);
 
     /// Set a surface's show/hide transition animation in the Shell
     fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition);
@@ -248,6 +255,17 @@ where
                     resource.visibility_changed(0);
                 } else {
                     warn!("SetHidden called on dead surface");
+                }
+            }
+            zcosmic_layer_surface_visibility_v1::Request::SetHiddenImmediately => {
+                if let Ok(surface) = data.surface.upgrade() {
+                    let surface_id = surface.id();
+                    info!(?surface_id, "Layer surface hidden immediately by client");
+                    *data.hidden.lock().unwrap() = true;
+                    state.set_surface_hidden_immediately(surface_id);
+                    resource.visibility_changed(0);
+                } else {
+                    warn!("SetHiddenImmediately called on dead surface");
                 }
             }
             zcosmic_layer_surface_visibility_v1::Request::SetVisible => {

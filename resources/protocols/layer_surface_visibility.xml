@@ -36,7 +36,7 @@
     - Can be shown instantly without Wayland roundtrip overhead
   </description>
 
-  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="3">
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="4">
     <description summary="manager for layer surface visibility">
       This interface allows layer-shell clients to control the visibility
       of their surfaces.
@@ -62,7 +62,7 @@
     </request>
   </interface>
 
-  <interface name="zcosmic_layer_surface_visibility_v1" version="3">
+  <interface name="zcosmic_layer_surface_visibility_v1" version="4">
     <description summary="visibility controller for a layer surface">
       This interface controls whether a layer surface is visible or hidden.
 
@@ -94,6 +94,26 @@
         
         The surface maintains its configuration and can be shown instantly.
         This is more efficient than destroying and recreating the surface.
+      </description>
+    </request>
+
+    <request name="set_hidden_immediately" since="4">
+      <description summary="hide the surface with no animation">
+        Hide this layer surface at once, with no hide animation.
+
+        Identical to set_hidden except that the compositor must not play the
+        transition selected by set_transition: the surface simply stops being
+        rendered from this point on.
+
+        This exists for a surface that is hidden before it has ever been shown.
+        A client that maps a surface it does not yet want seen has nothing on
+        screen to animate away, and a compositor cannot tell that case from an
+        ordinary hide — it sees the same request, and playing the transition
+        makes the surface appear for the length of it purely in order to
+        disappear again.
+
+        Prefer set_hidden everywhere else. A surface that IS on screen should
+        animate away, and a client that hides with this request forgoes that.
       </description>
     </request>
 

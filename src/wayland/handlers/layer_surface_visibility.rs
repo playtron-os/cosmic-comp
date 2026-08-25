@@ -170,6 +170,19 @@ impl LayerSurfaceVisibilityHandler for State {
         }
     }
 
+    fn set_surface_hidden_immediately(&mut self, surface_id: ObjectId) {
+        let mut shell = self.common.shell.write();
+        shell.set_surface_hidden_without_animating(surface_id.clone());
+        // Same focus bookkeeping an ordinary hide does: a surface that is gone
+        // must not keep its Exclusive claim, or the commit handler will not
+        // re-grant focus when it comes back.
+        shell.exclusive_focus_granted.remove(&surface_id);
+        tracing::debug!(
+            surface_id = surface_id.protocol_id(),
+            "set_surface_hidden_immediately"
+        );
+    }
+
     fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition) {
         let mut shell = self.common.shell.write();
         shell.set_surface_transition(surface_id, transition);
