@@ -1,3 +1,16 @@
+# [1.43.0](https://github.com/playtron-os/cosmic-comp/compare/v1.42.0...v1.43.0) (2026-08-25)
+
+
+### Bug Fixes
+
+* hide a surface that has never been on screen without animating it ([392851c](https://github.com/playtron-os/cosmic-comp/commit/392851c12550de074601c777ff3f143c0d260975))
+* split "has content" from "has been on screen" ([a6828c3](https://github.com/playtron-os/cosmic-comp/commit/a6828c355776abb877095733e0d6225d8c535440))
+
+
+### Features
+
+* let a client hide a surface without animating it ([07edbac](https://github.com/playtron-os/cosmic-comp/commit/07edbacdbcec6f6670da6ba77f586228019085b8))
+
 # [1.42.0](https://github.com/playtron-os/cosmic-comp/compare/v1.41.0...v1.42.0) (2026-08-25)
 
 
