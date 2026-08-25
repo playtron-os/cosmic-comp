@@ -1,3 +1,10 @@
+# [1.44.0](https://github.com/playtron-os/cosmic-comp/compare/v1.43.1...v1.44.0) (2026-08-25)
+
+
+### Features
+
+* support lib inhibitor async to avoid freezing compositor on login/logout and fix issue with crtcs plane ordering ([8bc3710](https://github.com/playtron-os/cosmic-comp/commit/8bc37103152e3a728687778a4a3b32abc224fac9))
+
 ## [1.43.1](https://github.com/playtron-os/cosmic-comp/compare/v1.43.0...v1.43.1) (2026-08-25)
 
 
