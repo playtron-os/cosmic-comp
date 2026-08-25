@@ -1,3 +1,10 @@
+## [1.43.1](https://github.com/playtron-os/cosmic-comp/compare/v1.43.0...v1.43.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* **kms:** stop self-inflicted teardown on session pause/resume ([5227d21](https://github.com/playtron-os/cosmic-comp/commit/5227d2171a66a9b8bc2dbf9d27ca18715c00749e))
+
 # [1.43.0](https://github.com/playtron-os/cosmic-comp/compare/v1.42.0...v1.43.0) (2026-08-25)
 
 
