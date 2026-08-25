@@ -639,6 +639,17 @@ pub struct Shell {
     /// happening to produce a frame.
     layer_opened_once: std::collections::HashSet<ObjectId>,
 
+    /// Surfaces that have committed real content at least once, whether or not
+    /// they were on screen at the time.
+    ///
+    /// Deliberately NOT the same question as `layer_opened_once`, and the two got
+    /// conflated once already. A show wants to know "is there something to
+    /// animate" — content exists, so start now rather than waiting for a commit
+    /// that may never come. A hide wants to know "was anything ever SEEN" —
+    /// content committed while hidden does not count, or a surface mapped
+    /// `start_hidden` animates out of a screen it was never on.
+    layer_has_content: std::collections::HashSet<ObjectId>,
+
     /// Layer surfaces currently playing the compositor-side CLOSE animation (the
     /// reverse of the open: 160ms easeInOut slide-down + scale-down + fade-out).
     /// The DEFAULT exit for every non-edge-sliding surface, triggered when it is
@@ -2285,6 +2296,7 @@ impl Shell {
             layer_opens: Vec::new(),
             pending_layer_opens: std::collections::HashMap::new(),
             layer_opened_once: std::collections::HashSet::new(),
+            layer_has_content: std::collections::HashSet::new(),
             layer_closes: Vec::new(),
             rise_surfaces: std::collections::HashSet::new(),
 
@@ -5017,10 +5029,17 @@ impl Shell {
                     "set_surface_hidden(false): starting open (slide-up) animation"
                 );
                 if was_hidden {
-                    if self.layer_opened_once.contains(&surface_id) {
+                    if self.layer_has_content.contains(&surface_id) {
                         // Already proved it renders content, so animate now.
                         // Waiting for a commit that may never come is what left
                         // a re-shown surface invisible for good.
+                        //
+                        // Content, NOT `layer_opened_once`: a surface mapped
+                        // `start_hidden` commits its content before it is ever
+                        // shown, so asking whether it had been SEEN deferred the
+                        // open behind a second commit that never came — which is
+                        // what stalled the dock's hover previews, created fresh
+                        // and shown immediately every time.
                         self.layer_opens.retain(|o| o.surface_id != surface_id);
                         self.layer_opens.push(layer_open::LayerOpen::styled(
                             surface_id.clone(),
@@ -5171,6 +5190,11 @@ impl Shell {
     pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
         self.hidden_surfaces.remove(surface_id);
         self.layer_transitions.remove(surface_id);
+        // Per-surface animation bookkeeping goes with the surface. The dock
+        // creates a new one per hover preview, so leaving these behind grows a
+        // set for the life of the session.
+        self.layer_opened_once.remove(surface_id);
+        self.layer_has_content.remove(surface_id);
     }
 
     /// Record the exclusive zone a layer surface's client last committed,
@@ -5601,8 +5625,11 @@ impl Shell {
         // is the case that showed: created `start_hidden`, it had nothing on
         // screen, yet its hide played a full close from fully-open, so the orb
         // and the input appeared at startup purely in order to fade away again.
-        if has_content && !self.hidden_surfaces.contains(surface_id) {
-            let _ = self.layer_opened_once.insert(surface_id.clone());
+        if has_content {
+            let _ = self.layer_has_content.insert(surface_id.clone());
+            if !self.hidden_surfaces.contains(surface_id) {
+                let _ = self.layer_opened_once.insert(surface_id.clone());
+            }
         }
 
         // Layer-shell toolkits commit before they know their auto-size geometry:
