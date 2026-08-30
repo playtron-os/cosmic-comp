@@ -30,13 +30,13 @@ pub use smithay::{
 };
 use std::{
     cell::{Ref, RefCell},
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::OpenOptions,
     io::Write,
     path::PathBuf,
     sync::{Arc, atomic::AtomicBool},
 };
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 mod input_config;
 pub mod key_bindings;
@@ -578,15 +578,19 @@ impl Config {
                 }
             }
 
+            if mirror_new_outputs_enabled() {
+                mirror_new_outputs(&outputs, &self.known_outputs());
+            }
+
             // we don't have a config, so lets generate somewhat sane positions
             let mut w = 0;
             if !outputs.iter().any(|o| o.config().xwayland_primary) {
                 // if we don't have a primary output for xwayland from a previous config, pick one
-                if let Some(primary) = outputs.iter().find(|o| o.mirroring().is_none()) {
+                if let Some(primary) = outputs.iter().find(|o| extends_desktop(o)) {
                     primary.config_mut().xwayland_primary = true;
                 }
             }
-            for output in outputs.iter().filter(|o| o.mirroring().is_none()) {
+            for output in outputs.iter().filter(|o| extends_desktop(o)) {
                 {
                     let mut config = output.config_mut();
                     config.position = (w, 0);
@@ -654,6 +658,17 @@ impl Config {
             .insert(infos, configs);
     }
 
+    /// Every display that took part in a stored configuration, in any combination.
+    fn known_outputs(&self) -> HashSet<OutputInfo> {
+        self.dynamic_conf
+            .outputs()
+            .config
+            .keys()
+            .flatten()
+            .cloned()
+            .collect()
+    }
+
     pub fn xkb_config(&self) -> XkbConfig {
         self.cosmic_conf.xkb_config.clone()
     }
@@ -701,6 +716,54 @@ impl Config {
         }
 
         (device_config, default_config)
+    }
+}
+
+/// A mirroring output shows another output's content, so it occupies no space
+/// of its own in the global layout.
+fn extends_desktop(output: &Output) -> bool {
+    !matches!(output.config().enabled, OutputState::Mirroring(_)) && output.mirroring().is_none()
+}
+
+/// `COSMIC_MIRROR_NEW_OUTPUTS=1` opts into [`mirror_new_outputs`]. Off by
+/// default, so an unconfigured display extends the desktop as usual.
+fn mirror_new_outputs_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("COSMIC_MIRROR_NEW_OUTPUTS").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+        )
+    })
+}
+
+/// Default a display we have never stored a configuration for to mirroring the
+/// primary output, instead of silently extending the desktop onto it.
+fn mirror_new_outputs(outputs: &[Output], known: &HashSet<OutputInfo>) {
+    let is_new = |output: &Output| !known.contains(&CompOutputInfo::from(output.clone()).0);
+    let is_enabled = |output: &Output| output.config().enabled == OutputState::Enabled;
+
+    // Mirror onto the internal panel, or else onto a display the user has configured
+    // before. With neither we have no established primary, so extend as usual.
+    let Some(target) = outputs
+        .iter()
+        .find(|o| o.is_internal() && is_enabled(o))
+        .or_else(|| outputs.iter().find(|o| is_enabled(o) && !is_new(o)))
+        .cloned()
+    else {
+        return;
+    };
+
+    for output in outputs
+        .iter()
+        .filter(|o| **o != target && is_enabled(o) && is_new(o))
+    {
+        info!(
+            output = output.name(),
+            target = target.name(),
+            "New display, defaulting to mirroring"
+        );
+        output.config_mut().enabled = OutputState::Mirroring(target.name());
     }
 }
 
@@ -1114,5 +1177,106 @@ impl From<Output> for CompOutputInfo {
             make: physical.make,
             model: physical.model,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::output::{PhysicalProperties, Subpixel};
+
+    fn output(name: &str) -> Output {
+        let output = Output::new(
+            name.into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "make".into(),
+                model: "model".into(),
+                serial_number: String::new(),
+            },
+        );
+        output
+            .user_data()
+            .insert_if_missing(|| RefCell::new(OutputConfig::default()));
+        output
+    }
+
+    fn mirroring(target: &str) -> OutputState {
+        OutputState::Mirroring(target.into())
+    }
+
+    fn info(name: &str) -> OutputInfo {
+        OutputInfo {
+            connector: name.into(),
+            make: "make".into(),
+            model: "model".into(),
+        }
+    }
+
+    #[test]
+    fn new_external_output_mirrors_the_internal_panel() {
+        let internal = output("eDP-1");
+        let external = output("DP-1");
+        let known = HashSet::from([info("eDP-1")]);
+
+        mirror_new_outputs(&[internal.clone(), external.clone()], &known);
+
+        assert_eq!(internal.config().enabled, OutputState::Enabled);
+        assert_eq!(external.config().enabled, mirroring("eDP-1"));
+        assert!(!extends_desktop(&external));
+    }
+
+    /// A display the user has configured before keeps whatever it had, even when
+    /// another new output turns up alongside it.
+    #[test]
+    fn known_external_output_keeps_extending() {
+        let internal = output("eDP-1");
+        let known = output("DP-1");
+        let new = output("DP-2");
+        let stored = HashSet::from([info("eDP-1"), info("DP-1")]);
+
+        mirror_new_outputs(&[internal.clone(), known.clone(), new.clone()], &stored);
+
+        assert_eq!(known.config().enabled, OutputState::Enabled);
+        assert_eq!(new.config().enabled, mirroring("eDP-1"));
+    }
+
+    /// Without an internal panel a previously configured display is the primary.
+    #[test]
+    fn new_output_mirrors_a_known_one_when_there_is_no_panel() {
+        let known = output("DP-1");
+        let new = output("HDMI-A-1");
+        let stored = HashSet::from([info("DP-1")]);
+
+        mirror_new_outputs(&[new.clone(), known.clone()], &stored);
+
+        assert_eq!(known.config().enabled, OutputState::Enabled);
+        assert_eq!(new.config().enabled, mirroring("DP-1"));
+    }
+
+    /// A first run with nothing but new displays has no primary to mirror onto.
+    #[test]
+    fn unknown_outputs_alone_extend() {
+        let first = output("DP-1");
+        let second = output("DP-2");
+
+        mirror_new_outputs(&[first.clone(), second.clone()], &HashSet::new());
+
+        assert_eq!(first.config().enabled, OutputState::Enabled);
+        assert_eq!(second.config().enabled, OutputState::Enabled);
+    }
+
+    /// A disabled panel is no mirror target - it shows nothing to mirror.
+    #[test]
+    fn disabled_internal_panel_is_not_a_mirror_target() {
+        let internal = output("eDP-1");
+        internal.config_mut().enabled = OutputState::Disabled;
+        let external = output("DP-1");
+        let known = HashSet::from([info("eDP-1")]);
+
+        mirror_new_outputs(&[internal.clone(), external.clone()], &known);
+
+        assert_eq!(external.config().enabled, OutputState::Enabled);
     }
 }

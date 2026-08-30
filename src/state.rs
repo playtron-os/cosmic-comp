@@ -669,14 +669,6 @@ impl LockedBackend<'_> {
                 .unwrap()
                 .borrow();
 
-            output.set_mirroring(match &final_config.enabled {
-                OutputState::Mirroring(conn) => shell_ref
-                    .outputs()
-                    .find(|output| &output.name() == conn)
-                    .cloned(),
-                _ => None,
-            });
-
             match final_config.enabled {
                 OutputState::Enabled => shell_ref.workspaces.add_output(output, workspace_state),
                 _ => {
@@ -691,6 +683,17 @@ impl LockedBackend<'_> {
             }
 
             layer_map_for_output(output).arrange();
+        }
+
+        // Resolve mirroring only once every enabled output is in the shell: `all_outputs`
+        // has no order, so a target can be processed after the output mirroring it.
+        for output in &all_outputs {
+            let mirrored = if let OutputState::Mirroring(conn) = &output.config().enabled {
+                shell_ref.outputs().find(|o| &o.name() == conn).cloned()
+            } else {
+                None
+            };
+            output.set_mirroring(mirrored);
         }
 
         // Update layout for changes in resolution, scale, orientation
