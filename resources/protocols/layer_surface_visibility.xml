@@ -97,26 +97,6 @@
       </description>
     </request>
 
-    <request name="set_hidden_immediately" since="4">
-      <description summary="hide the surface with no animation">
-        Hide this layer surface at once, with no hide animation.
-
-        Identical to set_hidden except that the compositor must not play the
-        transition selected by set_transition: the surface simply stops being
-        rendered from this point on.
-
-        This exists for a surface that is hidden before it has ever been shown.
-        A client that maps a surface it does not yet want seen has nothing on
-        screen to animate away, and a compositor cannot tell that case from an
-        ordinary hide — it sees the same request, and playing the transition
-        makes the surface appear for the length of it purely in order to
-        disappear again.
-
-        Prefer set_hidden everywhere else. A surface that IS on screen should
-        animate away, and a client that hides with this request forgoes that.
-      </description>
-    </request>
-
     <request name="set_visible">
       <description summary="show the surface">
         Show this layer surface if it was previously hidden.
@@ -142,6 +122,26 @@
         is remembered for the lifetime of this controller.
       </description>
       <arg name="transition" type="uint" enum="transition" summary="desired transition animation"/>
+    </request>
+
+    <request name="set_hidden_immediately" since="4">
+      <description summary="hide the surface with no animation">
+        Hide this layer surface at once, with no hide animation.
+
+        Identical to set_hidden except that the compositor must not play the
+        transition selected by set_transition: the surface simply stops being
+        rendered from this point on.
+
+        This exists for a surface that is hidden before it has ever been shown.
+        A client that maps a surface it does not yet want seen has nothing on
+        screen to animate away, and a compositor cannot tell that case from an
+        ordinary hide — it sees the same request, and playing the transition
+        makes the surface appear for the length of it purely in order to
+        disappear again.
+
+        Prefer set_hidden everywhere else. A surface that IS on screen should
+        animate away, and a client that hides with this request forgoes that.
+      </description>
     </request>
 
     <event name="visibility_changed">
