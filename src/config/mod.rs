@@ -974,11 +974,8 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
 
                     let mut shell = state.common.shell.write();
                     let shell_ref = &mut *shell;
-                    shell_ref.workspaces.update_tiling_enabled(
-                        new,
-                        &mut state.common.workspace_state.update(),
-                        shell_ref.seats.iter(),
-                    );
+                    shell_ref
+                        .update_tiling_enabled(new, &mut state.common.workspace_state.update());
                 }
             }
             "autotile" => {
@@ -988,11 +985,7 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
 
                     let mut shell = state.common.shell.write();
                     let shell_ref = &mut *shell;
-                    shell_ref.workspaces.update_autotile(
-                        new,
-                        &mut state.common.workspace_state.update(),
-                        shell_ref.seats.iter(),
-                    );
+                    shell_ref.update_autotile(new, &mut state.common.workspace_state.update());
                 }
             }
             "autotile_behavior" => {
@@ -1002,10 +995,9 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
 
                     let mut shell = state.common.shell.write();
                     let shell_ref = &mut *shell;
-                    shell_ref.workspaces.update_autotile_behavior(
+                    shell_ref.update_autotile_behavior(
                         new,
                         &mut state.common.workspace_state.update(),
-                        shell_ref.seats.iter(),
                     );
                 }
             }

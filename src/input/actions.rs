@@ -215,7 +215,7 @@ impl State {
                 }
                 let current_output = seat.active_output();
                 let mut shell = self.common.shell.write();
-                let workspace = shell.workspaces.len(&current_output).saturating_sub(1);
+                let workspace = shell.workspaces().len(&current_output).saturating_sub(1);
                 let _ = shell.activate(
                     &current_output,
                     workspace,
@@ -348,7 +348,7 @@ impl State {
                     return;
                 };
                 let mut shell = self.common.shell.write();
-                let workspace = shell.workspaces.len(&focused_output).saturating_sub(1);
+                let workspace = shell.workspaces().len(&focused_output).saturating_sub(1);
                 let res = shell.move_current(
                     seat,
                     (&focused_output, Some(workspace)),
@@ -391,7 +391,7 @@ impl State {
                 let res = {
                     let mut shell = self.common.shell.write();
                     shell
-                        .workspaces
+                        .workspaces()
                         .active_num(&focused_output)
                         .1
                         .checked_add(1)
@@ -486,7 +486,7 @@ impl State {
                 let res = {
                     let mut shell = self.common.shell.write();
                     shell
-                        .workspaces
+                        .workspaces()
                         .active_num(&focused_output)
                         .1
                         .checked_sub(1)
@@ -582,7 +582,7 @@ impl State {
                             );
                         }
 
-                        let idx = shell.workspaces.active_num(&next_output).1;
+                        let idx = shell.workspaces().active_num(&next_output).1;
                         let res = shell.activate(
                             &next_output,
                             idx,
@@ -594,7 +594,7 @@ impl State {
                     };
 
                     if let Ok(new_pos) = res {
-                        let workspace = shell.workspaces.active(&next_output).unwrap().1;
+                        let workspace = shell.workspaces().active(&next_output).unwrap().1;
                         let new_target = workspace
                             .focus_stack
                             .get(seat)
@@ -720,7 +720,7 @@ impl State {
                 if let Some(next_output) = next_output {
                     let mut shell = self.common.shell.write();
                     let mut workspace_state = self.common.workspace_state.update();
-                    shell.workspaces.migrate_workspace(
+                    shell.workspaces_mut().migrate_workspace(
                         &active_output,
                         &next_output,
                         &active,
@@ -728,7 +728,7 @@ impl State {
                     );
                     // Activate workspace on new set, and set that output as active
                     if let Some(new_idx) = shell
-                        .workspaces
+                        .workspaces()
                         .sets
                         .get(&next_output)
                         .and_then(|set| set.workspaces.iter().position(|w| w.handle == active))
@@ -789,7 +789,7 @@ impl State {
                                 {
                                     let current_output = seat.active_output();
                                     let workspace_idx =
-                                        shell.workspaces.active_num(&current_output).1;
+                                        shell.workspaces().active_num(&current_output).1;
                                     shell.previous_workspace_idx = Some((
                                         last_mod_serial,
                                         current_output.downgrade(),
@@ -847,7 +847,7 @@ impl State {
                                 .is_some_and(|(serial, _, _)| *serial == last_mod_serial)
                             {
                                 let current_output = seat.active_output();
-                                let workspace_idx = shell.workspaces.active_num(&current_output).1;
+                                let workspace_idx = shell.workspaces().active_num(&current_output).1;
                                 shell.previous_workspace_idx = Some((
                                     last_mod_serial,
                                     current_output.downgrade(),
@@ -1111,10 +1111,9 @@ impl State {
                         {
                             let mut shell = self.common.shell.write();
                             let shell_ref = &mut *shell;
-                            shell_ref.workspaces.update_autotile(
+                            shell_ref.update_autotile(
                                 self.common.config.cosmic_conf.autotile,
                                 &mut self.common.workspace_state.update(),
-                                shell_ref.seats.iter(),
                             );
                         }
                         let config = self.common.config.cosmic_helper.clone();
@@ -1126,7 +1125,7 @@ impl State {
                     } else {
                         let output = seat.active_output();
                         let mut shell = self.common.shell.write();
-                        let workspace = shell.workspaces.active_mut(&output).unwrap();
+                        let workspace = shell.workspaces_mut().active_mut(&output).unwrap();
                         let mut guard = self.common.workspace_state.update();
                         workspace.toggle_tiling(seat, &mut guard);
                     }
@@ -1257,10 +1256,10 @@ fn to_next_workspace(
     workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
 ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
     let current_output = seat.active_output();
-    let active = shell.workspaces.active_num(&current_output).1;
+    let active = shell.workspaces().active_num(&current_output).1;
     let mut workspace = active.checked_add(1).ok_or(InvalidWorkspaceIndex)?;
 
-    if workspace >= shell.workspaces.len(&current_output) {
+    if workspace >= shell.workspaces().len(&current_output) {
         workspace = if wraparound { 0 } else { active }
     }
     if workspace == active {
@@ -1287,10 +1286,10 @@ fn to_previous_workspace(
     workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
 ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
     let current_output = seat.active_output();
-    let active = shell.workspaces.active_num(&current_output).1;
+    let active = shell.workspaces().active_num(&current_output).1;
     let workspace = active.checked_sub(1).unwrap_or(if wraparound {
         shell
-            .workspaces
+            .workspaces()
             .len(&current_output)
             .checked_sub(1)
             .ok_or(InvalidWorkspaceIndex)?

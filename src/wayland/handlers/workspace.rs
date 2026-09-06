@@ -23,7 +23,7 @@ impl WorkspaceHandler for State {
             match request {
                 Request::Activate(handle) => {
                     let mut shell = self.common.shell.write();
-                    let maybe = shell.workspaces.iter().find_map(|(o, set)| {
+                    let maybe = shell.workspaces().iter().find_map(|(o, set)| {
                         set.workspaces
                             .iter()
                             .position(|w| w.handle == handle)
@@ -43,7 +43,7 @@ impl WorkspaceHandler for State {
                 Request::SetTilingState { workspace, state } => {
                     let mut shell = self.common.shell.write();
                     let seat = shell.seats.last_active().clone();
-                    if let Some(workspace) = shell.workspaces.space_for_handle_mut(&workspace) {
+                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace) {
                         let mut guard = self.common.workspace_state.update();
                         workspace.set_tiling(
                             !matches!(state.into_result(), Ok(TilingState::FloatingOnly)),
@@ -54,7 +54,7 @@ impl WorkspaceHandler for State {
                 }
                 Request::SetPin { workspace, pinned } => {
                     let mut shell = self.common.shell.write();
-                    if let Some(workspace) = shell.workspaces.space_for_handle_mut(&workspace) {
+                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace) {
                         workspace.pinned = pinned;
                         let mut update = self.common.workspace_state.update();
                         if pinned {
@@ -67,10 +67,10 @@ impl WorkspaceHandler for State {
                             }
                             update.add_workspace_state(&workspace.handle, WState::Pinned);
                             // TODO: Also need to update on changing other properties that are saved
-                            shell.workspaces.persist(&self.common.config);
+                            shell.workspaces().persist(&self.common.config);
                         } else {
                             update.remove_workspace_state(&workspace.handle, WState::Pinned);
-                            shell.workspaces.persist(&self.common.config);
+                            shell.workspaces().persist(&self.common.config);
                         }
                     }
                 }
@@ -84,7 +84,7 @@ impl WorkspaceHandler for State {
                     }
                     let mut shell = self.common.shell.write();
                     let mut update = self.common.workspace_state.update();
-                    shell.workspaces.move_workspace(
+                    shell.workspaces_mut().move_workspace(
                         &workspace,
                         &other_workspace,
                         &mut update,
@@ -101,7 +101,7 @@ impl WorkspaceHandler for State {
                     }
                     let mut shell = self.common.shell.write();
                     let mut update = self.common.workspace_state.update();
-                    shell.workspaces.move_workspace(
+                    shell.workspaces_mut().move_workspace(
                         &workspace,
                         &other_workspace,
                         &mut update,

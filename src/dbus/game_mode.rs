@@ -1078,7 +1078,7 @@ impl State {
                 .cloned();
             alive_surface.and_then(|game| {
                 let still_fullscreen = shell
-                    .workspaces
+                    .workspaces()
                     .spaces()
                     .any(|ws| ws.get_fullscreen_surfaces().any(|f| f.surface == game));
                 (!still_fullscreen)
@@ -1160,7 +1160,7 @@ impl State {
                     }
                 }
                 let matched_ws = if let Some(ws) = shell
-                    .workspaces
+                    .workspaces_mut()
                     .spaces_mut()
                     .find(|ws| ws.get_fullscreen_surfaces().any(|f| f.surface == game))
                 {
@@ -1262,7 +1262,7 @@ impl State {
             let shell = self.common.shell.read();
             shell.game_mode.input_grab.as_ref().is_some_and(|w| {
                 !shell
-                    .workspaces
+                    .workspaces()
                     .spaces()
                     .flat_map(|ws| ws.mapped())
                     .any(|m| m.windows().any(|(s, _)| s == *w))
@@ -1386,7 +1386,7 @@ impl State {
                 // surface, so this dissolves launcher<->game, no
                 // slide).
                 info!(target: GAMING_TARGET, app_id, "cross-fading to game-mode workspace");
-                if let Some(idx) = shell.workspaces.idx_for_handle(&output, &source_ws) {
+                if let Some(idx) = shell.workspaces().idx_for_handle(&output, &source_ws) {
                     let _ = shell.activate(
                         &output,
                         idx,
@@ -1401,10 +1401,10 @@ impl State {
                 // `game_mode_exclusive` — sliding to it, then fullscreen it.
                 // Nothing is minimized; the desktop it came from is left intact.
                 let target = shell
-                    .workspaces
+                    .workspaces()
                     .spaces_for_output(&output)
                     .find(|ws| ws.is_empty())
-                    .or_else(|| shell.workspaces.spaces_for_output(&output).last())
+                    .or_else(|| shell.workspaces().spaces_for_output(&output).last())
                     .map(|ws| ws.handle);
                 if relocate_fullscreen {
                     // It fullscreened itself on the output we are moving it AWAY
@@ -1570,12 +1570,12 @@ impl State {
             .home_workspace
             .and_then(|home| {
                 shell
-                    .workspaces
+                    .workspaces()
                     .space_for_handle(&home)
                     .map(|w| w.output().clone())
                     .and_then(|output| {
                         shell
-                            .workspaces
+                            .workspaces()
                             .idx_for_handle(&output, &home)
                             .map(|idx| (output, idx))
                     })
@@ -1633,7 +1633,7 @@ impl State {
             };
             let surface = (active && asserted)
                 .then(|| {
-                    shell.workspaces.spaces().find_map(|ws| {
+                    shell.workspaces().spaces().find_map(|ws| {
                         // Normal mapped windows first, then fullscreen surfaces: when
                         // game mode has latched the launcher it is FULLSCREEN, so it
                         // lives in `fullscreen_surfaces`, not `mapped()` — scanning
@@ -1721,7 +1721,7 @@ impl State {
         let target = {
             let shell = self.common.shell.read();
             shell
-                .workspaces
+                .workspaces()
                 .spaces()
                 .flat_map(|ws| ws.mapped())
                 .flat_map(|m| m.windows().map(|(s, _)| s))
@@ -1818,7 +1818,7 @@ fn find_game_surface(
     // maps LATE). Collect every LIVE match and take the best-ranked one; skipping
     // dead surfaces means a just-closed transient is never re-adopted.
     let mut candidates: Vec<(CosmicSurface, WorkspaceHandle, Output, bool)> = Vec::new();
-    for ws in shell.workspaces.spaces() {
+    for ws in shell.workspaces().spaces() {
         for f in ws.get_fullscreen_surfaces() {
             if f.surface.alive() && app_id_of(&f.surface) == app_id {
                 candidates.push((f.surface.clone(), ws.handle, ws.output().clone(), true));
@@ -1877,7 +1877,7 @@ pub fn is_game_child(base: &CosmicSurface, app_id: u32, surface: &CosmicSurface)
 
 fn resolve_game_children(shell: &Shell, base: &CosmicSurface, app_id: u32) -> Vec<CosmicSurface> {
     let Some(ws) = shell
-        .workspaces
+        .workspaces()
         .spaces()
         .find(|ws| ws.get_fullscreen_surfaces().any(|f| &f.surface == base))
     else {
@@ -1929,7 +1929,7 @@ fn base_candidate_rank(surface: &CosmicSurface) -> (u8, u8, i64) {
 /// is typically override-redirect).
 fn overlay_window_present(shell: &Shell) -> bool {
     shell
-        .workspaces
+        .workspaces()
         .spaces()
         .any(|ws| ws.mapped().any(|m| m.active_window().is_overlay()))
         || shell.override_redirect_windows.iter().any(|s| {
@@ -1943,7 +1943,7 @@ fn overlay_window_present(shell: &Shell) -> bool {
 /// be element-focused).
 fn focus_target_for(shell: &Shell, window: &CosmicSurface) -> Option<KeyboardFocusTarget> {
     shell
-        .workspaces
+        .workspaces()
         .spaces()
         .flat_map(|ws| ws.mapped())
         .find(|m| m.windows().any(|(s, _)| s == *window))

@@ -470,7 +470,7 @@ impl CompositorHandler for State {
 
             let changed = layer_map_for_output(output).arrange();
             if changed {
-                shell.workspaces.recalculate();
+                shell.workspaces_mut().recalculate();
             }
             // Drop the post-grab resize "settle" once the client's buffer has caught up,
             // so the size override stops holding the final width past convergence.

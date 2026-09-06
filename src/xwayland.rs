@@ -537,13 +537,13 @@ impl Common {
         {
             // front to back, given that is how the workspace enumerates
             let order = shell
-                .workspaces
+                .workspaces()
                 .sets
                 .iter()
                 .filter(|(output, _)| *output == &active_output)
                 .chain(
                     shell
-                        .workspaces
+                        .workspaces()
                         .sets
                         .iter()
                         .filter(|(output, _)| *output != &active_output),
@@ -1149,7 +1149,7 @@ impl XwmHandler for State {
                     .filter(|_| workspace.is_floating(&window))
                     .map(|geo| geo.to_global(workspace.output()))
             } else if let Some((output, set)) = shell
-                .workspaces
+                .workspaces()
                 .sets
                 .iter()
                 .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &mapped))
@@ -1197,7 +1197,7 @@ impl XwmHandler for State {
                             true,
                         );
                     } else if let Some((output, set)) = shell
-                        .workspaces
+                        .workspaces_mut()
                         .sets
                         .iter_mut()
                         .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &mapped))

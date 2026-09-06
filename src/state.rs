@@ -670,15 +670,10 @@ impl LockedBackend<'_> {
                 .borrow();
 
             match final_config.enabled {
-                OutputState::Enabled => shell_ref.workspaces.add_output(output, workspace_state),
+                OutputState::Enabled => shell_ref.workspaces_mut().add_output(output, workspace_state),
                 _ => {
                     let shell = &mut *shell_ref;
-                    shell.workspaces.remove_output(
-                        output,
-                        shell.seats.iter(),
-                        workspace_state,
-                        xdg_activation_state,
-                    )
+                    shell.remove_output(output, workspace_state, xdg_activation_state)
                 }
             }
 
@@ -697,7 +692,7 @@ impl LockedBackend<'_> {
         }
 
         // Update layout for changes in resolution, scale, orientation
-        shell_ref.workspaces.recalculate();
+        shell_ref.workspaces_mut().recalculate();
         let active_outputs = shell_ref.outputs().cloned().collect::<Vec<_>>();
         std::mem::drop(shell_ref);
 
@@ -1219,7 +1214,7 @@ impl Common {
         }
 
         // sticky window
-        for set in shell.workspaces.sets.values() {
+        for set in shell.workspaces().sets.values() {
             set.sticky_layer.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
                     window.with_surfaces(processor(None));
@@ -1228,7 +1223,7 @@ impl Common {
         }
 
         // normal windows
-        for space in shell.workspaces.spaces() {
+        for space in shell.workspaces().spaces() {
             if let Some(fs) = space.get_fullscreen(shell.seats.last_active()) {
                 fs.surface.with_surfaces(processor(None));
             }
@@ -1253,7 +1248,7 @@ impl Common {
 
         // layer surfaces
         for o in shell.outputs() {
-            let namespace = shell.workspaces.active_num(o).1;
+            let namespace = shell.workspaces().active_num(o).1;
             let map = smithay::desktop::layer_map_for_output(o);
             for layer_surface in map.layers() {
                 layer_surface.with_surfaces(processor(Some(namespace)));
@@ -1284,7 +1279,7 @@ impl Common {
             }
         };
 
-        for set in shell.workspaces.sets.values() {
+        for set in shell.workspaces().sets.values() {
             set.sticky_layer.mapped().for_each(|mapped| {
                 for (window, _) in mapped.windows() {
                     if let Some(surface) = window.wl_surface() {
@@ -1294,7 +1289,7 @@ impl Common {
             });
         }
 
-        for space in shell.workspaces.spaces() {
+        for space in shell.workspaces().spaces() {
             for window in &space.fullscreen_surfaces {
                 if let Some(surface) = window.surface.wl_surface() {
                     propagate_subsurface_scale(&surface);
@@ -1422,7 +1417,7 @@ impl Common {
         }
 
         shell
-            .workspaces
+            .workspaces()
             .sets
             .get(output)
             .unwrap()
@@ -1636,7 +1631,7 @@ impl Common {
         }
 
         shell
-            .workspaces
+            .workspaces()
             .sets
             .get(output)
             .unwrap()
@@ -1678,7 +1673,7 @@ impl Common {
             });
 
             for space in shell
-                .workspaces
+                .workspaces()
                 .spaces_for_output(output)
                 .filter(|w| w.handle != active.handle)
             {

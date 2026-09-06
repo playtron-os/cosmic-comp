@@ -49,7 +49,7 @@ impl DmabufHandler for State {
 
         let (handle, output) = shell.workspace_for_surface(surface)?;
         let is_fullscreen = shell
-            .workspaces
+            .workspaces()
             .space_for_handle(&handle)?
             .fullscreen_surfaces
             .iter()

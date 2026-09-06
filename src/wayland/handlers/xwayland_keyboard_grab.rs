@@ -26,7 +26,7 @@ impl XWaylandKeyboardGrabHandler for State {
             .common
             .shell
             .read()
-            .workspaces
+            .workspaces()
             .spaces()
             .find_map(|x| x.element_for_surface(surface).cloned())?;
         Some(KeyboardFocusTarget::Element(element))

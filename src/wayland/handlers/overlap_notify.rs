@@ -43,7 +43,7 @@ impl OverlapNotifyHandler for State {
     ) -> impl Iterator<Item = crate::wayland::protocols::workspace::WorkspaceHandle> {
         let shell = self.common.shell.read();
         shell
-            .workspaces
+            .workspaces()
             .sets
             .iter()
             .map(|(_, set)| set.workspaces[set.active].handle)

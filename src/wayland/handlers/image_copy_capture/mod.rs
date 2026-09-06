@@ -87,7 +87,7 @@ impl ImageCopyCaptureHandler for State {
                 .and_then(|output| constraints_for_output(&output, &mut self.backend)),
             ImageCaptureSourceKind::Workspace(handle) => {
                 let shell = self.common.shell.read();
-                let output = shell.workspaces.space_for_handle(&handle)?.output();
+                let output = shell.workspaces().space_for_handle(&handle)?.output();
                 constraints_for_output(output, &mut self.backend)
             }
             ImageCaptureSourceKind::Toplevel(window) => {
@@ -130,7 +130,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Workspace(handle) => {
                 let mut shell = self.common.shell.write();
-                let Some(workspace) = shell.workspaces.space_for_handle_mut(&handle) else {
+                let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&handle) else {
                     session.stop();
                     return;
                 };
@@ -225,7 +225,7 @@ impl ImageCopyCaptureHandler for State {
             }
             ImageCaptureSourceKind::Workspace(handle) => {
                 let mut shell = self.common.shell.write();
-                let Some(workspace) = shell.workspaces.space_for_handle_mut(&handle) else {
+                let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&handle) else {
                     return;
                 };
 
@@ -349,7 +349,7 @@ impl ImageCopyCaptureHandler for State {
                     .common
                     .shell
                     .write()
-                    .workspaces
+                    .workspaces_mut()
                     .space_for_handle_mut(&handle)
                 {
                     workspace.remove_session(&session)
@@ -376,7 +376,7 @@ impl ImageCopyCaptureHandler for State {
                     .common
                     .shell
                     .write()
-                    .workspaces
+                    .workspaces_mut()
                     .space_for_handle_mut(&handle)
                 {
                     workspace.remove_cursor_session(&session)

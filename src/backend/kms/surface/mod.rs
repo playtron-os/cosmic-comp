@@ -1438,7 +1438,7 @@ impl SurfaceThreadState {
             let game_mode_active = shell.game_mode.active;
             let game_mode_vrr = shell.game_mode_vrr;
             let output = self.mirroring.as_ref().unwrap_or(&self.output);
-            if let Some((_, workspace)) = shell.workspaces.active(output) {
+            if let Some((_, workspace)) = shell.workspaces().active(output) {
                 let seat = shell.seats.last_active();
                 if let Some(fullscreen_surface) = workspace.get_fullscreen(seat) {
                     const _30_FPS: Duration = Duration::from_nanos(1_000_000_000 / 30);
@@ -2135,7 +2135,7 @@ impl SurfaceThreadState {
                     let scaled = eligible
                         .then(|| {
                             shell.game_mode.game_surface.as_ref().and_then(|game| {
-                                shell.workspaces.spaces().find_map(|ws| {
+                                shell.workspaces().spaces().find_map(|ws| {
                                     ws.get_fullscreen_surfaces()
                                         .find(|f| &f.surface == game && !f.is_animating())
                                         // A filtered upscale can never scan out

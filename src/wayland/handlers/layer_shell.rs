@@ -192,7 +192,7 @@ impl WlrLayerShellHandler for State {
 
             // Update layer blur cache after unmapping
 
-            shell.workspaces.recalculate();
+            shell.workspaces_mut().recalculate();
 
             self.backend.schedule_render(&output);
         }

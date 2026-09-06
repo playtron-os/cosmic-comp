@@ -300,7 +300,7 @@ impl State {
 
             if !in_current_workspace {
                 let Some(idx) = shell
-                    .workspaces
+                    .workspaces()
                     .idx_for_handle(&element_output, &element_workspace)
                 else {
                     warn!("Couldn't determine idx for elements workspace?");
@@ -365,7 +365,7 @@ impl State {
             let current_workspace = shell.active_space(&current_output).unwrap();
             if workspace == current_workspace.handle {
                 let Some(target) = shell
-                    .workspaces
+                    .workspaces()
                     .space_for_handle(&workspace)
                     .unwrap()
                     .get_fullscreen(&seat)
@@ -379,7 +379,7 @@ impl State {
                 Shell::set_focus(self, Some(&target), &seat, None, false);
             } else {
                 if let Some(surface) = shell
-                    .workspaces
+                    .workspaces()
                     .space_for_handle(&workspace)
                     .and_then(|w| w.get_fullscreen(&seat))
                     .map(|f| f.surface.clone())

@@ -447,7 +447,18 @@ pub struct GameMode {
 
 #[derive(Debug)]
 pub struct Shell {
-    pub workspaces: Workspaces,
+    /// Private on purpose. A *realm* — the user-facing "workspace", the vertical
+    /// axis and the context boundary — will own a whole `Workspaces` (every
+    /// output's desktop set), and `Shell` will hold one per realm. Going through
+    /// an accessor now means that change edits this file rather than every
+    /// caller in the tree.
+    ///
+    /// Naming, because three vocabularies disagree here: what the user calls a
+    /// *Workspace* is a realm; what this type calls a `Workspace` is what the
+    /// user calls a *Desktop*, a window arrangement inside one realm. The type
+    /// keeps its name so upstream rebases stay clean; nothing named "realm"
+    /// reaches a user or an IPC surface.
+    workspaces: Workspaces,
 
     // Can't make this into a HashSet. See https://github.com/pop-os/cosmic-comp/pull/1902
     pub pending_windows: Vec<PendingWindow>,
@@ -2204,6 +2215,58 @@ impl Common {
 }
 
 impl Shell {
+    /// The desktop sets of the realm currently on screen.
+    pub fn workspaces(&self) -> &Workspaces {
+        &self.workspaces
+    }
+
+    pub fn workspaces_mut(&mut self) -> &mut Workspaces {
+        &mut self.workspaces
+    }
+
+    // These four take the seats, which Shell owns. Reaching them through
+    // `workspaces_mut()` would borrow all of Shell and lock `seats` out for the
+    // duration — the disjoint field borrow a `pub` field used to allow. Inside
+    // this impl the disjoint borrow still works, so the operation lives here
+    // and the callers stop needing both halves at once.
+
+    pub fn update_tiling_enabled(
+        &mut self,
+        enabled: bool,
+        guard: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        self.workspaces
+            .update_tiling_enabled(enabled, guard, self.seats.iter());
+    }
+
+    pub fn update_autotile(&mut self, autotile: bool, guard: &mut WorkspaceUpdateGuard<'_, State>) {
+        self.workspaces
+            .update_autotile(autotile, guard, self.seats.iter());
+    }
+
+    pub fn update_autotile_behavior(
+        &mut self,
+        behavior: TileBehavior,
+        guard: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        self.workspaces
+            .update_autotile_behavior(behavior, guard, self.seats.iter());
+    }
+
+    pub fn remove_output(
+        &mut self,
+        output: &Output,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+        xdg_activation_state: &XdgActivationState,
+    ) {
+        self.workspaces.remove_output(
+            output,
+            self.seats.iter(),
+            workspace_state,
+            xdg_activation_state,
+        );
+    }
+
     pub fn new(config: &Config) -> Self {
         let theme = crate::comp_theme::CompTheme::from_current();
 

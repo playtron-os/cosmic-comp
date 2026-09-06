@@ -875,14 +875,14 @@ where
     };
 
     let shell_guard = shell.read();
-    let Some((previous_workspace, workspace)) = shell_guard.workspaces.active(output) else {
+    let Some((previous_workspace, workspace)) = shell_guard.workspaces().active(output) else {
         #[cfg(not(feature = "debug"))]
         return Ok(Vec::new());
         #[cfg(feature = "debug")]
         return Ok(debug_elements);
     };
 
-    let (previous_idx, idx) = shell_guard.workspaces.active_num(output);
+    let (previous_idx, idx) = shell_guard.workspaces().active_num(output);
     let previous_workspace = previous_workspace
         .zip(previous_idx)
         .map(|((w, start), idx)| (w.handle, idx, start));
@@ -995,7 +995,7 @@ where
                     .filter_map(|(child_surface_id, embed_info)| {
                         // Find the CosmicMapped for this embedded child (by surface_id)
                         shell_ref
-                            .workspaces
+                            .workspaces()
                             .spaces()
                             .flat_map(|s| s.mapped())
                             .find(|mapped| {
@@ -1058,7 +1058,7 @@ where
     let swap_tree = if let Some(Trigger::KeyboardSwap(_, desc)) = overview.0.active_trigger() {
         if current.0 != desc.handle {
             shell
-                .workspaces
+                .workspaces()
                 .space_for_handle(&desc.handle)
                 .map(|w| w.tiling_layer.tree())
         } else {
@@ -1080,7 +1080,7 @@ where
         .unwrap()
         .is_some();
     let focused_output = last_active_seat.focused_or_active_output();
-    let set = shell.workspaces.sets.get(output).ok_or(OutputNoMode)?;
+    let set = shell.workspaces().sets.get(output).ok_or(OutputNoMode)?;
     let workspace = set
         .workspaces
         .iter()
@@ -2299,10 +2299,10 @@ where
     // render, no `BlurRenderState` and no throttling/hashing bookkeeping.
     let shell_ref = shell.read();
     let (previous_workspace, workspace) = shell_ref
-        .workspaces
+        .workspaces()
         .active(output)
         .ok_or(RenderError::OutputNoMode(OutputNoMode))?;
-    let (previous_idx, idx) = shell_ref.workspaces.active_num(output);
+    let (previous_idx, idx) = shell_ref.workspaces().active_num(output);
     let previous_workspace = previous_workspace
         .zip(previous_idx)
         .map(|((w, start), idx)| (w.handle, idx, start));

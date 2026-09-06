@@ -39,7 +39,7 @@ impl ToplevelManagementHandler for State {
         let mut shell = self.common.shell.write();
         for output in shell.outputs().cloned().collect::<Vec<_>>().iter() {
             let maybe = shell
-                .workspaces
+                .workspaces()
                 .spaces_for_output(output)
                 .enumerate()
                 .find(|(_, w)| {
@@ -59,7 +59,7 @@ impl ToplevelManagementHandler for State {
                     &mut self.common.workspace_state.update(),
                 );
 
-                let workspace = shell.workspaces.space_for_handle_mut(&handle).unwrap();
+                let workspace = shell.workspaces_mut().space_for_handle_mut(&handle).unwrap();
                 if seat
                     .get_keyboard()
                     .unwrap()
@@ -91,7 +91,7 @@ impl ToplevelManagementHandler for State {
                 (target, new_pos.ok())
             // sticky window?
             } else if let Some(mapped) = shell
-                .workspaces
+                .workspaces()
                 .sets
                 .get(output)
                 .unwrap()

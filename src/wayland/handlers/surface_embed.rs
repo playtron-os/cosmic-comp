@@ -553,7 +553,7 @@ impl SurfaceEmbedHandler for State {
         // Look through all spaces and windows to find one matching the ID
         // The ID format is the app_id (for now - could be UUID in future)
         let shell = self.common.shell.read();
-        for mapped in shell.workspaces.spaces().flat_map(|s| s.mapped()) {
+        for mapped in shell.workspaces().spaces().flat_map(|s| s.mapped()) {
             for (surface, _point) in mapped.windows() {
                 if surface.app_id() == toplevel_id || surface.title() == toplevel_id {
                     return Some(surface.clone());
@@ -570,7 +570,7 @@ impl SurfaceEmbedHandler for State {
     ) -> Option<(Self::Window, String)> {
         let shell = self.common.shell.read();
 
-        for mapped in shell.workspaces.spaces().flat_map(|s| s.mapped()) {
+        for mapped in shell.workspaces().spaces().flat_map(|s| s.mapped()) {
             for (surface, _point) in mapped.windows() {
                 // Get the WlSurface to check the client's PID
                 if let Some(wl_surface) = surface.wl_surface() {
@@ -853,7 +853,7 @@ impl State {
         let shell = self.common.shell.read();
         let target_id = surface.id();
         shell
-            .workspaces
+            .workspaces()
             .spaces()
             .flat_map(|s| s.mapped())
             .flat_map(|m| m.windows().map(|(w, _)| w))

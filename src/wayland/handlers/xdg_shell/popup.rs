@@ -48,7 +48,7 @@ impl Shell {
                             workspace.is_tiled(&elem.active_window()),
                         )
                     } else if let Some((output, set)) = self
-                        .workspaces
+                        .workspaces()
                         .sets
                         .iter()
                         .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == elem))
@@ -87,7 +87,7 @@ impl Shell {
                 } else {
                     unconstrain_xdg_popup(surface, window_loc, usable_geo);
                 }
-            } else if let Some(output) = self.workspaces.spaces().find_map(|w| {
+            } else if let Some(output) = self.workspaces().spaces().find_map(|w| {
                 w.fullscreen_surfaces.iter().find_map(|f| {
                     (f.surface.wl_surface().as_deref() == Some(&parent)).then_some(w.output())
                 })
@@ -119,11 +119,11 @@ impl Shell {
         // Find the parent window that contains the embedded window
         // Search both workspaces and sticky layers
         let parent_elem = self
-            .workspaces
+            .workspaces()
             .spaces()
             .flat_map(|s| s.mapped())
             .chain(
-                self.workspaces
+                self.workspaces()
                     .sets
                     .values()
                     .flat_map(|set| set.sticky_layer.mapped()),
@@ -143,7 +143,7 @@ impl Shell {
                 workspace.output.clone(),
             )
         } else if let Some((output, set)) = self
-            .workspaces
+            .workspaces()
             .sets
             .iter()
             .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == parent_elem))

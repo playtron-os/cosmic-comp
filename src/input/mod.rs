@@ -1171,7 +1171,7 @@ impl State {
                                                         })
                                                         .or_else(|| {
                                                             shell
-                                                                .workspaces
+                                                                .workspaces()
                                                                 .sets
                                                                 .get(&output)
                                                                 .and_then(|set| {
@@ -2622,13 +2622,13 @@ impl State {
     ) {
         if let Some(focus) = current_focus {
             if let Some(new_descriptor) = shell
-                .workspaces
+                .workspaces()
                 .active(focused_output)
                 .unwrap()
                 .1
                 .node_desc(focus)
             {
-                let mut spaces = shell.workspaces.spaces_mut();
+                let mut spaces = shell.workspaces_mut().spaces_mut();
                 if old_descriptor.handle != new_descriptor.handle {
                     let (mut old_w, mut other_w) =
                         spaces.partition::<Vec<_>, _>(|w| w.handle == old_descriptor.handle);
@@ -2684,9 +2684,9 @@ impl State {
                 }
             }
         } else {
-            let new_workspace = shell.workspaces.active(focused_output).unwrap().1.handle;
+            let new_workspace = shell.workspaces().active(focused_output).unwrap().1.handle;
             if new_workspace != old_descriptor.handle {
-                let spaces = shell.workspaces.spaces_mut();
+                let spaces = shell.workspaces_mut().spaces_mut();
                 let (mut old_w, mut other_w) =
                     spaces.partition::<Vec<_>, _>(|w| w.handle == old_descriptor.handle);
                 if let Some(old_workspace) = old_w.get_mut(0)
@@ -2729,8 +2729,8 @@ impl State {
         shell: &Shell,
         seat: &Seat<State>,
     ) -> Option<KeyboardFocusTarget> {
-        let (previous_workspace, workspace) = shell.workspaces.active(output)?;
-        let (previous_idx, idx) = shell.workspaces.active_num(output);
+        let (previous_workspace, workspace) = shell.workspaces().active(output)?;
+        let (previous_idx, idx) = shell.workspaces().active_num(output);
         let previous_workspace = previous_workspace
             .zip(previous_idx)
             .map(|((w, start), idx)| (w.handle, idx, start));
@@ -2904,8 +2904,8 @@ impl State {
             return None;
         }
 
-        let (previous_workspace, workspace) = shell.workspaces.active(output)?;
-        let (previous_idx, idx) = shell.workspaces.active_num(output);
+        let (previous_workspace, workspace) = shell.workspaces().active(output)?;
+        let (previous_idx, idx) = shell.workspaces().active_num(output);
         let previous_workspace = previous_workspace
             .zip(previous_idx)
             .map(|((w, start), idx)| (w.handle, idx, start));
@@ -3122,7 +3122,7 @@ impl State {
 
         let point_and_output = {
             let shell = self.common.shell.read();
-            let found = shell.workspaces.sets.iter().find_map(|(out, set)| {
+            let found = shell.workspaces().sets.iter().find_map(|(out, set)| {
                 set.surface_geometry_offset_from_toplevel(surface)
                     .map(|(geometry, surface_offset)| (out, geometry, surface_offset))
             });

@@ -81,7 +81,7 @@ impl LayerSurfaceVisibilityHandler for State {
                     }
                     // Update old output's blur cache (surface is gone from its map,
                     // so the general block below won't find it there).
-                    shell.workspaces.recalculate();
+                    shell.workspaces_mut().recalculate();
                     self.backend.schedule_render(old_output);
                     self.backend.schedule_render(&cursor_output);
                 }
