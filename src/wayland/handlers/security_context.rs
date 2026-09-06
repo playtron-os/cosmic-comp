@@ -39,11 +39,13 @@ impl SecurityContextHandler for State {
                     })
                     .or(new_state.advertised_drm_node);
 
+                let workspace = crate::workspace_tag::of_stream(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
                         security_context: Some(security_context.clone()),
                         advertised_drm_node: drm_node,
+                        workspace,
                         ..new_state
                     }),
                 ) {

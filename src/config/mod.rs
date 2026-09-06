@@ -995,10 +995,8 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
 
                     let mut shell = state.common.shell.write();
                     let shell_ref = &mut *shell;
-                    shell_ref.update_autotile_behavior(
-                        new,
-                        &mut state.common.workspace_state.update(),
-                    );
+                    shell_ref
+                        .update_autotile_behavior(new, &mut state.common.workspace_state.update());
                 }
             }
             "active_hint" => {

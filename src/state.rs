@@ -176,6 +176,13 @@ pub struct ClientState {
     pub evlh: LoopHandle<'static, State>,
     pub evls: LoopSignal,
     pub security_context: Option<SecurityContext>,
+    /// The workspace this client was launched into, resolved once from the
+    /// socket's peer credentials. `None` is machine-plane — the panel, dock,
+    /// launcher — which is visible from every workspace.
+    ///
+    /// Resolved at connect rather than per surface: a process cannot change the
+    /// cgroup it was launched into, so the answer never changes.
+    pub workspace: Option<String>,
 }
 unsafe impl Send for ClientState {}
 unsafe impl Sync for ClientState {}
@@ -670,7 +677,9 @@ impl LockedBackend<'_> {
                 .borrow();
 
             match final_config.enabled {
-                OutputState::Enabled => shell_ref.workspaces_mut().add_output(output, workspace_state),
+                OutputState::Enabled => shell_ref
+                    .workspaces_mut()
+                    .add_output(output, workspace_state),
                 _ => {
                     let shell = &mut *shell_ref;
                     shell.remove_output(output, workspace_state, xdg_activation_state)
@@ -891,6 +900,7 @@ impl State {
 
         let async_executor = ThreadPool::builder().pool_size(1).create().unwrap();
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
+        crate::dbus::workspaces::init(&handle, &async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
         // live values to the game-mode `AppFrametimeNs` reader.
         shell.write().game_mode_frametime_ns = game_mode_bridge.frametime_handle();
@@ -1007,6 +1017,8 @@ impl State {
             evlh: self.common.event_loop_handle.clone(),
             evls: self.common.event_loop_signal.clone(),
             security_context: None,
+            // Filled in by the socket sources, which have the peer credentials.
+            workspace: None,
         }
     }
 

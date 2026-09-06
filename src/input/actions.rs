@@ -847,7 +847,8 @@ impl State {
                                 .is_some_and(|(serial, _, _)| *serial == last_mod_serial)
                             {
                                 let current_output = seat.active_output();
-                                let workspace_idx = shell.workspaces().active_num(&current_output).1;
+                                let workspace_idx =
+                                    shell.workspaces().active_num(&current_output).1;
                                 shell.previous_workspace_idx = Some((
                                     last_mod_serial,
                                     current_output.downgrade(),

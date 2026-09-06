@@ -72,6 +72,7 @@ pub mod theme;
 pub mod toolkit_config;
 pub mod utils;
 pub mod wayland;
+pub mod workspace_tag;
 pub mod xwayland;
 
 #[cfg(feature = "profile-with-tracy")]
@@ -606,7 +607,14 @@ fn init_wayland_display(
     event_loop
         .handle()
         .insert_source(source, |client_stream, _, state| {
-            let client_state = state.new_client_state();
+            // Tagged here because this is where the peer credentials are: once
+            // the client is inserted the socket is gone and there is no way
+            // back to which workspace launched it.
+            let workspace = crate::workspace_tag::of_stream(&client_stream);
+            let client_state = crate::state::ClientState {
+                workspace,
+                ..state.new_client_state()
+            };
             match state
                 .common
                 .display_handle

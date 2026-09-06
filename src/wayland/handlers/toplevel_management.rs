@@ -59,7 +59,10 @@ impl ToplevelManagementHandler for State {
                     &mut self.common.workspace_state.update(),
                 );
 
-                let workspace = shell.workspaces_mut().space_for_handle_mut(&handle).unwrap();
+                let workspace = shell
+                    .workspaces_mut()
+                    .space_for_handle_mut(&handle)
+                    .unwrap();
                 if seat
                     .get_keyboard()
                     .unwrap()

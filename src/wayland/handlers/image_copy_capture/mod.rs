@@ -148,6 +148,26 @@ impl ImageCopyCaptureHandler for State {
                     return;
                 };
 
+                // A window belonging to another workspace is not capturable —
+                // refused here rather than blanked later, so nothing of it ever
+                // reaches a buffer. This is W-10's promise that a client demo
+                // cannot leak another client's work, and it is enforcement
+                // rather than advice: the requester is told no.
+                //
+                // Machine-plane windows (panel, dock, launcher) have no
+                // workspace and stay capturable, and with no workspace registry
+                // running nothing is refused at all.
+                let capturable = toplevel.wl_surface().is_some_and(|surface| {
+                    self.common
+                        .shell
+                        .read()
+                        .surface_in_active_workspace(&surface)
+                });
+                if !capturable {
+                    session.stop();
+                    return;
+                }
+
                 let size = toplevel.geometry().size.to_physical(1);
                 session.user_data().insert_if_missing_threadsafe(|| {
                     Mutex::new(SessionUserData::new(OutputDamageTracker::new(

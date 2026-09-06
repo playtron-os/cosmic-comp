@@ -460,6 +460,15 @@ pub struct Shell {
     /// reaches a user or an IPC surface.
     workspaces: Workspaces,
 
+    /// The workspace on screen — the user-facing, vertical one.
+    ///
+    /// Owned by the workspace registry (`one.playtron.Workspaces1`), not here:
+    /// the compositor is a consumer that learns about switches from
+    /// `ActiveChanged`. `None` means no registry is running, in which case
+    /// every client is visible and nothing is captured differently — so this
+    /// changes no behaviour until workspaces are switched on.
+    active_workspace: Option<String>,
+
     // Can't make this into a HashSet. See https://github.com/pop-os/cosmic-comp/pull/1902
     pub pending_windows: Vec<PendingWindow>,
     pub pending_layers: Vec<PendingLayer>,
@@ -2224,6 +2233,28 @@ impl Shell {
         &mut self.workspaces
     }
 
+    pub fn active_workspace(&self) -> Option<&str> {
+        self.active_workspace.as_deref()
+    }
+
+    pub fn set_active_workspace(&mut self, workspace: Option<String>) {
+        self.active_workspace = workspace;
+    }
+
+    /// Is this surface's client visible in the workspace on screen?
+    ///
+    /// The gate for capture and for window listings. Machine-plane clients (the
+    /// panel, dock, launcher) have no workspace and stay visible everywhere;
+    /// with no registry running nothing is hidden at all.
+    pub fn surface_in_active_workspace(&self, surface: &WlSurface) -> bool {
+        let client = surface.client();
+        let workspace = client
+            .as_ref()
+            .and_then(|c| c.get_data::<crate::state::ClientState>())
+            .and_then(|data| data.workspace.as_deref());
+        crate::workspace_tag::visible_in(workspace, self.active_workspace())
+    }
+
     // These four take the seats, which Shell owns. Reaching them through
     // `workspaces_mut()` would borrow all of Shell and lock `seats` out for the
     // duration — the disjoint field borrow a `pub` field used to allow. Inside
@@ -2273,6 +2304,7 @@ impl Shell {
         let tiling_exceptions = layout::TilingExceptions::new(config.tiling_exceptions.iter());
 
         Shell {
+            active_workspace: None,
             workspaces: Workspaces::new(config, theme.clone()),
             seats: Seats::new(),
 

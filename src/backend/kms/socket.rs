@@ -77,10 +77,12 @@ impl Common {
         let token = self
             .event_loop_handle
             .insert_source(listener, move |client_stream, _, state: &mut State| {
+                let workspace = crate::workspace_tag::of_stream(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
                         advertised_drm_node: Some(render_node),
+                        workspace,
                         ..state.new_client_state()
                     }),
                 ) {

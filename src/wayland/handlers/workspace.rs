@@ -43,7 +43,8 @@ impl WorkspaceHandler for State {
                 Request::SetTilingState { workspace, state } => {
                     let mut shell = self.common.shell.write();
                     let seat = shell.seats.last_active().clone();
-                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace) {
+                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace)
+                    {
                         let mut guard = self.common.workspace_state.update();
                         workspace.set_tiling(
                             !matches!(state.into_result(), Ok(TilingState::FloatingOnly)),
@@ -54,7 +55,8 @@ impl WorkspaceHandler for State {
                 }
                 Request::SetPin { workspace, pinned } => {
                     let mut shell = self.common.shell.write();
-                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace) {
+                    if let Some(workspace) = shell.workspaces_mut().space_for_handle_mut(&workspace)
+                    {
                         workspace.pinned = pinned;
                         let mut update = self.common.workspace_state.update();
                         if pinned {
