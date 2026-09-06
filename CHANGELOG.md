@@ -1,3 +1,15 @@
+# [1.45.0](https://github.com/playtron-os/cosmic-comp/compare/v1.44.0...v1.45.0) (2026-09-06)
+
+
+### Bug Fixes
+
+* **layer-surface-visibility:** append set_hidden_immediately instead of inserting it ([da4bbae](https://github.com/playtron-os/cosmic-comp/commit/da4bbae5205205ebbd50432075141f124c267837))
+
+
+### Features
+
+* mirror new outputs by default ([3c8d8dd](https://github.com/playtron-os/cosmic-comp/commit/3c8d8dd331f6c144933edaa143b2f22acfd0b1ee))
+
 # [1.44.0](https://github.com/playtron-os/cosmic-comp/compare/v1.43.1...v1.44.0) (2026-08-25)
 
 
