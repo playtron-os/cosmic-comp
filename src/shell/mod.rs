@@ -2,6 +2,10 @@ use calloop::LoopHandle;
 use focus::target::WindowGroup;
 use grabs::{MenuAlignment, SeatMoveGrabState};
 use indexmap::IndexMap;
+
+/// The realm every session starts in, and the one everything lives in until a
+/// workspace registry says otherwise.
+pub const DEFAULT_REALM: &str = "default";
 use layout::TilingExceptions;
 use std::{
     collections::HashMap,
@@ -458,15 +462,27 @@ pub struct Shell {
     /// user calls a *Desktop*, a window arrangement inside one realm. The type
     /// keeps its name so upstream rebases stay clean; nothing named "realm"
     /// reaches a user or an IPC surface.
-    workspaces: Workspaces,
+    /// One `Workspaces` — every output's set of desktops — per realm.
+    ///
+    /// A *realm* is the user-facing Workspace: the vertical axis, the context
+    /// boundary. Switching realms swaps the whole visible window set at once.
+    /// The horizontal axis lives inside a realm, where `Workspace` means what
+    /// the user calls a Desktop.
+    ///
+    /// Invariant: `active_realm` always names a realm in here, so the
+    /// accessors below never have to decide what to do when it does not.
+    realms: IndexMap<String, Workspaces>,
+    /// Key into `realms`. Always valid.
+    active_realm: String,
 
-    /// The workspace on screen — the user-facing, vertical one.
+    /// The workspace on screen, as the registry named it.
     ///
     /// Owned by the workspace registry (`one.playtron.Workspaces1`), not here:
     /// the compositor is a consumer that learns about switches from
-    /// `ActiveChanged`. `None` means no registry is running, in which case
-    /// every client is visible and nothing is captured differently — so this
-    /// changes no behaviour until workspaces are switched on.
+    /// `ActiveChanged`. `None` means no registry has ever spoken to us, in
+    /// which case every client is visible and nothing is refused capture — so
+    /// this changes no behaviour until workspaces are switched on. It is
+    /// distinct from `active_realm`, which is a map key and is never empty.
     active_workspace: Option<String>,
 
     // Can't make this into a HashSet. See https://github.com/pop-os/cosmic-comp/pull/1902
@@ -1320,6 +1336,28 @@ impl Workspaces {
         }
     }
 
+    /// A new, empty realm carrying the machine-wide settings of this one.
+    ///
+    /// Layout, tiling and theme are machine-wide, so a new realm inherits them.
+    /// What it does not inherit is content: no outputs yet (the caller adds
+    /// them), no backup set, and none of the pinned desktops — those belong to
+    /// the realm that persisted them, and copying them would put another
+    /// workspace's desktops in a brand new one.
+    pub fn new_sibling(&self) -> Workspaces {
+        Workspaces {
+            sets: IndexMap::new(),
+            backup_set: None,
+            layout: self.layout,
+            mode: self.mode,
+            tiling_enabled: self.tiling_enabled,
+            autotile: self.autotile,
+            autotile_behavior: self.autotile_behavior,
+            theme: self.theme.clone(),
+            appearance: self.appearance,
+            persisted_workspaces: Vec::new(),
+        }
+    }
+
     pub fn add_output(
         &mut self,
         output: &Output,
@@ -2050,7 +2088,7 @@ impl Common {
     pub fn add_output(&mut self, output: &Output) {
         let mut shell = self.shell.write();
         shell
-            .workspaces
+            .workspaces_mut()
             .add_output(output, &mut self.workspace_state.update());
 
         output
@@ -2078,7 +2116,7 @@ impl Common {
     pub fn remove_output(&mut self, output: &Output) {
         let mut shell = self.shell.write();
         let shell_ref = &mut *shell;
-        shell_ref.workspaces.remove_output(
+        Shell::realm_mut(&mut shell_ref.realms, &shell_ref.active_realm).remove_output(
             output,
             shell_ref.seats.iter(),
             &mut self.workspace_state.update(),
@@ -2106,7 +2144,10 @@ impl Common {
             zoom_state.movement = self.config.cosmic_conf.accessibility_zoom.view_moves;
             zoom_state.show_overlay = self.config.cosmic_conf.accessibility_zoom.show_overlay;
 
-            for output in shell_ref.workspaces.sets.keys() {
+            for output in Shell::realm_mut(&mut shell_ref.realms, &shell_ref.active_realm)
+                .sets
+                .keys()
+            {
                 let output_state = output.user_data().get::<Mutex<OutputZoomState>>().unwrap();
                 let mut output_state_ref = output_state.lock().unwrap();
                 let level = output_state_ref.level;
@@ -2115,7 +2156,7 @@ impl Common {
         }
 
         let mut workspace_state = self.workspace_state.update();
-        shell_ref.workspaces.update_config(
+        shell_ref.workspaces_mut().update_config(
             &self.config,
             &mut workspace_state,
             &self.xdg_activation_state,
@@ -2211,7 +2252,7 @@ impl Common {
                 }
             }
             if let Some(fs) = shell
-                .workspaces
+                .workspaces()
                 .spaces()
                 .flat_map(|w| w.get_fullscreen_surfaces())
                 .find(|f| f.surface == *surface)
@@ -2226,11 +2267,122 @@ impl Common {
 impl Shell {
     /// The desktop sets of the realm currently on screen.
     pub fn workspaces(&self) -> &Workspaces {
-        &self.workspaces
+        self.realms
+            .get(&self.active_realm)
+            .expect("active_realm always names a realm")
     }
 
     pub fn workspaces_mut(&mut self) -> &mut Workspaces {
-        &mut self.workspaces
+        self.realms
+            .get_mut(&self.active_realm)
+            .expect("active_realm always names a realm")
+    }
+
+    /// The active realm, borrowed from the map and the key **separately**.
+    ///
+    /// `workspaces_mut()` borrows all of `Shell`, which a `pub` field never
+    /// did — so code that legitimately needs the desktops *and* another field
+    /// at once (the theme, the overview mode, the seats) stops compiling. This
+    /// takes the two fields it actually needs, leaving every other field free,
+    /// and the returned borrow is tied only to `realms`.
+    fn realm_mut<'a>(
+        realms: &'a mut IndexMap<String, Workspaces>,
+        active: &str,
+    ) -> &'a mut Workspaces {
+        realms
+            .get_mut(active)
+            .expect("active_realm always names a realm")
+    }
+
+    /// The realm on screen.
+    pub fn active_realm(&self) -> &str {
+        &self.active_realm
+    }
+
+    pub fn realm_ids(&self) -> impl Iterator<Item = &str> {
+        self.realms.keys().map(String::as_str)
+    }
+
+    /// Create a realm if it does not exist yet, giving it a desktop set for
+    /// every connected output.
+    ///
+    /// Realms appear on demand rather than being provisioned up front: the
+    /// registry can name one we have never seen — after a restart, or when a
+    /// workspace is created while we are running — and the answer has to be a
+    /// working realm rather than a failure.
+    pub fn ensure_realm(
+        &mut self,
+        id: &str,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        if self.realms.contains_key(id) {
+            return;
+        }
+        let mut realm = self
+            .realms
+            .get(&self.active_realm)
+            .expect("active_realm always names a realm")
+            .new_sibling();
+        // Give it the outputs the machine actually has, or it would come up
+        // with nowhere to put a window.
+        let outputs: Vec<Output> = self.workspaces().sets.keys().cloned().collect();
+        for output in &outputs {
+            realm.add_output(output, workspace_state);
+        }
+        tracing::info!(realm = id, outputs = outputs.len(), "realm created");
+        self.realms.insert(id.to_string(), realm);
+    }
+
+    /// Put a realm on screen.
+    ///
+    /// Only the active realm's workspace groups carry outputs, so pagers and
+    /// docks — which group by output — see one realm's desktops at a time. The
+    /// handles themselves are left alone: destroying and recreating them on
+    /// every switch would be protocol churn on the 300ms path (W-9), and
+    /// clients that keep handles across a switch would see them all die.
+    pub fn switch_realm(
+        &mut self,
+        id: &str,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        if self.active_realm == id {
+            return;
+        }
+        self.ensure_realm(id, workspace_state);
+
+        let previous = std::mem::replace(&mut self.active_realm, id.to_string());
+        if let Some(realm) = self.realms.get(&previous) {
+            for (output, set) in &realm.sets {
+                workspace_state.remove_group_output(&set.group, output);
+            }
+        }
+        if let Some(realm) = self.realms.get(&self.active_realm) {
+            for (output, set) in &realm.sets {
+                workspace_state.add_group_output(&set.group, output);
+            }
+        }
+        tracing::info!(from = previous, to = id, "realm switched");
+    }
+
+    /// Add an output to **every** realm, not just the one on screen.
+    ///
+    /// A realm that missed a hot-plug would have nowhere to put a window on
+    /// that monitor the moment you switched to it.
+    pub fn add_output(
+        &mut self,
+        output: &Output,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        let active = self.active_realm.clone();
+        for (id, realm) in &mut self.realms {
+            realm.add_output(output, workspace_state);
+            // Only the realm on screen advertises its groups on this output.
+            if *id != active {
+                for set in realm.sets.values() {
+                    workspace_state.remove_group_output(&set.group, output);
+                }
+            }
+        }
     }
 
     pub fn active_workspace(&self) -> Option<&str> {
@@ -2266,13 +2418,19 @@ impl Shell {
         enabled: bool,
         guard: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
-        self.workspaces
-            .update_tiling_enabled(enabled, guard, self.seats.iter());
+        // Machine-wide setting, so every realm follows it — not just the one
+        // on screen, which would otherwise drift from the rest on a switch.
+        for realm in self.realms.values_mut() {
+            realm.update_tiling_enabled(enabled, guard, self.seats.iter());
+        }
     }
 
     pub fn update_autotile(&mut self, autotile: bool, guard: &mut WorkspaceUpdateGuard<'_, State>) {
-        self.workspaces
-            .update_autotile(autotile, guard, self.seats.iter());
+        // Machine-wide setting, so every realm follows it — not just the one
+        // on screen, which would otherwise drift from the rest on a switch.
+        for realm in self.realms.values_mut() {
+            realm.update_autotile(autotile, guard, self.seats.iter());
+        }
     }
 
     pub fn update_autotile_behavior(
@@ -2280,22 +2438,28 @@ impl Shell {
         behavior: TileBehavior,
         guard: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
-        self.workspaces
-            .update_autotile_behavior(behavior, guard, self.seats.iter());
+        // Machine-wide setting, so every realm follows it — not just the one
+        // on screen, which would otherwise drift from the rest on a switch.
+        for realm in self.realms.values_mut() {
+            realm.update_autotile_behavior(behavior, guard, self.seats.iter());
+        }
     }
 
+    /// Remove an output from **every** realm — see `add_output`.
     pub fn remove_output(
         &mut self,
         output: &Output,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
         xdg_activation_state: &XdgActivationState,
     ) {
-        self.workspaces.remove_output(
-            output,
-            self.seats.iter(),
-            workspace_state,
-            xdg_activation_state,
-        );
+        for realm in self.realms.values_mut() {
+            realm.remove_output(
+                output,
+                self.seats.iter(),
+                workspace_state,
+                xdg_activation_state,
+            );
+        }
     }
 
     pub fn new(config: &Config) -> Self {
@@ -2304,8 +2468,14 @@ impl Shell {
         let tiling_exceptions = layout::TilingExceptions::new(config.tiling_exceptions.iter());
 
         Shell {
+            // One realm to begin with, holding everything as before. More
+            // appear on demand when the registry names them.
+            realms: IndexMap::from([(
+                DEFAULT_REALM.to_string(),
+                Workspaces::new(config, theme.clone()),
+            )]),
+            active_realm: DEFAULT_REALM.to_string(),
             active_workspace: None,
-            workspaces: Workspaces::new(config, theme.clone()),
             seats: Seats::new(),
 
             pending_windows: Vec::new(),
@@ -2401,9 +2571,12 @@ impl Shell {
         workspace_delta: WorkspaceDelta,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Result<Point<i32, Global>, InvalidWorkspaceIndex> {
-        let result = match &mut self.workspaces.mode {
+        let result = match &mut Shell::realm_mut(&mut self.realms, &self.active_realm).mode {
             WorkspaceMode::OutputBound => {
-                if let Some(set) = self.workspaces.sets.get_mut(output) {
+                if let Some(set) = Shell::realm_mut(&mut self.realms, &self.active_realm)
+                    .sets
+                    .get_mut(output)
+                {
                     if matches!(
                         self.overview_mode.active_trigger(),
                         Some(Trigger::Pointer(_) | Trigger::Touch(_))
@@ -2422,7 +2595,7 @@ impl Shell {
                 }
             }
             WorkspaceMode::Global => {
-                for set in self.workspaces.sets.values_mut() {
+                for set in self.workspaces_mut().sets.values_mut() {
                     set.activate(idx, workspace_delta, workspace_state)?;
                 }
                 let output_geo = output.geometry();
@@ -2440,14 +2613,14 @@ impl Shell {
     }
 
     pub fn update_workspace_delta(&mut self, output: &Output, delta: f64, forward: bool) {
-        match &mut self.workspaces.mode {
+        match &mut self.workspaces_mut().mode {
             WorkspaceMode::OutputBound => {
-                if let Some(set) = self.workspaces.sets.get_mut(output) {
+                if let Some(set) = self.workspaces_mut().sets.get_mut(output) {
                     set.update_workspace_delta(delta, forward);
                 }
             }
             WorkspaceMode::Global => {
-                for set in self.workspaces.sets.values_mut() {
+                for set in self.workspaces_mut().sets.values_mut() {
                     set.update_workspace_delta(delta, forward);
                 }
             }
@@ -2463,9 +2636,12 @@ impl Shell {
         // Snapshot the theme's window spring for the velocity-seeded release.
         let window_spring = self.theme.motion.window_spring;
         let result =
-            match &mut self.workspaces.mode {
+            match &mut Shell::realm_mut(&mut self.realms, &self.active_realm).mode {
                 WorkspaceMode::OutputBound => {
-                    if let Some(set) = self.workspaces.sets.get_mut(output) {
+                    if let Some(set) = Shell::realm_mut(&mut self.realms, &self.active_realm)
+                        .sets
+                        .get_mut(output)
+                    {
                         if matches!(
                             self.overview_mode.active_trigger(),
                             Some(Trigger::Pointer(_) | Trigger::Touch(_))
@@ -2515,7 +2691,7 @@ impl Shell {
                     }
                 }
                 WorkspaceMode::Global => {
-                    for set in self.workspaces.sets.values_mut() {
+                    for set in self.workspaces_mut().sets.values_mut() {
                         if let Some((
                             _,
                             WorkspaceDelta::Gesture {
@@ -2648,7 +2824,7 @@ impl Shell {
         }
         // Only the controlled surface's own workspace is under strict control;
         // other workspaces (even on the game's output) are a normal desktop.
-        self.workspaces.spaces().any(|ws| {
+        self.workspaces().spaces().any(|ws| {
             ws.get_fullscreen_surfaces()
                 .any(|f| &f.surface == controlled)
                 && (ws.get_fullscreen_surfaces().any(|f| &f.surface == surface)
@@ -2657,11 +2833,11 @@ impl Shell {
     }
 
     pub fn active_space(&self, output: &Output) -> Option<&Workspace> {
-        self.workspaces.active(output).map(|(_, active)| active)
+        self.workspaces().active(output).map(|(_, active)| active)
     }
 
     pub fn active_space_mut(&mut self, output: &Output) -> Option<&mut Workspace> {
-        self.workspaces.active_mut(output)
+        self.workspaces_mut().active_mut(output)
     }
 
     /// get the parent output of the window which has keyboard focus (for a given seat)
@@ -2708,7 +2884,7 @@ impl Shell {
                 self.outputs()
                     .find(|output| {
                         let is_sticky = self
-                            .workspaces
+                            .workspaces()
                             .sets
                             .get(*output)
                             .unwrap()
@@ -2735,7 +2911,7 @@ impl Shell {
             KeyboardFocusTarget::Group(WindowGroup { node, .. }) => self
                 .outputs()
                 .find(|output| {
-                    self.workspaces
+                    self.workspaces()
                         .active(output)
                         .unwrap()
                         .1
@@ -2822,7 +2998,7 @@ impl Shell {
     }
 
     pub fn refresh_active_space(&mut self, output: &Output) {
-        if let Some(w) = self.workspaces.active_mut(output) {
+        if let Some(w) = self.workspaces_mut().active_mut(output) {
             w.refresh()
         }
     }
@@ -2887,7 +3063,7 @@ impl Shell {
             // sticky window ?
             .or_else(|| {
                 self.outputs().find(|o| {
-                    self.workspaces.sets[*o]
+                    self.workspaces().sets[*o]
                         .sticky_layer
                         .mapped()
                         .any(|e| e.has_surface(surface, WindowSurfaceType::ALL))
@@ -2947,12 +3123,12 @@ impl Shell {
                 .is_some()
         }) {
             Some(output) => self
-                .workspaces
+                .workspaces()
                 .spaces()
                 .find(move |workspace| workspace.output() == output)
                 .map(|w| (w.handle, output.clone())),
             None => self
-                .workspaces
+                .workspaces()
                 .spaces()
                 .find(|w| {
                     w.get_fullscreen_surfaces()
@@ -2972,7 +3148,7 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        self.workspaces.sets.values().find_map(|set| {
+        self.workspaces().sets.values().find_map(|set| {
             set.minimized_windows
                 .iter()
                 .find(|w| w.windows().any(|s| &s == surface))
@@ -2991,7 +3167,7 @@ impl Shell {
     }
 
     pub fn element_for_x11_window_id(&self, x11_window_id: u32) -> Option<&CosmicMapped> {
-        self.workspaces.sets.values().find_map(|set| {
+        self.workspaces().sets.values().find_map(|set| {
             set.minimized_windows
                 .iter()
                 .find(|w| {
@@ -3025,7 +3201,7 @@ impl Shell {
     /// Find a mapped element by its WlSurface ObjectId string
     /// Used for finding parent windows of embedded surfaces
     pub fn element_for_surface_id(&self, surface_id: &str) -> Option<&CosmicMapped> {
-        self.workspaces.sets.values().find_map(|set| {
+        self.workspaces().sets.values().find_map(|set| {
             set.minimized_windows
                 .iter()
                 .find(|w| {
@@ -3080,7 +3256,7 @@ impl Shell {
     ) -> Vec<(&CosmicMapped, Rectangle<i32, Logical>)> {
         let mut results = Vec::new();
 
-        for set in self.workspaces.sets.values() {
+        for set in self.workspaces().sets.values() {
             // Check sticky layer
             for mapped in set.sticky_layer.mapped() {
                 if mapped.active_window().app_id() == app_id {
@@ -3113,7 +3289,7 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        self.workspaces.sets.values().any(|set| {
+        self.workspaces().sets.values().any(|set| {
             set.minimized_windows
                 .iter()
                 .any(|w| w.windows().any(|s| &s == surface))
@@ -3137,7 +3313,7 @@ impl Shell {
     }
 
     pub fn space_for(&self, mapped: &CosmicMapped) -> Option<&Workspace> {
-        self.workspaces.spaces().find(|workspace| {
+        self.workspaces().spaces().find(|workspace| {
             workspace.mapped().any(|m| m == mapped)
                 || workspace
                     .minimized_windows
@@ -3147,7 +3323,7 @@ impl Shell {
     }
 
     pub fn space_for_mut(&mut self, mapped: &CosmicMapped) -> Option<&mut Workspace> {
-        self.workspaces.spaces_mut().find(|workspace| {
+        self.workspaces_mut().spaces_mut().find(|workspace| {
             workspace.mapped().any(|m| m == mapped)
                 || workspace
                     .minimized_windows
@@ -3157,7 +3333,7 @@ impl Shell {
     }
 
     pub fn outputs(&self) -> impl DoubleEndedIterator<Item = &Output> {
-        self.workspaces.sets.keys()
+        self.workspaces().sets.keys()
     }
 
     pub fn next_output(&self, current_output: &Output, direction: Direction) -> Option<&Output> {
@@ -3249,7 +3425,7 @@ impl Shell {
         // Outputs whose floating/sticky layer still has a crossfade in flight
         // need redraws even after the slide motion has settled (see
         // `animations_going`). Targeted so unrelated monitors stay idle.
-        for (output, set) in self.workspaces.sets.iter() {
+        for (output, set) in self.workspaces().sets.iter() {
             if outputs.contains(output) {
                 continue;
             }
@@ -3266,7 +3442,7 @@ impl Shell {
     }
 
     fn non_slide_animations_going(&self) -> bool {
-        let workspace_sets = self.workspaces.sets.values().any(|set| {
+        let workspace_sets = self.workspaces().sets.values().any(|set| {
             set.previously_active
                 .as_ref()
                 .is_some_and(|(_, delta)| delta.is_animating())
@@ -3281,7 +3457,7 @@ impl Shell {
             ResizeMode::None | ResizeMode::Active(_, _)
         );
         let workspaces = self
-            .workspaces
+            .workspaces()
             .spaces()
             .any(|workspace| workspace.animations_going());
         let zoom = self.zoom_state.as_ref().is_some_and(|_| {
@@ -3328,10 +3504,10 @@ impl Shell {
 
     pub fn update_animations(&mut self) -> HashMap<ClientId, Client> {
         let mut clients = HashMap::new();
-        for set in self.workspaces.sets.values_mut() {
+        for set in self.workspaces_mut().sets.values_mut() {
             set.sticky_layer.update_animation_state();
         }
-        for workspace in self.workspaces.spaces_mut() {
+        for workspace in self.workspaces_mut().spaces_mut() {
             clients.extend(workspace.update_animations());
         }
         // Update auto-hide animations and send visibility events
@@ -3377,7 +3553,7 @@ impl Shell {
                 self.override_slide_exclusive_zones(output);
                 layer_map_for_output(output).arrange();
             }
-            self.workspaces.recalculate();
+            self.workspaces_mut().recalculate();
         }
         // Advance the side-panel spring resize (maximize/restore, presets).
         self.update_layer_resize_animation();
@@ -3685,7 +3861,7 @@ impl Shell {
 
         // Pre-compute per-output state to avoid borrow issues.
         let outputs_maximized: Vec<(Output, bool)> = self
-            .workspaces
+            .workspaces()
             .sets
             .keys()
             .map(|output| {
@@ -3695,7 +3871,7 @@ impl Shell {
             .collect();
 
         let outputs_has_windows: Vec<(Output, bool)> = self
-            .workspaces
+            .workspaces()
             .sets
             .keys()
             .map(|output| {
@@ -4564,7 +4740,7 @@ impl Shell {
         });
         self.override_active_layer_resize(&output);
         if layer_map_for_output(&output).arrange() {
-            self.workspaces.recalculate();
+            self.workspaces_mut().recalculate();
         }
 
         if done {
@@ -4655,14 +4831,14 @@ impl Shell {
             layer_map_for_output(output).arrange();
         }
         for output in &outputs_to_arrange {
-            self.workspaces.recalculate_output(output);
+            self.workspaces_mut().recalculate_output(output);
         }
     }
 
     /// Set slide_active on all floating and tiling layouts (sticky + per-workspace).
     fn set_slide_active(&mut self, active: bool) {
         tracing::debug!(active, "[SLIDE] set_slide_active");
-        for set in self.workspaces.sets.values_mut() {
+        for set in self.workspaces_mut().sets.values_mut() {
             set.sticky_layer.slide_active = active;
             for workspace in &mut set.workspaces {
                 workspace.floating_layer.slide_active = active;
@@ -4674,7 +4850,7 @@ impl Shell {
     /// Propagate the current slide crossfade fraction (1.0 = transition just
     /// started, 0.0 = settled) to all floating layouts.
     fn set_slide_fade(&mut self, fade: f32) {
-        for set in self.workspaces.sets.values_mut() {
+        for set in self.workspaces_mut().sets.values_mut() {
             set.sticky_layer.slide_fade = fade;
             for workspace in &mut set.workspaces {
                 workspace.floating_layer.slide_fade = fade;
@@ -4689,7 +4865,7 @@ impl Shell {
     /// tick with `force_all=false` (sends each window's configure once its
     /// snapshot is captured) and once at settle with `force_all=true`.
     fn flush_deferred_slide_configures(&mut self, force_all: bool) {
-        for set in self.workspaces.sets.values_mut() {
+        for set in self.workspaces_mut().sets.values_mut() {
             set.sticky_layer.flush_deferred_slide_configures(force_all);
             for workspace in &mut set.workspaces {
                 workspace
@@ -4705,7 +4881,7 @@ impl Shell {
     /// (`animations_going` / `animating_outputs`) consult this to keep rendering
     /// until the fade finishes — otherwise it freezes mid-dissolve (a blink).
     pub fn any_slide_fade_in_flight(&self) -> bool {
-        self.workspaces.sets.values().any(|set| {
+        self.workspaces().sets.values().any(|set| {
             set.sticky_layer.has_slide_fade_in_flight()
                 || set
                     .workspaces
@@ -4773,7 +4949,7 @@ impl Shell {
         // crop-and-configure-at-end flow (their buffers must keep covering the
         // animated slots). Every window that got a final-size configure is
         // armed for an old-content snapshot on the next render frame.
-        for (output, set) in self.workspaces.sets.iter_mut() {
+        for (output, set) in self.workspaces_mut().sets.iter_mut() {
             if !outputs.contains(output) {
                 continue;
             }
@@ -4802,7 +4978,7 @@ impl Shell {
 
     /// Check if any floating/tiling layer still has slide_active set.
     fn is_slide_active(&self) -> bool {
-        self.workspaces
+        self.workspaces()
             .sets
             .values()
             .any(|set| set.sticky_layer.slide_active)
@@ -5833,7 +6009,7 @@ impl Shell {
     ) -> Option<Rectangle<i32, Local>> {
         match layer {
             ManagedLayer::Sticky => self
-                .workspaces
+                .workspaces()
                 .sets
                 .get(output)
                 .and_then(|set| set.sticky_layer.stacking_indicator()),
@@ -6008,7 +6184,7 @@ impl Shell {
             }
         }
 
-        self.workspaces
+        self.workspaces_mut()
             .refresh(workspace_state, xdg_activation_state);
 
         for output in self.outputs() {
@@ -6028,7 +6204,10 @@ impl Shell {
     }
 
     pub fn update_pointer_position(&mut self, location: Point<f64, Local>, output: &Output) {
-        for (o, set) in self.workspaces.sets.iter_mut() {
+        for (o, set) in Shell::realm_mut(&mut self.realms, &self.active_realm)
+            .sets
+            .iter_mut()
+        {
             if o == output {
                 set.sticky_layer.update_pointer_position(Some(location));
                 for (i, workspace) in set.workspaces.iter_mut().enumerate() {
@@ -6087,11 +6266,11 @@ impl Shell {
                 .upgrade()
                 .unwrap_or_else(|| self.seats.last_active().active_output());
             toplevel_enter_output(&window.active_window(), &output);
-            let set = self
-                .workspaces
+            let realm = Shell::realm_mut(&mut self.realms, &self.active_realm);
+            let set = realm
                 .sets
                 .get_mut(&output)
-                .or(self.workspaces.backup_set.as_mut())
+                .or(realm.backup_set.as_mut())
                 .unwrap();
             set.sticky_layer.map_internal(
                 window.clone(),
@@ -6106,17 +6285,22 @@ impl Shell {
         let workspace = match &state {
             Some(FullscreenRestoreState::Floating { workspace, .. })
             | Some(FullscreenRestoreState::Tiling { workspace, .. }) => {
-                let workspace = self.workspaces.space_for_handle_mut(workspace);
+                let workspace = Shell::realm_mut(&mut self.realms, &self.active_realm)
+                    .space_for_handle_mut(workspace);
                 let workspace = match workspace {
                     Some(workspace) => workspace,
-                    None => self.workspaces.active_mut(&seat.active_output()).unwrap(),
+                    None => Shell::realm_mut(&mut self.realms, &self.active_realm)
+                        .active_mut(&seat.active_output())
+                        .unwrap(),
                 };
                 toplevel_enter_output(&window.active_window(), &workspace.output);
                 toplevel_enter_workspace(&window.active_window(), &workspace.handle);
 
                 workspace
             }
-            None => self.workspaces.active_mut(&seat.active_output()).unwrap(),
+            None => Shell::realm_mut(&mut self.realms, &self.active_realm)
+                .active_mut(&seat.active_output())
+                .unwrap(),
             Some(FullscreenRestoreState::Sticky { .. } | FullscreenRestoreState::Stack { .. }) => {
                 unreachable!()
             }
@@ -6283,7 +6467,7 @@ impl Shell {
                     );
 
                     // Check workspaces on this output
-                    for workspace in self.workspaces.spaces().filter(|s| &s.output == output) {
+                    for workspace in self.workspaces().spaces().filter(|s| &s.output == output) {
                         for mapped in workspace.mapped() {
                             let mapped_app_id = mapped.active_window().app_id();
                             let mapped_surface_id = mapped.active_window().wl_surface().map(|s| s.id().to_string());
@@ -6307,7 +6491,7 @@ impl Shell {
                     }
 
                     // Check sticky layer on this output
-                    if let Some(set) = self.workspaces.sets.get(output) {
+                    if let Some(set) = self.workspaces().sets.get(output) {
                         for mapped in set.sticky_layer.mapped() {
                             let mapped_app_id = mapped.active_window().app_id();
                             let mapped_surface_id = mapped.active_window().wl_surface().map(|s| s.id().to_string());
@@ -6357,7 +6541,7 @@ impl Shell {
             self.space_for(parent)
                 .map(|workspace| workspace.output.clone())
                 .or_else(|| {
-                    self.workspaces.sets.iter().find_map(|(output, set)| {
+                    self.workspaces().sets.iter().find_map(|(output, set)| {
                         set.sticky_layer
                             .mapped()
                             .any(|m| m == parent)
@@ -6371,7 +6555,7 @@ impl Shell {
             .and_then(|parent| self.space_for(parent).map(|workspace| workspace.handle));
 
         let transient_parent_is_sticky = transient_parent.as_ref().is_some_and(|parent| {
-            self.workspaces
+            self.workspaces()
                 .sets
                 .values()
                 .any(|set| set.sticky_layer.mapped().any(|m| m == parent))
@@ -6382,7 +6566,7 @@ impl Shell {
             should_be_sticky = if let Some(toplevel) = window.0.toplevel() {
                 if let Some(parent) = toplevel.parent() {
                     if let Some(elem) = self.element_for_surface(&parent) {
-                        self.workspaces
+                        self.workspaces()
                             .sets
                             .values()
                             .any(|set| set.sticky_layer.mapped().any(|m| m == elem))
@@ -6422,16 +6606,16 @@ impl Shell {
 
         // this is beyond stupid, just to make the borrow checker happy
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {
-            self.workspaces
+            self.workspaces()
                 .spaces()
                 .any(|space| &space.handle == handle)
         }) {
-            self.workspaces
+            self.workspaces_mut()
                 .spaces_mut()
                 .find(|space| space.handle == handle)
                 .unwrap()
         } else {
-            self.workspaces.active_mut(&output).unwrap() // a seat's active output always has a workspace
+            self.workspaces_mut().active_mut(&output).unwrap() // a seat's active output always has a workspace
         };
         if output != workspace.output {
             output = workspace.output.clone();
@@ -6439,16 +6623,18 @@ impl Shell {
 
         let active_handle = self.active_space(&output).unwrap().handle;
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {
-            self.workspaces
+            self.workspaces()
                 .spaces()
                 .any(|space| &space.handle == handle)
         }) {
-            self.workspaces
+            Shell::realm_mut(&mut self.realms, &self.active_realm)
                 .spaces_mut()
                 .find(|space| space.handle == handle)
                 .unwrap()
         } else {
-            self.workspaces.active_mut(&output).unwrap()
+            Shell::realm_mut(&mut self.realms, &self.active_realm)
+                .active_mut(&output)
+                .unwrap()
         };
 
         toplevel_info.new_toplevel(&window, workspace_state);
@@ -6664,7 +6850,7 @@ impl Shell {
     ) {
         // Collect children that are transient to this parent
         let orphans: Vec<CosmicMapped> = self
-            .workspaces
+            .workspaces()
             .sets
             .values()
             .flat_map(|set| {
@@ -6689,14 +6875,14 @@ impl Shell {
         // First, move any orphans that are on the wrong workspace
         for orphan in &orphans {
             let already_on_target = self
-                .workspaces
+                .workspaces()
                 .spaces()
                 .find(|w| w.handle == parent_workspace_handle)
                 .is_some_and(|w| w.mapped().any(|m| m == orphan));
 
             if !already_on_target {
                 // Remove from current workspace
-                for workspace in self.workspaces.spaces_mut() {
+                for workspace in self.workspaces_mut().spaces_mut() {
                     if workspace.mapped().any(|m| m == orphan) {
                         workspace.unmap_element(orphan);
                         break;
@@ -6705,7 +6891,7 @@ impl Shell {
 
                 // Map onto parent's workspace as floating (position set below)
                 if let Some(workspace) = self
-                    .workspaces
+                    .workspaces_mut()
                     .spaces_mut()
                     .find(|w| w.handle == parent_workspace_handle)
                 {
@@ -6719,7 +6905,7 @@ impl Shell {
         // Use ORIGINAL X11 geometries (stored at map time, before compositor configuration)
         // because the compositor may have placed the child at a default position.
         let workspace = match self
-            .workspaces
+            .workspaces()
             .spaces()
             .find(|w| w.handle == parent_workspace_handle)
         {
@@ -6788,7 +6974,7 @@ impl Shell {
 
         // Re-map at corrected positions (need mutable access)
         if let Some(workspace) = self
-            .workspaces
+            .workspaces_mut()
             .spaces_mut()
             .find(|w| w.handle == parent_workspace_handle)
         {
@@ -6816,7 +7002,7 @@ impl Shell {
 
         // First pass: find children and compute offsets
         let children: Vec<(CosmicMapped, Point<i32, Logical>)> = self
-            .workspaces
+            .workspaces()
             .spaces()
             .flat_map(|w| {
                 w.mapped()
@@ -6837,7 +7023,7 @@ impl Shell {
 
         // Second pass: unmap children from their workspaces
         for (child, _) in &children {
-            for workspace in self.workspaces.spaces_mut() {
+            for workspace in self.workspaces_mut().spaces_mut() {
                 if workspace
                     .floating_layer
                     .space
@@ -7017,7 +7203,7 @@ impl Shell {
             }
         }
 
-        for workspace in self.workspaces.spaces_mut() {
+        for workspace in self.workspaces_mut().spaces_mut() {
             workspace.recalculate();
         }
 
@@ -7033,7 +7219,7 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        for set in self.workspaces.sets.values_mut() {
+        for set in self.workspaces_mut().sets.values_mut() {
             let sticky_res = set.sticky_layer.mapped().find_map(|m| {
                 m.windows()
                     .position(|(s, _)| &s == surface)
@@ -7111,23 +7297,23 @@ impl Shell {
         evlh: &LoopHandle<'static, State>,
     ) -> Result<Option<(KeyboardFocusTarget, Point<i32, Global>)>, InvalidWorkspaceIndex> {
         let (to_output, to_idx) = to;
-        let to_idx = to_idx.unwrap_or(self.workspaces.active_num(to_output).1);
+        let to_idx = to_idx.unwrap_or(self.workspaces().active_num(to_output).1);
         let from_output = seat.focused_or_active_output();
-        let from_idx = self.workspaces.active_num(&from_output).1;
+        let from_idx = self.workspaces().active_num(&from_output).1;
 
-        if &from_output == to_output && to_idx == self.workspaces.active_num(&from_output).1 {
+        if &from_output == to_output && to_idx == self.workspaces().active_num(&from_output).1 {
             return Ok(None);
         }
 
         if &from_output == to_output
             && to_idx.checked_sub(1).is_some_and(|idx| idx == from_idx)
-            && to_idx == self.workspaces.len(to_output) - 1
+            && to_idx == self.workspaces().len(to_output) - 1
             && self
-                .workspaces
+                .workspaces()
                 .get(from_idx, &from_output)
                 .is_some_and(|w| w.len() == 1)
             && self
-                .workspaces
+                .workspaces()
                 .get(to_idx, to_output)
                 .is_some_and(|w| w.is_empty())
         {
@@ -7135,13 +7321,13 @@ impl Shell {
         }
 
         let to = self
-            .workspaces
+            .workspaces()
             .get(to_idx, to_output)
             .map(|ws| ws.handle)
             .ok_or(InvalidWorkspaceIndex)?;
 
         let from_workspace = self
-            .workspaces
+            .workspaces_mut()
             .active_mut(&from_output)
             .ok_or(InvalidWorkspaceIndex)?;
         let from = from_workspace.handle;
@@ -7152,7 +7338,7 @@ impl Shell {
             })) => {
                 let new_pos = if follow {
                     seat.set_active_output(to_output);
-                    self.workspaces
+                    self.workspaces()
                         .idx_for_handle(to_output, &to)
                         .and_then(|to_idx| {
                             self.activate(
@@ -7167,7 +7353,7 @@ impl Shell {
                     None
                 };
 
-                let spaces = self.workspaces.spaces_mut();
+                let spaces = self.workspaces_mut().spaces_mut();
                 let (mut from_w, mut other_w) = spaces.partition::<Vec<_>, _>(|w| w.handle == from);
                 if let Some(from_workspace) = from_w.get_mut(0)
                     && let Some(to_workspace) = other_w.iter_mut().find(|w| w.handle == to)
@@ -7264,11 +7450,15 @@ impl Shell {
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
         evlh: &LoopHandle<'static, State>,
     ) -> Option<(KeyboardFocusTarget, Point<i32, Global>)> {
-        let from_output = self.workspaces.space_for_handle(from)?.output.clone();
-        let to_output = self.workspaces.space_for_handle(to)?.output.clone();
-        let to_is_tiling = self.workspaces.space_for_handle(to).unwrap().tiling_enabled;
+        let from_output = self.workspaces().space_for_handle(from)?.output.clone();
+        let to_output = self.workspaces().space_for_handle(to)?.output.clone();
+        let to_is_tiling = self
+            .workspaces()
+            .space_for_handle(to)
+            .unwrap()
+            .tiling_enabled;
 
-        let from_workspace = self.workspaces.space_for_handle_mut(from).unwrap(); // checked above
+        let from_workspace = self.workspaces_mut().space_for_handle_mut(from).unwrap(); // checked above
 
         let is_minimized = window.is_minimized();
         let is_fullscreen = from_workspace
@@ -7321,7 +7511,9 @@ impl Shell {
         }
 
         if is_minimized {
-            let to_workspace = self.workspaces.space_for_handle_mut(to).unwrap(); // checked above
+            let to_workspace = Shell::realm_mut(&mut self.realms, &self.active_realm)
+                .space_for_handle_mut(to)
+                .unwrap(); // checked above
             let minimized_window = match window_state {
                 WorkspaceRestoreData::Floating(previous) => {
                     let window = CosmicMapped::from(CosmicWindow::new(
@@ -7371,7 +7563,7 @@ impl Shell {
             if let Some(seat) = seat {
                 seat.set_active_output(&to_output);
             }
-            self.workspaces
+            self.workspaces()
                 .idx_for_handle(&to_output, to)
                 .and_then(|to_idx| {
                     self.activate(
@@ -7386,7 +7578,9 @@ impl Shell {
             None
         };
 
-        let to_workspace = self.workspaces.space_for_handle_mut(to).unwrap(); // checked above
+        let to_workspace = Shell::realm_mut(&mut self.realms, &self.active_realm)
+            .space_for_handle_mut(to)
+            .unwrap(); // checked above
         let to_mapped = to_workspace.mapped().cloned().collect::<Vec<_>>();
 
         let focus_target: KeyboardFocusTarget =
@@ -7465,10 +7659,10 @@ impl Shell {
         direction: Option<Direction>,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Option<(KeyboardFocusTarget, Point<i32, Global>)> {
-        let from_output = self.workspaces.space_for_handle(from)?.output.clone();
-        let to_output = self.workspaces.space_for_handle(to)?.output.clone();
+        let from_output = self.workspaces().space_for_handle(from)?.output.clone();
+        let to_output = self.workspaces().space_for_handle(to)?.output.clone();
 
-        let from_workspace = self.workspaces.space_for_handle_mut(from).unwrap(); // checked above
+        let from_workspace = self.workspaces_mut().space_for_handle_mut(from).unwrap(); // checked above
         let window_state = from_workspace.unmap_element(mapped)?;
         let elements = from_workspace.mapped().cloned().collect::<Vec<_>>();
 
@@ -7485,7 +7679,7 @@ impl Shell {
             if let Some(seat) = seat {
                 seat.set_active_output(&to_output);
             }
-            self.workspaces
+            self.workspaces()
                 .idx_for_handle(&to_output, to)
                 .and_then(|to_idx| {
                     self.activate(
@@ -7500,7 +7694,7 @@ impl Shell {
             None
         };
 
-        let to_workspace = self.workspaces.space_for_handle_mut(to).unwrap(); // checked above
+        let to_workspace = self.workspaces_mut().space_for_handle_mut(to).unwrap(); // checked above
         if !to_workspace.tiling_enabled {
             let (position, was_maximized, was_snapped) = match &window_state {
                 WorkspaceRestoreData::Floating(data) => (
@@ -7640,7 +7834,7 @@ impl Shell {
         };
 
         let (global_position, menu_items) = if let Some((set, mapped, relative_loc)) =
-            self.workspaces.sets.values().find_map(|set| {
+            self.workspaces().sets.values().find_map(|set| {
                 set.sticky_layer
                     .mapped()
                     .find_map(|m| {
@@ -7660,7 +7854,7 @@ impl Shell {
                 items_for_element(mapped, false, true, false, ResizeEdge::all()),
             )
         } else if let Some((workspace, output)) = self.workspace_for_surface(surface) {
-            let workspace = self.workspaces.space_for_handle(&workspace).unwrap();
+            let workspace = self.workspaces().space_for_handle(&workspace).unwrap();
 
             if let Some(fs) = workspace
                 .get_fullscreen_surfaces()
@@ -7774,7 +7968,7 @@ impl Shell {
         }
 
         let maybe_fullscreen_workspace = self
-            .workspaces
+            .workspaces_mut()
             .spaces_mut()
             .find(|w| w.get_fullscreen_surfaces().any(|f| &f.surface == surface));
         if let Some(workspace) = maybe_fullscreen_workspace {
@@ -7954,7 +8148,7 @@ impl Shell {
                 (initial_window_location, layer, workspace.handle, new_size)
             } else {
                 let sticky_layer = self
-                    .workspaces
+                    .workspaces_mut()
                     .sets
                     .get_mut(&cursor_output)
                     .filter(|set| set.sticky_layer.mapped().any(|m| m == &old_mapped))
@@ -8032,7 +8226,7 @@ impl Shell {
 
         if move_out_of_stack {
             old_mapped.stack_ref().unwrap().remove_window(&window);
-            self.workspaces
+            self.workspaces_mut()
                 .space_for_handle_mut(&workspace_handle)
                 .unwrap()
                 .refresh();
@@ -8075,7 +8269,7 @@ impl Shell {
             KeyboardFocusTarget::Fullscreen(surface) => surface
                 .wl_surface()
                 .and_then(|s| self.workspace_for_surface(&s))
-                .and_then(|(handle, _)| self.workspaces.space_for_handle(&handle))
+                .and_then(|(handle, _)| self.workspaces().space_for_handle(&handle))
                 .map(|workspace| {
                     workspace
                         .fullscreen_geometry_for_surface(surface)
@@ -8093,7 +8287,7 @@ impl Shell {
 
     pub fn element_geometry(&self, mapped: &CosmicMapped) -> Option<Rectangle<i32, Global>> {
         if let Some(set) = self
-            .workspaces
+            .workspaces()
             .sets
             .values()
             .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
@@ -8127,7 +8321,7 @@ impl Shell {
             return FocusResult::None;
         }
 
-        let set = self.workspaces.sets.get(&output).unwrap();
+        let set = self.workspaces().sets.get(&output).unwrap();
         let sticky_layer = &set.sticky_layer;
         let workspace = &set.workspaces[set.active];
 
@@ -8259,8 +8453,8 @@ impl Shell {
                 MoveResult::MoveFurther(KeyboardFocusTarget::Fullscreen(surface))
             }
             Some(FocusTarget::Window(mapped)) => {
-                if let Some(set) = self
-                    .workspaces
+                let theme = self.theme.clone();
+                if let Some(set) = Shell::realm_mut(&mut self.realms, &self.active_realm)
                     .sets
                     .values_mut()
                     .find(|set| set.sticky_layer.mapped().any(|m| &mapped == m))
@@ -8269,7 +8463,7 @@ impl Shell {
                         direction,
                         seat,
                         ManagedLayer::Sticky,
-                        self.theme.clone(),
+                        theme,
                     )
                 } else {
                     let theme = self.theme.clone();
@@ -8314,7 +8508,7 @@ impl Shell {
         let mut start_data = check_grab_preconditions(seat, None, None)?;
 
         let (floating_layer, geometry) = if let Some(set) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .values_mut()
             .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
@@ -8411,7 +8605,7 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        if let Some((set, mapped)) = self.workspaces.sets.values_mut().find_map(|set| {
+        if let Some((set, mapped)) = self.workspaces_mut().sets.values_mut().find_map(|set| {
             let mapped = set
                 .sticky_layer
                 .mapped()
@@ -8431,7 +8625,7 @@ impl Shell {
                 },
             });
         } else if let Some((workspace, window)) =
-            self.workspaces.sets.values_mut().find_map(|set| {
+            self.workspaces_mut().sets.values_mut().find_map(|set| {
                 set.workspaces.iter_mut().find_map(|workspace| {
                     let window = workspace
                         .get_fullscreen_surfaces()
@@ -8459,7 +8653,7 @@ impl Shell {
     ) where
         CosmicSurface: PartialEq<S>,
     {
-        if let Some((set, window)) = self.workspaces.sets.values_mut().find_map(|set| {
+        if let Some((set, window)) = self.workspaces_mut().sets.values_mut().find_map(|set| {
             set.minimized_windows
                 .iter()
                 .position(|m| m.windows().any(|s| &s == surface))
@@ -8479,7 +8673,7 @@ impl Shell {
             set.sticky_layer
                 .remap_minimized(window, from, previous_position);
         } else {
-            let Some((workspace, window)) = self.workspaces.spaces_mut().find_map(|w| {
+            let Some((workspace, window)) = self.workspaces_mut().spaces_mut().find_map(|w| {
                 w.minimized_windows
                     .iter()
                     .position(|m| m.windows().any(|s| &s == surface))
@@ -8544,7 +8738,7 @@ impl Shell {
         self.unminimize_request(&mapped.active_window(), seat, loop_handle);
 
         let (original_layer, floating_layer, mut original_geometry) = if let Some(set) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .values_mut()
             .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
@@ -8599,7 +8793,7 @@ impl Shell {
         &mut self,
         mapped: &CosmicMapped,
     ) -> Option<Size<i32, Logical>> {
-        if let Some(set) = self.workspaces.sets.values_mut().find(|set| {
+        if let Some(set) = self.workspaces_mut().sets.values_mut().find(|set| {
             set.sticky_layer.mapped().any(|m| m == mapped)
                 || set
                     .minimized_windows
@@ -8677,7 +8871,7 @@ impl Shell {
         }
 
         let floating_layer = if let Some(set) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .values_mut()
             .find(|set| set.sticky_layer.mapped().any(|m| m == &mapped))
@@ -8722,7 +8916,7 @@ impl Shell {
         let Some(output) = seat.focused_output() else {
             return;
         };
-        let (_, idx) = self.workspaces.active_num(&output);
+        let (_, idx) = self.workspaces().active_num(&output);
         let Some(focused) = seat.get_keyboard().unwrap().current_focus() else {
             return;
         };
@@ -8735,7 +8929,7 @@ impl Shell {
         .min(20);
 
         if self
-            .workspaces
+            .workspaces_mut()
             .sets
             .get_mut(&output)
             .unwrap()
@@ -8743,7 +8937,7 @@ impl Shell {
             .resize(&focused, direction, edge, amount)
         {
             self.resize_state = Some((focused, direction, edge, amount, idx, output));
-        } else if let Some(workspace) = self.workspaces.get_mut(idx, &output)
+        } else if let Some(workspace) = self.workspaces_mut().get_mut(idx, &output)
             && workspace.resize(&focused, direction, edge, amount)
         {
             self.resize_state = Some((focused, direction, edge, amount, idx, output));
@@ -8760,7 +8954,7 @@ impl Shell {
                 return;
             };
             let Some(mapped) = self
-                .workspaces
+                .workspaces()
                 .sets
                 .values()
                 .find_map(|set| {
@@ -8770,7 +8964,7 @@ impl Shell {
                 })
                 .cloned()
                 .or_else(|| {
-                    let workspace = self.workspaces.get(idx, &output).unwrap();
+                    let workspace = self.workspaces().get(idx, &output).unwrap();
                     workspace
                         .mapped()
                         .find(|m| m.has_surface(&toplevel, WindowSurfaceType::TOPLEVEL))
@@ -8795,7 +8989,7 @@ impl Shell {
         window: &CosmicMapped,
     ) -> Option<KeyboardFocusTarget> {
         if let Some(set) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .values_mut()
             .find(|set| set.sticky_layer.mapped().any(|m| m == window))
@@ -8827,7 +9021,7 @@ impl Shell {
         loop_handle: &LoopHandle<'static, State>,
     ) -> Option<KeyboardFocusTarget> {
         let focused_output = seat.focused_output()?;
-        let set = self.workspaces.sets.get_mut(&focused_output).unwrap();
+        let set = self.workspaces_mut().sets.get_mut(&focused_output).unwrap();
         let workspace = &mut set.workspaces[set.active];
 
         if matches!(
@@ -8871,7 +9065,7 @@ impl Shell {
 
     pub fn toggle_sticky(&mut self, seat: &Seat<State>, mapped: &CosmicMapped) {
         // clean from focus-stacks
-        for workspace in self.workspaces.spaces_mut() {
+        for workspace in Shell::realm_mut(&mut self.realms, &self.active_realm).spaces_mut() {
             for seat in self.seats.iter() {
                 let mut stack = workspace.focus_stack.get_mut(seat);
                 stack.remove(mapped);
@@ -8899,7 +9093,7 @@ impl Shell {
                 toplevel_leave_workspace(&window, &handle);
             }
 
-            let set = self.workspaces.sets.get_mut(&output).unwrap();
+            let set = self.workspaces_mut().sets.get_mut(&output).unwrap();
             set.sticky_layer.map(mapped.clone(), geometry.loc);
 
             let mut state = mapped.maximized_state.lock().unwrap();
@@ -8922,7 +9116,7 @@ impl Shell {
                 );
             }
         } else if let Some(set) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .values_mut()
             .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
@@ -8981,7 +9175,11 @@ impl Shell {
         ) {
             return;
         }
-        let set = self.workspaces.sets.get_mut(&seat.active_output()).unwrap();
+        let set = self
+            .workspaces_mut()
+            .sets
+            .get_mut(&seat.active_output())
+            .unwrap();
         let workspace = &mut set.workspaces[set.active];
 
         let maybe_window = workspace.focus_stack.get(seat).iter().next().cloned();
@@ -9014,7 +9212,7 @@ impl Shell {
         let window;
 
         if let Some((old_output, set)) = self
-            .workspaces
+            .workspaces_mut()
             .sets
             .iter_mut()
             .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &mapped))
@@ -9143,7 +9341,7 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        let maybe_workspace = self.workspaces.iter_mut().find_map(|(_, s)| {
+        let maybe_workspace = self.workspaces_mut().iter_mut().find_map(|(_, s)| {
             s.workspaces
                 .iter_mut()
                 .find(|w| w.get_fullscreen_surfaces().any(|f| &f.surface == surface))
@@ -9175,7 +9373,7 @@ impl Shell {
             *container = toolkit;
             drop(container);
             self.refresh(xdg_activation_state, workspace_state);
-            self.workspaces.force_redraw();
+            self.workspaces_mut().force_redraw();
         }
     }
 
@@ -9189,7 +9387,7 @@ impl Shell {
         self.refresh(xdg_activation_state, workspace_state);
 
         // Update all mapped windows (SSDs, tab bars, etc.)
-        self.workspaces.set_theme(theme.clone());
+        self.workspaces_mut().set_theme(theme.clone());
 
         // Update transient shell UI elements
         if let Some(ref indicator) = self.swap_indicator {
@@ -9262,7 +9460,7 @@ impl Shell {
         // `Common::send_frames` walks both of these; this must stay in step
         // with it. Surfaces belonging to another output are filtered inside
         // smithay by the `surface_primary_scanout_output` check.
-        if let Some(set) = self.workspaces.sets.get(output) {
+        if let Some(set) = self.workspaces().sets.get(output) {
             set.sticky_layer.mapped().for_each(|mapped| {
                 mapped.active_window().take_presentation_feedback(
                     &mut output_presentation_feedback,
@@ -9329,10 +9527,10 @@ impl Shell {
         // Mirroring drops the output from `sets` while its surface thread may still be
         // mid-redraw with `mirroring` unset, so the set can be gone here too.
         let namespace = self
-            .workspaces
+            .workspaces()
             .sets
             .get(output)
-            .or(self.workspaces.backup_set.as_ref())
+            .or(self.workspaces().backup_set.as_ref())
             .map(|set| set.active);
         for layer_surface in map.layers() {
             layer_surface.take_presentation_feedback(
@@ -9352,7 +9550,7 @@ impl Shell {
     }
 
     pub fn mapped(&self) -> impl Iterator<Item = &CosmicMapped> {
-        self.workspaces.iter().flat_map(|(_, set)| {
+        self.workspaces().iter().flat_map(|(_, set)| {
             set.sticky_layer
                 .mapped()
                 .chain(set.minimized_windows.iter().flat_map(|m| m.mapped()))

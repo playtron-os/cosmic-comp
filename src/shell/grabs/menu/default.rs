@@ -35,12 +35,12 @@ fn prev_workspace(
 ) -> Option<(WorkspaceHandle, WorkspaceHandle)> {
     let (current_handle, output) = shell.workspace_for_surface(surface)?;
     shell
-        .workspaces
+        .workspaces()
         .spaces_for_output(&output)
         .enumerate()
         .find_map(|(i, space)| (space.handle == current_handle).then_some(i))
         .and_then(|i| i.checked_sub(1))
-        .and_then(|i| shell.workspaces.get(i, &output))
+        .and_then(|i| shell.workspaces().get(i, &output))
         .map(|space| (current_handle, space.handle))
 }
 
@@ -50,7 +50,7 @@ fn next_workspace(
 ) -> Option<(WorkspaceHandle, WorkspaceHandle)> {
     let (current_handle, output) = shell.workspace_for_surface(surface)?;
     shell
-        .workspaces
+        .workspaces()
         .spaces_for_output(&output)
         .skip_while(|space| space.handle != current_handle)
         .nth(1)
@@ -189,7 +189,7 @@ pub fn tab_items(
                 let mut shell = state.common.shell.write();
                 let seat = shell.seats.last_active().clone();
                 let output = seat.active_output();
-                let workspace = shell.workspaces.active_mut(&output).unwrap();
+                let workspace = shell.workspaces_mut().active_mut(&output).unwrap();
                 if is_tiled {
                     for mapped in workspace
                         .mapped()

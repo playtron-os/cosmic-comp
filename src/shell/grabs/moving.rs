@@ -512,7 +512,7 @@ impl MoveGrab {
         };
         if self.cursor_output != current_output {
             shell
-                .workspaces
+                .workspaces_mut()
                 .active_mut(&self.cursor_output)
                 .unwrap()
                 .tiling_layer
@@ -1001,7 +1001,7 @@ impl Drop for MoveGrab {
                             grab_state
                                 .window
                                 .set_geometry(Rectangle::new(window_location, drop_size));
-                            let set = shell.workspaces.sets.get_mut(&output).unwrap();
+                            let set = shell.workspaces_mut().sets.get_mut(&output).unwrap();
                             let (window, location) = set
                                 .sticky_layer
                                 .drop_window(grab_state.window, window_location.to_local(&output));
@@ -1125,7 +1125,7 @@ impl Drop for MoveGrab {
                     drop_result
                 } else {
                     shell
-                        .workspaces
+                        .workspaces_mut()
                         .active_mut(&cursor_output)
                         .unwrap()
                         .tiling_layer
@@ -1166,7 +1166,7 @@ impl Drop for MoveGrab {
                             // Find and move each embedded child
                             let shell = state.common.shell.read();
                             let embedded_mapped = shell
-                                .workspaces
+                                .workspaces()
                                 .spaces()
                                 .flat_map(|s| s.mapped())
                                 .find(|m| {
@@ -1212,7 +1212,7 @@ impl Drop for MoveGrab {
 
             let mut shell = state.common.shell.write();
             shell
-                .workspaces
+                .workspaces_mut()
                 .active_mut(&cursor_output)
                 .unwrap()
                 .tiling_layer

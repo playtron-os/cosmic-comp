@@ -1192,7 +1192,7 @@ impl Program for CosmicStackInternal {
                             let shell = state.common.shell.read();
                             if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
                                 let position = if let Some((output, set)) =
-                                    shell.workspaces.sets.iter().find(|(_, set)| {
+                                    shell.workspaces().sets.iter().find(|(_, set)| {
                                         set.sticky_layer.mapped().any(|m| m == &mapped)
                                     }) {
                                     set.sticky_layer

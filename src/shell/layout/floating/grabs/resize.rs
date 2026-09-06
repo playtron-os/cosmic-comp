@@ -263,7 +263,7 @@ impl PointerGrab<State> for ResizeSurfaceGrab {
                         .common
                         .shell
                         .write()
-                        .workspaces
+                        .workspaces_mut()
                         .active_mut(&self.output)
                         && let Some(embedded_elem) = ws.floating_layer.space.elements().find(|e| {
                             e.active_window()
@@ -452,7 +452,7 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
                             .common
                             .shell
                             .write()
-                            .workspaces
+                            .workspaces_mut()
                             .active_mut(&self.output)
                             && let Some(embedded_elem) =
                                 ws.floating_layer.space.elements().find(|e| {
@@ -585,7 +585,7 @@ impl ResizeSurfaceGrab {
         }
 
         let (output, floating_layer) = if let Some((output, set)) = shell
-            .workspaces
+            .workspaces_mut()
             .sets
             .iter_mut()
             .find(|(_, set)| set.sticky_layer.mapped().any(|m| m == &window))

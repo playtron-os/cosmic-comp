@@ -162,7 +162,7 @@ fn render_input_order_internal<R: 'static>(
     // Xwayland game may not satisfy.
     let game_mode_exclusive = shell.game_mode.active
         && shell
-            .workspaces
+            .workspaces()
             .sets
             .get(output)
             .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
@@ -189,7 +189,7 @@ fn render_input_order_internal<R: 'static>(
     .flatten()
     .filter(|controlled| {
         shell
-            .workspaces
+            .workspaces()
             .sets
             .get(output)
             .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
@@ -256,7 +256,7 @@ fn render_input_order_internal<R: 'static>(
 
     // calculate a bunch of stuff for workspace transitions
 
-    let Some(set) = shell.workspaces.sets.get(output) else {
+    let Some(set) = shell.workspaces().sets.get(output) else {
         return ControlFlow::Break(Err(OutputNoMode));
     };
     let Some(workspace) = set.workspaces.iter().find(|w| w.handle == current.0) else {
@@ -297,9 +297,9 @@ fn render_input_order_internal<R: 'static>(
     // offset 0 (stacked) and fades the incoming one in over the opaque outgoing.
     let (previous, current_offset, previous_alpha, current_alpha) = match previous.as_ref() {
         Some((previous, previous_idx, start)) => {
-            let layout = shell.workspaces.layout;
+            let layout = shell.workspaces().layout;
 
-            let Some(workspace) = shell.workspaces.space_for_handle(previous) else {
+            let Some(workspace) = shell.workspaces().space_for_handle(previous) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             let has_fullscreen = workspace.get_fullscreen(seat).is_some();
@@ -428,7 +428,7 @@ fn render_input_order_internal<R: 'static>(
     if element_filter != ElementFilter::LayerShellOnly {
         // previous workspace popups
         if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
-            let Some(workspace) = shell.workspaces.space_for_handle(previous_handle) else {
+            let Some(workspace) = shell.workspaces().space_for_handle(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
 
@@ -440,7 +440,7 @@ fn render_input_order_internal<R: 'static>(
         }
 
         // current workspace popups
-        let Some(workspace) = shell.workspaces.space_for_handle(&current.0) else {
+        let Some(workspace) = shell.workspaces().space_for_handle(&current.0) else {
             return ControlFlow::Break(Err(OutputNoMode));
         };
 
@@ -566,7 +566,7 @@ fn render_input_order_internal<R: 'static>(
 
         // previous workspace windows (the outgoing workspace)
         if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
-            let Some(workspace) = shell.workspaces.space_for_handle(previous_handle) else {
+            let Some(workspace) = shell.workspaces().space_for_handle(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             callback(Stage::Workspace {

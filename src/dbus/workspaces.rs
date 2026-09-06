@@ -32,7 +32,7 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
                 workspace = active.as_deref().unwrap_or("<none>"),
                 "active workspace changed"
             );
-            state.common.shell.write().set_active_workspace(active);
+            state.set_active_workspace(active);
         }
     }) {
         warn!(?err, "Failed to register workspace channel");

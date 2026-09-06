@@ -248,7 +248,9 @@ impl Shell {
             .wl_surface()
             .and_then(|surface| self.workspace_for_surface(&surface));
         let workspace = if let Some(workspace) = workspace {
-            self.workspaces.space_for_handle_mut(&workspace.0).unwrap()
+            self.workspaces_mut()
+                .space_for_handle_mut(&workspace.0)
+                .unwrap()
         } else {
             //should this be the active output or the focused output?
             self.active_space_mut(&seat.focused_or_active_output())
@@ -306,7 +308,10 @@ impl Shell {
             .flatten();
 
         for output in self.outputs().cloned().collect::<Vec<_>>().into_iter() {
-            let set = self.workspaces.sets.get_mut(&output).unwrap();
+            let set = Shell::realm_mut(&mut self.realms, &self.active_realm)
+                .sets
+                .get_mut(&output)
+                .unwrap();
             for focused in focused_windows.iter() {
                 raise_with_children(&mut set.sticky_layer, focused);
             }
@@ -716,7 +721,7 @@ fn focus_target_is_valid(
             }
 
             let is_sticky = shell
-                .workspaces
+                .workspaces()
                 .sets
                 .get(output)
                 .unwrap()
@@ -741,7 +746,7 @@ fn focus_target_is_valid(
                 && !shell.is_surface_hidden(&layer.wl_surface().id())
         }
         KeyboardFocusTarget::Group(WindowGroup { node, .. }) => shell
-            .workspaces
+            .workspaces()
             .active(output)
             .unwrap()
             .1

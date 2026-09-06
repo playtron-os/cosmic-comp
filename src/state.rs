@@ -677,9 +677,7 @@ impl LockedBackend<'_> {
                 .borrow();
 
             match final_config.enabled {
-                OutputState::Enabled => shell_ref
-                    .workspaces_mut()
-                    .add_output(output, workspace_state),
+                OutputState::Enabled => shell_ref.add_output(output, workspace_state),
                 _ => {
                     let shell = &mut *shell_ref;
                     shell.remove_output(output, workspace_state, xdg_activation_state)
@@ -1004,6 +1002,19 @@ impl State {
             ready: Once::new(),
             last_refresh: LastRefresh::None,
             kiosk_command,
+        }
+    }
+
+    /// Put a realm on screen, in response to the workspace registry.
+    ///
+    /// Lives here rather than on `Shell` because swapping which realm is
+    /// exposed touches the workspace-protocol state, which `Common` owns.
+    pub fn set_active_workspace(&mut self, active: Option<String>) {
+        let mut shell = self.common.shell.write();
+        shell.set_active_workspace(active.clone());
+        if let Some(id) = active {
+            let mut guard = self.common.workspace_state.update();
+            shell.switch_realm(&id, &mut guard);
         }
     }
 
