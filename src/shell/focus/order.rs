@@ -339,7 +339,7 @@ fn render_input_order_internal<R: 'static>(
                                 0.0,
                                 1.0,
                                 Instant::now().duration_since(*st).as_millis() as f32
-                                    / shell.theme().motion.animation.as_millis() as f32,
+                                    / shell.theme().motion.realm_slide.as_millis() as f32,
                             ),
                         )
                     }

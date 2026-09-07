@@ -2344,7 +2344,7 @@ impl Shell {
         output: &Output,
     ) -> Option<(WorkspaceHandle, usize, WorkspaceDelta)> {
         let transition = self.realm_transition.as_ref()?;
-        if transition.started.elapsed() >= self.theme().motion.animation {
+        if transition.started.elapsed() >= self.theme().motion.realm_slide {
             return None;
         }
         let realm = self.realms.get(&transition.from)?;
@@ -2364,7 +2364,7 @@ impl Shell {
     pub fn realm_transition_active(&self) -> bool {
         self.realm_transition
             .as_ref()
-            .is_some_and(|t| t.started.elapsed() < self.theme().motion.animation)
+            .is_some_and(|t| t.started.elapsed() < self.theme().motion.realm_slide)
     }
 
     /// A workspace by handle, in **any** realm.
