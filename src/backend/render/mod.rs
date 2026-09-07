@@ -883,9 +883,14 @@ where
     };
 
     let (previous_idx, idx) = shell_guard.workspaces().active_num(output);
-    let previous_workspace = previous_workspace
-        .zip(previous_idx)
-        .map(|((w, start), idx)| (w.handle, idx, start));
+    // A realm switch wins over an in-realm one: you cannot be mid-way between
+    // two desktops AND two workspaces, and the boundary crossing is the one
+    // that matters to look at.
+    let previous_workspace = shell_guard.realm_transition_previous(output).or_else(|| {
+        previous_workspace
+            .zip(previous_idx)
+            .map(|((w, start), idx)| (w.handle, idx, start))
+    });
     let workspace = (workspace.handle, idx);
 
     std::mem::drop(shell_guard);
@@ -2303,9 +2308,14 @@ where
         .active(output)
         .ok_or(RenderError::OutputNoMode(OutputNoMode))?;
     let (previous_idx, idx) = shell_ref.workspaces().active_num(output);
-    let previous_workspace = previous_workspace
-        .zip(previous_idx)
-        .map(|((w, start), idx)| (w.handle, idx, start));
+    // A realm switch wins over an in-realm one: you cannot be mid-way between
+    // two desktops AND two workspaces, and the boundary crossing is the one
+    // that matters to look at.
+    let previous_workspace = shell_ref.realm_transition_previous(output).or_else(|| {
+        previous_workspace
+            .zip(previous_idx)
+            .map(|((w, start), idx)| (w.handle, idx, start))
+    });
     let workspace = (workspace.handle, idx);
     let zoom_state = shell_ref.zoom_state().cloned();
     std::mem::drop(shell_ref);

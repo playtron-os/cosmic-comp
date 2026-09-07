@@ -299,7 +299,9 @@ fn render_input_order_internal<R: 'static>(
         Some((previous, previous_idx, start)) => {
             let layout = shell.workspaces().layout;
 
-            let Some(workspace) = shell.workspaces().space_for_handle(previous) else {
+            // Across realms, not just the active one: during a realm switch the
+            // screen being left belongs to the realm being left.
+            let Some(workspace) = shell.space_for_handle_any_realm(previous) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             let has_fullscreen = workspace.get_fullscreen(seat).is_some();
@@ -322,7 +324,25 @@ fn render_input_order_internal<R: 'static>(
                     t,
                 )
             } else {
+                // The axis is usually the configured desktop layout, but a realm
+                // switch overrides it: crossing a workspace boundary is the
+                // vertical move by definition, whichever way desktops are laid
+                // out inside one.
+                let mut axis = layout;
                 let (forward, percentage) = match start {
+                    WorkspaceDelta::Realm { start: st, forward } => {
+                        axis = WorkspaceLayout::Vertical;
+                        (
+                            *forward,
+                            ease(
+                                EaseInOutCubic,
+                                0.0,
+                                1.0,
+                                Instant::now().duration_since(*st).as_millis() as f32
+                                    / shell.theme().motion.animation.as_millis() as f32,
+                            ),
+                        )
+                    }
                     WorkspaceDelta::Shortcut(st) => (
                         *previous_idx < current.1,
                         ease(
@@ -349,7 +369,7 @@ fn render_input_order_internal<R: 'static>(
                     WorkspaceDelta::Crossfade(_) => unreachable!("handled above"),
                 };
 
-                let offset = Point::<i32, Logical>::from(match (layout, forward) {
+                let offset = Point::<i32, Logical>::from(match (axis, forward) {
                     (WorkspaceLayout::Vertical, true) => {
                         (0, (-output_size.h as f32 * percentage).round() as i32)
                     }
@@ -366,7 +386,7 @@ fn render_input_order_internal<R: 'static>(
 
                 (
                     Some((previous, previous_idx, has_fullscreen, offset)),
-                    Point::<i32, Logical>::from(match (layout, forward) {
+                    Point::<i32, Logical>::from(match (axis, forward) {
                         (WorkspaceLayout::Vertical, true) => (0, output_size.h + offset.y),
                         (WorkspaceLayout::Vertical, false) => (0, -(output_size.h - offset.y)),
                         (WorkspaceLayout::Horizontal, true) => (output_size.w + offset.x, 0),

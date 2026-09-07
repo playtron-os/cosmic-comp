@@ -474,6 +474,8 @@ pub struct Shell {
     realms: IndexMap<String, Workspaces>,
     /// Key into `realms`. Always valid.
     active_realm: String,
+    /// A realm switch still playing, if any.
+    realm_transition: Option<RealmTransition>,
 
     /// The workspace on screen, as the registry named it.
     ///
@@ -726,6 +728,20 @@ pub enum WorkspaceDelta {
         spring: Spring,
         forward: bool,
     },
+    /// A realm switch — the user-facing Workspace, the vertical axis.
+    ///
+    /// Always slides VERTICALLY whatever `WorkspaceLayout` says, because here
+    /// the direction *is* the meaning: workspaces are the vertical axis and
+    /// desktops the horizontal one. A user who configures horizontal desktops
+    /// still crosses a workspace boundary by moving up or down.
+    ///
+    /// Carries its own `forward` because the two workspaces belong to different
+    /// realms, so comparing their indices — which is how `Shortcut` decides —
+    /// compares numbers from different sequences and means nothing.
+    Realm {
+        start: Instant,
+        forward: bool,
+    },
     /// Time-driven cross-fade (no slide): the outgoing workspace stays opaque and
     /// the incoming one fades in over it. Used for the game-mode launcher<->game
     /// switch, where each workspace is a single fullscreen surface (so alpha
@@ -770,8 +786,24 @@ impl WorkspaceDelta {
             WorkspaceDelta::Shortcut(_)
                 | WorkspaceDelta::GestureEnd { .. }
                 | WorkspaceDelta::Crossfade(_)
+                | WorkspaceDelta::Realm { .. }
         )
     }
+}
+
+/// A realm switch in flight.
+///
+/// Kept on `Shell` rather than on a `WorkspaceSet`, because the two sides of
+/// this transition live in *different* realms — a set only knows about its own
+/// desktops, so it has nowhere to record that the screen came from elsewhere.
+#[derive(Debug, Clone)]
+pub struct RealmTransition {
+    /// The realm being left, still on screen while the slide plays.
+    pub from: String,
+    pub started: Instant,
+    /// Which way the screen moves: `true` slides up (the next workspace comes
+    /// from below), matching Super+Ctrl+Down.
+    pub forward: bool,
 }
 
 #[derive(Debug)]
@@ -2299,6 +2331,52 @@ impl Shell {
         &self.active_realm
     }
 
+    /// The outgoing realm's desktop on this output, while a realm switch is
+    /// still playing.
+    ///
+    /// The renderer's usual "previous workspace" comes from the active set,
+    /// which cannot see across a realm boundary — after a realm switch the
+    /// screen you came from is in a different map entry entirely. This supplies
+    /// it, and stops supplying it the moment the animation is over so the
+    /// outgoing realm goes back to not being drawn.
+    pub fn realm_transition_previous(
+        &self,
+        output: &Output,
+    ) -> Option<(WorkspaceHandle, usize, WorkspaceDelta)> {
+        let transition = self.realm_transition.as_ref()?;
+        if transition.started.elapsed() >= self.theme().motion.animation {
+            return None;
+        }
+        let realm = self.realms.get(&transition.from)?;
+        let set = realm.sets.get(output)?;
+        let workspace = set.workspaces.get(set.active)?;
+        Some((
+            workspace.handle,
+            set.active,
+            WorkspaceDelta::Realm {
+                start: transition.started,
+                forward: transition.forward,
+            },
+        ))
+    }
+
+    /// Is a realm switch still animating? Drives the redraw loop.
+    pub fn realm_transition_active(&self) -> bool {
+        self.realm_transition
+            .as_ref()
+            .is_some_and(|t| t.started.elapsed() < self.theme().motion.animation)
+    }
+
+    /// A workspace by handle, in **any** realm.
+    ///
+    /// The renderer needs the outgoing realm's desktop during a switch, and by
+    /// then it is no longer in the active realm.
+    pub fn space_for_handle_any_realm(&self, handle: &WorkspaceHandle) -> Option<&Workspace> {
+        self.realms
+            .values()
+            .find_map(|realm| realm.space_for_handle(handle))
+    }
+
     pub fn realm_ids(&self) -> impl Iterator<Item = &str> {
         self.realms.keys().map(String::as_str)
     }
@@ -2351,6 +2429,18 @@ impl Shell {
         self.ensure_realm(id, workspace_state);
 
         let previous = std::mem::replace(&mut self.active_realm, id.to_string());
+        // Direction from collection order, so moving "down" the switcher slides
+        // the screen the same way every time.
+        let forward = self
+            .realms
+            .get_index_of(&previous)
+            .zip(self.realms.get_index_of(&self.active_realm))
+            .is_none_or(|(from, to)| from < to);
+        self.realm_transition = Some(RealmTransition {
+            from: previous.clone(),
+            started: Instant::now(),
+            forward,
+        });
         if let Some(realm) = self.realms.get(&previous) {
             for (output, set) in &realm.sets {
                 workspace_state.remove_group_output(&set.group, output);
@@ -2475,6 +2565,7 @@ impl Shell {
                 Workspaces::new(config, theme.clone()),
             )]),
             active_realm: DEFAULT_REALM.to_string(),
+            realm_transition: None,
             active_workspace: None,
             seats: Seats::new(),
 
@@ -3442,6 +3533,12 @@ impl Shell {
     }
 
     fn non_slide_animations_going(&self) -> bool {
+        // A realm switch animates across two realms, so it is not visible in
+        // any one set's `previously_active` — without this the slide would draw
+        // a frame or two and then freeze, because nothing asks for the next one.
+        if self.realm_transition_active() {
+            return true;
+        }
         let workspace_sets = self.workspaces().sets.values().any(|set| {
             set.previously_active
                 .as_ref()
