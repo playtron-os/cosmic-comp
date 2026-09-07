@@ -100,10 +100,6 @@ impl State {
                 self.coldstart_bench();
             }
 
-            Action::Private(PrivateAction::CycleWorkspace(delta)) => {
-                crate::dbus::workspaces::cycle(i32::from(delta));
-            }
-
             Action::Private(PrivateAction::Resizing(direction, edge, state)) => {
                 if state == shortcuts::State::Pressed {
                     self.common
@@ -227,6 +223,9 @@ impl State {
                     &mut self.common.workspace_state.update(),
                 );
             }
+
+            Action::NextRealm => crate::dbus::workspaces::cycle(1),
+            Action::PreviousRealm => crate::dbus::workspaces::cycle(-1),
 
             Action::NextWorkspace => {
                 if !workspaces_enabled() {

@@ -45,17 +45,17 @@
     (modifiers: [Super, Shift], key: "9"): MoveToWorkspace(9),
     (modifiers: [Super, Shift], key: "0"): MoveToLastWorkspace,
 
-    // Horizontal: desktops within the current workspace.
-    //
-    // Up/Down used to duplicate Left/Right here. They now move VERTICALLY,
-    // between workspaces — the context boundary — and are handled inside
-    // cosmic-comp rather than through this file, because a workspace is a Kora
-    // concept the settings shortcut vocabulary has no name for. Same modifier
-    // for both axes on purpose: one gesture family, two directions.
+    // Two axes, one modifier: Left/Right move between desktops, Up/Down between
+    // workspaces. Up/Down used to duplicate Left/Right, so nothing is lost.
+    // The realm bindings do nothing unless a workspace registry is running.
     (modifiers: [Super, Ctrl], key: "Left"): PreviousWorkspace,
     (modifiers: [Super, Ctrl], key: "Right"): NextWorkspace,
     (modifiers: [Super, Ctrl], key: "h"): PreviousWorkspace,
     (modifiers: [Super, Ctrl], key: "l"): NextWorkspace,
+    (modifiers: [Super, Ctrl], key: "Up"): PreviousRealm,
+    (modifiers: [Super, Ctrl], key: "Down"): NextRealm,
+    (modifiers: [Super, Ctrl], key: "k"): PreviousRealm,
+    (modifiers: [Super, Ctrl], key: "j"): NextRealm,
     (modifiers: [Super, Shift, Ctrl], key: "Left"): MoveToPreviousWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Down"): MoveToNextWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Up"): MoveToPreviousWorkspace,

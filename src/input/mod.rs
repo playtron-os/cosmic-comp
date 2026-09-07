@@ -2476,32 +2476,6 @@ impl State {
             }
         }
 
-        // Super+Ctrl+Up/Down move between workspaces; Left/Right stay on
-        // desktops. Only while a registry is answering — otherwise the match
-        // falls through and the keys go to whatever else wants them.
-        if event.state() == KeyState::Pressed
-            && modifiers.ctrl
-            && modifiers.logo
-            && !modifiers.alt
-            && !modifiers.shift
-            && self.common.shell.read().workspaces_live()
-        {
-            let direction = if handle.raw_syms().contains(&Keysym::Down) {
-                Some(1)
-            } else if handle.raw_syms().contains(&Keysym::Up) {
-                Some(-1)
-            } else {
-                None
-            };
-            if let Some(direction) = direction {
-                seat.supressed_keys().add(&handle, None);
-                return FilterResult::Intercept(Some((
-                    Action::Private(PrivateAction::CycleWorkspace(direction)),
-                    shortcuts::Binding::default(),
-                )));
-            }
-        }
-
         // Handle VT switches (KMS backend only)
         if event.state() == KeyState::Pressed
             && (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw())
@@ -2586,9 +2560,22 @@ impl State {
         let mut clear_queue = true;
         if !shortcuts_inhibited {
             let modifiers_queue = seat.modifiers_shortcut_queue();
+            let workspaces_live = self.common.shell.read().workspaces_live();
 
             for (binding, action) in self.common.config.shortcuts.iter() {
                 if *action == shortcuts::Action::Disable {
+                    continue;
+                }
+
+                // The vertical axis only exists while a registry is answering.
+                // Skipping rather than intercepting leaves the binding to
+                // whatever else wants it instead of swallowing it into a no-op.
+                if !workspaces_live
+                    && matches!(
+                        action,
+                        shortcuts::Action::NextRealm | shortcuts::Action::PreviousRealm
+                    )
+                {
                     continue;
                 }
 
