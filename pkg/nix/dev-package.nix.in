@@ -1,0 +1,62 @@
+# Substituted by `go-task deploy:nix` and evaluated on the device.
+#
+# Unlike the app packages, kora builds cosmic-comp from source, so there is no
+# RPM `src` to swap in - overriding it would ask the device to compile the whole
+# compositor. This unpacks the locally built RPM instead and runs
+# autoPatchelfHook over it, which is how every agentos package in kora is built,
+# so a dev build lands in seconds rather than in however long a device takes to
+# build smithay.
+#
+# The library set is the upstream package's buildInputs plus what a Fedora-built
+# binary needs that a source build would have got from stdenv. Anything missing
+# fails the build by name - autoPatchelf lists the soname it could not resolve -
+# rather than at the point the compositor tries to start a session.
+#
+# Installed into the user profile rather than the system: cosmic-session resolves
+# the compositor by name, and ~/.nix-profile/bin outranks /run/current-system/sw
+# on PATH. `nix profile remove` undoes it with no rebuild either way.
+let
+  kora = builtins.getFlake "path:@KORA_DIR@";
+  system = builtins.currentSystem;
+  pkgs = kora.inputs.nixpkgs.legacyPackages.${system};
+in
+{
+  @NAME@ = pkgs.stdenv.mkDerivation {
+    pname = "@NAME@";
+    version = "dev";
+    src = @SRC@;
+
+    unpackCmd = "${pkgs.rpm}/bin/rpm2cpio $curSrc | ${pkgs.cpio}/bin/cpio -idmv";
+    sourceRoot = ".";
+
+    nativeBuildInputs = [
+      pkgs.autoPatchelfHook
+      # Wraps $out/bin the way the source build does, so the compositor's own
+      # iced surfaces find COSMIC's icons and themes.
+      pkgs.libcosmicAppHook
+    ];
+
+    buildInputs = with pkgs; [
+      # Upstream cosmic-comp's buildInputs.
+      libdisplay-info_0_3
+      libgbm
+      libinput
+      pixman
+      seatd
+      systemd
+      # A prebuilt binary needs these named too; a source build inherits them.
+      stdenv.cc.cc.lib
+      libxkbcommon
+      wayland
+      libglvnd
+      vulkan-loader
+    ];
+
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      cp -r usr/. $out/
+      runHook postInstall
+    '';
+  };
+}

@@ -321,6 +321,109 @@ tasks:
     cmds:
       - rm -rf target .cache dist builder
 
+  deploy:nix:
+    desc: >-
+      Deploy to a NixOS (Kora) host - build this checkout's RPM, then install it
+      into the device's user profile. PROFILE=debug for a far quicker one.
+      E.g. go-task deploy:nix HOST=ericky@192.168.1.220
+    aliases:
+      - deploy:nixos
+    requires:
+      vars:
+        - name: HOST
+    vars:
+      GOTASK:
+        sh: command -v go-task || command -v task
+      # The device's own kora checkout - the one /etc/nixos's `kora` flake input
+      # points at. kora builds cosmic-comp from source, so there is no
+      # RPM `src` to swap and the template below builds its own derivation
+      # around the one this checkout produces - see pkg/nix/dev-package.nix.in.
+      KORA_DIR: '{{.KORA_DIR | default "~/dev/kora-nix-poc"}}'
+      # NixOS 26.11 is on glibc 2.42 and Fedora 44 binds f32 libm against
+      # GLIBC_2.43, which ld.so refuses before it binds a single symbol. The
+      # Debian 13 builder image is glibc 2.41 and is what CI builds the release
+      # RPM with, so its output is the artefact that device is known to run.
+      BUILDER: '{{.BUILDER | default "container"}}'
+      REMOTE_DIR: /tmp/{{.NAME}}-nix
+      STAGE: .cache/nix
+      # `debug` builds the repo's own debug feature - far faster to iterate
+      # than a release compositor, and the same NVR, so it installs the same way.
+      PROFILE: '{{.PROFILE | default "release"}}'
+      # cosmic-comp is the session; restarting it ends the one on the device.
+      RESTART: '{{.RESTART | default "false"}}'
+    preconditions:
+      - sh: which rsync
+        msg: "Prerequisite utility 'rsync' is not installed"
+      - sh: ssh -o BatchMode=yes -o ConnectTimeout=10 {{.HOST}} true
+        msg: "Cannot reach {{.HOST}} over SSH without a password. Set up key auth first."
+      - sh: ssh {{.HOST}} 'test -e /run/current-system'
+        msg: "{{.HOST}} is not a NixOS host. Use `deploy:native` for RPM-based devices."
+      - sh: ssh {{.HOST}} 'test -d {{.KORA_DIR}}'
+        msg: >-
+          No kora checkout at {{.KORA_DIR}} on {{.HOST}}. Point KORA_DIR at the one
+          /etc/nixos's `kora` flake input uses.
+    cmds:
+      # PROFILE=debug is the same NVR, so it deploys by exactly this path - it is
+      # unoptimized and much larger, so rebuild release before measuring anything.
+      - |
+        if [ "{{.BUILDER}}" = "container" ]; then
+          {{.GOTASK}} docker:run TARGET={{if eq .PROFILE "debug"}}dist:rpm:debug{{else}}dist:rpm{{end}} ARCH={{.ARCH}} TARGET_ARCH={{.TARGET_ARCH}}
+        else
+          {{.GOTASK}} {{if eq .PROFILE "debug"}}dist:rpm:debug{{else}}dist:rpm{{end}}
+        fi
+      # ld.so checks symbol versions before it binds anything, so a binary that
+      # wants a newer glibc than the device has dies at exec with nothing but
+      # "version `GLIBC_x.yz' not found" - and autoPatchelfHook cannot fix a
+      # symbol version. Catch it here, where the fix has a name.
+      - |
+        need=$(objdump -T target/{{.TARGET_ARCH}}/{{.PROFILE}}/{{.NAME}} |
+          grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n1)
+        have=GLIBC_$(ssh {{.HOST}} 'ldd --version | head -n1 | sed "s/.* //"')
+        if [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | tail -n1)" != "$have" ]; then
+          echo "error: this build needs $need, {{.HOST}} provides $have. Wants:" >&2
+          objdump -T target/{{.TARGET_ARCH}}/{{.PROFILE}}/{{.NAME}} | grep -F "($need)" >&2
+          echo "Build against the container's older glibc: drop BUILDER=host." >&2
+          exit 1
+        fi
+        echo "glibc: this build needs $need, {{.HOST}} has $have"
+      - |
+        rm -rf {{.STAGE}}
+        mkdir -p {{.STAGE}}
+        rpm=$(ls dist/{{.NAME}}-{{.VERSION}}-*.{{.ARCH}}.rpm | tail -n1)
+        cp "$rpm" {{.STAGE}}/
+        # getFlake takes no `~`, and the src has to be an absolute path on the
+        # device, so both are resolved here rather than written by hand.
+        kora=$(ssh {{.HOST}} 'cd {{.KORA_DIR}} && pwd')
+        sed -e "s|@KORA_DIR@|$kora|g" \
+            -e "s|@SRC@|{{.REMOTE_DIR}}/$(basename "$rpm")|g" \
+            -e "s|@NAME@|{{.NAME}}|g" \
+            pkg/nix/dev-package.nix.in > {{.STAGE}}/dev.nix
+      - ssh {{.HOST}} 'mkdir -p {{.REMOTE_DIR}}'
+      # --delete so an older deploy's RPM does not sit there being confusing;
+      # nix has already copied the one it used into the store.
+      - rsync -a --delete {{.STAGE}}/ {{.HOST}}:{{.REMOTE_DIR}}/
+      # `add` is `install` under its current name. A profile refuses a name it
+      # already holds and there is no replace, so the previous deploy goes first;
+      # removing one that was never installed is not worth stopping for.
+      - |
+        ssh {{.HOST}} 'nix profile remove {{.NAME}} >/dev/null 2>&1 || true
+          nix profile add --impure --file {{.REMOTE_DIR}}/dev.nix {{.NAME}}'
+      # Not killed by default: cosmic-comp *is* the session, so restarting it
+      # logs the user out of {{.HOST}} with no warning. RESTART=true asks for it.
+      - |
+        case "{{.RESTART}}" in
+          true|yes)
+            echo "Restarting the compositor - this ends the session on {{.HOST}}."
+            ssh {{.HOST}} 'pkill -x cosmic-comp || true' ;;
+          *)
+            echo "Not restarting. Log out and back in on {{.HOST}} to pick it up." ;;
+        esac
+      - |
+        echo "Done. {{.NAME}} is in {{.HOST}}'s user profile."
+        echo "cosmic-session resolves the compositor by name and ~/.nix-profile/bin"
+        echo "outranks the system closure, so the next session starts this build."
+        echo "Undo it with 'nix profile remove {{.NAME}}' on the device."
+
   docker:build:
     desc: Build the container image used for the `docker:run` target
     preconditions:
