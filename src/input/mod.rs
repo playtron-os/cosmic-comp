@@ -2476,6 +2476,42 @@ impl State {
             }
         }
 
+        // The vertical axis: Super+Ctrl+Up / Super+Ctrl+Down move between
+        // workspaces, the context boundary. Super+Ctrl+Left/Right stay on
+        // desktops, the horizontal axis inside one workspace — same modifier,
+        // so the two axes read as one gesture family rather than two unrelated
+        // shortcuts.
+        //
+        // Super is required, not just Ctrl: a bare Ctrl+Up/Down belongs to
+        // applications (paragraph navigation in editors, terminals, browsers)
+        // and intercepting it here would take it from all of them. Super+Ctrl
+        // is also where Up/Down already lived — they duplicated Left/Right, so
+        // nothing is lost by giving them the axis they point along.
+        //
+        // Strict modifier match, so it cannot swallow a chord meant for
+        // something else — Super+Shift+Ctrl+Up still moves a window.
+        if event.state() == KeyState::Pressed
+            && modifiers.ctrl
+            && modifiers.logo
+            && !modifiers.alt
+            && !modifiers.shift
+        {
+            let direction = if handle.raw_syms().contains(&Keysym::Down) {
+                Some(1)
+            } else if handle.raw_syms().contains(&Keysym::Up) {
+                Some(-1)
+            } else {
+                None
+            };
+            if let Some(direction) = direction {
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(Some((
+                    Action::Private(PrivateAction::CycleWorkspace(direction)),
+                    shortcuts::Binding::default(),
+                )));
+            }
+        }
+
         // Handle VT switches (KMS backend only)
         if event.state() == KeyState::Pressed
             && (Keysym::XF86_Switch_VT_1.raw()..=Keysym::XF86_Switch_VT_12.raw())

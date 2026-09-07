@@ -48,6 +48,28 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
     });
 }
 
+/// Ask the registry to step `delta` workspaces along — the vertical axis.
+///
+/// Fire and forget: the switch arrives back through `ActiveChanged` like any
+/// other, so a keypress and a click on the panel take exactly the same path and
+/// cannot disagree about what happened. Nothing here waits on the round trip,
+/// because the shell has 300ms to become interactive (W-9).
+pub fn cycle(delta: i32) {
+    std::thread::spawn(move || {
+        let result = futures_executor::block_on(async {
+            let conn = zbus::Connection::session().await?;
+            conn.call_method(Some(DEST), PATH, Some(DEST), "Cycle", &(delta,))
+                .await
+        });
+        match result {
+            Ok(_) => {}
+            // No registry is the normal case until workspaces ship; the
+            // keypress simply does nothing.
+            Err(err) => debug!(%err, delta, "workspace cycle went nowhere"),
+        }
+    });
+}
+
 async fn watch(tx: calloop::channel::Sender<Option<String>>) -> zbus::Result<()> {
     let conn = zbus::Connection::session().await?;
 

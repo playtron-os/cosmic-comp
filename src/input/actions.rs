@@ -100,6 +100,10 @@ impl State {
                 self.coldstart_bench();
             }
 
+            Action::Private(PrivateAction::CycleWorkspace(delta)) => {
+                crate::dbus::workspaces::cycle(i32::from(delta));
+            }
+
             Action::Private(PrivateAction::Resizing(direction, edge, state)) => {
                 if state == shortcuts::State::Pressed {
                     self.common

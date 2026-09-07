@@ -23,6 +23,14 @@ pub enum PrivateAction {
     PerfReport,
     /// Run the cold-start (app-launch) benchmark (Ctrl+Alt+Super+Shift+F11).
     ColdStartBench,
+    /// Move to the next (`+1`) or previous (`-1`) workspace — the vertical
+    /// axis, Ctrl+Down / Ctrl+Up.
+    ///
+    /// Private rather than a `cosmic-settings` shortcut because that enum lives
+    /// in an external crate: adding a variant there would fork it, and this is
+    /// a Kora concept the upstream settings app has no idea about. It also
+    /// keeps Ctrl+Left/Right — the horizontal axis — exactly where they are.
+    CycleWorkspace(i8),
 }
 
 /// Convert `cosmic_settings_config::shortcuts::State` to `smithay::backend::input::KeyState`.
