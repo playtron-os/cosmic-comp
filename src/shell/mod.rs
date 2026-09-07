@@ -2,6 +2,7 @@ use calloop::LoopHandle;
 use focus::target::WindowGroup;
 use grabs::{MenuAlignment, SeatMoveGrabState};
 use indexmap::IndexMap;
+use smithay::backend::renderer::element::Id;
 
 /// The realm every session starts in, and the one everything lives in until a
 /// workspace registry says otherwise.
@@ -791,6 +792,33 @@ impl WorkspaceDelta {
     }
 }
 
+/// How far into the transition the wash is at its strongest, and how strong
+/// that is — the design's `times: [0, 0.35, 1]` and `opacity: [0, 0.28, 0]`.
+///
+/// The peak is deliberately low: this is the screen taking on a colour, not a
+/// flash over it.
+const WASH_PEAK_AT: f32 = 0.35;
+const WASH_PEAK_ALPHA: f32 = 0.28;
+
+/// The wash's strength at `t`, the fraction of the transition elapsed.
+///
+/// Blooms and recedes: nothing at the start, strongest a third of the way in,
+/// nothing again by the end. A monotonic ramp — the shape a fade-to-black uses
+/// — would leave the accent at full strength exactly when the workspace you
+/// just moved to is trying to be looked at, and would need dismissing rather
+/// than reading as part of the move.
+fn wash_alpha(t: f32) -> f32 {
+    if !(0.0..1.0).contains(&t) {
+        return 0.0;
+    }
+    let ramp = if t < WASH_PEAK_AT {
+        t / WASH_PEAK_AT
+    } else {
+        1.0 - (t - WASH_PEAK_AT) / (1.0 - WASH_PEAK_AT)
+    };
+    (ramp * WASH_PEAK_ALPHA).clamp(0.0, WASH_PEAK_ALPHA)
+}
+
 /// A realm switch in flight.
 ///
 /// Kept on `Shell` rather than on a `WorkspaceSet`, because the two sides of
@@ -804,6 +832,19 @@ pub struct RealmTransition {
     /// Which way the screen moves: `true` slides up (the next workspace comes
     /// from below), matching Super+Ctrl+Down.
     pub forward: bool,
+    /// The colour of the workspace being entered, for the wash.
+    ///
+    /// `None` when the registry reported no accent or an unparseable one; the
+    /// renderer falls back to a theme colour rather than skipping the wash, so
+    /// the crossing still reads as a crossing.
+    pub accent: Option<[f32; 3]>,
+    /// One shader-cache id per output.
+    ///
+    /// Per-output on purpose: the wash element is cached by key and resized to
+    /// the geometry it was last asked for, so a single shared id would make two
+    /// monitors fight over one entry and resize it every frame. The ids die
+    /// with the transition, which is what evicts the cache entries.
+    wash_ids: HashMap<Output, Id>,
 }
 
 #[derive(Debug)]
@@ -2360,6 +2401,35 @@ impl Shell {
         ))
     }
 
+    /// The wash for a realm switch in flight: colour, which edge it enters
+    /// from, and how strong it is right now.
+    ///
+    /// The alpha blooms and recedes rather than fading in — it peaks partway
+    /// through and is gone by the end, so the colour reads as the screen taking
+    /// on a tint during the move rather than as an overlay that has to be
+    /// waited out. A monotonic ramp would leave the accent at full strength
+    /// exactly when the new workspace is trying to be looked at.
+    pub fn realm_wash(&self, output: &Output) -> Option<(Id, [f32; 3], bool, f32)> {
+        let transition = self.realm_transition.as_ref()?;
+        let id = transition.wash_ids.get(output)?.clone();
+        let elapsed = transition.started.elapsed().as_secs_f32();
+        let total = self.theme().motion.realm_slide.as_secs_f32();
+        if total <= 0.0 || elapsed >= total {
+            return None;
+        }
+
+        let alpha = wash_alpha(elapsed / total);
+
+        // Enter from the edge the screen came from: moving forward, the new
+        // workspace rises from below, so the colour rises with it.
+        let from_top = !transition.forward;
+        let accent = transition.accent.unwrap_or_else(|| {
+            let c = self.theme().primary();
+            [c.r, c.g, c.b]
+        });
+        Some((id, accent, from_top, alpha))
+    }
+
     /// Is a realm switch still animating? Drives the redraw loop.
     pub fn realm_transition_active(&self) -> bool {
         self.realm_transition
@@ -2421,9 +2491,16 @@ impl Shell {
     pub fn switch_realm(
         &mut self,
         id: &str,
+        accent: Option<[f32; 3]>,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
         if self.active_realm == id {
+            // Same realm: a recolour, not a crossing. Update the accent in
+            // place so the next switch wears the new colour, but do not play a
+            // transition for a change nobody moved to see.
+            if let Some(transition) = self.realm_transition.as_mut() {
+                transition.accent = accent;
+            }
             return;
         }
         self.ensure_realm(id, workspace_state);
@@ -2440,6 +2517,14 @@ impl Shell {
             from: previous.clone(),
             started: Instant::now(),
             forward,
+            accent,
+            wash_ids: self
+                .realms
+                .get(&self.active_realm)
+                .into_iter()
+                .flat_map(|realm| realm.sets.keys().cloned())
+                .map(|output| (output, Id::new()))
+                .collect(),
         });
         if let Some(realm) = self.realms.get(&previous) {
             for (output, set) in &realm.sets {
@@ -9710,4 +9795,63 @@ pub fn check_grab_preconditions(
     }
 
     Some(start_data)
+}
+
+#[cfg(test)]
+mod wash_tests {
+    use super::{WASH_PEAK_ALPHA, WASH_PEAK_AT, wash_alpha};
+
+    #[test]
+    fn the_wash_starts_and_ends_invisible() {
+        // It has to be gone by the end: a tint still on screen when the slide
+        // settles reads as a notification waiting to be dismissed.
+        assert_eq!(wash_alpha(0.0), 0.0);
+        assert!(wash_alpha(0.999) < 0.01);
+        assert_eq!(wash_alpha(1.0), 0.0);
+    }
+
+    #[test]
+    fn it_peaks_partway_through_not_at_the_end() {
+        let peak = wash_alpha(WASH_PEAK_AT);
+        assert!((peak - WASH_PEAK_ALPHA).abs() < 1e-6);
+        assert!(peak > wash_alpha(0.9), "must be receding by the end");
+        assert!(peak > wash_alpha(0.05), "must be blooming at the start");
+    }
+
+    #[test]
+    fn it_never_exceeds_the_designed_peak() {
+        // The screen takes on a colour; it is not flashed.
+        for i in 0..=100 {
+            let a = wash_alpha(i as f32 / 100.0);
+            assert!(
+                (0.0..=WASH_PEAK_ALPHA).contains(&a),
+                "alpha {a} out of range at t={}",
+                i as f32 / 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn it_rises_then_falls_monotonically() {
+        let mut prev = wash_alpha(0.0);
+        let mut turned = false;
+        for i in 1..=100 {
+            let a = wash_alpha(i as f32 / 100.0);
+            if a + 1e-6 < prev {
+                turned = true;
+            } else if turned {
+                assert!(a <= prev + 1e-6, "wash brightened again after receding");
+            }
+            prev = a;
+        }
+        assert!(turned, "the wash never receded");
+    }
+
+    #[test]
+    fn out_of_range_time_is_silent() {
+        // Clock skew or a stale transition must not paint the screen.
+        assert_eq!(wash_alpha(-0.5), 0.0);
+        assert_eq!(wash_alpha(2.0), 0.0);
+        assert_eq!(wash_alpha(f32::NAN), 0.0);
+    }
 }

@@ -1009,12 +1009,15 @@ impl State {
     ///
     /// Lives here rather than on `Shell` because swapping which realm is
     /// exposed touches the workspace-protocol state, which `Common` owns.
-    pub fn set_active_workspace(&mut self, active: Option<String>) {
+    pub fn set_active_workspace(
+        &mut self,
+        active: Option<crate::dbus::workspaces::ActiveWorkspace>,
+    ) {
         let mut shell = self.common.shell.write();
-        shell.set_active_workspace(active.clone());
-        if let Some(id) = active {
+        shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
+        if let Some(active) = active {
             let mut guard = self.common.workspace_state.update();
-            shell.switch_realm(&id, &mut guard);
+            shell.switch_realm(&active.id, active.accent, &mut guard);
         }
     }
 
