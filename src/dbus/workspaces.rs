@@ -1,24 +1,12 @@
 //! Following the active workspace, and its colour.
 //!
-//! The workspace registry (`one.playtron.Workspaces1`) is the single source of
-//! truth for which workspace is on screen; the compositor is a consumer. It
-//! learns about switches from `ActiveChanged` and does not decide them —
-//! residency, provisioning and slice management all live in the registry.
+//! The registry (`one.playtron.Workspaces1`) owns which workspace is on screen;
+//! the compositor is a consumer and does not decide switches. `ListChanged`
+//! matters as much as `ActiveChanged` because recolouring the workspace you are
+//! standing in changes no active id.
 //!
-//! It also learns each workspace's **accent**, the colour the user gave it,
-//! which tints the airlock wash. That is why `ListChanged` matters as much as
-//! `ActiveChanged`: recolouring the workspace you are already standing in
-//! changes nothing about which one is active, and without that subscription the
-//! new colour would never arrive.
-//!
-//! Nothing here is on the switch path's critical section. The registry answers
-//! `Switch` as soon as the active id is written and the signal is out, so the
-//! shell has its 300ms to become interactive (W-9) whatever the services are
-//! doing behind it.
-//!
-//! With no registry running the active workspace stays `None`, every client is
-//! visible and nothing is refused capture — so this changes no behaviour until
-//! workspaces are switched on.
+//! Two things gate it: `COSMIC_WORKSPACES` decides whether the session runs
+//! workspaces at all, and [`Registry`] says whether one is actually answering.
 
 use calloop::LoopHandle;
 use futures_executor::ThreadPool;
@@ -29,28 +17,46 @@ use crate::state::State;
 const DEST: &str = "one.playtron.Workspaces1";
 const PATH: &str = "/one/playtron/Workspaces1";
 
+/// Whether this session runs workspaces at all.
+///
+/// Off unless `COSMIC_WORKSPACES` says otherwise, so a build with no registry
+/// grows no vertical axis, no switch gesture and no bus connection.
+pub fn enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| crate::utils::env::bool_var("COSMIC_WORKSPACES").unwrap_or(false))
+}
+
 /// The workspace on screen, as the registry describes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveWorkspace {
     pub id: String,
-    /// The user's colour for this workspace.
-    ///
-    /// `None` when the registry gave none or gave something unparseable — the
-    /// wash then falls back to a theme colour rather than painting whatever a
-    /// malformed string happened to decode to.
+    /// The user's colour, `None` if the registry gave none or gave something
+    /// unparseable. The wash then falls back to a theme colour.
     pub accent: Option<[f32; 3]>,
 }
 
+/// What the compositor knows about the registry.
+///
+/// With none the switch gesture is not ours to intercept; one that says nothing
+/// is active yet still owns those keys.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Registry {
+    Absent,
+    Present(Option<ActiveWorkspace>),
+}
+
 pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
-    let (tx, rx) = calloop::channel::channel::<Option<ActiveWorkspace>>();
+    if !enabled() {
+        debug!("COSMIC_WORKSPACES is not set; workspaces stay off");
+        return;
+    }
+
+    let (tx, rx) = calloop::channel::channel::<Registry>();
 
     if let Err(err) = handle.insert_source(rx, |event, _, state| {
-        if let calloop::channel::Event::Msg(active) = event {
-            debug!(
-                workspace = active.as_ref().map_or("<none>", |a| a.id.as_str()),
-                "active workspace changed"
-            );
-            state.set_active_workspace(active);
+        if let calloop::channel::Event::Msg(registry) = event {
+            debug!(?registry, "workspace registry changed");
+            state.set_workspace_registry(registry);
         }
     }) {
         warn!(?err, "Failed to register workspace channel");
@@ -59,21 +65,15 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
 
     executor.spawn_ok(async move {
         if let Err(err) = watch(tx).await {
-            // Not fatal, and not even unusual: no registry is running until
-            // workspaces ship. Everything stays visible.
-            debug!(%err, "not following a workspace registry");
+            debug!(%err, "stopped following the workspace registry");
         }
     });
 }
 
-async fn watch(tx: calloop::channel::Sender<Option<ActiveWorkspace>>) -> zbus::Result<()> {
+async fn watch(tx: calloop::channel::Sender<Registry>) -> zbus::Result<()> {
     let conn = zbus::Connection::session().await?;
 
-    // Subscribe BEFORE the first read. The compositor and the registry race at
-    // boot, and a switch landing between the read and the subscription would
-    // otherwise be lost — leaving the screen following a workspace it is no
-    // longer on.
-    let rule = |member: &'static str| -> zbus::Result<zbus::MatchRule<'static>> {
+    let from_registry = |member: &'static str| -> zbus::Result<zbus::MatchRule<'static>> {
         Ok(zbus::MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
             .sender(DEST)?
@@ -81,55 +81,63 @@ async fn watch(tx: calloop::channel::Sender<Option<ActiveWorkspace>>) -> zbus::R
             .member(member)?
             .build())
     };
-    let mut active_changed =
-        zbus::MessageStream::for_match_rule(rule("ActiveChanged")?, &conn, None).await?;
-    // Recolouring the workspace you are standing in does not change which one
-    // is active, so a new accent only ever arrives through this one.
-    let mut list_changed =
-        zbus::MessageStream::for_match_rule(rule("ListChanged")?, &conn, None).await?;
 
-    // A failed first read is normal when the registry has not claimed its name
-    // yet: report "no workspace" and keep listening rather than giving up, or a
-    // compositor that wins the boot race would never follow the registry at all.
+    // Subscribe before the first read. Watching the name is what stops the
+    // start order from mattering — the registry and the compositor come up
+    // together — and picks the registry up again when it restarts.
+    let mut events = futures_util::stream::select_all([
+        zbus::MessageStream::for_match_rule(from_registry("ActiveChanged")?, &conn, None).await?,
+        zbus::MessageStream::for_match_rule(from_registry("ListChanged")?, &conn, None).await?,
+        zbus::MessageStream::for_match_rule(
+            zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender("org.freedesktop.DBus")?
+                .interface("org.freedesktop.DBus")?
+                .member("NameOwnerChanged")?
+                // Only this name; unfiltered, every service coming or going
+                // would wake us.
+                .add_arg(DEST)?
+                .build(),
+            &conn,
+            None,
+        )
+        .await?,
+    ]);
+
     let _ = tx.send(read(&conn).await);
 
     use futures_util::stream::StreamExt;
-    loop {
-        // Both signals mean the same thing here — "re-read" — because
-        // ActiveChanged carries only an id and the accent lives in the list.
-        let alive = {
-            let next_active = active_changed.next();
-            let next_list = list_changed.next();
-            futures_util::pin_mut!(next_active);
-            futures_util::pin_mut!(next_list);
-            match futures_util::future::select(next_active, next_list).await {
-                futures_util::future::Either::Left((msg, _))
-                | futures_util::future::Either::Right((msg, _)) => msg.is_some(),
-            }
-        };
-        if !alive {
-            break;
-        }
+    // All three mean "re-read": ActiveChanged carries only an id, the accent
+    // lives in the list, and a name change says only that the answer differs.
+    while events.next().await.is_some() {
         if tx.send(read(&conn).await).is_err() {
             break;
         }
     }
+
+    // The streams end only with the connection. Say so rather than keep hiding
+    // clients for a registry we can no longer hear.
+    let _ = tx.send(Registry::Absent);
     Ok(())
 }
 
-/// The active workspace and its colour, or `None` if there is not one.
-async fn read(conn: &zbus::Connection) -> Option<ActiveWorkspace> {
-    let id = conn
+/// The active workspace and its colour, or whether there is a registry at all.
+async fn read(conn: &zbus::Connection) -> Registry {
+    // Nobody owns the name, or whoever does will not answer — the same thing
+    // from here.
+    let Ok(reply) = conn
         .call_method(Some(DEST), PATH, Some(DEST), "Active", &())
         .await
-        .ok()?
-        .body()
-        .deserialize::<String>()
-        .ok()?;
-    // The registry reports "nothing active" as an empty string; taking it at
-    // face value would tag every client with an id nothing can match.
+    else {
+        return Registry::Absent;
+    };
+    let Ok(id) = reply.body().deserialize::<String>() else {
+        return Registry::Absent;
+    };
+    // "Nothing active" comes back as an empty string; taken at face value it
+    // would tag every client with an id nothing can match.
     if id.is_empty() {
-        return None;
+        return Registry::Present(None);
     }
 
     let accent = conn
@@ -148,14 +156,13 @@ async fn read(conn: &zbus::Connection) -> Option<ActiveWorkspace> {
                 .and_then(|(_, _, accent, ..)| parse_accent(&accent))
         });
 
-    Some(ActiveWorkspace { id, accent })
+    Registry::Present(Some(ActiveWorkspace { id, accent }))
 }
 
-/// `#rrggbb` to an RGB triple.
+/// `#rrggbb` to an RGB triple, `None` for anything malformed.
 ///
-/// Returns `None` rather than a guess for anything malformed: the caller falls
-/// back to a theme colour, which is a better answer than washing the screen in
-/// whatever a bad string happened to decode to.
+/// The caller falls back to a theme colour, which beats washing the screen in
+/// whatever a bad string decoded to.
 fn parse_accent(accent: &str) -> Option<[f32; 3]> {
     let hex = accent.strip_prefix('#')?;
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -169,12 +176,11 @@ fn parse_accent(accent: &str) -> Option<[f32; 3]> {
     Some([channel(0)?, channel(2)?, channel(4)?])
 }
 
-/// Ask the registry to step `delta` workspaces along — the vertical axis.
+/// Ask the registry to step `delta` workspaces along.
 ///
-/// Fire and forget: the switch arrives back through `ActiveChanged` like any
-/// other, so a keypress and a click on the panel take exactly the same path and
-/// cannot disagree about what happened. Nothing here waits on the round trip,
-/// because the shell has 300ms to become interactive (W-9).
+/// Fire and forget: the switch comes back through `ActiveChanged`, so a
+/// keypress and a click on the panel take the same path. The gate is upstream —
+/// this is only reachable while a registry is answering.
 pub fn cycle(delta: i32) {
     std::thread::spawn(move || {
         let result = futures_executor::block_on(async {
@@ -182,11 +188,8 @@ pub fn cycle(delta: i32) {
             conn.call_method(Some(DEST), PATH, Some(DEST), "Cycle", &(delta,))
                 .await
         });
-        match result {
-            Ok(_) => {}
-            // No registry is the normal case until workspaces ship; the
-            // keypress simply does nothing.
-            Err(err) => debug!(%err, delta, "workspace cycle went nowhere"),
+        if let Err(err) = result {
+            debug!(%err, delta, "workspace cycle went nowhere");
         }
     });
 }
@@ -211,8 +214,6 @@ mod tests {
 
     #[test]
     fn anything_malformed_is_refused_rather_than_guessed() {
-        // The caller falls back to a theme colour; washing the screen in
-        // whatever a bad string decoded to would be worse than not washing.
         for bad in [
             "",
             "#",

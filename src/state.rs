@@ -1009,15 +1009,23 @@ impl State {
     ///
     /// Lives here rather than on `Shell` because swapping which realm is
     /// exposed touches the workspace-protocol state, which `Common` owns.
-    pub fn set_active_workspace(
-        &mut self,
-        active: Option<crate::dbus::workspaces::ActiveWorkspace>,
-    ) {
+    pub fn set_workspace_registry(&mut self, registry: crate::dbus::workspaces::Registry) {
+        use crate::dbus::workspaces::Registry;
+
         let mut shell = self.common.shell.write();
-        shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
-        if let Some(active) = active {
-            let mut guard = self.common.workspace_state.update();
-            shell.switch_realm(&active.id, active.accent, &mut guard);
+        match registry {
+            Registry::Absent => {
+                shell.set_workspace_registry_present(false);
+                shell.set_active_workspace(None);
+            }
+            Registry::Present(active) => {
+                shell.set_workspace_registry_present(true);
+                shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
+                if let Some(active) = active {
+                    let mut guard = self.common.workspace_state.update();
+                    shell.switch_realm(&active.id, active.accent, &mut guard);
+                }
+            }
         }
     }
 

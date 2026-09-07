@@ -2476,25 +2476,15 @@ impl State {
             }
         }
 
-        // The vertical axis: Super+Ctrl+Up / Super+Ctrl+Down move between
-        // workspaces, the context boundary. Super+Ctrl+Left/Right stay on
-        // desktops, the horizontal axis inside one workspace — same modifier,
-        // so the two axes read as one gesture family rather than two unrelated
-        // shortcuts.
-        //
-        // Super is required, not just Ctrl: a bare Ctrl+Up/Down belongs to
-        // applications (paragraph navigation in editors, terminals, browsers)
-        // and intercepting it here would take it from all of them. Super+Ctrl
-        // is also where Up/Down already lived — they duplicated Left/Right, so
-        // nothing is lost by giving them the axis they point along.
-        //
-        // Strict modifier match, so it cannot swallow a chord meant for
-        // something else — Super+Shift+Ctrl+Up still moves a window.
+        // Super+Ctrl+Up/Down move between workspaces; Left/Right stay on
+        // desktops. Only while a registry is answering — otherwise the match
+        // falls through and the keys go to whatever else wants them.
         if event.state() == KeyState::Pressed
             && modifiers.ctrl
             && modifiers.logo
             && !modifiers.alt
             && !modifiers.shift
+            && self.common.shell.read().workspaces_live()
         {
             let direction = if handle.raw_syms().contains(&Keysym::Down) {
                 Some(1)

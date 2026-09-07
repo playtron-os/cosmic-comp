@@ -488,6 +488,12 @@ pub struct Shell {
     /// distinct from `active_realm`, which is a map key and is never empty.
     active_workspace: Option<String>,
 
+    /// Whether a workspace registry is answering right now.
+    ///
+    /// The switch gesture keys off this rather than off the environment, so
+    /// enabling workspaces without a registry running claims no shortcut.
+    workspace_registry: bool,
+
     // Can't make this into a HashSet. See https://github.com/pop-os/cosmic-comp/pull/1902
     pub pending_windows: Vec<PendingWindow>,
     pub pending_layers: Vec<PendingLayer>,
@@ -2568,6 +2574,17 @@ impl Shell {
         self.active_workspace = workspace;
     }
 
+    /// Whether workspaces are live — opted into, and a registry answering.
+    ///
+    /// Gates the switch gesture only; visibility keys off `active_workspace`.
+    pub fn workspaces_live(&self) -> bool {
+        self.workspace_registry
+    }
+
+    pub fn set_workspace_registry_present(&mut self, present: bool) {
+        self.workspace_registry = present;
+    }
+
     /// Is this surface's client visible in the workspace on screen?
     ///
     /// The gate for capture and for window listings. Machine-plane clients (the
@@ -2652,6 +2669,7 @@ impl Shell {
             active_realm: DEFAULT_REALM.to_string(),
             realm_transition: None,
             active_workspace: None,
+            workspace_registry: false,
             seats: Seats::new(),
 
             pending_windows: Vec::new(),
