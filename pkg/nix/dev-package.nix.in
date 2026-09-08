@@ -48,8 +48,18 @@ in
       stdenv.cc.cc.lib
       libxkbcommon
       wayland
-      libglvnd
       vulkan-loader
+    ];
+
+    # dlopen'd, so on no link line and invisible to autoPatchelf's DT_NEEDED
+    # pass: smithay loads libEGL by name and panics at startup without it.
+    # /run/opengl-driver is where NixOS keeps the GPU's own EGL/GBM drivers.
+    runtimeDependencies = with pkgs; [
+      libglvnd
+      wayland
+      libxkbcommon
+      vulkan-loader
+      "/run/opengl-driver"
     ];
 
     installPhase = ''
