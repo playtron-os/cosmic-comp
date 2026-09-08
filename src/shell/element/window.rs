@@ -149,6 +149,11 @@ pub struct CosmicWindowInternal {
     /// Whether the window fills the output zone (position 0,0 and size >= zone).
     /// Used to give square corners to non-maximized windows that visually fill the screen.
     fills_output_zone: AtomicBool,
+    /// Which output edges the geometry reaches, as [`OutputEdges`] bits.
+    /// Decides WHICH corners a maximized (or zone-filling) window squares —
+    /// once something reserves a margin, a maximized window no longer touches
+    /// the screen edge and has nothing to square against.
+    output_edges: AtomicU8,
     theme: Mutex<crate::comp_theme::CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
@@ -576,6 +581,22 @@ impl CosmicWindowInternal {
         self.window.is_tiled(false).unwrap_or(false)
     }
 
+    /// Which output edges this window's geometry reaches.
+    fn output_edges(&self) -> super::OutputEdges {
+        super::OutputEdges::from_bits(self.output_edges.load(Ordering::Acquire))
+    }
+
+    /// Whether the top corners sit in screen corners — what decides if the SSD
+    /// header squares its own top corners, so it cannot disagree with the
+    /// window frame drawn around it.
+    fn squares_top_corners(&self) -> bool {
+        if !(self.window.is_maximized(false) || self.fills_output_zone.load(Ordering::Acquire)) {
+            return false;
+        }
+        let squared = self.output_edges().squared_corners();
+        squared[0] && squared[1]
+    }
+
     /// Compute corner radius based on window state, appearance config, and theme.
     /// This is a helper that can be called from within `with_program` closures.
     pub fn compute_corner_radius(
@@ -590,14 +611,34 @@ impl CosmicWindowInternal {
         let is_maximized = self.window.is_maximized(false);
         let appearance = self.appearance_conf.lock().unwrap();
 
-        // Maximized windows always have 0 corner radius
-        if is_maximized {
-            return [0; 4];
-        }
-
-        // Non-maximized windows that fill the output zone also get square corners
-        if self.fills_output_zone.load(Ordering::Acquire) {
-            return [0; 4];
+        // A maximized window — or one that visually fills the zone — squares the
+        // corners that sit in a SCREEN corner. That used to be all four
+        // unconditionally, on the assumption that maximized means edge-to-edge.
+        // It no longer does: a maximized window is laid out into the output's
+        // NON-EXCLUSIVE zone, so anything reserving a margin (agentos-panel holds
+        // 10px on three edges; the bar reserves the bottom) leaves it inset, with
+        // nothing to square against.
+        if is_maximized || self.fills_output_zone.load(Ordering::Acquire) {
+            let edges = self.output_edges();
+            // Edge-to-edge: the common case, and the old behaviour exactly.
+            if edges.squares_every_corner() {
+                return [0; 4];
+            }
+            // Otherwise fall through and round as usual, then flatten only the
+            // corners that do meet an edge.
+            let radii = self
+                .theme
+                .lock()
+                .unwrap()
+                .radius_window()
+                .map(|x| x.round() as u8);
+            let surface_corners = self.window.corner_radius(geometry_size);
+            let base = if has_ssd {
+                radii
+            } else {
+                surface_corners.unwrap_or(radii)
+            };
+            return edges.apply(base);
         }
 
         // X11 transient children (utility/toolbar windows) get 0 corner radius
@@ -688,6 +729,7 @@ impl CosmicWindow {
                 desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
+                output_edges: AtomicU8::new(super::OutputEdges::ALL.bits()),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
@@ -1222,6 +1264,18 @@ impl CosmicWindow {
             .with_program(|p| p.fills_output_zone.store(fills, Ordering::Release));
     }
 
+    /// Record which output edges this window reaches. See [`super::OutputEdges`].
+    pub fn set_output_edges(&self, edges: super::OutputEdges) {
+        self.0
+            .with_program(|p| p.output_edges.store(edges.bits(), Ordering::Release));
+    }
+
+    /// Whether the SSD header should square its top corners: only when the
+    /// window actually meets the top edge of its output.
+    pub fn header_is_flush_with_top(&self) -> bool {
+        self.0.with_program(|p| p.squares_top_corners())
+    }
+
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>, default_radius: u8) -> [u8; 4] {
         self.0
             .with_program(|p| p.compute_corner_radius(geometry_size, default_radius))
@@ -1423,6 +1477,10 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .maximized(
                 win.window.is_maximized(false) || win.fills_output_zone.load(Ordering::Acquire),
             )
+            // The buttons follow `maximized`; the corners follow whether the
+            // window actually reaches the top of the screen. With a reserved
+            // margin those differ, and only the second decides the radius.
+            .square_top(win.squares_top_corners())
             .theme(theme);
 
         // Pass the application icon if resolved. A client-set toplevel icon

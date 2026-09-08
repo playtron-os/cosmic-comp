@@ -126,11 +126,29 @@ pub struct CosmicStackInternal {
     mask: Mutex<Option<tiny_skia::Mask>>,
     tiled: AtomicBool,
     fills_output_zone: AtomicBool,
+    /// Which output edges the geometry reaches, as [`super::OutputEdges`] bits.
+    /// Decides which corners square when maximized — see the window equivalent.
+    output_edges: AtomicU8,
     theme: Mutex<CompTheme>,
     appearance_conf: Mutex<AppearanceConfig>,
 }
 
 impl CosmicStackInternal {
+    /// The corners to square, given whether the active window is maximized.
+    ///
+    /// Empty unless the stack is claiming the screen: a floating window that
+    /// happens to sit against an edge keeps all four corners. When it IS
+    /// claiming the screen, only the corners that reach an output edge square —
+    /// a maximized window laid out into an inset non-exclusive zone reaches
+    /// none of them.
+    fn squaring_edges(&self, maximized: bool) -> super::OutputEdges {
+        if maximized || self.fills_output_zone.load(Ordering::Acquire) {
+            super::OutputEdges::from_bits(self.output_edges.load(Ordering::Acquire))
+        } else {
+            super::OutputEdges::default()
+        }
+    }
+
     /// Tab bar height derived from the current theme's window control style.
     fn tab_height(&self) -> i32 {
         icetron_p::prelude::header_height(&**self.theme.lock().unwrap()) as i32
@@ -193,6 +211,7 @@ impl CosmicStack {
                 mask: Mutex::new(None),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
+                output_edges: AtomicU8::new(super::OutputEdges::ALL.bits()),
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
@@ -541,6 +560,12 @@ impl CosmicStack {
             .with_program(|p| p.fills_output_zone.store(fills, Ordering::Release));
     }
 
+    /// Record which output edges this stack reaches. See [`super::OutputEdges`].
+    pub fn set_output_edges(&self, edges: super::OutputEdges) {
+        self.0
+            .with_program(|p| p.output_edges.store(edges.bits(), Ordering::Release));
+    }
+
     pub fn surfaces(&self) -> impl Iterator<Item = CosmicSurface> {
         self.0.with_program(|p| {
             p.windows
@@ -835,8 +860,9 @@ impl CosmicStack {
             let theme = p.theme.lock().unwrap();
             let tiled = p.tiled.load(Ordering::Acquire);
             let maximized = windows[active].is_maximized(false);
-            let round = (appearance.clip_tiled_windows || !tiled) && !maximized;
-            round.then(|| theme.radius_window().map(|x| x.round() as u8))
+            let edges = p.squaring_edges(maximized);
+            let round = (appearance.clip_tiled_windows || !tiled) && !edges.squares_every_corner();
+            round.then(|| edges.apply(theme.radius_window().map(|x| x.round() as u8)))
         });
 
         self.0.with_program(|p| {
@@ -1023,17 +1049,20 @@ impl CosmicStack {
 
     pub fn corner_radius(&self, geometry_size: Size<i32, Logical>, default_radius: u8) -> [u8; 4] {
         self.0.with_program(|p| {
-            // Non-maximized windows that fill the output zone get square corners
-            if p.fills_output_zone.load(Ordering::Acquire) {
-                return [0; 4];
-            }
-
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
             let is_tiled = p.tiled.load(Ordering::Acquire);
             let appearance = p.appearance_conf.lock().unwrap();
             let maximized = active_window.is_maximized(false);
+            // Squares only the corners that reach an output edge; every corner
+            // when the window really is edge-to-edge, none when a reserved
+            // margin holds it clear of the screen border.
+            let edges = p.squaring_edges(maximized);
+            if edges.squares_every_corner() {
+                return [0; 4];
+            }
 
-            let round = (appearance.clip_tiled_windows || !is_tiled) && !maximized;
+            let round =
+                (appearance.clip_tiled_windows || !is_tiled) && !edges.squares_every_corner();
             let radii = p
                 .theme
                 .lock()
@@ -1058,7 +1087,7 @@ impl CosmicStack {
                 corners[2] = radii[2].max(corners[2]);
                 corners[3] = radii[3];
 
-                corners
+                edges.apply(corners)
             }
         })
     }
@@ -1506,7 +1535,12 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
 
         // Outer container with background and corner radius
         let fill_default = theme.fill_default();
-        let top_radius = if maximized
+        // The tab bar is the top of the frame, so it has to square exactly when
+        // the frame does — a rounded window under a square tab strip (or the
+        // reverse) reads as a rendering bug. `squaring_edges` is the same rule
+        // `corner_radius` uses.
+        let squared = stack.squaring_edges(maximized).squared_corners();
+        let top_radius = if (squared[0] && squared[1])
             || (stack.tiled.load(Ordering::Acquire)
                 && !stack.appearance_conf.lock().unwrap().clip_tiled_windows)
         {

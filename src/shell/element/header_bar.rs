@@ -48,6 +48,11 @@ pub struct HeaderBar<'a, Message> {
     focused: bool,
     hovered: bool,
     maximized: bool,
+    /// Whether the top corners sit in SCREEN corners, so the header must square
+    /// them. Distinct from `maximized`: a maximized window laid out into an
+    /// inset non-exclusive zone is still maximized (and still shows the restore
+    /// button) while no longer touching the top edge.
+    square_top: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
 }
@@ -70,6 +75,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             focused: false,
             hovered: false,
             maximized: false,
+            square_top: false,
             theme: None,
             app_icon: None,
         }
@@ -112,6 +118,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.hovered = hovered;
+        self
+    }
+
+    /// Square the header's top corners. Must agree with the frame drawn around
+    /// it — see `CosmicWindowInternal::squares_top_corners`.
+    pub fn square_top(mut self, square_top: bool) -> Self {
+        self.square_top = square_top;
         self
     }
 
@@ -235,7 +248,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         // Force header background to fully opaque — the blur backdrop renders
         // behind the header and should not bleed through.
         let header_bg = theme.header_background();
-        let top_radius = if self.maximized {
+        let top_radius = if self.square_top {
             0.0
         } else {
             theme.radius_window()[0]

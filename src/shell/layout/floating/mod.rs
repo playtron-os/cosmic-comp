@@ -42,7 +42,7 @@ use crate::{
     shell::{
         CosmicSurface, Direction, ManagedLayer, MoveResult, ResizeMode,
         element::{
-            CosmicMapped, CosmicMappedRenderElement, CosmicWindow, MaximizedState,
+            CosmicMapped, CosmicMappedRenderElement, CosmicWindow, MaximizedState, OutputEdges,
             resize_indicator::ResizeIndicator,
             stack::{CosmicStackRenderElement, MoveResult as StackMoveResult},
             window::CosmicWindowRenderElement,
@@ -782,7 +782,12 @@ impl FloatingLayout {
             false,
         );
 
-        mapped.set_geometry(target_geometry.to_global(&output));
+        let global = target_geometry.to_global(&output);
+        // Set now as well as in `refresh`, so the first frame after maximizing
+        // already knows whether it reaches the screen edge. Defaulting to
+        // "square" and correcting a frame later would flash square corners.
+        mapped.set_output_edges(OutputEdges::of(global, output.geometry()));
+        mapped.set_geometry(global);
         mapped.configure();
 
         if animate {
@@ -2763,8 +2768,33 @@ impl FloatingLayout {
     }
 
     #[profiling::function]
+    /// Record, for every element, which screen edges its geometry reaches — the
+    /// input to per-corner rounding (see [`OutputEdges`]).
+    ///
+    /// Done here rather than beside each of the dozen-odd `set_geometry` calls:
+    /// one place cannot drift out of sync with another, and it re-evaluates when
+    /// the *zone* changes rather than the window — a panel appearing or going
+    /// away moves where a maximized window's edges are without ever touching its
+    /// geometry through this layout.
+    fn refresh_output_edges(&mut self) {
+        let Some(output) = self.space.outputs().next().cloned() else {
+            return;
+        };
+        let output_geo = output.geometry();
+        for mapped in self.space.elements() {
+            let Some(geo) = self.space.element_geometry(mapped) else {
+                continue;
+            };
+            mapped.set_output_edges(OutputEdges::of(
+                geo.as_local().to_global(&output),
+                output_geo,
+            ));
+        }
+    }
+
     pub fn refresh(&mut self) {
         self.space.refresh();
+        self.refresh_output_edges();
 
         if let Some(pos) = self.spawn_order.iter().position(|w| !w.alive()) {
             self.spawn_order.truncate(pos);

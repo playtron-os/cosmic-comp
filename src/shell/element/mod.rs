@@ -52,6 +52,92 @@ use std::{
     },
 };
 
+/// Which of an output's four edges a window's geometry actually touches.
+///
+/// A maximized window is laid out into the output's NON-EXCLUSIVE zone, so once
+/// something reserves a margin (agentos-panel holds 10px on the top, left and
+/// right, and the bar itself reserves the bottom) a "maximized" window no longer
+/// reaches the screen edge. Corners that do not reach it have nothing to square
+/// against, and should stay rounded.
+///
+/// Tracked per side rather than as one "fills the screen" flag so it degrades
+/// correctly: on an output with no panel, or with a spacer missing, only the
+/// corners that genuinely meet an edge go square.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutputEdges(u8);
+
+impl OutputEdges {
+    const LEFT: u8 = 1 << 0;
+    const RIGHT: u8 = 1 << 1;
+    const TOP: u8 = 1 << 2;
+    const BOTTOM: u8 = 1 << 3;
+
+    /// Every edge touched — the classic edge-to-edge maximized window.
+    pub const ALL: Self = Self(Self::LEFT | Self::RIGHT | Self::TOP | Self::BOTTOM);
+
+    /// Which edges of `output` the rectangle `geo` reaches.
+    ///
+    /// Both rectangles must be in the same space; callers pass global
+    /// coordinates. A window overshooting an edge counts as touching it, so a
+    /// window larger than its output is still squared.
+    #[must_use]
+    pub fn of(geo: Rectangle<i32, Global>, output: Rectangle<i32, Global>) -> Self {
+        let mut bits = 0;
+        if geo.loc.x <= output.loc.x {
+            bits |= Self::LEFT;
+        }
+        if geo.loc.y <= output.loc.y {
+            bits |= Self::TOP;
+        }
+        if geo.loc.x + geo.size.w >= output.loc.x + output.size.w {
+            bits |= Self::RIGHT;
+        }
+        if geo.loc.y + geo.size.h >= output.loc.y + output.size.h {
+            bits |= Self::BOTTOM;
+        }
+        Self(bits)
+    }
+
+    #[must_use]
+    pub fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    #[must_use]
+    pub fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether each corner sits in a screen corner, in the renderer's order:
+    /// `[top-left, top-right, bottom-right, bottom-left]`.
+    ///
+    /// A corner is squared when EITHER of its two edges meets the output — a
+    /// window flush against the left edge but inset from the top would look
+    /// wrong with a rounded top-left poking out of the screen side.
+    #[must_use]
+    pub fn squared_corners(self) -> [bool; 4] {
+        let l = self.0 & Self::LEFT != 0;
+        let r = self.0 & Self::RIGHT != 0;
+        let t = self.0 & Self::TOP != 0;
+        let b = self.0 & Self::BOTTOM != 0;
+        [l || t, r || t, r || b, l || b]
+    }
+
+    /// Whether every corner is squared — the fast path, and what the old
+    /// unconditional `is_maximized => [0; 4]` rule assumed was always true.
+    #[must_use]
+    pub fn squares_every_corner(self) -> bool {
+        self.squared_corners().iter().all(|c| *c)
+    }
+
+    /// Zero the corners that meet an output edge, leaving the rest alone.
+    #[must_use]
+    pub fn apply(self, radii: [u8; 4]) -> [u8; 4] {
+        let squared = self.squared_corners();
+        std::array::from_fn(|i| if squared[i] { 0 } else { radii[i] })
+    }
+}
+
 pub mod surface;
 use self::stack::MoveResult;
 pub use self::surface::CosmicSurface;
@@ -369,6 +455,16 @@ impl CosmicMapped {
         match &self.element {
             CosmicMappedInternal::Stack(s) => s.set_fills_output_zone(fills),
             CosmicMappedInternal::Window(w) => w.set_fills_output_zone(fills),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Record which output edges this window's geometry reaches, so corners
+    /// that do not reach one can stay rounded. See [`OutputEdges`].
+    pub fn set_output_edges(&self, edges: OutputEdges) {
+        match &self.element {
+            CosmicMappedInternal::Stack(s) => s.set_output_edges(edges),
+            CosmicMappedInternal::Window(w) => w.set_output_edges(edges),
             _ => unreachable!(),
         }
     }
@@ -1714,5 +1810,83 @@ where
 {
     fn from(elem: TextureRenderElement<GlesTexture>) -> Self {
         CosmicMappedRenderElement::Egui(elem)
+    }
+}
+
+#[cfg(test)]
+mod output_edges_tests {
+    use super::OutputEdges;
+    use smithay::utils::{Point, Rectangle, Size};
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, crate::utils::prelude::Global> {
+        Rectangle::new(Point::from((x, y)), Size::from((w, h)))
+    }
+
+    /// A 1920x1080 output at the origin.
+    fn output() -> Rectangle<i32, crate::utils::prelude::Global> {
+        rect(0, 0, 1920, 1080)
+    }
+
+    #[test]
+    fn an_edge_to_edge_window_squares_every_corner() {
+        // The classic maximized window, and what the old unconditional rule
+        // assumed was always the case.
+        let edges = OutputEdges::of(output(), output());
+        assert!(edges.squares_every_corner());
+        assert_eq!(edges.apply([20; 4]), [0; 4]);
+    }
+
+    #[test]
+    fn a_window_inset_on_every_side_keeps_every_corner() {
+        // What agentos-panel's spacers produce: 10px reserved on the top, left
+        // and right, and the bar's own zone at the bottom. The window is still
+        // maximized — it just no longer touches the screen.
+        let inset = rect(10, 10, 1900, 1008);
+        let edges = OutputEdges::of(inset, output());
+        assert!(!edges.squares_every_corner());
+        assert_eq!(edges.squared_corners(), [false; 4]);
+        assert_eq!(edges.apply([20; 4]), [20; 4], "radius survives untouched");
+    }
+
+    #[test]
+    fn only_the_corners_at_a_met_edge_square() {
+        // The degrade-gracefully case: a margin on the left and top but not the
+        // right, so the two right-hand corners sit in real screen corners and
+        // the two left-hand ones do not.
+        let edges = OutputEdges::of(rect(10, 10, 1910, 1070), output());
+        // [top-left, top-right, bottom-right, bottom-left]
+        assert_eq!(edges.squared_corners(), [false, true, true, true]);
+        assert_eq!(edges.apply([20; 4]), [20, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_corner_squares_if_either_of_its_edges_is_met() {
+        // Flush against the bottom only. Both bottom corners square: a rounded
+        // corner poking out of the screen edge on one axis looks broken even
+        // when the other axis is clear.
+        let edges = OutputEdges::of(rect(10, 10, 1900, 1070), output());
+        assert_eq!(edges.squared_corners(), [false, false, true, true]);
+    }
+
+    #[test]
+    fn a_window_overshooting_the_output_still_squares() {
+        // Larger than its screen, or positioned off it: the edge is met, not
+        // missed. `>=` rather than `==` is what makes this true.
+        let edges = OutputEdges::of(rect(-5, -5, 2000, 1200), output());
+        assert!(edges.squares_every_corner());
+    }
+
+    #[test]
+    fn edges_survive_a_round_trip_through_the_atomic() {
+        // How the mask reaches the window: stored as bits in an AtomicU8.
+        for r in [
+            output(),
+            rect(10, 10, 1900, 1008),
+            rect(10, 10, 1910, 1070),
+            rect(0, 10, 1920, 1000),
+        ] {
+            let edges = OutputEdges::of(r, output());
+            assert_eq!(OutputEdges::from_bits(edges.bits()), edges);
+        }
     }
 }
