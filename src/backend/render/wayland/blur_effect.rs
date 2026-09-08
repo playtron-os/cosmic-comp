@@ -1136,7 +1136,7 @@ where
     }
 }
 
-fn blit_from_active_fb(
+pub(crate) fn blit_from_active_fb(
     frame: &mut GlesFrame<'_, '_>,
     src: Rectangle<f64, Buffer>,
     dst: Rectangle<i32, Physical>,

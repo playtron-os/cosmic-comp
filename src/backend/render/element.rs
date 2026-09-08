@@ -1,7 +1,7 @@
 use crate::{
     backend::{
         kms::render::gles::GbmGlowBackend,
-        render::{GlMultiError, wayland::SurfaceRenderElement},
+        render::{GlMultiError, shatter::ShatterElement, wayland::SurfaceRenderElement},
     },
     shell::{CosmicMappedRenderElement, WorkspaceRenderElement},
     utils::iced::IcedRenderElement,
@@ -60,6 +60,7 @@ where
     /// orb is an app-side widget now, and `shadow.rs` is what reaches the
     /// `From<PixelShaderElement>` impl below.
     PixelShader(PixelShaderElement),
+    Shatter(ShatterElement),
     /// Frozen previous-session frame (KMS handoff): a fullscreen texture imported from
     /// the outgoing compositor's CLOSEFB'd scanout, composited as a backdrop/crossfade
     /// so login/logout adopt the held frame instead of clearing to grey.
@@ -84,6 +85,7 @@ where
             CosmicElement::Zoom(elem) => elem.id(),
             CosmicElement::Damage(elem) => elem.id(),
             CosmicElement::PixelShader(elem) => elem.id(),
+            CosmicElement::Shatter(elem) => elem.id(),
             CosmicElement::Adopt(elem) => elem.id(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.id(),
@@ -100,6 +102,7 @@ where
             CosmicElement::Zoom(elem) => elem.current_commit(),
             CosmicElement::Damage(elem) => elem.current_commit(),
             CosmicElement::PixelShader(elem) => elem.current_commit(),
+            CosmicElement::Shatter(elem) => elem.current_commit(),
             CosmicElement::Adopt(elem) => elem.current_commit(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.current_commit(),
@@ -116,6 +119,7 @@ where
             CosmicElement::Zoom(elem) => elem.src(),
             CosmicElement::Damage(elem) => elem.src(),
             CosmicElement::PixelShader(elem) => elem.src(),
+            CosmicElement::Shatter(elem) => elem.src(),
             CosmicElement::Adopt(elem) => elem.src(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.src(),
@@ -132,6 +136,7 @@ where
             CosmicElement::Zoom(elem) => elem.geometry(scale),
             CosmicElement::Damage(elem) => elem.geometry(scale),
             CosmicElement::PixelShader(elem) => elem.geometry(scale),
+            CosmicElement::Shatter(elem) => elem.geometry(scale),
             CosmicElement::Adopt(elem) => elem.geometry(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.geometry(scale),
@@ -148,6 +153,7 @@ where
             CosmicElement::Zoom(elem) => elem.location(scale),
             CosmicElement::Damage(elem) => elem.location(scale),
             CosmicElement::PixelShader(elem) => elem.location(scale),
+            CosmicElement::Shatter(elem) => elem.location(scale),
             CosmicElement::Adopt(elem) => elem.location(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.location(scale),
@@ -164,6 +170,7 @@ where
             CosmicElement::Zoom(elem) => elem.transform(),
             CosmicElement::Damage(elem) => elem.transform(),
             CosmicElement::PixelShader(elem) => elem.transform(),
+            CosmicElement::Shatter(elem) => elem.transform(),
             CosmicElement::Adopt(elem) => elem.transform(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.transform(),
@@ -184,6 +191,7 @@ where
             CosmicElement::Zoom(elem) => elem.damage_since(scale, commit),
             CosmicElement::Damage(elem) => elem.damage_since(scale, commit),
             CosmicElement::PixelShader(elem) => elem.damage_since(scale, commit),
+            CosmicElement::Shatter(elem) => elem.damage_since(scale, commit),
             CosmicElement::Adopt(elem) => elem.damage_since(scale, commit),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.damage_since(scale, commit),
@@ -200,6 +208,7 @@ where
             CosmicElement::Zoom(elem) => elem.opaque_regions(scale),
             CosmicElement::Damage(elem) => elem.opaque_regions(scale),
             CosmicElement::PixelShader(elem) => elem.opaque_regions(scale),
+            CosmicElement::Shatter(elem) => elem.opaque_regions(scale),
             CosmicElement::Adopt(elem) => elem.opaque_regions(scale),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.opaque_regions(scale),
@@ -216,6 +225,7 @@ where
             CosmicElement::Zoom(elem) => elem.alpha(),
             CosmicElement::Damage(elem) => elem.alpha(),
             CosmicElement::PixelShader(elem) => elem.alpha(),
+            CosmicElement::Shatter(elem) => elem.alpha(),
             CosmicElement::Adopt(elem) => elem.alpha(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.alpha(),
@@ -232,6 +242,7 @@ where
             CosmicElement::Zoom(elem) => elem.kind(),
             CosmicElement::Damage(elem) => elem.kind(),
             CosmicElement::PixelShader(elem) => elem.kind(),
+            CosmicElement::Shatter(elem) => elem.kind(),
             CosmicElement::Adopt(elem) => elem.kind(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.kind(),
@@ -248,6 +259,7 @@ where
             CosmicElement::Zoom(elem) => elem.is_framebuffer_effect(),
             CosmicElement::Damage(elem) => elem.is_framebuffer_effect(),
             CosmicElement::PixelShader(elem) => elem.is_framebuffer_effect(),
+            CosmicElement::Shatter(elem) => elem.is_framebuffer_effect(),
             CosmicElement::Adopt(elem) => elem.is_framebuffer_effect(),
             #[cfg(feature = "debug")]
             CosmicElement::Egui(elem) => elem.is_framebuffer_effect(),
@@ -311,6 +323,9 @@ where
                 )
                 .map_err(R::from_gles_error)
             }
+            CosmicElement::Shatter(elem) => {
+                RenderElement::<R>::draw(elem, frame, src, dst, damage, opaque_regions, cache)
+            }
             CosmicElement::Adopt(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
                 RenderElement::<GlowRenderer>::draw(
@@ -357,6 +372,7 @@ where
                 let glow_renderer = renderer.glow_renderer_mut();
                 elem.underlying_storage(glow_renderer)
             }
+            CosmicElement::Shatter(elem) => elem.underlying_storage(renderer),
             CosmicElement::Adopt(elem) => {
                 let glow_renderer = renderer.glow_renderer_mut();
                 elem.underlying_storage(glow_renderer)
@@ -398,6 +414,9 @@ where
                     elem, glow_frame, src, dst, cache,
                 )
                 .map_err(R::from_gles_error)
+            }
+            CosmicElement::Shatter(elem) => {
+                RenderElement::<R>::capture_framebuffer(elem, frame, src, dst, cache)
             }
             CosmicElement::Adopt(elem) => {
                 let glow_frame = R::glow_frame_mut(frame);
@@ -464,6 +483,17 @@ where
 {
     fn from(elem: PixelShaderElement) -> Self {
         Self::PixelShader(elem)
+    }
+}
+
+impl<R> From<ShatterElement> for CosmicElement<R>
+where
+    R: Renderer + ImportAll + ImportMem + AsGlowRenderer,
+    R::TextureId: Send + 'static,
+    CosmicMappedRenderElement<R>: RenderElement<R>,
+{
+    fn from(elem: ShatterElement) -> Self {
+        Self::Shatter(elem)
     }
 }
 

@@ -1025,7 +1025,6 @@ impl State {
                     let mut guard = self.common.workspace_state.update();
                     shell.switch_realm(
                         &active.id,
-                        active.accent,
                         self.common.config.cosmic_conf.workspace_transition,
                         &mut guard,
                     );

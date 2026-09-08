@@ -102,6 +102,7 @@ pub mod element;
 pub mod gpu_profiler;
 pub mod perf_badge;
 pub mod shadow;
+pub mod shatter;
 // MERGE: our `blur` + `clipped_surface` modules are replaced by upstream's
 // `wayland::{blur_effect, clipped_surface}` (PR #2179 frosted glass).
 pub mod wayland;
@@ -197,7 +198,6 @@ fn parse_clear_color(raw: &str) -> Option<Color32F> {
 
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
-pub static SHATTER_SHADER: &str = include_str!("./shaders/workspace_shatter.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // MERGE: our dual-Kawase / blurred-backdrop shaders (fragment + compute) and the
 // whole `blur` module re-export block are dropped — upstream's `wayland::blur_effect`
@@ -476,93 +476,6 @@ impl BackdropShader {
     }
 }
 
-pub struct ShatterShader(pub GlesPixelProgram);
-
-#[derive(PartialEq)]
-struct ShatterSettings {
-    progress: f32,
-    color: [f32; 3],
-    aspect: f32,
-    forward: bool,
-    seed: f32,
-}
-type ShatterCache = RefCell<HashMap<Key, (ShatterSettings, PixelShaderElement)>>;
-
-impl ShatterShader {
-    pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
-            .get::<ShatterShader>()
-            .expect("Custom Shaders not initialized")
-            .0
-            .clone()
-    }
-
-    /// Full-output procedural cracks and shards; no bitmap asset is scaled.
-    pub fn element<R: AsGlowRenderer>(
-        renderer: &R,
-        key: impl Into<Key>,
-        geo: Rectangle<i32, Local>,
-        progress: f32,
-        color: [f32; 3],
-        forward: bool,
-        seed: f32,
-    ) -> PixelShaderElement {
-        let aspect = geo.size.w as f32 / geo.size.h.max(1) as f32;
-        let settings = ShatterSettings {
-            progress,
-            color,
-            aspect,
-            forward,
-            seed,
-        };
-
-        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data();
-
-        user_data.insert_if_missing(|| ShatterCache::new(HashMap::new()));
-        let mut cache = user_data.get::<ShatterCache>().unwrap().borrow_mut();
-        cache.retain(|k, _| match k {
-            Key::Static(w) => w.upgrade().is_some(),
-            Key::Group(a) => a.upgrade().is_some(),
-            Key::Window(_, w) => w.alive(),
-            Key::LayerSurface(_) => true,
-        });
-
-        let key = key.into();
-        if cache
-            .get(&key)
-            .filter(|(old, _)| &settings == old)
-            .is_none()
-        {
-            let shader = Self::get(renderer);
-            let elem = PixelShaderElement::new(
-                shader,
-                geo.as_logical(),
-                None,
-                1.0,
-                vec![
-                    Uniform::new("color", color),
-                    Uniform::new("progress", progress),
-                    Uniform::new("aspect", aspect),
-                    Uniform::new("direction", if forward { 1.0f32 } else { -1.0f32 }),
-                    Uniform::new("seed", seed),
-                ],
-                Kind::Unspecified,
-            );
-            cache.insert(key.clone(), (settings, elem));
-        }
-
-        let elem = &mut cache.get_mut(&key).unwrap().1;
-        if elem.geometry(1.0.into()).to_logical(1) != geo.as_logical() {
-            elem.resize(geo.as_logical(), None);
-        }
-        elem.clone()
-    }
-}
-
 pub struct PostprocessShader(pub GlesTexProgram);
 /// FSR upscaling pass — see `shaders/fsr_easu.frag`.
 pub struct FsrEasuShader(pub GlesTexProgram);
@@ -598,7 +511,10 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         let egl_context = renderer.egl_context();
         if egl_context.user_data().get::<IndicatorShader>().is_some()
             && egl_context.user_data().get::<BackdropShader>().is_some()
-            && egl_context.user_data().get::<ShatterShader>().is_some()
+            && egl_context
+                .user_data()
+                .get::<shatter::ShatterShader>()
+                .is_some()
             && egl_context.user_data().get::<PostprocessShader>().is_some()
         {
             return Ok(());
@@ -624,10 +540,9 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("corner_radius_bl", UniformType::_1f),
         ],
     )?;
-    let shatter_shader = renderer.compile_custom_pixel_shader(
-        SHATTER_SHADER,
+    let shatter_shader = renderer.compile_custom_texture_shader(
+        shatter::SHADER,
         &[
-            UniformName::new("color", UniformType::_3f),
             UniformName::new("progress", UniformType::_1f),
             UniformName::new("aspect", UniformType::_1f),
             UniformName::new("direction", UniformType::_1f),
@@ -711,7 +626,7 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         .insert_if_missing(|| BackdropShader(rectangle_shader));
     egl_context
         .user_data()
-        .insert_if_missing(|| ShatterShader(shatter_shader));
+        .insert_if_missing(|| shatter::ShatterShader(shatter_shader));
     egl_context
         .user_data()
         .insert_if_missing(|| PostprocessShader(postprocess_shader));
@@ -1158,15 +1073,16 @@ where
         }
 
         // Above both realms but below the cursor, so it reads as the screen breaking.
-        if let Some((id, accent, forward, seed, progress)) = shell_guard.realm_shatter(output) {
-            let shatter = ShatterShader::element(
+        if let Some((id, forward, seed, progress, captured)) = shell_guard.realm_shatter(output) {
+            let shatter = shatter::ShatterElement::new(
                 renderer,
                 id,
                 output_geo.as_local(),
+                output.current_scale().fractional_scale(),
                 progress,
-                accent,
                 forward,
                 seed,
+                captured,
             );
             elements.push(CosmicElement::from(shatter));
         }

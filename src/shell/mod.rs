@@ -742,6 +742,7 @@ pub enum WorkspaceDelta {
     Realm {
         start: Instant,
         animation: WorkspaceTransition,
+        captured: bool,
     },
     /// Time-driven cross-fade (no slide): the outgoing workspace stays opaque and
     /// the incoming one fades in over it. Used for the game-mode launcher<->game
@@ -802,18 +803,20 @@ pub(crate) fn realm_transition_duration(
     }
 }
 
-pub(crate) fn realm_window_alphas(animation: WorkspaceTransition, progress: f32) -> (f32, f32) {
+pub(crate) fn realm_window_alphas(
+    animation: WorkspaceTransition,
+    progress: f32,
+    captured: bool,
+) -> (f32, f32) {
     let progress = if progress.is_finite() {
         progress.clamp(0.0, 1.0)
     } else {
         1.0
     };
-    let reveal = match animation {
-        WorkspaceTransition::Fade => progress,
-        // Hold the old scene while cracks grow, then break it quickly.
-        WorkspaceTransition::Shatter => (progress - 0.38) / 0.24,
+    if animation == WorkspaceTransition::Shatter {
+        return if captured { (0.0, 1.0) } else { (1.0, 0.0) };
     }
-    .clamp(0.0, 1.0);
+    let reveal = progress.clamp(0.0, 1.0);
     let reveal = ease(EaseInOutCubic, 0.0, 1.0, reveal);
     (1.0 - reveal, reveal)
 }
@@ -839,10 +842,14 @@ pub struct RealmTransition {
     /// Collection direction, used to move the shatter's impact point.
     pub forward: bool,
     pub animation: WorkspaceTransition,
-    /// The incoming workspace subtly colours the custom effect.
-    pub accent: Option<[f32; 3]>,
-    effect_ids: HashMap<Output, Id>,
+    effects: HashMap<Output, RealmEffect>,
     seed: f32,
+}
+
+#[derive(Debug, Clone)]
+struct RealmEffect {
+    id: Id,
+    captured: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -2405,39 +2412,49 @@ impl Shell {
         let realm = self.realms.get(&transition.from)?;
         let set = realm.sets.get(output)?;
         let workspace = set.workspaces.get(set.active)?;
+        let captured = transition
+            .effects
+            .get(output)
+            .is_some_and(|effect| effect.captured.load(Ordering::Acquire));
         Some((
             workspace.handle,
             set.active,
             WorkspaceDelta::Realm {
                 start: transition.started,
                 animation: transition.animation,
+                captured,
             },
         ))
     }
 
-    /// Parameters for the procedural shatter overlay on this output.
-    pub fn realm_shatter(&self, output: &Output) -> Option<(Id, [f32; 3], bool, f32, f32)> {
+    /// Parameters for the captured-scene shatter on this output.
+    pub fn realm_shatter(
+        &self,
+        output: &Output,
+    ) -> Option<(
+        Id,
+        bool,
+        f32,
+        f32,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+    )> {
         let transition = self.realm_transition.as_ref()?;
         if transition.animation != WorkspaceTransition::Shatter {
             return None;
         }
-        let id = transition.effect_ids.get(output)?.clone();
+        let effect = transition.effects.get(output)?;
         let elapsed = transition.started.elapsed().as_secs_f32();
         let total =
             realm_transition_duration(transition.animation, self.theme().motion).as_secs_f32();
         if total <= 0.0 || elapsed >= total {
             return None;
         }
-        let accent = transition.accent.unwrap_or_else(|| {
-            let c = self.theme().primary();
-            [c.r, c.g, c.b]
-        });
         Some((
-            id,
-            accent,
+            effect.id.clone(),
             transition.forward,
             transition.seed,
             elapsed / total,
+            effect.captured.clone(),
         ))
     }
 
@@ -2502,17 +2519,10 @@ impl Shell {
     pub fn switch_realm(
         &mut self,
         id: &str,
-        accent: Option<[f32; 3]>,
         animation: WorkspaceTransition,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
         if self.active_realm == id {
-            // Same realm: a recolour, not a crossing. Update the accent in
-            // place so the next switch wears the new colour, but do not play a
-            // transition for a change nobody moved to see.
-            if let Some(transition) = self.realm_transition.as_mut() {
-                transition.accent = accent;
-            }
             return;
         }
         self.ensure_realm(id, workspace_state);
@@ -2530,13 +2540,22 @@ impl Shell {
             started: Instant::now(),
             forward,
             animation,
-            accent,
-            effect_ids: self
+            effects: self
                 .realms
                 .get(&self.active_realm)
                 .into_iter()
                 .flat_map(|realm| realm.sets.keys().cloned())
-                .map(|output| (output, Id::new()))
+                .map(|output| {
+                    (
+                        output,
+                        RealmEffect {
+                            id: Id::new(),
+                            captured: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                                false,
+                            )),
+                        },
+                    )
+                })
                 .collect(),
             seed: realm_transition_seed(&previous, id),
         });
@@ -9856,26 +9875,26 @@ mod realm_transition_tests {
     #[test]
     fn fade_crosses_between_the_two_realms() {
         assert_eq!(
-            realm_window_alphas(WorkspaceTransition::Fade, 0.0),
+            realm_window_alphas(WorkspaceTransition::Fade, 0.0, false),
             (1.0, 0.0)
         );
         assert_eq!(
-            realm_window_alphas(WorkspaceTransition::Fade, 1.0),
+            realm_window_alphas(WorkspaceTransition::Fade, 1.0, false),
             (0.0, 1.0)
         );
-        let (old, new) = realm_window_alphas(WorkspaceTransition::Fade, 0.5);
+        let (old, new) = realm_window_alphas(WorkspaceTransition::Fade, 0.5, false);
         assert!((old - 0.5).abs() < 1e-6);
         assert!((new - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn shatter_holds_the_old_realm_until_the_cracks_have_grown() {
+    fn shatter_swaps_the_underlay_once_the_old_frame_is_captured() {
         assert_eq!(
-            realm_window_alphas(WorkspaceTransition::Shatter, 0.38),
+            realm_window_alphas(WorkspaceTransition::Shatter, 0.38, false),
             (1.0, 0.0)
         );
         assert_eq!(
-            realm_window_alphas(WorkspaceTransition::Shatter, 0.62),
+            realm_window_alphas(WorkspaceTransition::Shatter, 0.38, true),
             (0.0, 1.0)
         );
     }
@@ -9885,7 +9904,7 @@ mod realm_transition_tests {
         for animation in [WorkspaceTransition::Fade, WorkspaceTransition::Shatter] {
             let mut previous_old = 1.0;
             for i in 0..=100 {
-                let (old, new) = realm_window_alphas(animation, i as f32 / 100.0);
+                let (old, new) = realm_window_alphas(animation, i as f32 / 100.0, false);
                 assert!((0.0..=1.0).contains(&old));
                 assert!((0.0..=1.0).contains(&new));
                 assert!((old + new - 1.0).abs() < 1e-6);
@@ -9898,7 +9917,7 @@ mod realm_transition_tests {
     #[test]
     fn invalid_progress_settles_on_the_new_realm() {
         assert_eq!(
-            realm_window_alphas(WorkspaceTransition::Fade, f32::NAN),
+            realm_window_alphas(WorkspaceTransition::Fade, f32::NAN, false),
             (0.0, 1.0)
         );
     }

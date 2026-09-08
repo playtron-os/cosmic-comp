@@ -316,7 +316,9 @@ fn render_input_order_internal<R: 'static>(
                         (1.0, ease(EaseInOutCubic, 0.0, 1.0, t))
                     }
                     WorkspaceDelta::Realm {
-                        start, animation, ..
+                        start,
+                        animation,
+                        captured,
                     } => {
                         let duration = crate::shell::realm_transition_duration(
                             *animation,
@@ -325,7 +327,7 @@ fn render_input_order_internal<R: 'static>(
                         let t = (Instant::now().duration_since(*start).as_secs_f32()
                             / duration.as_secs_f32())
                         .clamp(0.0, 1.0);
-                        crate::shell::realm_window_alphas(*animation, t)
+                        crate::shell::realm_window_alphas(*animation, t, *captured)
                     }
                     _ => unreachable!("filtered above"),
                 };

@@ -30,7 +30,7 @@ pub fn enabled() -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveWorkspace {
     pub id: String,
-    /// The user's colour, or `None` when it cannot colour a custom effect.
+    /// Retained independently of transition rendering for workspace styling.
     pub accent: Option<[f32; 3]>,
 }
 
@@ -106,8 +106,7 @@ async fn watch(tx: calloop::channel::Sender<Registry>) -> zbus::Result<()> {
     let _ = tx.send(read(&conn).await);
 
     use futures_util::stream::StreamExt;
-    // All three mean "re-read": ActiveChanged carries only an id, the accent
-    // lives in the list, and a name change says only that the answer differs.
+    // ActiveChanged carries only an id; ListChanged carries accent updates.
     while events.next().await.is_some() {
         if tx.send(read(&conn).await).is_err() {
             break;
@@ -158,9 +157,7 @@ async fn read(conn: &zbus::Connection) -> Registry {
     Registry::Present(Some(ActiveWorkspace { id, accent }))
 }
 
-/// `#rrggbb` to an RGB triple, `None` for anything malformed.
-///
-/// The caller falls back to a theme colour for malformed values.
+/// Parse a registry `#rrggbb`, leaving malformed values for styling fallback.
 fn parse_accent(accent: &str) -> Option<[f32; 3]> {
     let hex = accent.strip_prefix('#')?;
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
