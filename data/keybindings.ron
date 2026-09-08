@@ -56,6 +56,10 @@
     (modifiers: [Super, Ctrl], key: "Down"): NextRealm,
     (modifiers: [Super, Ctrl], key: "k"): PreviousRealm,
     (modifiers: [Super, Ctrl], key: "j"): NextRealm,
+    // Super+Tab duplicated Alt+Tab exactly, so it costs nothing to give it the
+    // axis instead — and Tab-to-switch matches what the gesture means elsewhere.
+    (modifiers: [Super], key: "Tab"): NextRealm,
+    (modifiers: [Super, Shift], key: "Tab"): PreviousRealm,
     (modifiers: [Super, Shift, Ctrl], key: "Left"): MoveToPreviousWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Down"): MoveToNextWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Up"): MoveToPreviousWorkspace,
@@ -112,8 +116,6 @@
     (modifiers: [Super]): System(StartMenu),
     (modifiers: [Alt], key: "Tab"): System(WindowSwitcher),
     (modifiers: [Alt, Shift], key: "Tab"): System(WindowSwitcherPrevious),
-    (modifiers: [Super], key: "Tab"): System(WindowSwitcher),
-    (modifiers: [Super, Shift], key: "Tab"): System(WindowSwitcherPrevious),
 
     (modifiers: [Super], key: "p"): System(DisplayToggle),
     (modifiers: [Super], key: "i"): System(Settings),

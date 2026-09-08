@@ -84,4 +84,26 @@ mod tests {
             );
         }
     }
+
+    /// Super+Tab is the workspace switch, not a second Alt+Tab.
+    #[test]
+    fn super_tab_switches_workspaces() {
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (combo, want) in [
+            ("Super+Tab", shortcuts::Action::NextRealm),
+            ("Super+Shift+Tab", shortcuts::Action::PreviousRealm),
+            // Alt keeps the window switcher.
+            (
+                "Alt+Tab",
+                shortcuts::Action::System(shortcuts::action::System::WindowSwitcher),
+            ),
+        ] {
+            let binding = shortcuts::Binding::from_str(combo).unwrap();
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+        }
+    }
 }
