@@ -46,13 +46,16 @@ pub fn of_pid(pid: u32) -> Option<String> {
 /// the function that decides whether a client is inside a boundary, and the
 /// capture gating downstream is a launch-blocking guarantee.
 pub fn of_cgroup(cgroup: &str) -> Option<String> {
+    // The deepest match: systemd nests `workspace-a-b.slice` inside
+    // `workspace-a.slice`, so the first segment names a prefix, not the id.
     cgroup
         .split(['/', ':', '\n'])
-        .find_map(|segment| {
+        .filter_map(|segment| {
             segment
                 .strip_prefix("workspace-")
                 .and_then(|rest| rest.strip_suffix(".slice"))
         })
+        .next_back()
         .filter(|id| !id.is_empty() && id.chars().all(is_id_char))
         .map(str::to_string)
 }
@@ -98,6 +101,12 @@ mod tests {
     fn resolves_a_workspace_from_its_slice() {
         let cgroup = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-meridian.slice/app.scope\n";
         assert_eq!(of_cgroup(cgroup).as_deref(), Some("meridian"));
+    }
+
+    #[test]
+    fn a_dashed_id_is_read_from_the_deepest_slice() {
+        let cgroup = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-e2e.slice/workspace-e2e-a.slice/app.scope\n";
+        assert_eq!(of_cgroup(cgroup).as_deref(), Some("e2e-a"));
     }
 
     #[test]
