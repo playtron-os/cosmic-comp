@@ -339,13 +339,8 @@ tasks:
       # RPM `src` to swap and the template below builds its own derivation
       # around the one this checkout produces - see pkg/nix/dev-package.nix.in.
       KORA_DIR: '{{.KORA_DIR | default "~/dev/kora-nix-poc"}}'
-      # Where the release build happens. `device` rsyncs this checkout to
-      # {{.HOST}} and builds it there, in the dev shell flake.nix describes: the
-      # glibc it links against is the one it will run on, no image or pin has to
-      # be kept in step, and an aarch64 device builds natively. The rest build
-      # here - `nix` in the same dev shell, `container` in the Debian 13 image CI
-      # uses, `host` on whatever is on PATH - and are checked against the
-      # device's glibc before anything is shipped.
+      # device builds on {{.HOST}} itself, so it links against the glibc it will
+      # run on. nix, container and host build here and are checked against it.
       BUILDER: '{{.BUILDER | default "device"}}'
       REMOTE_DIR: /tmp/{{.NAME}}-nix
       STAGE: .cache/nix
@@ -414,20 +409,16 @@ tasks:
   deploy:nix:rpm:
     internal: true
     desc: >-
-      Build the release RPM and leave it, with the dev.nix that wraps it, in
-      REMOTE_DIR on HOST. Every BUILDER finishes there, so the install step that
-      follows does not care which one ran.
+      Build the RPM and leave it, with the dev.nix wrapping it, in REMOTE_DIR on
+      HOST - where every BUILDER finishes, so the install step need not care.
     vars:
       GOTASK:
         sh: command -v go-task || command -v task
       RPM_TARGET: '{{.RPM_TARGET | default "dist:rpm"}}'
       PROFILE: '{{.PROFILE | default "release"}}'
       SHELL_ATTR: '{{.SHELL_ATTR | default ""}}'
-      # The checkout BUILDER=device builds in, relative to the device's home -
-      # ssh and rsync both land there, so there is no `~` to expand. Deliberately
-      # not ~/dev/{{.NAME}}: rsync --delete into a tree you also work in throws
-      # away whatever was uncommitted in it. target/ survives between deploys, so
-      # only the first deploy to a device pays for a cold build.
+      # Home-relative, and its own directory: --delete into a tree you also work
+      # in would discard uncommitted work. target/ survives between deploys.
       SRC_DIR: '{{.SRC_DIR | default (printf ".cache/kora-deploy/%s" .NAME)}}'
     cmds:
       - |
@@ -435,25 +426,21 @@ tasks:
         case "{{.BUILDER}}" in
         device)
           ssh {{.HOST}} 'mkdir -p {{.SRC_DIR}} {{.REMOTE_DIR}}'
-          # .git travels with the source. nix reads a git checkout through git,
-          # so .gitignore keeps target/ out of the copy it takes into the store;
-          # sent without it, nix would copy the build output too - tens of
-          # gigabytes - on every evaluation.
+          # .git goes too: nix reads a checkout through git, so .gitignore is what
+          # keeps target/ out of the copy it takes into the store.
           rsync -a --delete \
             --exclude 'target/' --exclude '.cache/' --exclude 'dist/' --exclude 'result' \
             ./ {{.HOST}}:{{.SRC_DIR}}/
-          # Quoted heredoc: go-task has already substituted its own templates, and
-          # everything left is meant to be expanded on the device, not here.
+          # Quoted: what survives go-task's templating expands on the device.
           ssh {{.HOST}} bash -s <<'REMOTE'
         set -e
         cd {{.SRC_DIR}}
-        # A flake's source is its git-tracked files, so a file that is new in this
-        # checkout and has never been committed is invisible to the build.
+        # A flake's source is its tracked files; a new uncommitted one is not.
         git add -AN . >/dev/null 2>&1 || true
         nix develop {{.SHELL_ATTR}} --command task {{.RPM_TARGET}}
         rpm=$(ls dist/{{.NAME}}-{{.VERSION}}-*.rpm | tail -n1)
         cp "$rpm" {{.REMOTE_DIR}}/
-        # getFlake takes no `~`, so the kora path is resolved rather than written.
+        # getFlake takes no `~`, so resolve it rather than write it.
         sed -e "s|@KORA_DIR@|$(cd {{.KORA_DIR}} && pwd)|g" \
             -e "s|@SRC@|{{.REMOTE_DIR}}/$(basename "$rpm")|g" \
             -e "s|@NAME@|{{.NAME}}|g" \
@@ -469,10 +456,8 @@ tasks:
             host)
               {{.GOTASK}} {{.RPM_TARGET}} ;;
           esac
-          # ld.so checks symbol versions before it binds anything, so a binary that
-          # wants a newer glibc than the device has dies at exec with nothing but
-          # "version `GLIBC_x.yz' not found" - and autoPatchelfHook cannot fix a
-          # symbol version. BUILDER=device cannot get this wrong; these three can.
+          # ld.so rejects a too-new glibc symbol version at exec and no patching
+          # fixes it. Only the builders that run here can get this wrong.
           bin=target/{{.TARGET_ARCH}}/{{.PROFILE}}/{{.NAME}}
           need=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -V | tail -n1)
           have=GLIBC_$(ssh {{.HOST}} 'ldd --version | head -n1 | sed "s/.* //"')
@@ -511,9 +496,8 @@ tasks:
         go-task nix:run TARGET=build:debug
         go-task nix:run TARGET=test:all
 
-      This is the crane shell the repo develops in, on nixpkgs-unstable.
-      `deploy:nix` packages in `.#deploy` instead - same toolchain, but pinned
-      to the nixpkgs the Kora devices run, so a build links against their glibc.
+      Uses `.#deploy`, the shell `deploy:nix` packages in - `.#default` cannot
+      resolve rust-toolchain.toml's 1.93 from the rust-overlay pin.
     aliases:
       - in-nix
     preconditions:
@@ -523,9 +507,8 @@ tasks:
       vars:
         - TARGET
     cmds:
-      # Everything this Taskfile derives is worked out again by the inner
-      # `task`, inside the shell, where there is a compiler to ask.
-      - nix develop --command task {{.TARGET}}
+      # The inner `task` re-derives everything, where there is a compiler to ask.
+      - nix develop .#deploy --command task {{.TARGET}}
 
   docker:build:
     desc: Build the container image used for the `docker:run` target
@@ -555,11 +538,8 @@ tasks:
         sh: pwd
       SSH_KEY:
         sh: echo "${SSH_KEY}"
-      # Rootless podman maps the container's uid into a subuid range, so
-      # --user below is a uid that does not own the bind-mounted checkout and
-      # cannot read it; keep-id maps it back. SELinux then denies container_t
-      # the host labels, and label=disable is the option that does not relabel
-      # the working tree the way :z would. Real Docker needs neither.
+      # Rootless podman maps --user onto a subuid that cannot read the mounted
+      # checkout, and SELinux denies the labels. Real Docker needs neither.
       PODMAN_OPTS:
         sh: >-
           docker --version 2>/dev/null | grep -qi podman &&

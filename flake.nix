@@ -4,11 +4,8 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
-    # The revision NixOS 26.11 ships, used only by `devShells.deploy`. The
-    # unstable channel above is a moving target, and ld.so rejects a binary
-    # that wants a newer glibc symbol version than the device has before it
-    # binds anything - so the shell `deploy:nix` packages in is pinned to what
-    # the Kora devices actually run.
+    # For `devShells.deploy` only: the revision the devices run, so a build
+    # links against their glibc rather than whatever unstable moved to.
     nixpkgs-kora.url = "github:NixOS/nixpkgs/b7c2ada94fe99c15b0dbcf4d11fd7850b957a436";
 
     parts.url = "github:hercules-ci/flake-parts";
@@ -101,10 +98,8 @@
           cargoArtifacts = craneLib.buildDepsOnly craneArgs;
           cosmic-comp = craneLib.buildPackage (craneArgs // { inherit cargoArtifacts; });
 
-          # rustc drives the link, but it is the shell's gcc and glibc that
-          # decide which symbol versions the compositor ends up asking for, so
-          # `deploy:nix` packages against this stdenv rather than the unstable
-          # one above.
+          # The shell's gcc and glibc decide which symbol versions the binary
+          # asks for, so `deploy:nix` packages against this stdenv.
           pkgsKora = import inputs.nixpkgs-kora { inherit system; };
         in
         {
@@ -125,19 +120,13 @@
             inputsFrom = [ cosmic-comp ];
           };
 
-          # What `go-task deploy:nix` builds the RPM in. The library set is the
-          # one pkg/nix/dev-package.nix.in names on the device, so what this
-          # links against is what autoPatchelfHook resolves there - notably
-          # libdisplay-info 0.3, which the container instead links statically to
-          # dodge Fedora 43/44 soname skew that nix does not have.
+          # What `deploy:nix` builds the RPM in. The library set matches what the
+          # device resolves, notably libdisplay-info 0.3.
           devShells.deploy = pkgsKora.mkShell {
             name = "cosmic-comp-deploy";
 
-            # Not rust-bin: rust-toolchain.toml pins 1.93 and this flake's
-            # rust-overlay input is from 2024-08, which has no manifest that far
-            # forward - devShells.default fails on the same line. nixpkgs' own
-            # rustc here is 1.97 and a non-rustup cargo ignores the toml, so the
-            # pinned channel is a floor this clears rather than a version to match.
+            # Not rust-bin: the rust-overlay pin has no manifest for 1.93. A
+            # non-rustup cargo ignores rust-toolchain.toml, and 1.97 clears it.
             nativeBuildInputs = with pkgsKora; [
               rustc
               cargo
