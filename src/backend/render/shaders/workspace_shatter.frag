@@ -75,9 +75,21 @@ vec2 shard_translation(vec3 shard, vec2 center, float fly) {
     float random = hash(shard.z + 17.0);
     vec2 radial = normalize(center + vec2(0.0001));
     vec2 tangent = vec2(-radial.y, radial.x);
-    vec2 motion = radial * (0.08 + random * 0.32);
-    motion += tangent * (hash(shard.z + 29.0) - 0.5) * 0.12;
-    motion.y += fly * (0.04 + hash(shard.z + 41.0) * 0.08);
+    vec2 impact = vec2(0.48, direction > 0.0 ? 0.60 : 0.40);
+    vec2 near_edge = vec2(-impact.x * aspect, -impact.y);
+    vec2 far_edge = vec2((1.0 - impact.x) * aspect, 1.0 - impact.y);
+    float edge_x = radial.x > 0.0
+        ? far_edge.x / max(radial.x, 0.0001)
+        : near_edge.x / min(radial.x, -0.0001);
+    float edge_y = radial.y > 0.0
+        ? far_edge.y / max(radial.y, 0.0001)
+        : near_edge.y / min(radial.y, -0.0001);
+    float travel = max(0.0, min(edge_x, edge_y) - length(center));
+    travel += 0.18 + random * 0.22;
+
+    vec2 motion = radial * travel;
+    motion += tangent * (hash(shard.z + 29.0) - 0.5) * 0.16;
+    motion.y += fly * (0.05 + hash(shard.z + 41.0) * 0.10);
     return motion * fly;
 }
 
@@ -118,7 +130,7 @@ void main() {
     float crack_reach = crack_phase * 1.35;
     float crack = crack_phase
         * (1.0 - smoothstep(crack_reach - 0.10, crack_reach, length(output_point)));
-    float fly = smoothstep(0.30, 0.82, progress);
+    float fly = smoothstep(0.26, 0.86, progress);
     fly *= fly;
 
     vec2 source_point = inverse_shard(output_point, fly);
@@ -148,7 +160,8 @@ void main() {
     color.rgb *= 1.0 - shadow * 0.42;
     color.rgb += vec3(color.a) * glint * 0.72;
 
-    float fade = 1.0 - smoothstep(0.76, 1.0, progress);
+    // Finish early so a slow refresh cannot expose the effect's removal boundary.
+    float fade = 1.0 - smoothstep(0.84, 0.94, progress);
     color *= mapped * fade * alpha;
     if (color.a <= 0.001)
         discard;

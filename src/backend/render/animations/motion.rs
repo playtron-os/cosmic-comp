@@ -100,7 +100,7 @@ impl Motion {
             scroll: ms(theme.duration_normal()),
             slide_crossfade: ms(theme.duration_normal()),
             realm_fade: ms(theme.duration_slow()),
-            realm_shatter: ms(theme.duration_slower()) + ms(theme.duration_slow()),
+            realm_shatter: ms(theme.duration_slower()) * 2,
             layer_open: ms(theme.duration_normal()),
             minimize: ms(theme.duration_slow()),
             panel_slide: ms(theme.duration_slower()),
