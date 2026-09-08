@@ -882,7 +882,10 @@ impl CosmicStack {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0)));
 
-            if !maximized && !is_embedded {
+            // The same rule the corners follow: a stack held clear of the screen
+            // edges by a reserved margin still has an outline to draw, and the
+            // border element is what carries the radii.
+            if !p.squaring_edges(maximized).squares_every_corner() && !is_embedded {
                 let c = theme.window_border_color();
                 push_above(CosmicStackRenderElement::Border(
                     IndicatorShader::focus_element(

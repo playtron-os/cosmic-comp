@@ -586,6 +586,13 @@ impl CosmicWindowInternal {
         super::OutputEdges::from_bits(self.output_edges.load(Ordering::Acquire))
     }
 
+    /// Whether every corner sits in a screen corner — the window really is
+    /// edge-to-edge, and there is nothing to round or to clip.
+    fn squares_every_corner(&self) -> bool {
+        (self.window.is_maximized(false) || self.fills_output_zone.load(Ordering::Acquire))
+            && self.output_edges().squares_every_corner()
+    }
+
     /// Whether the top corners sit in screen corners — what decides if the SSD
     /// header squares its own top corners, so it cannot disagree with the
     /// window frame drawn around it.
@@ -1079,21 +1086,32 @@ impl CosmicWindow {
         let is_embedded = embed_render_info.is_some();
         let embed_corner_radius = embed_render_info.map(|info| info.corner_radius);
 
-        let (has_ssd, is_tiled, is_maximized, mut radii, appearance, has_blur) =
+        let (has_ssd, is_tiled, squares_every_corner, mut radii, appearance, has_blur) =
             self.0.with_program(|p| {
                 let geo_size = SpaceElement::geometry(&p.window).size;
                 (
                     p.has_ssd(false),
                     p.is_tiled(),
-                    p.window.is_maximized(false),
+                    p.squares_every_corner(),
                     embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
                     *p.appearance_conf.lock().unwrap(),
                     p.window.has_blur(),
                 )
             });
+        // Clipping is what rounds the CLIENT's surface; `radii` alone rounds
+        // nothing without it. This used to be `&& !is_maximized`, on the same
+        // assumption `compute_corner_radius` made — that maximized means
+        // edge-to-edge, so there is nothing to round. Once a reserved margin
+        // holds a maximized window clear of the screen, its bottom corners have
+        // somewhere to be round, and only clipping puts them there.
+        //
+        // That is why the top corners already looked right and the bottom ones
+        // did not: the SSD header draws its own top corners, so it followed
+        // `compute_corner_radius` on its own, while the content below it was
+        // never clipped at all.
         let clip = ((!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows))
-            && !is_maximized;
+            && !squares_every_corner;
 
         if has_ssd && !clip && !is_embedded {
             // bottom corners
@@ -1125,7 +1143,11 @@ impl CosmicWindow {
             geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
         }
 
-        if ((has_ssd || clip) && !is_maximized && !has_blur) || is_embedded {
+        // Also `squares_every_corner` rather than `is_maximized`: a window held
+        // clear of the screen edges has corners to draw a border around, and the
+        // border element is what carries `radii` — without it a rounded
+        // maximized window has no outline at all.
+        if ((has_ssd || clip) && !squares_every_corner && !has_blur) || is_embedded {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 
