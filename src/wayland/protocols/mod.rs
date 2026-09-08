@@ -32,3 +32,4 @@ pub mod tooltip;
 pub mod toplevel_info;
 pub mod toplevel_management;
 pub mod workspace;
+pub mod workspace_transition;

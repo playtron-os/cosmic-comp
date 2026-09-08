@@ -54,6 +54,7 @@ pub mod tooltip;
 pub mod toplevel_info;
 pub mod toplevel_management;
 pub mod workspace;
+pub mod workspace_transition;
 pub mod xdg_activation;
 pub mod xdg_foreign;
 pub mod xdg_shell;

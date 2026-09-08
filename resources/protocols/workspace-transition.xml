@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="workspace_transition">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="tell shell components when a workspace switch is animating">
+    A workspace switch is animated by the compositor: the windows of the old
+    workspace give way to the new ones over a configurable transition. Shell
+    components are not part of that animation — a panel, dock or launcher is a
+    layer surface that stays where it is — so their contents change the instant
+    they learn the workspace changed, which reads as a snap in the middle of an
+    otherwise smooth switch.
+
+    This protocol tells them when the switch is animating and how long it
+    lasts, so they can fade their own contents across it instead. The
+    compositor is the only party that knows: it owns the animation, its curve
+    and its duration, and the duration is configuration a client cannot see.
+
+    The transition is reported as a start and an end rather than as a series of
+    phases. A client that wants to swap its contents at the least visible
+    moment computes that moment from the start event's duration against its own
+    clock, which needs no further round trips and stays smooth if an event is
+    late. The end event exists so a client can settle exactly rather than
+    guessing, and a client that misses it is only left finishing its own
+    animation on its own schedule.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="workspace_transition_manager_v1" version="1">
+    <description summary="workspace transition notifications">
+      Binding this global is the whole opt-in: the compositor sends transition
+      events to every bound client. There is no per-surface object because a
+      workspace switch is a property of the session rather than of any one
+      surface — every shell component animating it is animating the same event.
+
+      Events are not sent for a switch that does not animate (the compositor
+      transitioning instantly, or a switch to the workspace already active).
+      A client therefore cannot rely on a start event for every workspace
+      change, and should continue to treat its own source of the active
+      workspace as the truth about which one that is.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global. No
+        further events are sent after this request.
+      </description>
+    </request>
+
+    <event name="started">
+      <description summary="a workspace switch began animating">
+        Sent when the compositor begins animating a switch away from one
+        workspace and towards another.
+
+        `duration_ms` is how long the compositor's own animation will take.
+        A client fading its contents should treat it as the window it has,
+        rather than choosing a duration of its own: the two are meant to look
+        like one movement, and the compositor's is configurable.
+
+        `from` and `to` are workspace identifiers in the same namespace the
+        client already uses to name workspaces. `from` may be empty when the
+        compositor was not showing a workspace before this one.
+      </description>
+      <arg name="from" type="string" allow-null="true" summary="workspace being left"/>
+      <arg name="to" type="string" summary="workspace being entered"/>
+      <arg name="duration_ms" type="uint" summary="length of the compositor's animation"/>
+    </event>
+
+    <event name="finished">
+      <description summary="the workspace switch finished animating">
+        Sent when the animation started by the matching started event has
+        completed. A client that is mid-fade can settle on its final state.
+
+        A switch interrupted by another switch produces a finished event for
+        the first before the started event for the second, so start and finish
+        always pair up.
+      </description>
+      <arg name="to" type="string" summary="workspace now shown"/>
+    </event>
+  </interface>
+</protocol>

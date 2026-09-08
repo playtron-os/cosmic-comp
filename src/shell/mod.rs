@@ -2254,6 +2254,11 @@ impl Common {
             &mut self.workspace_state.update(),
         );
         self.popups.cleanup();
+        // The transition is driven by the render clock and has no completion
+        // callback, so it is noticed here. A no-op unless one is outstanding.
+        if !self.shell.read().realm_transition_active() {
+            self.workspace_transition_state.finished();
+        }
         // A workspace is a context boundary, so windows belonging to another one
         // must not appear in any listing — the taskbar's running dot, alt-tab,
         // the dock. `surface_in_active_workspace` already answered this for

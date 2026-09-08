@@ -43,6 +43,7 @@ use crate::{
             toplevel_info::ToplevelInfoState,
             toplevel_management::{ManagementCapabilities, ToplevelManagementState},
             workspace::{WorkspaceState, WorkspaceUpdateGuard},
+            workspace_transition::WorkspaceTransitionState,
         },
     },
     xwayland::XWaylandState,
@@ -356,6 +357,9 @@ pub struct Common {
     pub layer_shadow_state: LayerShadowManagerState,
     pub layer_auto_hide_state: LayerAutoHideState,
     pub usable_area_state: UsableAreaState,
+    /// Tells shell components when a workspace switch is animating, so they can
+    /// fade their contents across it instead of swapping mid-animation.
+    pub workspace_transition_state: WorkspaceTransitionState,
     pub edge_resize_state: EdgeResizeState,
     pub session_hold_state: SessionHoldState,
     pub layer_surface_placement_state: LayerSurfacePlacementState,
@@ -776,6 +780,7 @@ impl State {
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
         let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
         let usable_area_state = UsableAreaState::new::<Self>(dh);
+        let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let session_hold_state = SessionHoldState::new::<Self>(dh);
         let layer_surface_placement_state = LayerSurfacePlacementState::new::<Self>(dh);
@@ -934,6 +939,7 @@ impl State {
                 layer_shadow_state,
                 layer_auto_hide_state,
                 usable_area_state,
+                workspace_transition_state,
                 edge_resize_state,
                 session_hold_state,
                 layer_surface_placement_state,
@@ -1020,14 +1026,28 @@ impl State {
             }
             Registry::Present(active) => {
                 shell.set_workspace_registry_present(true);
+                let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
                 if let Some(active) = active {
                     let mut guard = self.common.workspace_state.update();
-                    shell.switch_realm(
-                        &active.id,
-                        self.common.config.cosmic_conf.workspace_transition,
-                        &mut guard,
-                    );
+                    let animation = self.common.config.cosmic_conf.workspace_transition;
+                    shell.switch_realm(&active.id, animation, &mut guard);
+                    // `switch_realm` returns early for the realm already shown,
+                    // and a client told of a transition that never runs would
+                    // fade out and never come back.
+                    if shell.realm_transition_active() {
+                        let duration = crate::shell::realm_transition_duration(
+                            animation,
+                            shell.theme().motion,
+                        );
+                        drop(guard);
+                        drop(shell);
+                        self.common.workspace_transition_state.started(
+                            previous.as_deref(),
+                            &active.id,
+                            u32::try_from(duration.as_millis()).unwrap_or(u32::MAX),
+                        );
+                    }
                 }
             }
         }
