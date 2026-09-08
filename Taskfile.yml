@@ -227,7 +227,10 @@ tasks:
       - mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
       - cp ./pkg/rpm/{{.NAME}}.spec ~/rpmbuild/SPECS
       - cp dist/{{.NAME}}-{{.ARCH}}{{.SUFFIX}}.tar.gz ~/rpmbuild/SOURCES/{{.NAME}}.tar.gz
-      - rpmbuild -bb --target {{.ARCH}} --define '_prefix /usr' ~/rpmbuild/SPECS/{{.NAME}}.spec
+        # A nix-provided rpm has no platform macros: %_arch is unset and %_prefix
+        # is its own store path, which silently misplaces every %_bindir file.
+      - rpmbuild -bb --target {{.ARCH}} --define "_arch {{.ARCH}}"
+        --define '_prefix /usr' ~/rpmbuild/SPECS/{{.NAME}}.spec
       - cp ~/rpmbuild/RPMS/{{.ARCH}}/{{.NAME}}-{{.VERSION}}-*.{{.ARCH}}.rpm dist
 
   dist:rpm:debug:
