@@ -384,11 +384,10 @@ tasks:
           PROFILE: '{{.PROFILE}}'
           RPM_TARGET: '{{if eq .PROFILE "debug"}}dist:rpm:debug{{else}}dist:rpm{{end}}'
           SHELL_ATTR: '.#deploy'
-      # `add` is `install` under its current name. A profile refuses a name it
-      # already holds and there is no replace, so the previous deploy goes first;
-      # removing one that was never installed is not worth stopping for.
+      # By regex: the element is named after the derivation, not the attribute,
+      # and there is no replace - the previous deploy goes first.
       - |
-        ssh {{.HOST}} 'nix profile remove {{.NAME}} >/dev/null 2>&1 || true
+        ssh {{.HOST}} 'nix profile remove --regex "^{{.NAME}}(-.*)?$" >/dev/null 2>&1 || true
           nix profile add --impure --file {{.REMOTE_DIR}}/dev.nix {{.NAME}}'
       # Not killed by default: cosmic-comp *is* the session, so restarting it
       # logs the user out of {{.HOST}} with no warning. RESTART=true asks for it.
@@ -404,7 +403,8 @@ tasks:
         echo "Done. {{.NAME}} is in {{.HOST}}'s user profile."
         echo "cosmic-session resolves the compositor by name and ~/.nix-profile/bin"
         echo "outranks the system closure, so the next session starts this build."
-        echo "Undo it with 'nix profile remove {{.NAME}}' on the device."
+        echo "Undo it on the device with:"
+        echo "  nix profile remove --regex '^{{.NAME}}(-.*)?\$'"
 
   deploy:nix:rpm:
     internal: true
