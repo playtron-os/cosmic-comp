@@ -2601,6 +2601,16 @@ impl Shell {
         self.workspace_registry = present;
     }
 
+    /// The workspace a window's client was launched into, if any.
+    pub fn client_workspace(&self, window: &CosmicSurface) -> Option<String> {
+        window
+            .wl_surface()?
+            .client()?
+            .get_data::<crate::state::ClientState>()?
+            .workspace
+            .clone()
+    }
+
     /// Is this surface's client visible in the workspace on screen?
     ///
     /// The gate for capture and for window listings. Machine-plane clients (the
@@ -6820,18 +6830,32 @@ impl Shell {
             .or(transient_parent_output)
             .unwrap_or_else(|| seat.active_output());
 
+        // A window belongs to the workspace its process runs in, on screen or
+        // not; mapped into a realm that is not showing, it waits there.
+        let realm = crate::workspace_tag::realm_for(
+            self.client_workspace(&window).as_deref(),
+            &self.active_realm,
+        );
+        if realm != self.active_realm {
+            let mut guard = workspace_state.update();
+            self.ensure_realm(&realm, &mut guard);
+        }
+
         // this is beyond stupid, just to make the borrow checker happy
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {
-            self.workspaces()
+            self.realms[&realm]
                 .spaces()
                 .any(|space| &space.handle == handle)
         }) {
-            self.workspaces_mut()
+            Shell::realm_mut(&mut self.realms, &realm)
                 .spaces_mut()
                 .find(|space| space.handle == handle)
                 .unwrap()
         } else {
-            self.workspaces_mut().active_mut(&output).unwrap() // a seat's active output always has a workspace
+            // Every realm carries every output, so this always resolves.
+            Shell::realm_mut(&mut self.realms, &realm)
+                .active_mut(&output)
+                .unwrap()
         };
         if output != workspace.output {
             output = workspace.output.clone();
@@ -6839,16 +6863,16 @@ impl Shell {
 
         let active_handle = self.active_space(&output).unwrap().handle;
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {
-            self.workspaces()
+            self.realms[&realm]
                 .spaces()
                 .any(|space| &space.handle == handle)
         }) {
-            Shell::realm_mut(&mut self.realms, &self.active_realm)
+            Shell::realm_mut(&mut self.realms, &realm)
                 .spaces_mut()
                 .find(|space| space.handle == handle)
                 .unwrap()
         } else {
-            Shell::realm_mut(&mut self.realms, &self.active_realm)
+            Shell::realm_mut(&mut self.realms, &realm)
                 .active_mut(&output)
                 .unwrap()
         };

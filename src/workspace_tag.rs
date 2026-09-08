@@ -86,6 +86,12 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
 /// workspace and is visible everywhere, and an unknown active workspace means
 /// no workspace registry is running — in which case nothing should change from
 /// today's behaviour.
+/// The realm a new window goes to: its client's workspace when it has one,
+/// else the one on screen.
+pub fn realm_for(client: Option<&str>, active: &str) -> String {
+    client.unwrap_or(active).to_string()
+}
+
 pub fn visible_in(client: Option<&str>, active: Option<&str>) -> bool {
     match (client, active) {
         (Some(client), Some(active)) => client == active,
@@ -107,6 +113,16 @@ mod tests {
     fn a_dashed_id_is_read_from_the_deepest_slice() {
         let cgroup = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-e2e.slice/workspace-e2e-a.slice/app.scope\n";
         assert_eq!(of_cgroup(cgroup).as_deref(), Some("e2e-a"));
+    }
+
+    #[test]
+    fn a_tagged_client_maps_into_its_own_realm() {
+        assert_eq!(realm_for(Some("meridian"), "default"), "meridian");
+    }
+
+    #[test]
+    fn a_machine_plane_client_maps_into_the_realm_on_screen() {
+        assert_eq!(realm_for(None, "default"), "default");
     }
 
     #[test]
