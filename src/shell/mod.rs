@@ -2255,6 +2255,22 @@ impl Common {
             &mut self.workspace_state.update(),
         );
         self.popups.cleanup();
+        // A workspace is a context boundary, so windows belonging to another one
+        // must not appear in any listing — the taskbar's running dot, alt-tab,
+        // the dock. `surface_in_active_workspace` already answered this for
+        // screen capture and its own doc named window listings as the other half;
+        // this is that half. Machine-plane clients (the panel, dock, launcher)
+        // carry no workspace and stay visible from everywhere, so the shell's own
+        // surfaces are unaffected.
+        {
+            let shell = self.shell.read();
+            self.toplevel_info_state
+                .set_visible(&self.workspace_state, |window| {
+                    window
+                        .wl_surface()
+                        .is_none_or(|surface| shell.surface_in_active_workspace(surface.as_ref()))
+                });
+        }
         self.toplevel_info_state.refresh(&self.workspace_state);
         self.refresh_idle_inhibit();
         if let Some(mut a11y_keyboard_monitor) = self.dbus_state.a11y_keyboard_monitor() {

@@ -49,6 +49,14 @@ pub trait Window: IsAlive + Clone + PartialEq + Send {
 pub struct ToplevelInfoState<D, W: Window> {
     dh: DisplayHandle,
     pub(super) toplevels: Vec<W>,
+    /// Toplevels withheld from clients because the workspace that owns them is
+    /// not the active one.
+    ///
+    /// A workspace is a context boundary, so a window belonging to another one
+    /// should not appear in any listing — not the taskbar's running dot, not
+    /// alt-tab, not the dock. They are kept here rather than dropped so the same
+    /// window can be re-advertised, unchanged, when its workspace comes back.
+    hidden: Vec<W>,
     instances: Vec<ZcosmicToplevelInfoV1>,
     dirty: bool,
     last_dirty: bool,
@@ -328,6 +336,7 @@ where
         ToplevelInfoState {
             dh: dh.clone(),
             toplevels: Vec::new(),
+            hidden: Vec::new(),
             instances: Vec::new(),
             dirty: false,
             last_dirty: false,
@@ -358,7 +367,102 @@ where
         self.dirty = true;
     }
 
+    /// Tear a toplevel's protocol presence down, without forgetting the window.
+    ///
+    /// Shared by closing and by hiding: to a client the two are the same event,
+    /// which is the point — nothing has to learn a new "temporarily gone" state.
+    fn withdraw(&mut self, toplevel: &W) {
+        if let Some(state) = toplevel.user_data().get::<ToplevelState>() {
+            let mut state_inner = state.lock().unwrap();
+            for (_info, handle) in &state_inner.instances {
+                // don't send events to stopped instances
+                if handle.version() < zcosmic_toplevel_info_v1::REQ_GET_COSMIC_TOPLEVEL_SINCE
+                    && self
+                        .instances
+                        .iter()
+                        .any(|i| i.id().same_client_as(&handle.id()))
+                {
+                    handle.closed();
+                }
+            }
+            if let Some(handle) = state_inner.foreign_handle.take() {
+                self.foreign_toplevel_list.remove_toplevel(&handle);
+            }
+            *state_inner = Default::default();
+            self.dirty = true;
+        }
+    }
+
+    /// Advertise a toplevel to every bound client, as if it had just opened.
+    fn advertise(&mut self, toplevel: &W, workspace_state: &WorkspaceState<D>) {
+        let toplevel_handle = self
+            .foreign_toplevel_list
+            .new_toplevel::<D>(toplevel.title(), toplevel.app_id());
+
+        if let Some(toplevel_state) = toplevel.user_data().get::<ToplevelState>() {
+            let mut toplevel_state = toplevel_state.lock().unwrap();
+            toplevel_state.foreign_handle = Some(toplevel_handle);
+        } else {
+            toplevel
+                .user_data()
+                .insert_if_missing(move || ToplevelStateInner::from_foreign(toplevel_handle));
+        }
+
+        for instance in &self.instances {
+            send_toplevel_to_client::<D, W>(&self.dh, workspace_state, instance, toplevel);
+        }
+        self.dirty = true;
+    }
+
+    /// Re-partition advertised vs withheld toplevels by `visible`.
+    ///
+    /// Called every refresh, so it follows both a workspace switch (the active
+    /// workspace changed under a fixed set of windows) and a window's own
+    /// arrival on a workspace. Cheap when nothing moved: the predicate runs per
+    /// window, and no protocol traffic is emitted unless a window actually
+    /// crossed the boundary.
+    pub fn set_visible(
+        &mut self,
+        workspace_state: &WorkspaceState<D>,
+        visible: impl Fn(&W) -> bool,
+    ) {
+        let mut newly_hidden = Vec::new();
+        self.toplevels.retain(|w| {
+            if visible(w) {
+                true
+            } else {
+                newly_hidden.push(w.clone());
+                false
+            }
+        });
+        for toplevel in &newly_hidden {
+            self.withdraw(toplevel);
+        }
+        self.hidden.append(&mut newly_hidden);
+
+        let mut newly_shown = Vec::new();
+        self.hidden.retain(|w| {
+            // A window that died while hidden is simply forgotten: it was never
+            // advertised, so there is nothing to tell anyone about.
+            if !w.alive() {
+                return false;
+            }
+            if visible(w) {
+                newly_shown.push(w.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for toplevel in newly_shown {
+            self.advertise(&toplevel, workspace_state);
+            self.toplevels.push(toplevel);
+        }
+    }
+
     pub fn remove_toplevel(&mut self, toplevel: &W) {
+        // A hidden window has no protocol presence to tear down.
+        self.hidden.retain(|w| w != toplevel);
         if let Some(state) = toplevel.user_data().get::<ToplevelState>() {
             let mut state_inner = state.lock().unwrap();
             for (_info, handle) in &state_inner.instances {
