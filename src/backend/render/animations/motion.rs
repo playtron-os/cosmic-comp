@@ -68,14 +68,10 @@ pub struct Motion {
     pub scroll: Duration,
     /// Slide-content crossfade (was 220ms). `normal`.
     pub slide_crossfade: Duration,
-    /// Crossing a workspace boundary — the airlock.
-    ///
-    /// Deliberately longer than `animation`, which is what a desktop switch
-    /// uses. The spec presents a workspace switch as a boundary crossing rather
-    /// than a spatial move, and giving it the same weight as stepping between
-    /// desktops is precisely what makes the two feel like the same thing.
-    /// `slow` is the nearest token to the design prototype's 420ms.
-    pub realm_slide: Duration,
+    /// Cross-workspace fade. `slow` is nearest the reference's 420ms.
+    pub realm_fade: Duration,
+    /// The shatter needs time for cracks to grow before the reveal.
+    pub realm_shatter: Duration,
     /// Layer open/close fade+rise (was 160ms). `normal`.
     pub layer_open: Duration,
     /// Minimize / unminimize scale-to-dock (was 320ms). `slow`.
@@ -103,7 +99,8 @@ impl Motion {
             fullscreen: ms(theme.duration_normal()),
             scroll: ms(theme.duration_normal()),
             slide_crossfade: ms(theme.duration_normal()),
-            realm_slide: ms(theme.duration_slow()),
+            realm_fade: ms(theme.duration_slow()),
+            realm_shatter: ms(theme.duration_slower()) + ms(theme.duration_slow()),
             layer_open: ms(theme.duration_normal()),
             minimize: ms(theme.duration_slow()),
             panel_slide: ms(theme.duration_slower()),

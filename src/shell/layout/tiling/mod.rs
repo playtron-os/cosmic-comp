@@ -4254,6 +4254,7 @@ impl TilingLayout {
         non_exclusive_zone: Rectangle<i32, Local>,
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
         theme: &crate::comp_theme::CompTheme,
+        window_alpha: f32,
         scanout_node: Option<DrmNode>,
         push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
     ) where
@@ -4337,6 +4338,7 @@ impl TilingLayout {
                 swap_desc.is_some(),
                 scanout_node,
                 &shadow_layers,
+                window_alpha,
                 push,
             );
 
@@ -4379,6 +4381,7 @@ impl TilingLayout {
             swap_desc.clone(),
             scanout_node,
             &shadow_layers,
+            window_alpha,
             push,
         );
     }
@@ -5073,6 +5076,7 @@ fn render_old_tree_popups<R>(
     is_swap_mode: bool,
     scanout_node: Option<DrmNode>,
     shadow_layers: &[iced_core::Shadow],
+    window_alpha: f32,
     push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
 ) where
     R: AsGlowRenderer,
@@ -5097,7 +5101,7 @@ fn render_old_tree_popups<R>(
                 renderer,
                 geo.loc.as_logical().to_physical_precise_round(output_scale) - elem_geometry.loc,
                 Scale::from(output_scale),
-                alpha,
+                alpha * window_alpha,
                 scanout_node,
                 push,
                 Some(PopupShadow {
@@ -5325,6 +5329,7 @@ fn render_new_tree_popups<R>(
     swap_desc: Option<NodeDesc>,
     scanout_node: Option<DrmNode>,
     shadow_layers: &[iced_core::Shadow],
+    window_alpha: f32,
     push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
 ) where
     R: AsGlowRenderer,
@@ -5369,7 +5374,7 @@ fn render_new_tree_popups<R>(
                     geo.loc.as_logical().to_physical_precise_round(output_scale)
                         - elem_geometry.loc,
                     Scale::from(output_scale),
-                    alpha,
+                    alpha * window_alpha,
                     scanout_node,
                     push,
                     Some(PopupShadow {

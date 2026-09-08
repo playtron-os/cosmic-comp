@@ -2853,6 +2853,7 @@ impl State {
                     Stage::WorkspacePopups {
                         workspace,
                         offset,
+                        alpha: _,
                         game_mode_only: _,
                     } => {
                         let location = global_pos + offset.as_global().to_f64();
@@ -3083,6 +3084,7 @@ impl State {
                     Stage::WorkspacePopups {
                         workspace,
                         offset,
+                        alpha: _,
                         game_mode_only: _,
                     } => {
                         let global_pos = global_pos + offset.to_f64().as_global();

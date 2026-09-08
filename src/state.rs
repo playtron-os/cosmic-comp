@@ -1023,7 +1023,12 @@ impl State {
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
                 if let Some(active) = active {
                     let mut guard = self.common.workspace_state.update();
-                    shell.switch_realm(&active.id, active.accent, &mut guard);
+                    shell.switch_realm(
+                        &active.id,
+                        active.accent,
+                        self.common.config.cosmic_conf.workspace_transition,
+                        &mut guard,
+                    );
                 }
             }
         }

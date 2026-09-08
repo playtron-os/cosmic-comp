@@ -2707,6 +2707,7 @@ impl Workspace {
         render_focus: bool,
         overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
         theme: &CompTheme,
+        window_alpha: f32,
         scanout_node: Option<DrmNode>,
         game_mode_only: Option<GameModeView<'_>>,
         push: &mut dyn FnMut(WorkspaceRenderElement<R>),
@@ -2786,7 +2787,7 @@ impl Workspace {
                 renderer,
                 render_loc,
                 output_scale.into(),
-                alpha,
+                alpha * window_alpha,
                 scanout_node,
                 0,
                 &mut |elem| push(WorkspaceRenderElement::FullscreenPopup(elem.into())),
@@ -2806,25 +2807,26 @@ impl Workspace {
                 .all(|f| !f.alive() || f.ended_at.is_some())
         {
             // floating surfaces
-            let alpha = match &overview.0 {
-                OverviewMode::Started(_, started) => {
-                    (1.0 - (Instant::now().duration_since(*started).as_millis()
-                        / self.tiling_layer.theme.motion.animation.as_millis())
-                        as f32)
-                        .max(0.0)
-                        * 0.4
-                        + 0.6
-                }
-                OverviewMode::Ended(_, ended) => {
-                    ((Instant::now().duration_since(*ended).as_millis()
-                        / self.tiling_layer.theme.motion.animation.as_millis())
-                        as f32)
-                        * 0.4
-                        + 0.6
-                }
-                OverviewMode::Active(_) => 0.6,
-                OverviewMode::None => 1.0,
-            };
+            let alpha = window_alpha
+                * match &overview.0 {
+                    OverviewMode::Started(_, started) => {
+                        (1.0 - (Instant::now().duration_since(*started).as_millis()
+                            / self.tiling_layer.theme.motion.animation.as_millis())
+                            as f32)
+                            .max(0.0)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Ended(_, ended) => {
+                        ((Instant::now().duration_since(*ended).as_millis()
+                            / self.tiling_layer.theme.motion.animation.as_millis())
+                            as f32)
+                            * 0.4
+                            + 0.6
+                    }
+                    OverviewMode::Active(_) => 0.6,
+                    OverviewMode::None => 1.0,
+                };
 
             if let Some(view) = game_mode_only {
                 // Under strict control the layers must NOT be asked for every
@@ -2866,6 +2868,7 @@ impl Workspace {
                     zone,
                     overview,
                     theme,
+                    window_alpha,
                     scanout_node,
                     &mut |elem| push(elem.into()),
                 );

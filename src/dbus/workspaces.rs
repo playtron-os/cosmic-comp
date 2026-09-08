@@ -30,8 +30,7 @@ pub fn enabled() -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveWorkspace {
     pub id: String,
-    /// The user's colour, `None` if the registry gave none or gave something
-    /// unparseable. The wash then falls back to a theme colour.
+    /// The user's colour, or `None` when it cannot colour a custom effect.
     pub accent: Option<[f32; 3]>,
 }
 
@@ -161,8 +160,7 @@ async fn read(conn: &zbus::Connection) -> Registry {
 
 /// `#rrggbb` to an RGB triple, `None` for anything malformed.
 ///
-/// The caller falls back to a theme colour, which beats washing the screen in
-/// whatever a bad string decoded to.
+/// The caller falls back to a theme colour for malformed values.
 fn parse_accent(accent: &str) -> Option<[f32; 3]> {
     let hex = accent.strip_prefix('#')?;
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {

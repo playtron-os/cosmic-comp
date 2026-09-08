@@ -46,8 +46,8 @@ pub mod voice;
 use crate::toolkit_config::{ToolkitConfig, icon_theme_default, icon_theme_set_default};
 pub use cosmic_comp_config::EdidProduct;
 use cosmic_comp_config::{
-    ActivationPolicy, AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior, XkbConfig,
-    XwaylandDescaling, XwaylandEavesdropping, ZoomConfig,
+    ActivationPolicy, AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior,
+    WorkspaceTransition, XkbConfig, XwaylandDescaling, XwaylandEavesdropping, ZoomConfig,
     input::{DeviceState as InputDeviceState, InputConfig, TouchpadOverride},
     output::comp::{
         OutputConfig, OutputInfo, OutputState, OutputsConfig, TransformDef, load_outputs,
@@ -1062,6 +1062,10 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                         state.backend.schedule_render(output);
                     }
                 }
+            }
+            "workspace_transition" => {
+                state.common.config.cosmic_conf.workspace_transition =
+                    get_config::<WorkspaceTransition>(&config, "workspace_transition");
             }
             "night_shift" => {
                 let new = get_config::<u16>(&config, "night_shift");

@@ -60,6 +60,7 @@ pub enum Stage<'a> {
     WorkspacePopups {
         workspace: &'a Workspace,
         offset: Point<i32, Logical>,
+        alpha: f32,
         /// Same strict game-mode control as [`Stage::Workspace`]: popups are
         /// rendered for the controlled set only.
         game_mode_only: Option<GameModeView<'a>>,
@@ -291,10 +292,7 @@ fn render_input_order_internal<R: 'static>(
         };
     let has_fullscreen = game_mode_exclusive || (fullscreen.is_some() && !overview_is_open);
 
-    // For a transition: `previous` = (outgoing workspace, has_fullscreen, its
-    // offset); plus the incoming `current_offset` and the two opacities.
-    // A slide keeps both opaque and moves them apart; a Crossfade keeps both at
-    // offset 0 (stacked) and fades the incoming one in over the opaque outgoing.
+    // Realm transitions stack both scenes; in-realm desktops remain spatial.
     let (previous, current_offset, previous_alpha, current_alpha) = match previous.as_ref() {
         Some((previous, previous_idx, start)) => {
             let layout = shell.workspaces().layout;
@@ -306,43 +304,40 @@ fn render_input_order_internal<R: 'static>(
             };
             let has_fullscreen = workspace.get_fullscreen(seat).is_some();
 
-            if let WorkspaceDelta::Crossfade(st) = start {
-                let t: f32 = ease(
-                    EaseInOutCubic,
-                    0.0f32,
-                    1.0f32,
-                    Instant::now().duration_since(*st).as_millis() as f32
-                        / shell.theme().motion.slide_crossfade.as_millis() as f32,
-                )
-                .clamp(0.0, 1.0);
-                // Both stacked at offset 0; outgoing opaque (drawn under),
-                // incoming fades in (drawn over, emitted first == topmost).
+            if matches!(
+                start,
+                WorkspaceDelta::Crossfade(_) | WorkspaceDelta::Realm { .. }
+            ) {
+                let (previous_alpha, current_alpha) = match start {
+                    WorkspaceDelta::Crossfade(st) => {
+                        let t = (Instant::now().duration_since(*st).as_secs_f32()
+                            / shell.theme().motion.slide_crossfade.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                        (1.0, ease(EaseInOutCubic, 0.0, 1.0, t))
+                    }
+                    WorkspaceDelta::Realm {
+                        start, animation, ..
+                    } => {
+                        let duration = crate::shell::realm_transition_duration(
+                            *animation,
+                            shell.theme().motion,
+                        );
+                        let t = (Instant::now().duration_since(*start).as_secs_f32()
+                            / duration.as_secs_f32())
+                        .clamp(0.0, 1.0);
+                        crate::shell::realm_window_alphas(*animation, t)
+                    }
+                    _ => unreachable!("filtered above"),
+                };
                 (
                     Some((previous, previous_idx, has_fullscreen, Point::default())),
                     Point::default(),
-                    1.0f32,
-                    t,
+                    previous_alpha,
+                    current_alpha,
                 )
             } else {
-                // The axis is usually the configured desktop layout, but a realm
-                // switch overrides it: crossing a workspace boundary is the
-                // vertical move by definition, whichever way desktops are laid
-                // out inside one.
-                let mut axis = layout;
+                let axis = layout;
                 let (forward, percentage) = match start {
-                    WorkspaceDelta::Realm { start: st, forward } => {
-                        axis = WorkspaceLayout::Vertical;
-                        (
-                            *forward,
-                            ease(
-                                EaseInOutCubic,
-                                0.0,
-                                1.0,
-                                Instant::now().duration_since(*st).as_millis() as f32
-                                    / shell.theme().motion.realm_slide.as_millis() as f32,
-                            ),
-                        )
-                    }
                     WorkspaceDelta::Shortcut(st) => (
                         *previous_idx < current.1,
                         ease(
@@ -366,7 +361,9 @@ fn render_input_order_internal<R: 'static>(
                         (spring.value_at(Instant::now().duration_since(*start)) as f32)
                             .clamp(0.0, 1.0),
                     ),
-                    WorkspaceDelta::Crossfade(_) => unreachable!("handled above"),
+                    WorkspaceDelta::Crossfade(_) | WorkspaceDelta::Realm { .. } => {
+                        unreachable!("handled above")
+                    }
                 };
 
                 let offset = Point::<i32, Logical>::from(match (axis, forward) {
@@ -447,14 +444,17 @@ fn render_input_order_internal<R: 'static>(
 
     if element_filter != ElementFilter::LayerShellOnly {
         // previous workspace popups
-        if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
-            let Some(workspace) = shell.workspaces().space_for_handle(previous_handle) else {
+        if let Some((previous_handle, _, _, offset)) = previous.as_ref()
+            && previous_alpha > 0.0
+        {
+            let Some(workspace) = shell.space_for_handle_any_realm(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
 
             callback(Stage::WorkspacePopups {
                 workspace,
                 offset: *offset,
+                alpha: previous_alpha,
                 game_mode_only: None,
             })?;
         }
@@ -464,11 +464,14 @@ fn render_input_order_internal<R: 'static>(
             return ControlFlow::Break(Err(OutputNoMode));
         };
 
-        callback(Stage::WorkspacePopups {
-            workspace,
-            offset: current_offset,
-            game_mode_only: game_mode_controlled,
-        })?;
+        if current_alpha > 0.0 {
+            callback(Stage::WorkspacePopups {
+                workspace,
+                offset: current_offset,
+                alpha: current_alpha,
+                game_mode_only: game_mode_controlled,
+            })?;
+        }
     }
 
     if !has_focused_fullscreen {
@@ -577,16 +580,20 @@ fn render_input_order_internal<R: 'static>(
         }
 
         // workspace windows (the incoming workspace — fades in during a crossfade)
-        callback(Stage::Workspace {
-            workspace,
-            offset: current_offset,
-            alpha: current_alpha,
-            game_mode_only: game_mode_controlled,
-        })?;
+        if current_alpha > 0.0 {
+            callback(Stage::Workspace {
+                workspace,
+                offset: current_offset,
+                alpha: current_alpha,
+                game_mode_only: game_mode_controlled,
+            })?;
+        }
 
         // previous workspace windows (the outgoing workspace)
-        if let Some((previous_handle, _, _, offset)) = previous.as_ref() {
-            let Some(workspace) = shell.workspaces().space_for_handle(previous_handle) else {
+        if let Some((previous_handle, _, _, offset)) = previous.as_ref()
+            && previous_alpha > 0.0
+        {
+            let Some(workspace) = shell.space_for_handle_any_realm(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             callback(Stage::Workspace {

@@ -197,7 +197,7 @@ fn parse_clear_color(raw: &str) -> Option<Color32F> {
 
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
-pub static WASH_SHADER: &str = include_str!("./shaders/workspace_wash.frag");
+pub static SHATTER_SHADER: &str = include_str!("./shaders/workspace_shatter.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // MERGE: our dual-Kawase / blurred-backdrop shaders (fragment + compute) and the
 // whole `blur` module re-export block are dropped — upstream's `wayland::blur_effect`
@@ -476,52 +476,54 @@ impl BackdropShader {
     }
 }
 
-/// The airlock wash — see `shaders/workspace_wash.frag`.
-pub struct WashShader(pub GlesPixelProgram);
+pub struct ShatterShader(pub GlesPixelProgram);
 
 #[derive(PartialEq)]
-struct WashSettings {
-    alpha: f32,
+struct ShatterSettings {
+    progress: f32,
     color: [f32; 3],
-    from_top: bool,
+    aspect: f32,
+    forward: bool,
+    seed: f32,
 }
-type WashCache = RefCell<HashMap<Key, (WashSettings, PixelShaderElement)>>;
+type ShatterCache = RefCell<HashMap<Key, (ShatterSettings, PixelShaderElement)>>;
 
-impl WashShader {
+impl ShatterShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
         Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
             .egl_context()
             .user_data()
-            .get::<WashShader>()
+            .get::<ShatterShader>()
             .expect("Custom Shaders not initialized")
             .0
             .clone()
     }
 
-    /// A full-output gradient in the workspace's accent, entering from one edge.
-    ///
-    /// `alpha` is the whole animation: the caller blooms it and lets it recede,
-    /// so this stays a pure function of the current frame.
+    /// Full-output procedural cracks and shards; no bitmap asset is scaled.
     pub fn element<R: AsGlowRenderer>(
         renderer: &R,
         key: impl Into<Key>,
         geo: Rectangle<i32, Local>,
-        alpha: f32,
+        progress: f32,
         color: [f32; 3],
-        from_top: bool,
+        forward: bool,
+        seed: f32,
     ) -> PixelShaderElement {
-        let settings = WashSettings {
-            alpha,
+        let aspect = geo.size.w as f32 / geo.size.h.max(1) as f32;
+        let settings = ShatterSettings {
+            progress,
             color,
-            from_top,
+            aspect,
+            forward,
+            seed,
         };
 
         let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
             .egl_context()
             .user_data();
 
-        user_data.insert_if_missing(|| WashCache::new(HashMap::new()));
-        let mut cache = user_data.get::<WashCache>().unwrap().borrow_mut();
+        user_data.insert_if_missing(|| ShatterCache::new(HashMap::new()));
+        let mut cache = user_data.get::<ShatterCache>().unwrap().borrow_mut();
         cache.retain(|k, _| match k {
             Key::Static(w) => w.upgrade().is_some(),
             Key::Group(a) => a.upgrade().is_some(),
@@ -540,18 +542,13 @@ impl WashShader {
                 shader,
                 geo.as_logical(),
                 None,
-                alpha,
+                1.0,
                 vec![
-                    // Premultiplied, matching BackdropShader and what the
-                    // fragment shader expects.
-                    Uniform::new(
-                        "color",
-                        [color[0] * alpha, color[1] * alpha, color[2] * alpha],
-                    ),
-                    Uniform::new("from_top", if from_top { 1.0f32 } else { 0.0f32 }),
-                    // The design fades the colour out by 55% of the screen, so
-                    // the far half is never obscured.
-                    Uniform::new("falloff", 0.55f32),
+                    Uniform::new("color", color),
+                    Uniform::new("progress", progress),
+                    Uniform::new("aspect", aspect),
+                    Uniform::new("direction", if forward { 1.0f32 } else { -1.0f32 }),
+                    Uniform::new("seed", seed),
                 ],
                 Kind::Unspecified,
             );
@@ -601,6 +598,7 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         let egl_context = renderer.egl_context();
         if egl_context.user_data().get::<IndicatorShader>().is_some()
             && egl_context.user_data().get::<BackdropShader>().is_some()
+            && egl_context.user_data().get::<ShatterShader>().is_some()
             && egl_context.user_data().get::<PostprocessShader>().is_some()
         {
             return Ok(());
@@ -626,12 +624,14 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("corner_radius_bl", UniformType::_1f),
         ],
     )?;
-    let wash_shader = renderer.compile_custom_pixel_shader(
-        WASH_SHADER,
+    let shatter_shader = renderer.compile_custom_pixel_shader(
+        SHATTER_SHADER,
         &[
             UniformName::new("color", UniformType::_3f),
-            UniformName::new("from_top", UniformType::_1f),
-            UniformName::new("falloff", UniformType::_1f),
+            UniformName::new("progress", UniformType::_1f),
+            UniformName::new("aspect", UniformType::_1f),
+            UniformName::new("direction", UniformType::_1f),
+            UniformName::new("seed", UniformType::_1f),
         ],
     )?;
     let postprocess_shader = renderer.compile_custom_texture_shader(
@@ -711,7 +711,7 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         .insert_if_missing(|| BackdropShader(rectangle_shader));
     egl_context
         .user_data()
-        .insert_if_missing(|| WashShader(wash_shader));
+        .insert_if_missing(|| ShatterShader(shatter_shader));
     egl_context
         .user_data()
         .insert_if_missing(|| PostprocessShader(postprocess_shader));
@@ -1157,21 +1157,18 @@ where
             elements.push(DamageElement::new(output_geo).into());
         }
 
-        // The airlock wash: the workspace you are entering announces itself in
-        // its own colour, from the edge you came from.
-        //
-        // Pushed here — after the cursor, before the workspace content — so it
-        // tints the screen without ever covering the pointer. Emitting it any
-        // earlier than the workspaces is what puts it on top of them.
-        //
-        // It is deliberately part of the captured frame: a screenshot taken
-        // mid-crossing should show what was on screen. It carries only the
-        // INCOMING workspace's colour, so it cannot leak anything about the one
-        // being left (W-10).
-        if let Some((id, accent, from_top, alpha)) = shell_guard.realm_wash(output) {
-            let wash =
-                WashShader::element(renderer, id, output_geo.as_local(), alpha, accent, from_top);
-            elements.push(CosmicElement::from(wash));
+        // Above both realms but below the cursor, so it reads as the screen breaking.
+        if let Some((id, accent, forward, seed, progress)) = shell_guard.realm_shatter(output) {
+            let shatter = ShatterShader::element(
+                renderer,
+                id,
+                output_geo.as_local(),
+                progress,
+                accent,
+                forward,
+                seed,
+            );
+            elements.push(CosmicElement::from(shatter));
         }
     }
 
@@ -1915,6 +1912,7 @@ where
             Stage::WorkspacePopups {
                 workspace,
                 offset,
+                alpha,
                 game_mode_only,
             } => {
                 workspace.render_popups(
@@ -1923,6 +1921,7 @@ where
                     !move_active && is_active_space,
                     overview.clone(),
                     &theme,
+                    alpha,
                     scanout_node,
                     game_mode_only,
                     &mut |elem| {

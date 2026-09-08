@@ -28,7 +28,7 @@ use crate::{
     },
 };
 use cosmic_comp_config::{
-    AppearanceConfig, TileBehavior, ZoomConfig, ZoomMovement,
+    AppearanceConfig, TileBehavior, WorkspaceTransition, ZoomConfig, ZoomMovement,
     workspace::{PinnedWorkspace, WorkspaceLayout, WorkspaceMode},
 };
 use cosmic_config::ConfigSet;
@@ -74,7 +74,10 @@ use smithay::{
 use tracing::error;
 
 use crate::{
-    backend::render::animations::spring::{Spring, SpringParams},
+    backend::render::animations::{
+        motion::Motion,
+        spring::{Spring, SpringParams},
+    },
     config::Config,
     utils::{prelude::*, process::workspaces_enabled, quirks::WORKSPACE_OVERVIEW_NAMESPACE},
     wayland::{
@@ -735,19 +738,10 @@ pub enum WorkspaceDelta {
         spring: Spring,
         forward: bool,
     },
-    /// A realm switch — the user-facing Workspace, the vertical axis.
-    ///
-    /// Always slides VERTICALLY whatever `WorkspaceLayout` says, because here
-    /// the direction *is* the meaning: workspaces are the vertical axis and
-    /// desktops the horizontal one. A user who configures horizontal desktops
-    /// still crosses a workspace boundary by moving up or down.
-    ///
-    /// Carries its own `forward` because the two workspaces belong to different
-    /// realms, so comparing their indices — which is how `Shortcut` decides —
-    /// compares numbers from different sequences and means nothing.
+    /// A user-facing Workspace switch; desktops keep their spatial animation.
     Realm {
         start: Instant,
-        forward: bool,
+        animation: WorkspaceTransition,
     },
     /// Time-driven cross-fade (no slide): the outgoing workspace stays opaque and
     /// the incoming one fades in over it. Used for the game-mode launcher<->game
@@ -798,31 +792,38 @@ impl WorkspaceDelta {
     }
 }
 
-/// How far into the transition the wash is at its strongest, and how strong
-/// that is — the design's `times: [0, 0.35, 1]` and `opacity: [0, 0.28, 0]`.
-///
-/// The peak is deliberately low: this is the screen taking on a colour, not a
-/// flash over it.
-const WASH_PEAK_AT: f32 = 0.35;
-const WASH_PEAK_ALPHA: f32 = 0.28;
-
-/// The wash's strength at `t`, the fraction of the transition elapsed.
-///
-/// Blooms and recedes: nothing at the start, strongest a third of the way in,
-/// nothing again by the end. A monotonic ramp — the shape a fade-to-black uses
-/// — would leave the accent at full strength exactly when the workspace you
-/// just moved to is trying to be looked at, and would need dismissing rather
-/// than reading as part of the move.
-fn wash_alpha(t: f32) -> f32 {
-    if !(0.0..1.0).contains(&t) {
-        return 0.0;
+pub(crate) fn realm_transition_duration(
+    animation: WorkspaceTransition,
+    motion: Motion,
+) -> Duration {
+    match animation {
+        WorkspaceTransition::Fade => motion.realm_fade,
+        WorkspaceTransition::Shatter => motion.realm_shatter,
     }
-    let ramp = if t < WASH_PEAK_AT {
-        t / WASH_PEAK_AT
+}
+
+pub(crate) fn realm_window_alphas(animation: WorkspaceTransition, progress: f32) -> (f32, f32) {
+    let progress = if progress.is_finite() {
+        progress.clamp(0.0, 1.0)
     } else {
-        1.0 - (t - WASH_PEAK_AT) / (1.0 - WASH_PEAK_AT)
+        1.0
     };
-    (ramp * WASH_PEAK_ALPHA).clamp(0.0, WASH_PEAK_ALPHA)
+    let reveal = match animation {
+        WorkspaceTransition::Fade => progress,
+        // Hold the old scene while cracks grow, then break it quickly.
+        WorkspaceTransition::Shatter => (progress - 0.38) / 0.24,
+    }
+    .clamp(0.0, 1.0);
+    let reveal = ease(EaseInOutCubic, 0.0, 1.0, reveal);
+    (1.0 - reveal, reveal)
+}
+
+fn realm_transition_seed(from: &str, to: &str) -> f32 {
+    let mut hash = 2_166_136_261u32;
+    for byte in from.bytes().chain([0xff]).chain(to.bytes()) {
+        hash = (hash ^ u32::from(byte)).wrapping_mul(16_777_619);
+    }
+    hash as f32 / u32::MAX as f32
 }
 
 /// A realm switch in flight.
@@ -835,22 +836,13 @@ pub struct RealmTransition {
     /// The realm being left, still on screen while the slide plays.
     pub from: String,
     pub started: Instant,
-    /// Which way the screen moves: `true` slides up (the next workspace comes
-    /// from below), matching Super+Ctrl+Down.
+    /// Collection direction, used to move the shatter's impact point.
     pub forward: bool,
-    /// The colour of the workspace being entered, for the wash.
-    ///
-    /// `None` when the registry reported no accent or an unparseable one; the
-    /// renderer falls back to a theme colour rather than skipping the wash, so
-    /// the crossing still reads as a crossing.
+    pub animation: WorkspaceTransition,
+    /// The incoming workspace subtly colours the custom effect.
     pub accent: Option<[f32; 3]>,
-    /// One shader-cache id per output.
-    ///
-    /// Per-output on purpose: the wash element is cached by key and resized to
-    /// the geometry it was last asked for, so a single shared id would make two
-    /// monitors fight over one entry and resize it every frame. The ids die
-    /// with the transition, which is what evicts the cache entries.
-    wash_ids: HashMap<Output, Id>,
+    effect_ids: HashMap<Output, Id>,
+    seed: f32,
 }
 
 #[derive(Debug)]
@@ -2394,8 +2386,7 @@ impl Shell {
         &self.active_realm
     }
 
-    /// The outgoing realm's desktop on this output, while a realm switch is
-    /// still playing.
+    /// The outgoing realm's desktop while a transition still needs it.
     ///
     /// The renderer's usual "previous workspace" comes from the active set,
     /// which cannot see across a realm boundary — after a realm switch the
@@ -2407,7 +2398,8 @@ impl Shell {
         output: &Output,
     ) -> Option<(WorkspaceHandle, usize, WorkspaceDelta)> {
         let transition = self.realm_transition.as_ref()?;
-        if transition.started.elapsed() >= self.theme().motion.realm_slide {
+        let duration = realm_transition_duration(transition.animation, self.theme().motion);
+        if transition.started.elapsed() >= duration {
             return None;
         }
         let realm = self.realms.get(&transition.from)?;
@@ -2418,45 +2410,42 @@ impl Shell {
             set.active,
             WorkspaceDelta::Realm {
                 start: transition.started,
-                forward: transition.forward,
+                animation: transition.animation,
             },
         ))
     }
 
-    /// The wash for a realm switch in flight: colour, which edge it enters
-    /// from, and how strong it is right now.
-    ///
-    /// The alpha blooms and recedes rather than fading in — it peaks partway
-    /// through and is gone by the end, so the colour reads as the screen taking
-    /// on a tint during the move rather than as an overlay that has to be
-    /// waited out. A monotonic ramp would leave the accent at full strength
-    /// exactly when the new workspace is trying to be looked at.
-    pub fn realm_wash(&self, output: &Output) -> Option<(Id, [f32; 3], bool, f32)> {
+    /// Parameters for the procedural shatter overlay on this output.
+    pub fn realm_shatter(&self, output: &Output) -> Option<(Id, [f32; 3], bool, f32, f32)> {
         let transition = self.realm_transition.as_ref()?;
-        let id = transition.wash_ids.get(output)?.clone();
+        if transition.animation != WorkspaceTransition::Shatter {
+            return None;
+        }
+        let id = transition.effect_ids.get(output)?.clone();
         let elapsed = transition.started.elapsed().as_secs_f32();
-        let total = self.theme().motion.realm_slide.as_secs_f32();
+        let total =
+            realm_transition_duration(transition.animation, self.theme().motion).as_secs_f32();
         if total <= 0.0 || elapsed >= total {
             return None;
         }
-
-        let alpha = wash_alpha(elapsed / total);
-
-        // Enter from the edge the screen came from: moving forward, the new
-        // workspace rises from below, so the colour rises with it.
-        let from_top = !transition.forward;
         let accent = transition.accent.unwrap_or_else(|| {
             let c = self.theme().primary();
             [c.r, c.g, c.b]
         });
-        Some((id, accent, from_top, alpha))
+        Some((
+            id,
+            accent,
+            transition.forward,
+            transition.seed,
+            elapsed / total,
+        ))
     }
 
     /// Is a realm switch still animating? Drives the redraw loop.
     pub fn realm_transition_active(&self) -> bool {
-        self.realm_transition
-            .as_ref()
-            .is_some_and(|t| t.started.elapsed() < self.theme().motion.realm_slide)
+        self.realm_transition.as_ref().is_some_and(|t| {
+            t.started.elapsed() < realm_transition_duration(t.animation, self.theme().motion)
+        })
     }
 
     /// A workspace by handle, in **any** realm.
@@ -2514,6 +2503,7 @@ impl Shell {
         &mut self,
         id: &str,
         accent: Option<[f32; 3]>,
+        animation: WorkspaceTransition,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
         if self.active_realm == id {
@@ -2539,14 +2529,16 @@ impl Shell {
             from: previous.clone(),
             started: Instant::now(),
             forward,
+            animation,
             accent,
-            wash_ids: self
+            effect_ids: self
                 .realms
                 .get(&self.active_realm)
                 .into_iter()
                 .flat_map(|realm| realm.sets.keys().cloned())
                 .map(|output| (output, Id::new()))
                 .collect(),
+            seed: realm_transition_seed(&previous, id),
         });
         if let Some(realm) = self.realms.get(&previous) {
             for (output, set) in &realm.sets {
@@ -9856,60 +9848,66 @@ pub fn check_grab_preconditions(
 }
 
 #[cfg(test)]
-mod wash_tests {
-    use super::{WASH_PEAK_ALPHA, WASH_PEAK_AT, wash_alpha};
+mod realm_transition_tests {
+    use cosmic_comp_config::WorkspaceTransition;
+
+    use super::{realm_transition_seed, realm_window_alphas};
 
     #[test]
-    fn the_wash_starts_and_ends_invisible() {
-        // It has to be gone by the end: a tint still on screen when the slide
-        // settles reads as a notification waiting to be dismissed.
-        assert_eq!(wash_alpha(0.0), 0.0);
-        assert!(wash_alpha(0.999) < 0.01);
-        assert_eq!(wash_alpha(1.0), 0.0);
+    fn fade_crosses_between_the_two_realms() {
+        assert_eq!(
+            realm_window_alphas(WorkspaceTransition::Fade, 0.0),
+            (1.0, 0.0)
+        );
+        assert_eq!(
+            realm_window_alphas(WorkspaceTransition::Fade, 1.0),
+            (0.0, 1.0)
+        );
+        let (old, new) = realm_window_alphas(WorkspaceTransition::Fade, 0.5);
+        assert!((old - 0.5).abs() < 1e-6);
+        assert!((new - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn it_peaks_partway_through_not_at_the_end() {
-        let peak = wash_alpha(WASH_PEAK_AT);
-        assert!((peak - WASH_PEAK_ALPHA).abs() < 1e-6);
-        assert!(peak > wash_alpha(0.9), "must be receding by the end");
-        assert!(peak > wash_alpha(0.05), "must be blooming at the start");
+    fn shatter_holds_the_old_realm_until_the_cracks_have_grown() {
+        assert_eq!(
+            realm_window_alphas(WorkspaceTransition::Shatter, 0.38),
+            (1.0, 0.0)
+        );
+        assert_eq!(
+            realm_window_alphas(WorkspaceTransition::Shatter, 0.62),
+            (0.0, 1.0)
+        );
     }
 
     #[test]
-    fn it_never_exceeds_the_designed_peak() {
-        // The screen takes on a colour; it is not flashed.
-        for i in 0..=100 {
-            let a = wash_alpha(i as f32 / 100.0);
-            assert!(
-                (0.0..=WASH_PEAK_ALPHA).contains(&a),
-                "alpha {a} out of range at t={}",
-                i as f32 / 100.0
-            );
-        }
-    }
-
-    #[test]
-    fn it_rises_then_falls_monotonically() {
-        let mut prev = wash_alpha(0.0);
-        let mut turned = false;
-        for i in 1..=100 {
-            let a = wash_alpha(i as f32 / 100.0);
-            if a + 1e-6 < prev {
-                turned = true;
-            } else if turned {
-                assert!(a <= prev + 1e-6, "wash brightened again after receding");
+    fn both_timelines_are_bounded_and_complementary() {
+        for animation in [WorkspaceTransition::Fade, WorkspaceTransition::Shatter] {
+            let mut previous_old = 1.0;
+            for i in 0..=100 {
+                let (old, new) = realm_window_alphas(animation, i as f32 / 100.0);
+                assert!((0.0..=1.0).contains(&old));
+                assert!((0.0..=1.0).contains(&new));
+                assert!((old + new - 1.0).abs() < 1e-6);
+                assert!(old <= previous_old + 1e-6);
+                previous_old = old;
             }
-            prev = a;
         }
-        assert!(turned, "the wash never receded");
     }
 
     #[test]
-    fn out_of_range_time_is_silent() {
-        // Clock skew or a stale transition must not paint the screen.
-        assert_eq!(wash_alpha(-0.5), 0.0);
-        assert_eq!(wash_alpha(2.0), 0.0);
-        assert_eq!(wash_alpha(f32::NAN), 0.0);
+    fn invalid_progress_settles_on_the_new_realm() {
+        assert_eq!(
+            realm_window_alphas(WorkspaceTransition::Fade, f32::NAN),
+            (0.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn crack_seed_is_stable_per_crossing() {
+        let seed = realm_transition_seed("one", "two");
+        assert_eq!(seed, realm_transition_seed("one", "two"));
+        assert_ne!(seed, realm_transition_seed("two", "one"));
+        assert!((0.0..=1.0).contains(&seed));
     }
 }
