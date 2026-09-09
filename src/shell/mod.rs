@@ -4627,30 +4627,30 @@ impl Shell {
         // windows (they stay frozen at the minimum) instead of squishing them further
         // and breaking their layouts.
         let output_width = output.geometry().size.w;
-        let zone = resize
-            .width
-            .min((output_width - MIN_VIEWPORT_WIDTH).max(0))
-            .max(0);
-        let map = layer_map_for_output(output);
-        for layer in map.layers() {
-            if layer.wl_surface().id() != resize.surface_id {
-                continue;
-            }
+        let width = resize.width.max(0);
+        let cap = (output_width - MIN_VIEWPORT_WIDTH).max(0);
+        let mut map = layer_map_for_output(output);
+        let target = map
+            .layers()
+            .find(|l| l.wl_surface().id() == resize.surface_id)
+            .cloned();
+        if let Some(layer) = target {
+            map.set_reserve_cap(&layer, (width > cap).then_some(cap as u32));
             with_states(layer.wl_surface(), |states| {
                 let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
                 let current = cached.current();
                 tracing::debug!(
-                    "RESIZE_DBG override prev_anchor={:?} prev_size=({},{}) -> new_width={} zone={} out_w={} anchor_right={}",
+                    "RESIZE_DBG override prev_anchor={:?} prev_size=({},{}) -> new_width={} cap={} out_w={} anchor_right={}",
                     current.anchor,
                     current.size.w,
                     current.size.h,
                     resize.width,
-                    zone,
+                    cap,
                     output_width,
                     resize.anchor_right,
                 );
                 current.size = (resize.width, 0).into();
-                current.exclusive_zone = ExclusiveZone::Exclusive(zone as u32);
+                current.exclusive_zone = ExclusiveZone::Exclusive(width as u32);
             });
         }
     }
@@ -4742,35 +4742,33 @@ impl Shell {
         use smithay::wayland::shell::wlr_layer::ExclusiveZone;
 
         let cap = (output.geometry().size.w - MIN_VIEWPORT_WIDTH).max(0) as u32;
-        let map = layer_map_for_output(output);
-        for layer in map.layers() {
-            // Only surfaces opted into edge resize (via the layer_edge_resize
-            // protocol) get the viewport-floor cap on their exclusive zone.
-            if crate::wayland::protocols::layer_edge_resize::get_surface_edge_resize(
-                layer.wl_surface(),
-            )
-            .is_none()
-            {
-                continue;
-            }
-            with_states(layer.wl_surface(), |states| {
-                let mut cached = states.cached_state.get::<LayerSurfaceCachedState>();
-                let current = cached.current();
-                if let ExclusiveZone::Exclusive(n) = current.exclusive_zone {
-                    tracing::debug!(
-                        "RESIZE_DBG cap_zone cap={} current_zone={} size=({},{}) anchor={:?} will_cap={}",
-                        cap,
-                        n,
-                        current.size.w,
-                        current.size.h,
-                        current.anchor,
-                        n > cap,
-                    );
-                    if n > cap {
-                        current.exclusive_zone = ExclusiveZone::Exclusive(cap);
-                    }
+        let mut map = layer_map_for_output(output);
+        let panels: Vec<(LayerSurface, u32)> = map
+            .layers()
+            .filter(|l| {
+                crate::wayland::protocols::layer_edge_resize::get_surface_edge_resize(
+                    l.wl_surface(),
+                )
+                .is_some()
+            })
+            .filter_map(|l| {
+                let zone = with_states(l.wl_surface(), |states| {
+                    states
+                        .cached_state
+                        .get::<LayerSurfaceCachedState>()
+                        .current()
+                        .exclusive_zone
+                });
+                match zone {
+                    ExclusiveZone::Exclusive(n) => Some((l.clone(), n)),
+                    _ => None,
                 }
-            });
+            })
+            .collect();
+        for (layer, zone) in panels {
+            // The surface keeps its whole zone, so a bar beside it is arranged
+            // clear of it; windows only give up `cap` and keep a usable viewport.
+            map.set_reserve_cap(&layer, (zone > cap).then_some(cap));
         }
     }
 
