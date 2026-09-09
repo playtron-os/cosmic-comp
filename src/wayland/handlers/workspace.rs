@@ -40,6 +40,24 @@ impl WorkspaceHandler for State {
                         // TODO: move cursor?
                     }
                 }
+                Request::Create { in_group, .. } => {
+                    let mut shell = self.common.shell.write();
+                    let mut guard = self.common.workspace_state.update();
+                    if let Some((output, idx)) = shell.fresh_desktop_in_group(&in_group, &mut guard)
+                    {
+                        let _ = shell.activate(
+                            &output,
+                            idx,
+                            WorkspaceDelta::new_shortcut(),
+                            &mut guard,
+                        );
+                    }
+                }
+                Request::Remove(handle) => {
+                    let mut shell = self.common.shell.write();
+                    let mut guard = self.common.workspace_state.update();
+                    shell.remove_empty_desktop(&handle, &mut guard);
+                }
                 Request::SetTilingState { workspace, state } => {
                     let mut shell = self.common.shell.write();
                     let seat = shell.seats.last_active().clone();

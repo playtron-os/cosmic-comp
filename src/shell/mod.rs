@@ -900,7 +900,8 @@ fn create_workspace(
         WorkspaceCapabilities::Activate
             | WorkspaceCapabilities::SetTilingState
             | WorkspaceCapabilities::Pin
-            | WorkspaceCapabilities::Move,
+            | WorkspaceCapabilities::Move
+            | WorkspaceCapabilities::Remove,
     );
     Workspace::new(
         workspace_handle,
@@ -940,7 +941,8 @@ fn create_workspace_from_pinned(
         WorkspaceCapabilities::Activate
             | WorkspaceCapabilities::SetTilingState
             | WorkspaceCapabilities::Pin
-            | WorkspaceCapabilities::Move,
+            | WorkspaceCapabilities::Move
+            | WorkspaceCapabilities::Remove,
     );
 
     if let Some(ref name) = pinned.name {
@@ -2492,6 +2494,44 @@ impl Shell {
         self.realms
             .values_mut()
             .find_map(|realm| realm.space_for_handle_mut(handle))
+    }
+
+    /// A fresh desktop in `group`: the trailing empty one the active realm
+    /// keeps, added first if the last is in use. Where it is, so it can be shown.
+    pub fn fresh_desktop_in_group(
+        &mut self,
+        group: &WorkspaceGroupHandle,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> Option<(Output, usize)> {
+        let (output, set) = self
+            .workspaces_mut()
+            .sets
+            .iter_mut()
+            .find(|(_, set)| set.group == *group)?;
+        if set.workspaces.last().is_none_or(|last| !last.is_empty()) {
+            set.add_empty_workspace(workspace_state);
+        }
+        Some((output.clone(), set.workspaces.len() - 1))
+    }
+
+    /// Remove `handle` if nothing is on it; a desktop with windows stays.
+    pub fn remove_empty_desktop(
+        &mut self,
+        handle: &WorkspaceHandle,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> bool {
+        for realm in self.realms.values_mut() {
+            for set in realm.sets.values_mut() {
+                let Some(workspace) = set.workspaces.iter().find(|w| w.handle == *handle) else {
+                    continue;
+                };
+                if !workspace.is_empty() || set.workspaces.len() == 1 {
+                    return false;
+                }
+                return set.remove_workspace(workspace_state, handle).is_some();
+            }
+        }
+        false
     }
 
     /// The realm holding `handle`, active or not.
