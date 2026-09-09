@@ -440,7 +440,7 @@ tasks:
         cd {{.SRC_DIR}}
         # A flake's source is its tracked files; a new uncommitted one is not.
         git add -AN . >/dev/null 2>&1 || true
-        nix develop {{.SHELL_ATTR}} --command task {{.RPM_TARGET}}
+        CARGO_NET_GIT_FETCH_WITH_CLI=true nix develop {{.SHELL_ATTR}} --command task {{.RPM_TARGET}}
         rpm=$(ls dist/{{.NAME}}-{{.VERSION}}-*.rpm | tail -n1)
         cp "$rpm" {{.REMOTE_DIR}}/
         # getFlake takes no `~`, so resolve it rather than write it.
@@ -453,7 +453,7 @@ tasks:
         nix|container|host)
           case "{{.BUILDER}}" in
             nix)
-              nix develop {{.SHELL_ATTR}} --command task {{.RPM_TARGET}} ;;
+              CARGO_NET_GIT_FETCH_WITH_CLI=true nix develop {{.SHELL_ATTR}} --command task {{.RPM_TARGET}} ;;
             container)
               {{.GOTASK}} docker:run TARGET={{.RPM_TARGET}} ARCH={{.ARCH}} TARGET_ARCH={{.TARGET_ARCH}} ;;
             host)
