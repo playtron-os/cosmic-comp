@@ -2485,6 +2485,29 @@ impl Shell {
             .find_map(|realm| realm.space_for_handle(handle))
     }
 
+    pub fn space_for_handle_any_realm_mut(
+        &mut self,
+        handle: &WorkspaceHandle,
+    ) -> Option<&mut Workspace> {
+        self.realms
+            .values_mut()
+            .find_map(|realm| realm.space_for_handle_mut(handle))
+    }
+
+    /// The realm holding `handle`, active or not.
+    pub fn realm_for_handle(&self, handle: &WorkspaceHandle) -> Option<&Workspaces> {
+        self.realms
+            .values()
+            .find(|realm| realm.space_for_handle(handle).is_some())
+    }
+
+    /// Every workspace group with the realm it belongs to.
+    pub fn realm_groups(&self) -> impl Iterator<Item = (&str, WorkspaceGroupHandle)> {
+        self.realms
+            .iter()
+            .flat_map(|(id, realm)| realm.sets.values().map(move |set| (id.as_str(), set.group)))
+    }
+
     pub fn realm_ids(&self) -> impl Iterator<Item = &str> {
         self.realms.keys().map(String::as_str)
     }

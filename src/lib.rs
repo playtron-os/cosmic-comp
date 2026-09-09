@@ -38,8 +38,8 @@ use std::{
 };
 use tracing::{debug, error, info, warn};
 use wayland::protocols::{
-    keyboard_layout::KeyboardLayoutState, layer_usable_area::UsableAreaState,
-    overlap_notify::OverlapNotifyState,
+    keyboard_layout::KeyboardLayoutState, kora_workspace_realm::RealmState,
+    layer_usable_area::UsableAreaState, overlap_notify::OverlapNotifyState,
 };
 
 use crate::wayland::handlers::compositor::client_compositor_state;
@@ -683,6 +683,7 @@ fn refresh(state: &mut State) {
     state.refresh_game_mode_state();
     OverlapNotifyState::refresh(state);
     UsableAreaState::refresh(state);
+    RealmState::refresh(state);
     state.common.update_x11_stacking_order();
     KeyboardLayoutState::refresh(state);
     state.last_refresh = LastRefresh::At(Instant::now());

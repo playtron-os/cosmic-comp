@@ -25,6 +25,7 @@ pub mod image_copy_capture;
 pub mod input_method;
 pub mod keyboard_layout;
 pub mod keyboard_shortcuts_inhibit;
+pub mod kora_workspace_realm;
 pub mod layer_auto_hide;
 pub mod layer_corner_radius;
 pub mod layer_edge_resize;

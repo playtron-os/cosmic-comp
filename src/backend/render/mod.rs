@@ -1117,7 +1117,8 @@ where
         .unwrap()
         .is_some();
     let focused_output = last_active_seat.focused_or_active_output();
-    let set = shell.workspaces().sets.get(output).ok_or(OutputNoMode)?;
+    let realm = shell.realm_for_handle(&current.0).ok_or(OutputNoMode)?;
+    let set = realm.sets.get(output).ok_or(OutputNoMode)?;
     let workspace = set
         .workspaces
         .iter()

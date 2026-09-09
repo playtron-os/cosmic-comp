@@ -14,6 +14,7 @@ pub mod corner_radius;
 pub mod drm;
 pub mod image_capture_source;
 pub mod keyboard_layout;
+pub mod kora_workspace_realm;
 pub mod layer_auto_hide;
 pub mod layer_corner_radius;
 pub mod layer_edge_resize;

@@ -301,13 +301,17 @@ pub fn render_workspace_to_buffer(
     handle: WorkspaceHandle,
 ) {
     let shell = state.common.shell.read();
-    let Some(workspace) = shell.workspaces().space_for_handle(&handle) else {
+    // Any realm's desktop can be captured, not only the active one's.
+    let Some((workspace, realm)) = shell
+        .realm_for_handle(&handle)
+        .and_then(|realm| Some((realm.space_for_handle(&handle)?, realm)))
+    else {
         frame.fail(CaptureFailureReason::Stopped);
         return;
     };
 
     let mut output = workspace.output().clone();
-    let idx = shell.workspaces().idx_for_handle(&output, &handle).unwrap();
+    let idx = realm.idx_for_handle(&output, &handle).unwrap();
     std::mem::drop(shell);
 
     let mode = output

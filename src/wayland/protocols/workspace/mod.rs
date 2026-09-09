@@ -221,6 +221,17 @@ where
         }
     }
 
+    /// The per-client objects announcing `group`.
+    pub fn group_ext_instances(
+        &self,
+        group: &WorkspaceGroupHandle,
+    ) -> &[ExtWorkspaceGroupHandleV1] {
+        self.groups
+            .iter()
+            .find(|g| g.id == group.id)
+            .map_or(&[], |g| g.ext_instances.as_slice())
+    }
+
     pub fn group_capabilities(&self, group: &WorkspaceGroupHandle) -> Option<GroupCapabilities> {
         Some(self.groups.iter().find(|g| g.id == group.id)?.capabilities)
     }
