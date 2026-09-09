@@ -1031,7 +1031,8 @@ impl State {
                 if let Some(active) = active {
                     let mut guard = self.common.workspace_state.update();
                     let animation = self.common.config.cosmic_conf.workspace_transition;
-                    shell.switch_realm(&active.id, animation, &mut guard);
+                    let initial = shell.take_initial_realm_activation();
+                    shell.switch_realm(&active.id, (!initial).then_some(animation), &mut guard);
                     // `switch_realm` returns early for the realm already shown,
                     // and a client told of a transition that never runs would
                     // fade out and never come back.

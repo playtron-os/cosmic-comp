@@ -480,15 +480,15 @@ pub struct Shell {
     active_realm: String,
     /// A realm switch still playing, if any.
     realm_transition: Option<RealmTransition>,
+    /// The first registry-selected realm is startup state, not a user switch.
+    realm_initialized: bool,
 
     /// The workspace on screen, as the registry named it.
     ///
     /// Owned by the workspace registry (`one.playtron.Workspaces1`), not here:
     /// the compositor is a consumer that learns about switches from
-    /// `ActiveChanged`. `None` means no registry has ever spoken to us, in
-    /// which case every client is visible and nothing is refused capture — so
-    /// this changes no behaviour until workspaces are switched on. It is
-    /// distinct from `active_realm`, which is a map key and is never empty.
+    /// `ActiveChanged`. `None` means no registry workspace is active right now.
+    /// It is distinct from `active_realm`, which is a map key and is never empty.
     active_workspace: Option<String>,
 
     /// Whether a workspace registry is answering right now.
@@ -2515,6 +2515,7 @@ impl Shell {
     }
 
     /// Put a realm on screen.
+    /// `None` adopts the login realm without presenting it as a user switch.
     ///
     /// Only the active realm's workspace groups carry outputs, so pagers and
     /// docks — which group by output — see one realm's desktops at a time. The
@@ -2524,7 +2525,7 @@ impl Shell {
     pub fn switch_realm(
         &mut self,
         id: &str,
-        animation: WorkspaceTransition,
+        animation: Option<WorkspaceTransition>,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) {
         if self.active_realm == id {
@@ -2533,36 +2534,36 @@ impl Shell {
         self.ensure_realm(id, workspace_state);
 
         let previous = std::mem::replace(&mut self.active_realm, id.to_string());
-        // Direction from collection order, so moving "down" the switcher slides
-        // the screen the same way every time.
-        let forward = self
-            .realms
-            .get_index_of(&previous)
-            .zip(self.realms.get_index_of(&self.active_realm))
-            .is_none_or(|(from, to)| from < to);
-        self.realm_transition = Some(RealmTransition {
-            from: previous.clone(),
-            started: Instant::now(),
-            forward,
-            animation,
-            effects: self
+        self.realm_transition = animation.map(|animation| {
+            let forward = self
                 .realms
-                .get(&self.active_realm)
-                .into_iter()
-                .flat_map(|realm| realm.sets.keys().cloned())
-                .map(|output| {
-                    (
-                        output,
-                        RealmEffect {
-                            id: Id::new(),
-                            captured: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                                false,
-                            )),
-                        },
-                    )
-                })
-                .collect(),
-            seed: realm_transition_seed(&previous, id),
+                .get_index_of(&previous)
+                .zip(self.realms.get_index_of(&self.active_realm))
+                .is_none_or(|(from, to)| from < to);
+            RealmTransition {
+                from: previous.clone(),
+                started: Instant::now(),
+                forward,
+                animation,
+                effects: self
+                    .realms
+                    .get(&self.active_realm)
+                    .into_iter()
+                    .flat_map(|realm| realm.sets.keys().cloned())
+                    .map(|output| {
+                        (
+                            output,
+                            RealmEffect {
+                                id: Id::new(),
+                                captured: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                                    false,
+                                )),
+                            },
+                        )
+                    })
+                    .collect(),
+                seed: realm_transition_seed(&previous, id),
+            }
         });
         if let Some(realm) = self.realms.get(&previous) {
             for (output, set) in &realm.sets {
@@ -2604,6 +2605,11 @@ impl Shell {
 
     pub fn set_active_workspace(&mut self, workspace: Option<String>) {
         self.active_workspace = workspace;
+    }
+
+    /// Returns true exactly once, for adoption of the login workspace.
+    pub fn take_initial_realm_activation(&mut self) -> bool {
+        !std::mem::replace(&mut self.realm_initialized, true)
     }
 
     /// Whether workspaces are live — opted into, and a registry answering.
@@ -2710,6 +2716,7 @@ impl Shell {
             )]),
             active_realm: DEFAULT_REALM.to_string(),
             realm_transition: None,
+            realm_initialized: false,
             active_workspace: None,
             workspace_registry: false,
             seats: Seats::new(),
