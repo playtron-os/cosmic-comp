@@ -29,6 +29,7 @@ use crate::{
             layer_corner_radius::LayerCornerRadiusState,
             layer_edge_resize::EdgeResizeState,
             layer_shadow::LayerShadowManagerState,
+            layer_size_transition::SizeTransitionState,
             layer_surface_dismiss::LayerSurfaceDismissState,
             layer_surface_placement::LayerSurfacePlacementState,
             layer_surface_visibility::LayerSurfaceVisibilityState,
@@ -357,6 +358,8 @@ pub struct Common {
     pub layer_shadow_state: LayerShadowManagerState,
     pub layer_auto_hide_state: LayerAutoHideState,
     pub usable_area_state: UsableAreaState,
+    /// Tells a bar beside a sliding panel once where its size is heading.
+    pub size_transition_state: SizeTransitionState,
     /// Tells shell components when a workspace switch is animating, so they can
     /// fade their contents across it instead of swapping mid-animation.
     pub workspace_transition_state: WorkspaceTransitionState,
@@ -780,6 +783,7 @@ impl State {
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
         let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
         let usable_area_state = UsableAreaState::new::<Self>(dh);
+        let size_transition_state = SizeTransitionState::new::<Self>(dh);
         let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let session_hold_state = SessionHoldState::new::<Self>(dh);
@@ -939,6 +943,7 @@ impl State {
                 layer_shadow_state,
                 layer_auto_hide_state,
                 usable_area_state,
+                size_transition_state,
                 workspace_transition_state,
                 edge_resize_state,
                 session_hold_state,

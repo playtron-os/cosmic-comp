@@ -30,6 +30,7 @@ pub mod layer_corner_radius;
 pub mod layer_edge_resize;
 pub mod layer_shadow;
 pub mod layer_shell;
+pub mod layer_size_transition;
 pub mod layer_surface_dismiss;
 pub mod layer_surface_placement;
 pub mod layer_surface_visibility;

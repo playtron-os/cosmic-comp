@@ -87,6 +87,14 @@ impl SlideVisibility {
         matches!(self, Self::SlidingOut { .. } | Self::SlidingIn { .. })
     }
 
+    /// How long the animation in flight runs, if one is.
+    pub fn duration(&self) -> Option<Duration> {
+        match self {
+            Self::SlidingOut { duration, .. } | Self::SlidingIn { duration, .. } => Some(*duration),
+            _ => None,
+        }
+    }
+
     /// Fraction of the slide still to run: ~1.0 right after a transition
     /// starts, 0.0 once settled. Eased, and consistent across reversals —
     /// used to drive content crossfades locked to the motion.

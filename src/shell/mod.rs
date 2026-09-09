@@ -16,6 +16,7 @@ use std::{
 };
 use wayland_backend::server::{ClientId, ObjectId};
 
+use crate::wayland::protocols::layer_size_transition;
 use crate::{
     shell::{
         element::CosmicStack, focus::FocusTarget, grabs::fullscreen_items,
@@ -626,6 +627,10 @@ pub struct Shell {
 
     /// Layer surfaces with active slide animations (visibility-protocol triggered).
     pub layer_slides: Vec<layer_slide::LayerSlide>,
+    /// Neighbours held at one size while a slide animates around them.
+    pub slide_held: std::collections::HashSet<ObjectId>,
+    /// The sliding panel's zone the held neighbours were arranged under.
+    pub slide_hold_ez: Option<i32>,
 
     /// The width the side panel is currently being forced to, set each frame while a
     /// spring resize animation ([`layer_resize_anim::LayerResizeAnim`]) plays. While
@@ -2780,6 +2785,8 @@ impl Shell {
 
             // Layer slide animations (visibility-protocol triggered)
             layer_slides: Vec::new(),
+            slide_held: std::collections::HashSet::new(),
+            slide_hold_ez: None,
 
             // No interactive side-panel resize in progress
             active_layer_resize: None,
@@ -3798,11 +3805,18 @@ impl Shell {
             // the client's true zones / zero hidden ones and re-arrange before
             // the final relayout.
             let outputs = self.outputs().cloned().collect::<Vec<_>>();
+            let held = self.release_slide_holds(&outputs);
             for output in &outputs {
                 self.override_slide_exclusive_zones(output);
                 layer_map_for_output(output).arrange();
             }
             self.workspaces_mut().recalculate();
+            // The configure just went out; now the client may settle on it.
+            for (output, layer) in &held {
+                if let Some(geo) = layer_map_for_output(output).layer_geometry(layer) {
+                    layer_size_transition::send_finished(layer.wl_surface(), geo.size);
+                }
+            }
         }
         // Advance the side-panel spring resize (maximize/restore, presets).
         self.update_layer_resize_animation();
@@ -5083,6 +5097,11 @@ impl Shell {
             | layer_slide::SlideVisibility::Hidden => 0,
         };
         let initial_fade = slide.visibility.remaining_fraction();
+        let duration_ms = slide
+            .visibility
+            .duration()
+            .map_or(0, |d| d.as_millis() as u32);
+        let applied_ez = slide.ez_for_factor(slide.cached_factor);
 
         let outputs: Vec<Output> = self
             .outputs()
@@ -5095,6 +5114,25 @@ impl Shell {
             .collect();
         if outputs.is_empty() {
             return;
+        }
+
+        // Neighbours that asked to glide get one configure, not one per frame:
+        // a growing one from the terminal arrange below, a shrinking one when
+        // the slide ends. The event goes first so it precedes that configure.
+        let held_ez = self.slide_hold_ez.unwrap_or(applied_ez);
+        let terminal = terminal_ez as i32;
+        let grow = terminal < held_ez;
+        let neighbours = self.slide_neighbours(&outputs, surface_id);
+        for (output, layer) in &neighbours {
+            let Some(from) = layer_map_for_output(output)
+                .layer_geometry(layer)
+                .map(|g| g.size)
+            else {
+                continue;
+            };
+            let to = Size::from((from.w + held_ez - terminal, from.h));
+            layer_size_transition::send_started(layer.wl_surface(), from, to, duration_ms);
+            layer_map_for_output(output).hold_size(layer, !grow);
         }
 
         // Final-layout pass with configures enabled. Written directly (not via
@@ -5135,6 +5173,14 @@ impl Shell {
 
         // Back to the animated state for visuals: re-apply the interpolated
         // zone immediately so no frame renders the final layout early.
+        for (output, layer) in &neighbours {
+            layer_map_for_output(output).hold_size(layer, true);
+            self.slide_held.insert(layer.wl_surface().id());
+        }
+        if !neighbours.is_empty() {
+            self.slide_hold_ez = Some(if grow { terminal } else { held_ez });
+        }
+
         self.set_slide_active(true);
         self.set_slide_fade(initial_fade);
         for slide in &mut self.layer_slides {
@@ -5143,6 +5189,54 @@ impl Shell {
             }
         }
         self.apply_slide_exclusive_zones();
+    }
+
+    /// Layers beside the sliding panel whose width follows its zone and whose
+    /// client asked to be told about that once.
+    fn slide_neighbours(
+        &self,
+        outputs: &[Output],
+        panel: &ObjectId,
+    ) -> Vec<(Output, LayerSurface)> {
+        use smithay::wayland::shell::wlr_layer::ExclusiveZone;
+        let mut found = Vec::new();
+        for output in outputs {
+            let map = layer_map_for_output(output);
+            for layer in map.layers() {
+                let state = layer.cached_state();
+                let spans =
+                    state.anchor.contains(Anchor::LEFT) && state.anchor.contains(Anchor::RIGHT);
+                if layer.wl_surface().id() == *panel
+                    || !spans
+                    || state.exclusive_zone == ExclusiveZone::DontCare
+                    || !layer_size_transition::wants_size_transitions(layer.wl_surface())
+                {
+                    continue;
+                }
+                found.push((output.clone(), layer.clone()));
+            }
+        }
+        found
+    }
+
+    /// Let every held neighbour be arranged again, returning them.
+    fn release_slide_holds(&mut self, outputs: &[Output]) -> Vec<(Output, LayerSurface)> {
+        let mut released = Vec::new();
+        for output in outputs {
+            let mut map = layer_map_for_output(output);
+            let held: Vec<LayerSurface> = map
+                .layers()
+                .filter(|l| self.slide_held.contains(&l.wl_surface().id()))
+                .cloned()
+                .collect();
+            for layer in held {
+                map.hold_size(&layer, false);
+                released.push((output.clone(), layer));
+            }
+        }
+        self.slide_held.clear();
+        self.slide_hold_ez = None;
+        released
     }
 
     /// Check if any floating/tiling layer still has slide_active set.

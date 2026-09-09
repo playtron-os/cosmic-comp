@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="layer_size_transition">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="announce an animated change to a layer surface's size">
+    When another layer surface slides in or out, the space left for the
+    surfaces beside it changes over the length of that animation. Rather than
+    configure a neighbour on every frame of it, the compositor tells the
+    neighbour once what size it is heading for and how long the animation
+    takes, keeps it at the larger of the two sizes meanwhile, and configures it
+    to the final size when the animation ends. The client can then move its own
+    content over the same duration and curve, in its own frames.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="layer_size_transition_manager_v1" version="1">
+    <description summary="size transition manager for layer surfaces">
+      Manager for creating size-transition objects for layer shell surfaces.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Existing size-transition objects remain valid until destroyed.
+      </description>
+    </request>
+
+    <request name="get_size_transition">
+      <description summary="get size transitions for a surface">
+        Create a size-transition object for the given wl_surface, which must be
+        a layer shell surface.
+
+        If the given wl_surface already has a layer_size_transition_v1 object
+        associated, the already_exists protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="layer_size_transition_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_exists" value="0"
+        summary="surface already has a size-transition object"/>
+    </enum>
+  </interface>
+
+  <interface name="layer_size_transition_v1" version="1">
+    <description summary="size transitions for a surface">
+      Announces animated changes to the arranged size of the associated
+      surface. Sizes are in the output's logical coordinate space.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the size-transition object">
+        Informs the compositor that the client is no longer interested in
+        size transitions for the surface.
+      </description>
+    </request>
+
+    <event name="started">
+      <description summary="an animated size change began">
+        The surface's arranged size is going from `from` to `to` over
+        `duration_ms`. The surface is kept at the larger of the two sizes for
+        the duration and configured to `to` when it ends; a shrinking surface
+        keeps its size until then, a growing one is configured before this
+        event arrives. A started event during an animation replaces it: the
+        new target and duration are measured from now.
+      </description>
+      <arg name="from_width" type="int" summary="width at the start, logical px"/>
+      <arg name="from_height" type="int" summary="height at the start, logical px"/>
+      <arg name="to_width" type="int" summary="width at the end, logical px"/>
+      <arg name="to_height" type="int" summary="height at the end, logical px"/>
+      <arg name="duration_ms" type="uint" summary="length of the animation"/>
+    </event>
+
+    <event name="finished">
+      <description summary="the animated size change ended">
+        The animation ended and the surface has been configured to its final
+        size. Sent after the configure.
+      </description>
+      <arg name="width" type="int" summary="final width, logical px"/>
+      <arg name="height" type="int" summary="final height, logical px"/>
+    </event>
+  </interface>
+</protocol>
