@@ -891,37 +891,30 @@ impl CosmicStack {
                 let thickness = theme.window_border_width() as u8;
                 let border =
                     if theme.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
-                        IndicatorShader::element
+                        IndicatorShader::window_outline(
+                            renderer,
+                            Key::Window(Usage::Border, window_key),
+                            geo.as_local(),
+                            thickness,
+                            radii.unwrap_or([0; 4]),
+                            alpha,
+                            scale.x,
+                            c,
+                            theme.focused_window_ring(focused),
+                        )
                     } else {
-                        IndicatorShader::focus_element
-                    };
-                push_above(CosmicStackRenderElement::Border(border(
-                    renderer,
-                    Key::Window(Usage::Border, window_key.clone()),
-                    geo.to_i32_round().as_local(),
-                    thickness,
-                    radii.unwrap_or([0; 4]),
-                    c.a * alpha,
-                    scale.x,
-                    [c.r, c.g, c.b],
-                )));
-                if let Some(ring) = theme
-                    .focused_window_ring(focused)
-                    .filter(|ring| ring.a > 0.0 && thickness > 0)
-                {
-                    push_above(CosmicStackRenderElement::Border(
                         IndicatorShader::focus_element(
                             renderer,
-                            Key::Window(Usage::AccentFocusRing, window_key),
+                            Key::Window(Usage::Border, window_key),
                             geo.to_i32_round().as_local(),
                             thickness,
                             radii.unwrap_or([0; 4]),
-                            ring.a * alpha,
+                            c.a * alpha,
                             scale.x,
-                            [ring.r, ring.g, ring.b],
-                        ),
-                    ));
-                }
+                            [c.r, c.g, c.b],
+                        )
+                    };
+                push_above(CosmicStackRenderElement::Border(border));
             };
 
             let radii = radii.map(|[a, _, c, _]| [a, 0, c, 0]);

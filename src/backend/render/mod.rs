@@ -197,6 +197,7 @@ fn parse_clear_color(raw: &str) -> Option<Color32F> {
 }
 
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
+mod outline;
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // MERGE: our dual-Kawase / blurred-backdrop shaders (fragment + compute) and the
@@ -223,7 +224,6 @@ pub enum Usage {
     PotentialGroupIndicator,
     SnappingIndicator,
     Border,
-    AccentFocusRing,
 }
 
 #[derive(Clone)]
@@ -275,12 +275,57 @@ struct IndicatorSettings {
     thickness: u8,
     outer_radius: [u8; 4],
     alpha: f32,
-    color: [f32; 3],
+    color: [f32; 4],
+    ring_width: u8,
+    ring_color: [f32; 4],
+    geometry: outline::Geometry,
     scale: f64,
+}
+
+impl IndicatorSettings {
+    fn uniforms(&self) -> Vec<Uniform<'static>> {
+        let premultiply = |[r, g, b, a]: [f32; 4]| [r * a, g * a, b * a, a];
+        vec![
+            Uniform::new("color", premultiply(self.color)),
+            Uniform::new("ring_color", premultiply(self.ring_color)),
+            Uniform::new("thickness", f32::from(self.thickness)),
+            Uniform::new("ring_width", f32::from(self.ring_width)),
+            Uniform::new(
+                "radius",
+                [
+                    self.outer_radius[3] as f32,
+                    self.outer_radius[1] as f32,
+                    self.outer_radius[0] as f32,
+                    self.outer_radius[2] as f32,
+                ],
+            ),
+            Uniform::new("scale", self.scale as f32),
+            Uniform::new("draw_size", self.geometry.draw_size),
+            Uniform::new("shape_origin", self.geometry.shape_origin),
+            Uniform::new("shape_size", self.geometry.shape_size),
+        ]
+    }
 }
 type IndicatorCache = RefCell<HashMap<Key, (IndicatorSettings, PixelShaderElement)>>;
 
 impl IndicatorShader {
+    fn compile(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
+        renderer.compile_custom_pixel_shader(
+            OUTLINE_SHADER,
+            &[
+                UniformName::new("color", UniformType::_4f),
+                UniformName::new("ring_color", UniformType::_4f),
+                UniformName::new("thickness", UniformType::_1f),
+                UniformName::new("ring_width", UniformType::_1f),
+                UniformName::new("scale", UniformType::_1f),
+                UniformName::new("radius", UniformType::_4f),
+                UniformName::new("draw_size", UniformType::_2f),
+                UniformName::new("shape_origin", UniformType::_2f),
+                UniformName::new("shape_size", UniformType::_2f),
+            ],
+        )
+    }
+
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
         Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
             .egl_context()
@@ -304,7 +349,7 @@ impl IndicatorShader {
         let t = thickness as i32;
         element_geo.loc -= (t, t).into();
         element_geo.size += (t * 2, t * 2).into();
-        let outer_radius = inner_radius.map(|r| r + thickness);
+        let outer_radius = inner_radius.map(|r| r.saturating_add(thickness));
 
         IndicatorShader::element(
             renderer,
@@ -328,12 +373,43 @@ impl IndicatorShader {
         scale: f64,
         color: [f32; 3],
     ) -> PixelShaderElement {
+        Self::window_outline(
+            renderer,
+            key,
+            geo.to_f64(),
+            thickness,
+            outer_radius,
+            alpha,
+            scale,
+            iced_core::Color::from_rgb(color[0], color[1], color[2]),
+            None,
+        )
+    }
+
+    /// Adjacent border and ring share one subpixel shape and one coverage blend.
+    pub fn window_outline<R: AsGlowRenderer>(
+        renderer: &R,
+        key: impl Into<Key>,
+        geo: Rectangle<f64, Local>,
+        thickness: u8,
+        outer_radius: [u8; 4],
+        alpha: f32,
+        scale: f64,
+        color: iced_core::Color,
+        ring: Option<iced_core::Color>,
+    ) -> PixelShaderElement {
+        let ring = ring.filter(|color| color.a > 0.0 && thickness > 0);
+        let ring_width = if ring.is_some() { thickness } else { 0 };
+        let rgba = |color: iced_core::Color| [color.r, color.g, color.b, color.a];
         let settings = IndicatorSettings {
             thickness,
             outer_radius,
             alpha,
             scale,
-            color,
+            color: rgba(color),
+            ring_width,
+            ring_color: rgba(ring.unwrap_or(iced_core::Color::TRANSPARENT)),
+            geometry: outline::Geometry::new(geo, ring_width, scale),
         };
 
         let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
@@ -352,43 +428,30 @@ impl IndicatorShader {
         let key = key.into();
         if cache
             .get(&key)
-            .filter(|(old_settings, _)| &settings == old_settings)
+            .filter(|(old_settings, _)| settings.alpha == old_settings.alpha)
             .is_none()
         {
-            let thickness: f32 = ((thickness as f64 * scale) / scale) as f32;
             let shader = Self::get(renderer);
 
             let elem = PixelShaderElement::new(
                 shader,
-                geo.as_logical(),
+                settings.geometry.canvas.as_logical(),
                 None, //TODO
                 alpha,
-                vec![
-                    Uniform::new(
-                        "color",
-                        [color[0] * alpha, color[1] * alpha, color[2] * alpha],
-                    ),
-                    Uniform::new("thickness", thickness),
-                    Uniform::new(
-                        "radius",
-                        [
-                            outer_radius[3] as f32,
-                            outer_radius[1] as f32,
-                            outer_radius[0] as f32,
-                            outer_radius[2] as f32,
-                        ],
-                    ),
-                    Uniform::new("scale", scale as f32),
-                ],
+                settings.uniforms(),
                 Kind::Unspecified,
             );
             cache.insert(key.clone(), (settings, elem));
+        } else {
+            let (previous, elem) = cache.get_mut(&key).unwrap();
+            if *previous != settings {
+                elem.update_uniforms(settings.uniforms());
+                *previous = settings;
+            }
         }
 
-        let elem = &mut cache.get_mut(&key).unwrap().1;
-        if elem.geometry(1.0.into()).to_logical(1) != geo.as_logical() {
-            elem.resize(geo.as_logical(), None);
-        }
+        let (settings, elem) = cache.get_mut(&key).unwrap();
+        elem.resize(settings.geometry.canvas.as_logical(), None);
         elem.clone()
     }
 }
@@ -522,15 +585,7 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
         }
     }
 
-    let outline_shader = renderer.compile_custom_pixel_shader(
-        OUTLINE_SHADER,
-        &[
-            UniformName::new("color", UniformType::_3f),
-            UniformName::new("thickness", UniformType::_1f),
-            UniformName::new("scale", UniformType::_1f),
-            UniformName::new("radius", UniformType::_4f),
-        ],
-    )?;
+    let outline_shader = IndicatorShader::compile(renderer)?;
     let rectangle_shader = renderer.compile_custom_pixel_shader(
         RECTANGLE_SHADER,
         &[

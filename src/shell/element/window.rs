@@ -1407,31 +1407,18 @@ impl CosmicWindow {
             // SSD windows: draw the border inset (inside the geo) so the
             // border overlays the header/surface edges with no gap at the top.
             // CSD windows: same — draw the border inside the geo.
-            let elem = CosmicWindowRenderElement::Border(IndicatorShader::element(
+            let elem = CosmicWindowRenderElement::Border(IndicatorShader::window_outline(
                 renderer,
-                Key::Window(Usage::Border, window_key.clone()),
-                geo.to_i32_round().as_local(),
+                Key::Window(Usage::Border, window_key),
+                geo.as_local(),
                 border_thickness,
                 radii,
-                border_color.a * alpha,
+                alpha,
                 scale.x,
-                [border_color.r, border_color.g, border_color.b],
+                border_color,
+                ring,
             ));
             push_above(elem);
-            if let Some(ring) = ring.filter(|ring| ring.a > 0.0 && border_thickness > 0) {
-                push_above(CosmicWindowRenderElement::Border(
-                    IndicatorShader::focus_element(
-                        renderer,
-                        Key::Window(Usage::AccentFocusRing, window_key),
-                        geo.to_i32_round().as_local(),
-                        border_thickness,
-                        radii,
-                        ring.a * alpha,
-                        scale.x,
-                        [ring.r, ring.g, ring.b],
-                    ),
-                ));
-            }
         }
 
         // MERGE: clipping/rounding of the toplevel surface now happens inside
