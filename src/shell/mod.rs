@@ -3983,6 +3983,7 @@ impl Shell {
         // - "Always" mode: start hidden unless the workspace has no visible
         //   windows (so the dock stays visible on an empty desktop).
         // - "OnMaximize" mode: start hidden if maximized/fullscreen windows exist.
+        // - "OnFullscreen" mode: maximized desktop windows do not trigger hiding.
         // - Output not resolved yet: the surface registered for auto-hide before
         //   its first buffer commit (e.g. a panel that requests auto-hide on
         //   open), so we can't read the desktop state. Start hidden to avoid a
@@ -3994,12 +3995,11 @@ impl Shell {
         // (startup) registration can't read desktop state.
         let mapped = output.is_some();
         let should_hide = match output {
-            Some(output) => match mode {
-                auto_hide::AutoHideMode::Always => self.output_has_visible_windows(&output),
-                auto_hide::AutoHideMode::OnMaximize => {
-                    self.output_has_maximized_or_fullscreen(&output)
-                }
-            },
+            Some(output) => mode.should_hide(
+                self.output_has_visible_windows(&output),
+                self.output_has_maximized_or_fullscreen(&output),
+                self.output_has_fullscreen(&output),
+            ),
             None => true,
         };
 
@@ -4039,6 +4039,16 @@ impl Shell {
         let surface_id = surface.id().protocol_id();
         self.auto_hide_surfaces.retain(|s| s.surface != *surface);
         tracing::info!(surface_id, "auto_hide: unregistered surface");
+    }
+
+    /// Fullscreen content on this output's active workspace only; ignore exiting surfaces.
+    pub fn output_has_fullscreen(&self, output: &Output) -> bool {
+        self.active_space(output).is_some_and(|workspace| {
+            workspace
+                .fullscreen_surfaces
+                .iter()
+                .any(|fullscreen| fullscreen.alive() && fullscreen.ended_at.is_none())
+        })
     }
 
     /// Check whether any toplevel on an output is maximized or fullscreen.
@@ -4129,7 +4139,7 @@ impl Shell {
     /// This is the thin strip at the screen edge used to trigger showing the
     /// dock when it is hidden.  Returns `None` when the surface has no edge
     /// zone configured or when the surface cannot be found.
-    fn auto_hide_edge_zone_rect(&self, surface: &WlSurface) -> Option<Rectangle<i32, Global>> {
+    fn auto_hide_edge_zone_rect(&self, surface: &WlSurface) -> Option<Rectangle<f64, Global>> {
         let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
@@ -4146,10 +4156,15 @@ impl Shell {
                     let global_geo = local_geo.as_local().to_global(output);
                     let output_geo = output.geometry();
                     let output_bottom = output_geo.loc.y + output_geo.size.h;
-                    let zone_top = output_bottom - edge_zone as i32;
+                    let thickness = auto_hide::edge_zone_height(
+                        edge_zone,
+                        self.output_has_fullscreen(output),
+                        output.current_scale().fractional_scale(),
+                    );
+                    let zone_top = f64::from(output_bottom) - thickness;
                     return Some(Rectangle::new(
-                        Point::from((global_geo.loc.x, zone_top)),
-                        Size::from((global_geo.size.w, edge_zone as i32)),
+                        Point::from((f64::from(global_geo.loc.x), zone_top)),
+                        Size::from((f64::from(global_geo.size.w), thickness)),
                     ));
                 }
             }
@@ -4161,6 +4176,7 @@ impl Shell {
     /// update all auto-hide surfaces on the affected output.
     pub fn update_auto_hide_for_output(&mut self, output: &Output) {
         let has_max = self.output_has_maximized_or_fullscreen(output);
+        let has_fullscreen = self.output_has_fullscreen(output);
         let has_windows = self.output_has_visible_windows(output);
         let output_id = output.name();
 
@@ -4189,26 +4205,32 @@ impl Shell {
             }
 
             match surface.mode {
-                auto_hide::AutoHideMode::Always => {
-                    // "Always" mode: show the dock when the workspace has no
-                    // visible windows (empty desktop), hide when windows exist.
-                    if !has_windows {
-                        // No visible windows — show the dock.
+                auto_hide::AutoHideMode::Always | auto_hide::AutoHideMode::OnFullscreen => {
+                    // Rechecks must not dismiss a revealed panel under the pointer.
+                    if !surface
+                        .mode
+                        .should_hide(has_windows, has_max, has_fullscreen)
+                    {
+                        // This output no longer meets the mode's hide condition.
                         surface.visibility.force_show();
                     } else if !surface.cursor_over {
-                        // Windows exist and cursor is not on the dock — hide.
+                        // Hide only after the pointer leaves the revealed surface.
                         surface.visibility.start_hide(false);
                     }
                     tracing::debug!(
                         surface_id = surface.surface_id,
                         has_windows,
+                        mode = ?surface.mode,
                         output = %output_id,
-                        "auto_hide: output window state changed (Always mode)"
+                        "auto_hide: output window state changed"
                     );
                 }
                 auto_hide::AutoHideMode::OnMaximize => {
-                    if has_max {
-                        // Maximize detected — hide (with delay if cursor is on the surface).
+                    if surface
+                        .mode
+                        .should_hide(has_windows, has_max, has_fullscreen)
+                    {
+                        // Hide for this mode's window state, after the cursor leaves.
                         if !surface.cursor_over {
                             surface.visibility.start_hide(false);
                         } else {
@@ -4222,8 +4244,10 @@ impl Shell {
                     tracing::debug!(
                         surface_id = surface.surface_id,
                         has_maximized = has_max,
+                        has_fullscreen,
+                        mode = ?surface.mode,
                         output = %output_id,
-                        "auto_hide: output maximized state changed (OnMaximize mode)"
+                        "auto_hide: output window state changed (conditional mode)"
                     );
                 }
             }
@@ -4245,6 +4269,12 @@ impl Shell {
         let cursor_object_id: Option<ObjectId> = cursor_surface.map(|s| s.id());
 
         // Pre-compute per-output state to avoid borrow issues.
+        let outputs_fullscreen: Vec<(Output, bool)> = self
+            .workspaces()
+            .sets
+            .keys()
+            .map(|output| (output.clone(), self.output_has_fullscreen(output)))
+            .collect();
         let outputs_maximized: Vec<(Output, bool)> = self
             .workspaces()
             .sets
@@ -4292,7 +4322,7 @@ impl Shell {
         // can trigger show when the cursor enters the edge zone while the
         // surface is hidden.  This replaces the old approach of returning
         // the dock surface as a pointer hit target from surface_under().
-        let edge_zone_rects: Vec<(ObjectId, Option<Rectangle<i32, Global>>)> = self
+        let edge_zone_rects: Vec<(ObjectId, Option<Rectangle<f64, Global>>)> = self
             .auto_hide_surfaces
             .iter()
             .filter_map(|s| {
@@ -4325,6 +4355,14 @@ impl Shell {
                             .map(|(_, m)| *m)
                     })
                     .unwrap_or(false),
+                auto_hide::AutoHideMode::OnFullscreen => output
+                    .and_then(|o| {
+                        outputs_fullscreen
+                            .iter()
+                            .find(|(out, _)| out == o)
+                            .map(|(_, f)| *f)
+                    })
+                    .unwrap_or(false),
             }
         };
 
@@ -4336,7 +4374,7 @@ impl Shell {
                 .iter()
                 .find(|(id, _)| *id == obj_id)
                 .and_then(|(_, rect)| rect.as_ref())
-                .is_some_and(|rect| rect.to_f64().contains(cursor_pos));
+                .is_some_and(|rect| rect.contains(cursor_pos));
             let is_over = cursor_object_id.as_ref() == Some(&obj_id) || in_edge_zone;
             let was_over = surface.cursor_over;
 
@@ -9103,7 +9141,9 @@ impl Shell {
                 window.mapped().unwrap().set_active(surface);
             }
             let from = minimize_rectangle(workspace.output(), &window.active_window());
-            if let Some((surface, restore, _)) = workspace.unminimize(window, from, seat, loop_handle) {
+            if let Some((surface, restore, _)) =
+                workspace.unminimize(window, from, seat, loop_handle)
+            {
                 toplevel_leave_output(&surface, &workspace.output);
                 toplevel_leave_workspace(&surface, &workspace.handle);
                 self.remap_unfullscreened_window(surface, restore, loop_handle);

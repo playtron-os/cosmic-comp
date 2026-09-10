@@ -39,6 +39,90 @@ fn theme() -> CompTheme {
 }
 
 #[test]
+fn fullscreen_halo_reveal_animates_inside_the_screen_and_hides_after_leave() {
+    use crate::shell::element::header_bar::{fullscreen_header_offset, halo_is_visible};
+    struct FullscreenHeader {
+        hovered: bool,
+        menu_open: bool,
+    }
+    impl Program for FullscreenHeader {
+        type Message = ();
+        fn backdrop_blur(
+            &self,
+            theme: &CompTheme,
+            size: Size<i32, Logical>,
+            layers: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+            crate::shell::element::window::halo_backdrop_blur(
+                layers,
+                theme.halo_style().pill_height(),
+                size.w as f32,
+            )
+        }
+        fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
+            Some(halo_visibility(
+                theme,
+                halo_is_visible(true, self.hovered, true, self.menu_open),
+            ))
+        }
+        fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
+            header_bar()
+                .theme(theme)
+                .title("Fullscreen app")
+                .focused(true)
+                .on_close(())
+                .on_fullscreen((), true)
+                .on_right_click(())
+                .into_element()
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let element = IcedElement::new(
+        FullscreenHeader {
+            hovered: false,
+            menu_open: false,
+        },
+        (900, ssd_header_render_height(&theme) as i32),
+        event_loop.handle(),
+        theme.clone(),
+    );
+    let body = element.backdrop_bounds().unwrap();
+    let origin_y = fullscreen_header_offset(&theme) as f32;
+    assert!(
+        (origin_y + body.y - halo_visibility(&theme, false).hidden_offset.y - 10.0).abs() < 1.0,
+        "the pill must sit inside the fullscreen output"
+    );
+    assert!(
+        body.x > 0.0 && body.x + body.width < 900.0,
+        "the pill is centered on the output, not the client buffer"
+    );
+    let mut internal = element.0.lock().unwrap();
+    assert_eq!(
+        internal.visibility_frame.opacity, 0.0,
+        "focus must not show fullscreen chrome"
+    );
+    let now = IcedInstant::now();
+    let duration = halo_visibility(&theme, true).duration;
+    internal.program.hovered = true;
+    internal.sync_visibility(now);
+    assert_eq!(internal.visibility_frame.opacity, 0.0);
+    internal.sync_visibility(now + duration / 2);
+    assert!(internal.visibility_frame.opacity > 0.0 && internal.visibility_frame.opacity < 1.0);
+    internal.sync_visibility(now + duration);
+    assert_eq!(internal.visibility_frame, VisibilityFrame::VISIBLE);
+    internal.program.hovered = false;
+    internal.program.menu_open = true;
+    internal.sync_visibility(now + duration * 2);
+    assert_eq!(internal.visibility_frame, VisibilityFrame::VISIBLE);
+    internal.program.menu_open = false;
+    internal.sync_visibility(now + duration * 3);
+    internal.sync_visibility(now + duration * 4);
+    assert_eq!(internal.visibility_frame.opacity, 0.0);
+}
+
+#[test]
 fn header_hover_paints_on_entry_and_clears_on_exit() {
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
     let theme = theme();
@@ -123,6 +207,112 @@ fn output(name: &str) -> Output {
 }
 
 #[test]
+fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
+    use icetron_p::utils::platform::test_clock;
+    use std::time::Duration;
+    let _clock = test_clock::Frozen::start();
+    let at = icetron_p::utils::platform::now();
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
+    tokens.duration_fast = 120.0;
+    let theme = CompTheme::new(Arc::new(tokens), true);
+    let element = IcedElement::new(
+        Header { visible: true },
+        (640, ssd_header_render_height(&theme) as i32),
+        event_loop.handle(),
+        theme.clone(),
+    );
+    let mut internal = element.0.lock().unwrap();
+    let pill = internal
+        .renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.quads)
+        .find(|(quad, _)| {
+            (quad.bounds.height - theme.halo_style().pill_height()).abs() < 1.0
+                && quad.bounds.width > 100.0
+        })
+        .unwrap()
+        .0
+        .bounds;
+    let close = IcedPoint::new(
+        pill.x + pill.width
+            - theme.halo_style().padding_horizontal
+            - theme.halo_style().control_size / 2.0,
+        pill.center_y(),
+    );
+    internal.cursor_pos = Some((close.x as f64, close.y as f64).into());
+    let step = |internal: &mut IcedElementInternal<Header>, ms| {
+        let now = at + Duration::from_millis(ms);
+        test_clock::set(now);
+        internal
+            .event_queue
+            .push(Event::Window(WindowEvent::RedrawRequested(now)));
+        internal.update(UpdateSource::AnimRedraw);
+    };
+    step(&mut internal, 0);
+    step(&mut internal, 399);
+    assert!(internal.tooltip.report.is_none());
+    step(&mut internal, 400);
+    let first = internal
+        .tooltip
+        .report
+        .clone()
+        .expect("tooltip must open at the deadline");
+    assert_eq!(first.label, "Close");
+    assert_eq!(first.opacity, 0.0);
+    assert!(
+        first.bounds.y > pill.y,
+        "operation must report laid-out, not zero, coordinates"
+    );
+    step(&mut internal, 460);
+    let middle = internal.tooltip.report.clone().unwrap();
+    assert!(
+        (middle.opacity - 0.685).abs() < 0.01,
+        "CSS ease-out is not a linear fade"
+    );
+    step(&mut internal, 520);
+    let last = internal.tooltip.report.clone().unwrap();
+    assert_eq!(last.opacity, 1.0);
+    assert!((last.bounds.y - first.bounds.y - 3.0).abs() < 0.01);
+    assert!(last.bounds.y > middle.bounds.y);
+    // Native Iced button transitions still read wall time. Stop those independently
+    // before checking that the tooltip itself has no remaining frame requests.
+    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
+    tokens.duration_fast = 0.0;
+    internal.theme = CompTheme::new(Arc::new(tokens), true);
+    step(&mut internal, 536);
+    assert!(
+        !internal.needs_redraw,
+        "settled tooltips must stop requesting frames"
+    );
+    internal
+        .event_queue
+        .push(Event::Mouse(MouseEvent::ButtonPressed(MouseButton::Left)));
+    step(&mut internal, 540);
+    assert!(internal.tooltip.report.is_none());
+    step(&mut internal, 1000);
+    assert!(
+        internal.tooltip.report.is_none(),
+        "click suppression lasts until leave"
+    );
+    internal.cursor_pos = None;
+    step(&mut internal, 1010);
+    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
+    tokens.duration_fast = 120.0;
+    internal.theme = CompTheme::new(Arc::new(tokens), true);
+    internal.cursor_pos = Some((close.x as f64, close.y as f64).into());
+    step(&mut internal, 1020);
+    step(&mut internal, 1419);
+    assert!(
+        internal.tooltip.report.is_none(),
+        "re-entry must restart the delay"
+    );
+    step(&mut internal, 1420);
+    assert_eq!(internal.tooltip.report.as_ref().unwrap().opacity, 0.0);
+}
+
+#[test]
 fn header_transition_requests_frames_with_a_stationary_pointer_then_stops() {
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
     let mut theme = theme();
@@ -182,6 +372,8 @@ fn header_transition_requests_frames_with_a_stationary_pointer_then_stops() {
     let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme);
     tokens.duration_fast = 0.0;
     internal.theme = CompTheme::new(Arc::new(tokens), true);
+    // This test concerns button transitions; leaving also cancels the new tooltip delay.
+    internal.cursor_pos = None;
     internal.update(UpdateSource::Forced);
     assert!(!internal.needs_redraw);
     assert!(

@@ -37,6 +37,18 @@ pub const SHOW_DELAY: Duration = Duration::from_millis(400);
 /// Extra pixels beyond the surface height for the hide offset (shadow/blur).
 pub const SHADOW_BUFFER: i32 = 60;
 
+/// Fullscreen reveal is confined to the outermost physical pixel; elsewhere
+/// retain the client's configured logical edge zone (as used by the dock).
+pub fn edge_zone_height(configured: u32, fullscreen: bool, scale: f64) -> f64 {
+    if configured == 0 {
+        0.0
+    } else if fullscreen {
+        1.0 / scale
+    } else {
+        f64::from(configured)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Edge enum – matches the protocol's auto_hide_edge enum
 // ---------------------------------------------------------------------------
@@ -65,12 +77,23 @@ pub enum AutoHideMode {
     Always,
     /// Only hide when maximized/fullscreen windows exist on the same output.
     OnMaximize,
+    /// Stay visible on the desktop, hiding only while this output has fullscreen content.
+    OnFullscreen,
 }
 
 impl AutoHideMode {
+    pub fn should_hide(self, has_windows: bool, has_maximized: bool, has_fullscreen: bool) -> bool {
+        match self {
+            Self::Always => has_windows,
+            Self::OnMaximize => has_maximized,
+            Self::OnFullscreen => has_fullscreen,
+        }
+    }
+
     pub fn from_protocol(value: u32) -> Self {
         match value {
             1 => AutoHideMode::OnMaximize,
+            2 => AutoHideMode::OnFullscreen,
             _ => AutoHideMode::Always, // 0 or unknown defaults to Always
         }
     }
@@ -319,4 +342,69 @@ fn ease_out_back(t: f32) -> f32 {
 /// Clamped progress ratio for an animation started at `start` with `duration`.
 fn progress_clamped(start: Instant, duration: Duration) -> f32 {
     (start.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fullscreen_mode_leaves_normal_and_maximized_desktops_visible() {
+        for (windows, maximized, fullscreen) in [
+            (false, false, false),
+            (true, false, false),
+            (true, true, false),
+            (true, true, true),
+        ] {
+            assert_eq!(
+                AutoHideMode::OnFullscreen.should_hide(windows, maximized, fullscreen),
+                fullscreen
+            );
+            assert_eq!(
+                AutoHideMode::OnMaximize.should_hide(windows, maximized, fullscreen),
+                maximized
+            );
+            assert_eq!(
+                AutoHideMode::Always.should_hide(windows, maximized, fullscreen),
+                windows
+            );
+        }
+        assert_eq!(AutoHideMode::from_protocol(2), AutoHideMode::OnFullscreen);
+        assert_eq!(
+            crate::wayland::protocols::layer_auto_hide::layer_auto_hide_v1::Mode::OnFullscreen
+                as u32,
+            2
+        );
+    }
+
+    #[test]
+    fn fullscreen_bottom_trigger_is_one_physical_pixel_at_every_scale() {
+        use smithay::utils::{Logical, Point, Rectangle};
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let height = edge_zone_height(4, true, scale);
+            let edge = Rectangle::<f64, Logical>::new(
+                (1920.0, 1080.0 - height).into(),
+                (1920.0, height).into(),
+            );
+            assert!(edge.contains(Point::from((2100.0, 1080.0 - 0.5 / scale))));
+            assert!(!edge.contains(Point::from((2100.0, 1080.0 - 1.1 / scale))));
+            assert!(!edge.contains(Point::from((1800.0, 1080.0 - 0.5 / scale))));
+            assert!(!edge.contains(Point::from((2100.0, 1080.0))));
+            assert_eq!(edge_zone_height(4, false, scale), 4.0);
+            assert_eq!(edge_zone_height(0, true, scale), 0.0);
+        }
+    }
+
+    #[test]
+    fn leaving_and_reentering_revealed_panel_respects_hide_delay() {
+        let mut visibility = AutoHideVisibility::Visible;
+        visibility.start_hide(true);
+        assert!(matches!(visibility, AutoHideVisibility::HidePending { .. }));
+        visibility.start_show(true);
+        assert!(matches!(visibility, AutoHideVisibility::Visible));
+        visibility.start_hide(false);
+        assert!(matches!(visibility, AutoHideVisibility::SlidingOut { .. }));
+        visibility.force_show();
+        assert!(matches!(visibility, AutoHideVisibility::SlidingIn { .. }));
+    }
 }

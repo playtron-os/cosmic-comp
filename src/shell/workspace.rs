@@ -68,9 +68,11 @@ use wayland_backend::server::ClientId;
 use super::{
     CosmicMappedRenderElement, CosmicSurface, ResizeDirection, ResizeMode,
     element::{
-        CosmicMapped, CosmicMappedKey, MaximizedState, resize_indicator::ResizeIndicator,
-        stack::CosmicStackRenderElement, swap_indicator::SwapIndicator,
-        window::CosmicWindowRenderElement,
+        CosmicMapped, CosmicMappedKey, MaximizedState,
+        resize_indicator::ResizeIndicator,
+        stack::CosmicStackRenderElement,
+        swap_indicator::SwapIndicator,
+        window::{CosmicWindow, CosmicWindowRenderElement},
     },
     focus::{
         FocusStack, FocusStackMut,
@@ -253,6 +255,7 @@ struct RetainedFullscreenFrame {
 #[derive(Debug, Clone)]
 pub struct FullscreenSurface {
     pub surface: CosmicSurface,
+    pub(crate) halo: CosmicWindow,
     pub previous_state: Option<FullscreenRestoreState>,
     pub previous_geometry: Option<Rectangle<i32, Local>>,
     start_at: Option<Instant>,
@@ -832,6 +835,13 @@ impl Workspace {
 
     #[profiling::function]
     pub fn refresh(&mut self) {
+        for fullscreen in &self.fullscreen_surfaces {
+            if fullscreen.alive() && !fullscreen.is_animating() {
+                fullscreen.halo.refresh_fullscreen_header(&self.output);
+            } else {
+                fullscreen.halo.hide_fullscreen_header();
+            }
+        }
         // seems it removes dead windows
         // self.fullscreen.take_if(|w| !w.alive());
         // A dead fullscreen surface is not dropped on the spot: its last
@@ -1338,6 +1348,13 @@ impl Workspace {
 
         let check_fullscreen = |fullscreen: &FullscreenSurface| {
             if !fullscreen.is_animating() {
+                if let Some(hit) = fullscreen.halo.focus_under(
+                    location.as_logical(),
+                    WindowSurfaceType::TOPLEVEL,
+                    Some(seat),
+                ) {
+                    return Some((hit.0, hit.1.as_local()));
+                }
                 let geometry = self.fullscreen_geometry_for(fullscreen);
                 return fullscreen
                     .surface
@@ -1515,6 +1532,13 @@ impl Workspace {
         }
         let geometry = self.fullscreen_geometry_for(fullscreen);
         let (surface_point, scale) = self.controlled_surface_transform(fullscreen, location);
+        if let Some((target, offset)) = fullscreen.halo.focus_under(
+            location.as_logical(),
+            WindowSurfaceType::TOPLEVEL,
+            Some(seat),
+        ) {
+            return Some((target, offset.as_local().to_global(&self.output)));
+        }
         fullscreen
             .surface
             .focus_under(
@@ -1716,6 +1740,7 @@ impl Workspace {
         window: MinimizedWindow,
         from: Rectangle<i32, Local>,
         seat: &Seat<State>,
+        loop_handle: &smithay::reexports::calloop::LoopHandle<'static, State>,
     ) -> Option<(
         CosmicSurface,
         Option<FullscreenRestoreState>,
@@ -1729,6 +1754,13 @@ impl Workspace {
                     .get_mut(seat)
                     .append(FocusTarget::Fullscreen(surface.clone()));
                 self.fullscreen_surfaces.push(FullscreenSurface {
+                    halo: CosmicWindow::new_fullscreen(
+                        surface.clone(),
+                        loop_handle.clone(),
+                        self.floating_layer.theme.clone(),
+                        self.floating_layer.appearance,
+                        &self.output,
+                    ),
                     surface,
                     previous_state: previous.clone().map(|p| p.previous_state),
                     previous_geometry: previous.map(|p| p.previous_geometry),
@@ -1830,6 +1862,7 @@ impl Workspace {
         seat: impl Into<Option<&'a Seat<State>>>,
         restore: Option<FullscreenRestoreState>,
         previous_geometry: Option<Rectangle<i32, Local>>,
+        loop_handle: &smithay::reexports::calloop::LoopHandle<'static, State>,
     ) {
         window.set_fullscreen(true);
         window.set_geometry(self.output.geometry(), 0);
@@ -1846,6 +1879,13 @@ impl Workspace {
         self.dirty.store(true, Ordering::SeqCst);
         self.fullscreen_surfaces.push(FullscreenSurface {
             surface: window.clone(),
+            halo: CosmicWindow::new_fullscreen(
+                window.clone(),
+                loop_handle.clone(),
+                self.floating_layer.theme.clone(),
+                self.floating_layer.appearance,
+                &self.output,
+            ),
             previous_state: restore,
             previous_geometry,
             start_at: Some(Instant::now()),
@@ -2452,6 +2492,14 @@ impl Workspace {
                         fullscreen.surface.0.geometry().size
                     };
                     let is_animating = fullscreen.is_animating();
+                    if !is_animating {
+                        fullscreen.halo.push_fullscreen_header(
+                            renderer,
+                            output_scale.into(),
+                            fullscreen_alpha,
+                            &mut |element| fullscreen_elements.push(element.into()),
+                        );
+                    }
                     let animation_rescale = |elem| {
                         if (is_animating || scaling) && src.w > 0 && src.h > 0 {
                             let scale = Scale {

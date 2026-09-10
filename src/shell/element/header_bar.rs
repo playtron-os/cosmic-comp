@@ -8,13 +8,29 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, mouse_area, row, svg, tooltip};
 use icetron_p::prelude::{
-    animated_opacity, app_header, header_height_for, header_render_height_for, styled_text,
+    animated_opacity, animated_tooltip, app_header, header_height_for, header_render_height_for,
+    styled_text,
 };
 use icetron_p::{animation::transition::ButtonTransition, components::icons::icon_svg_inherit};
 use icetron_themes::WindowHeaderStyle;
 use icetron_themes::icons;
 
 use crate::comp_theme::CompTheme;
+
+/// Fullscreen Halo sits 10 px inside the output in the prototype, excluding both
+/// the raster's shadow padding and the widget's own top inset.
+pub(crate) fn fullscreen_header_offset(theme: &CompTheme) -> f64 {
+    10.0 - f64::from(halo_shadow_padding(theme).top + theme.halo_style().top_inset)
+}
+
+pub(crate) fn halo_is_visible(
+    fullscreen: bool,
+    hovered: bool,
+    focused: bool,
+    menu_open: bool,
+) -> bool {
+    hovered || (!fullscreen && focused) || menu_open
+}
 
 /// Motion of the live design prototype's `components/halo/halo.css`:
 /// translateY(3px -> 0), opacity via --ease-standard, slide via --ease-spring.
@@ -399,7 +415,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     self.on_screenshot.clone(),
                     "Screenshot window",
                     HaloButtonRole::Tray,
-                    false,
+                    self.menu_open,
                     theme
                 ),
                 halo_button(
@@ -407,7 +423,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     None,
                     "Recording — coming soon",
                     HaloButtonRole::Tray,
-                    false,
+                    self.menu_open,
                     theme
                 ),
             ]
@@ -438,7 +454,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     Some(message),
                     "New Window",
                     HaloButtonRole::Window,
-                    false,
+                    self.menu_open,
                     theme,
                 ));
             }
@@ -485,7 +501,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         } else {
                             HaloButtonRole::Window
                         },
-                        false,
+                        self.menu_open,
                         theme,
                     ));
                 }
@@ -567,10 +583,11 @@ fn halo_button<'a, Message: Clone + 'static>(
     message: Option<Message>,
     label: &'a str,
     role: HaloButtonRole,
-    active: bool,
+    menu_open: bool,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     let metrics = theme.halo_style();
+    let active = menu_open && matches!(role, HaloButtonRole::Menu);
     let icon_size = match role {
         HaloButtonRole::Tray => metrics.glyph_icon_size,
         HaloButtonRole::Menu => metrics.menu_icon_size,
@@ -611,12 +628,11 @@ fn halo_button<'a, Message: Clone + 'static>(
             ..Default::default()
         }
     });
-    tooltip(
-        button,
-        styled_text(label, theme.text_styles().caption(), theme.text_primary()),
-        tooltip::Position::Bottom,
-    )
-    .into()
+    animated_tooltip(button, label, &**theme)
+        .position(tooltip::Position::Bottom)
+        .enabled(!menu_open)
+        .compositor_managed(true)
+        .into()
 }
 
 impl<'a, Message: Clone + 'static> From<HeaderBar<'a, Message>>

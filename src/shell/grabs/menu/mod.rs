@@ -11,7 +11,9 @@ use calloop::LoopHandle;
 // `menu::menu_column::MenuColumn`). This fork does not depend on the libcosmic widget crate —
 // the menu is built from raw iced widgets styled with icetron design tokens — so the icetron
 // imports stay.
-use iced_core::{Alignment, Length, Rectangle as IcedRectangle, alignment::Horizontal};
+use iced_core::{
+    Alignment, Length, Rectangle as IcedRectangle, alignment::Horizontal, mouse::Interaction,
+};
 use iced_runtime::Task;
 use iced_widget::{self, Column, Row, Space, button, container, svg::Svg};
 
@@ -29,7 +31,7 @@ use smithay::{
     input::{
         Seat,
         pointer::{
-            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
+            AxisFrame, ButtonEvent, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,
             GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
             GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
             GrabStartData as PointerGrabStartData, MotionEvent as PointerMotionEvent, PointerGrab,
@@ -45,9 +47,12 @@ use smithay::{
 };
 
 use crate::{
-    backend::render::element::AsGlowRenderer,
+    backend::render::{cursor::CursorState, element::AsGlowRenderer},
     comp_theme::CompTheme,
-    shell::{SeatExt, focus::target::PointerFocusTarget},
+    shell::{
+        SeatExt, element::window::mouse_interaction_to_cursor_icon,
+        focus::target::PointerFocusTarget,
+    },
     state::State,
     utils::{
         apply::Apply,
@@ -702,6 +707,22 @@ pub struct MenuGrab {
     on_close: Option<Box<dyn FnOnce() + Send>>,
 }
 
+fn set_menu_cursor(seat: &Seat<State>, interaction: Option<Interaction>) {
+    if let Some(cursor) = seat.user_data().get::<CursorState>() {
+        let mut cursor = cursor.lock().unwrap();
+        if let Some(interaction) = interaction {
+            cursor.set_shape(mouse_interaction_to_cursor_icon(interaction));
+        } else {
+            cursor.unset_shape();
+        }
+    }
+    seat.set_cursor_image_status(
+        interaction.map_or_else(CursorImageStatus::default_named, |interaction| {
+            CursorImageStatus::Named(mouse_interaction_to_cursor_icon(interaction))
+        }),
+    );
+}
+
 impl PointerGrab<State> for MenuGrab {
     fn motion(
         &mut self,
@@ -710,6 +731,7 @@ impl PointerGrab<State> for MenuGrab {
         _focus: Option<(PointerFocusTarget, Point<f64, Logical>)>,
         event: &PointerMotionEvent,
     ) {
+        let mut interaction = Interaction::None;
         {
             let mut guard = self.elements.lock().unwrap();
             let elements = &mut *guard;
@@ -746,11 +768,17 @@ impl PointerGrab<State> for MenuGrab {
                 } else {
                     PointerTarget::motion(&element.iced, &self.seat, state, &new_event);
                 }
+                interaction = element.iced.mouse_interaction();
             } else {
+                // Legacy nested menus keep the root selected while travelling to
+                // a submenu. Halo is a single dropdown: leaving must clear its row.
+                let keep_root = !elements
+                    .first()
+                    .is_some_and(|element| element.iced.with_program(|p| p.halo));
                 elements
                     .iter_mut()
                     .filter(|element| element.pointer_entered)
-                    .skip(1)
+                    .skip(usize::from(keep_root))
                     .for_each(|element| {
                         PointerTarget::leave(
                             &element.iced,
@@ -764,6 +792,9 @@ impl PointerGrab<State> for MenuGrab {
             }
         }
         handle.motion(state, None, event);
+        // Clearing the old focus can reset the cursor in its leave handler.
+        // Apply the menu's choice afterwards, without re-locking the pointer handle.
+        set_menu_cursor(&self.seat, Some(interaction));
     }
 
     fn relative_motion(
@@ -903,7 +934,9 @@ impl PointerGrab<State> for MenuGrab {
         }
     }
 
-    fn unset(&mut self, _data: &mut State) {}
+    fn unset(&mut self, _data: &mut State) {
+        set_menu_cursor(&self.seat, None);
+    }
 }
 
 impl TouchGrab<State> for MenuGrab {

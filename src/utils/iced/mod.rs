@@ -20,6 +20,7 @@ use std::{
 
 use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
+mod tooltip;
 mod visibility;
 pub use visibility::Visibility;
 use visibility::{VisibilityAnimation, VisibilityFrame};
@@ -327,6 +328,7 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     buffers: HashMap<OrderedFloat<f64>, (MemoryRenderBuffer, Option<(Vec<Layer>, Color)>)>,
     pending_realloc: bool,
     blur: BlurState,
+    tooltip: tooltip::Surface,
 
     // state
     size: Size<i32, Logical>,
@@ -383,6 +385,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             buffers: self.buffers.clone(),
             pending_realloc: self.pending_realloc,
             blur: BlurState::default(),
+            tooltip: tooltip::Surface::default(),
             size: self.size,
             last_seat: self.last_seat.clone(),
             cursor_pos: self.cursor_pos,
@@ -564,6 +567,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             buffers: HashMap::new(),
             pending_realloc: false,
             blur: BlurState::default(),
+            tooltip: tooltip::Surface::default(),
             size,
             cursor_pos: None,
             last_seat,
@@ -593,6 +597,22 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     pub fn with_program<R>(&self, func: impl FnOnce(&P) -> R) -> R {
         let internal = self.0.lock().unwrap();
         func(&internal.program)
+    }
+
+    /// The painted backdrop body, excluding render-only shadow padding.
+    pub(crate) fn backdrop_bounds(&self) -> Option<iced_core::Rectangle> {
+        let mut guard = self.0.lock().unwrap();
+        let IcedElementInternal {
+            program,
+            theme,
+            size,
+            renderer,
+            visibility_frame,
+            ..
+        } = &mut *guard;
+        program
+            .backdrop_blur(theme, *size, renderer.layers(), [0; 4])
+            .map(|(bounds, _)| bounds + visibility_frame.offset)
     }
 
     pub fn minimum_size(&self) -> Size<i32, Logical> {
@@ -667,6 +687,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         let mut guard = self.0.lock().unwrap();
         guard.iced_theme = theme.to_iced_theme();
         guard.theme = theme;
+        guard.tooltip.invalidate();
         guard.update(UpdateSource::Forced);
     }
 
@@ -881,6 +902,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             text_color: self.theme.on_bg_color(),
         };
         interface.draw(&mut self.renderer, &self.iced_theme, &style, cursor);
+        self.tooltip.report = tooltip::collect(&mut interface, &self.renderer);
         let draw_duration = draw_start.elapsed();
 
         // Preserve widget tree state for next frame
@@ -923,6 +945,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
                 user_interface::State::Outdated { .. } => self.needs_redraw = true,
             }
             interface.draw(&mut self.renderer, &self.iced_theme, &style, cursor);
+            self.tooltip.report = tooltip::collect(&mut interface, &self.renderer);
             self.cache = interface.into_cache();
             // Do not discard messages emitted by redraw-aware widgets. Apply
             // them now and rebuild next frame, avoiding an unbounded rebuild loop.
@@ -1549,6 +1572,16 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         // Preserve subpixel motion and use exactly the same origin for the
         // texture (including its shadow) and the framebuffer blur capture.
         let location = internal_ref.visibility_frame.location(location, scale);
+        // Front-to-back: tooltip, its backdrop, header, then the header's backdrop.
+        internal_ref.tooltip.push(
+            renderer,
+            &internal_ref.theme,
+            location,
+            scale,
+            internal_ref.additional_scale,
+            alpha,
+            push_above,
+        );
         if let Some((buffer, old_layers)) = internal_ref.buffers.get_mut(&OrderedFloat(scale.x)) {
             let size: Size<i32, BufferCoords> = internal_ref
                 .size

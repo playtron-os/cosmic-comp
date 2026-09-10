@@ -164,6 +164,8 @@ pub struct CosmicWindowInternal {
     pointer_entered: AtomicU8,
     /// Whether any pointer is currently over the window (header, content, or resize borders).
     pointer_over_window: AtomicBool,
+    /// A header-only wrapper anchored to an output, not to the fullscreen client geometry.
+    fullscreen_output: Option<Mutex<Output>>,
     last_title: Mutex<String>,
     /// Cached app icon handle, resolved once and refreshed when app_id changes.
     cached_icon: Mutex<(String, Option<super::header_bar::AppIcon>)>,
@@ -601,6 +603,19 @@ impl CosmicWindowInternal {
         super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
     }
 
+    fn header_origin(&self) -> Point<f64, Logical> {
+        if self.fullscreen_output.is_some() {
+            (
+                0.0,
+                super::header_bar::fullscreen_header_offset(&self.theme.lock().unwrap()),
+            )
+                .into()
+        } else {
+            self.window.geometry().loc.to_f64()
+                - Point::from((0.0, self.ssd_render_overhang() as f64))
+        }
+    }
+
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
         let value = focus.map_or(0, |x| x as u8);
         unsafe { Focus::from_u8(self.pointer_entered.swap(value, Ordering::SeqCst)) }
@@ -747,7 +762,34 @@ impl CosmicWindow {
         theme: crate::comp_theme::CompTheme,
         appearance: AppearanceConfig,
     ) -> CosmicWindow {
-        let window = window.into();
+        Self::new_inner(window.into(), handle, theme, appearance, None)
+    }
+
+    pub(crate) fn new_fullscreen(
+        window: CosmicSurface,
+        handle: LoopHandle<'static, State>,
+        theme: crate::comp_theme::CompTheme,
+        appearance: AppearanceConfig,
+        output: &Output,
+    ) -> Self {
+        let header = Self::new_inner(window, handle, theme, appearance, Some(output.clone()));
+        let height = header.0.with_program(|p| p.ssd_render_height());
+        SpaceElement::output_enter(
+            &header.0,
+            output,
+            Rectangle::from_size((output.geometry().size.w, height).into()),
+        );
+        header.refresh_fullscreen_header(output);
+        header
+    }
+
+    fn new_inner(
+        window: CosmicSurface,
+        handle: LoopHandle<'static, State>,
+        theme: crate::comp_theme::CompTheme,
+        appearance: AppearanceConfig,
+        fullscreen_output: Option<Output>,
+    ) -> Self {
         let width = window.geometry().size.w;
         let last_title = window.title();
         let app_id = window.app_id();
@@ -771,9 +813,10 @@ impl CosmicWindow {
         let cosmic_window = CosmicWindow(IcedElement::new(
             CosmicWindowInternal {
                 window,
-                activated: AtomicBool::new(false),
+                activated: AtomicBool::new(fullscreen_output.is_some()),
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
+                fullscreen_output: fullscreen_output.map(Mutex::new),
                 last_title: Mutex::new(last_title),
                 cached_icon: Mutex::new((app_id.clone(), None)),
                 client_icon: Mutex::new((String::new(), None)),
@@ -887,7 +930,35 @@ impl CosmicWindow {
             false
         };
 
+        let fullscreen_pill = self
+            .0
+            .with_program(|p| p.fullscreen_output.is_some())
+            .then(|| self.0.backdrop_bounds())
+            .flatten();
         let result = self.0.with_program(|p| {
+            if let Some(output) = &p.fullscreen_output {
+                let output = output.lock().unwrap();
+                let enabled =
+                    p.uses_halo_header() && !is_surface_embedded(&p.window) && !has_constraint;
+                let pill = fullscreen_pill
+                    .map(|rect| rect + iced_core::Vector::new(0.0, p.header_origin().y as f32));
+                return (enabled
+                    && halo::fullscreen_hit(
+                        relative_pos,
+                        output.geometry().size.w as f64,
+                        output.current_scale().fractional_scale(),
+                        pill,
+                        p.pointer_over_window.load(Ordering::SeqCst)
+                            || p.menu_open.load(Ordering::SeqCst),
+                    )
+                    && surface_type.contains(WindowSurfaceType::TOPLEVEL))
+                .then(|| {
+                    (
+                        PointerFocusTarget::WindowUI(self.clone()),
+                        Point::from((0.0, 0.0)),
+                    )
+                });
+            }
             let mut offset = Point::from((0., 0.));
             let mut window_ui = None;
             let has_ssd = p.has_ssd(false);
@@ -973,6 +1044,70 @@ impl CosmicWindow {
         self.0.with_program(|p| {
             p.pointer_over_window.store(value, Ordering::SeqCst);
         });
+    }
+
+    pub(crate) fn refresh_fullscreen_header(&self, output: &Output) {
+        let old_output = self.0.with_program(|p| {
+            if let Some(previous) = &p.fullscreen_output {
+                let mut previous = previous.lock().unwrap();
+                if *previous != *output {
+                    // The Iced output notifications are issued below, outside the program lock.
+                    let old = previous.clone();
+                    *previous = output.clone();
+                    Some(old)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        });
+        let height = self.0.with_program(|p| p.ssd_render_height());
+        self.0.resize((output.geometry().size.w, height).into());
+        if let Some(old) = old_output {
+            SpaceElement::output_leave(&self.0, &old);
+            SpaceElement::output_enter(
+                &self.0,
+                output,
+                Rectangle::from_size((output.geometry().size.w, height).into()),
+            );
+        }
+        SpaceElement::refresh(self);
+    }
+
+    pub(crate) fn hide_fullscreen_header(&self) {
+        if self
+            .0
+            .with_program(|p| p.pointer_over_window.swap(false, Ordering::SeqCst))
+        {
+            self.0.force_update();
+        }
+    }
+
+    pub(crate) fn push_fullscreen_header<R>(
+        &self,
+        renderer: &mut R,
+        scale: Scale<f64>,
+        alpha: f32,
+        push: &mut dyn FnMut(CosmicWindowRenderElement<R>),
+    ) where
+        R: AsGlowRenderer,
+        R::TextureId: Send + Clone + 'static,
+    {
+        let origin = self
+            .0
+            .with_program(|p| p.uses_halo_header().then(|| p.header_origin()));
+        if let Some(origin) = origin {
+            self.0.push_render_elements(
+                renderer,
+                origin.to_physical_precise_round(scale),
+                scale,
+                alpha,
+                [0; 4],
+                &mut |element| push(element.into()),
+                None,
+            );
+        }
     }
 
     pub fn contains_surface(&self, window: &CosmicSurface) -> bool {
@@ -1329,9 +1464,14 @@ impl CosmicWindow {
         self.0.set_theme(theme);
         // Resize the IcedElement to the new SSD height so there's no gap
         // between header and window content after a theme change.
-        let geo = self.0.with_program(|p| p.window.geometry());
+        let width = self.0.with_program(|p| {
+            p.fullscreen_output.as_ref().map_or_else(
+                || p.window.geometry().size.w,
+                |output| output.lock().unwrap().geometry().size.w,
+            )
+        });
         self.0.resize(Size::from((
-            geo.size.w,
+            width,
             self.0.with_program(|p| p.ssd_render_height()),
         )));
     }
@@ -1430,7 +1570,7 @@ pub enum Message {
     NewWindow,
 }
 
-pub(super) fn halo_backdrop_blur(
+pub(crate) fn halo_backdrop_blur(
     layers: &[iced_tiny_skia::Layer],
     pill_height: f32,
     max_width: f32,
@@ -1539,15 +1679,16 @@ impl Program for CosmicWindowInternal {
             Message::Close => self.window.close(),
             Message::Menu => {
                 if self.uses_halo_header() {
-                    if let Some((seat, serial)) = last_seat.cloned()
-                        && let Some(start) =
-                            crate::shell::check_grab_preconditions(&seat, Some(serial), None)
-                    {
-                        let position = start.current_location(&seat).to_i32_round().as_global();
+                    if let Some((seat, serial)) = last_seat.cloned() {
+                        let query_input = halo::menu_input_query(seat.clone(), serial);
                         let surface = self.window.clone();
                         let action = self.new_window_action();
                         loop_handle.insert_idle(move |state| {
-                            halo::open_menu(state, &surface, &seat, serial, start, position, action)
+                            if let Some((start, position)) = query_input() {
+                                halo::open_menu(
+                                    state, &surface, &seat, serial, start, position, action,
+                                );
+                            }
                         });
                     }
                     return Task::none();
@@ -1618,9 +1759,12 @@ impl Program for CosmicWindowInternal {
         super::header_bar::uses_halo_header(theme).then(|| {
             super::header_bar::halo_visibility(
                 theme,
-                self.pointer_over_window.load(Ordering::SeqCst)
-                    || self.activated.load(Ordering::SeqCst)
-                    || self.menu_open.load(Ordering::SeqCst),
+                super::header_bar::halo_is_visible(
+                    self.fullscreen_output.is_some(),
+                    self.pointer_over_window.load(Ordering::SeqCst),
+                    self.activated.load(Ordering::SeqCst),
+                    self.menu_open.load(Ordering::SeqCst),
+                ),
             )
         })
     }
@@ -1695,7 +1839,10 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
             .on_screenshot(Message::Screenshot)
-            .on_fullscreen(Message::Fullscreen, win.window.is_fullscreen(false))
+            .on_fullscreen(
+                Message::Fullscreen,
+                win.fullscreen_output.is_some() || win.window.is_fullscreen(false),
+            )
             .menu_open(win.menu_open.load(Ordering::SeqCst))
             .focused(focused)
             .hovered(hovered)
@@ -1822,7 +1969,7 @@ impl SpaceElement for CosmicWindow {
     fn refresh(&self) {
         if self.0.with_program(|p| {
             SpaceElement::refresh(&p.window);
-            if !p.has_ssd(true) {
+            if !p.has_ssd(true) && p.fullscreen_output.is_none() {
                 return false;
             }
 
@@ -1921,6 +2068,10 @@ impl PointerTarget<State> for CosmicWindow {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
         let is_header = self.0.with_program(|p| {
+            if p.fullscreen_output.is_some() {
+                p.swap_focus(Some(Focus::Header));
+                return true;
+            }
             if is_surface_embedded(&p.window) {
                 return false;
             }
@@ -1955,8 +2106,7 @@ impl PointerTarget<State> for CosmicWindow {
         });
 
         self.0.with_program(|p| {
-            event.location -= p.window.geometry().loc.to_f64();
-            event.location.y += p.ssd_render_overhang() as f64;
+            event.location -= p.header_origin();
         });
         PointerTarget::enter(&self.0, seat, data, &event);
 
@@ -1973,6 +2123,10 @@ impl PointerTarget<State> for CosmicWindow {
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
         let is_header = self.0.with_program(|p| {
+            if p.fullscreen_output.is_some() {
+                p.swap_focus(Some(Focus::Header));
+                return true;
+            }
             if is_surface_embedded(&p.window) {
                 return false;
             }
@@ -2005,8 +2159,7 @@ impl PointerTarget<State> for CosmicWindow {
         });
 
         self.0.with_program(|p| {
-            event.location -= p.window.geometry().loc.to_f64();
-            event.location.y += p.ssd_render_overhang() as f64;
+            event.location -= p.header_origin();
         });
         PointerTarget::motion(&self.0, seat, data, &event);
 
@@ -2185,8 +2338,7 @@ impl TouchTarget<State> for CosmicWindow {
     fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent) {
         let mut event = event.clone();
         self.0.with_program(|p| {
-            event.location -= p.window.geometry().loc.to_f64();
-            event.location.y += p.ssd_render_overhang() as f64;
+            event.location -= p.header_origin();
         });
         TouchTarget::down(&self.0, seat, data, &event)
     }
@@ -2198,8 +2350,7 @@ impl TouchTarget<State> for CosmicWindow {
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent) {
         let mut event = event.clone();
         self.0.with_program(|p| {
-            event.location -= p.window.geometry().loc.to_f64();
-            event.location.y += p.ssd_render_overhang() as f64;
+            event.location -= p.header_origin();
         });
         TouchTarget::motion(&self.0, seat, data, &event)
     }

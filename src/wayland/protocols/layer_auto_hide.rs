@@ -113,7 +113,7 @@ impl LayerAutoHideState {
             + 'static,
     {
         let global =
-            dh.create_global::<D, layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _>(1, ());
+            dh.create_global::<D, layer_auto_hide_manager_v1::LayerAutoHideManagerV1, _>(2, ());
         LayerAutoHideState { global }
     }
 

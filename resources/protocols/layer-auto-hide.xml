@@ -32,7 +32,7 @@
     loop.
   </description>
 
-  <interface name="layer_auto_hide_manager_v1" version="1">
+  <interface name="layer_auto_hide_manager_v1" version="2">
     <description summary="auto-hide manager for layer surfaces">
       Manager for creating auto-hide objects for layer shell surfaces.
     </description>
@@ -61,7 +61,7 @@
     </enum>
   </interface>
 
-  <interface name="layer_auto_hide_v1" version="1">
+  <interface name="layer_auto_hide_v1" version="2">
     <description summary="auto-hide controller for a surface">
       Controls compositor-driven auto-hide for a layer shell surface.
 
@@ -98,6 +98,8 @@
         summary="always auto-hide when cursor leaves the surface"/>
       <entry name="on_maximize" value="1"
         summary="only auto-hide when a toplevel on the same output is maximized or fullscreen"/>
+      <entry name="on_fullscreen" value="2" since="2"
+        summary="only auto-hide when fullscreen content exists on the same output"/>
     </enum>
 
     <request name="set_auto_hide">
@@ -108,6 +110,8 @@
         - always: the surface hides whenever the cursor leaves it
         - on_maximize: the surface hides only when maximized/fullscreen
           windows are present on the same output
+        - on_fullscreen (version 2): hide only for fullscreen content, keeping
+          ordinary and maximized desktops unchanged
 
         The edge_zone parameter specifies how many pixels at the screen edge
         will trigger hover-to-show when the surface is hidden. This should
