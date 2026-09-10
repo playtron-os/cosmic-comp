@@ -9,7 +9,11 @@ use std::{
     fmt,
     hash::{Hash, Hasher},
     mem::ManuallyDrop,
-    sync::{Arc, Mutex, OnceLock, mpsc::Receiver},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc::Receiver,
+    },
     thread::ThreadId,
     time::Instant,
 };
@@ -84,26 +88,40 @@ use smithay::{
 // with `UserInterface` + `Cache` driven directly (iced 0.15, no libcosmic), so it is dropped.
 use crate::backend::render::{
     element::AsGlowRenderer,
-    wayland::blur_effect::{BlurElement, BlurState},
+    wayland::blur_effect::{BlurElement, BlurState, configured_blur_strength},
 };
 
 // --- Theme ---
 pub use crate::comp_theme::CompTheme;
-
-/// Blur strength for the frosted backdrop drawn behind iced-rendered chrome
-/// (SSD headers, stack tabs, indicators, menus).
-///
-/// MERGE: upstream reads this off `cosmic::Theme` — `transparent` gates the pass and
-/// `frosted` picks 1 vs 2. `CompTheme` has neither flag, so the fork gates on the
-/// `header_backdrop_blur()` design token and uses the strong pass, matching
-/// `shell::element::window::WINDOW_BLUR_STRENGTH`.
-const CHROME_BLUR_STRENGTH: usize = 2;
 
 /// Type alias for iced elements rendered in the compositor.
 /// Uses `iced_core::Theme` so standard iced widgets and icetron components
 /// can be used without custom Catalog impls.
 pub type CompElement<'a, Message> =
     Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>;
+
+#[derive(Default)]
+struct PendingRedraw(AtomicBool);
+
+fn request_redraw(output: &Output) {
+    output
+        .user_data()
+        .insert_if_missing_threadsafe(PendingRedraw::default);
+    output
+        .user_data()
+        .get::<PendingRedraw>()
+        .unwrap()
+        .0
+        .store(true, Ordering::Release);
+}
+
+/// Consume a frame requested by compositor Iced widgets on this output.
+pub(crate) fn take_redraw_request(output: &Output) -> bool {
+    output
+        .user_data()
+        .get::<PendingRedraw>()
+        .is_some_and(|pending| pending.0.swap(false, Ordering::AcqRel))
+}
 
 // --- Public API (unchanged interface) ---
 
@@ -264,6 +282,12 @@ pub trait Program {
         Color::TRANSPARENT
     }
 
+    /// Fade the complete UI buffer and its backdrop together when specified.
+    /// The view must keep its content at full visibility; this owns the fade.
+    fn visibility(&self, _theme: &CompTheme) -> Option<bool> {
+        None
+    }
+
     fn backdrop_blur(
         &self,
         theme: &CompTheme,
@@ -316,6 +340,7 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     event_queue: Vec<Event>,
     mouse_interaction: MouseInteraction,
     needs_redraw: bool,
+    visibility: Option<iced_core::Animation<bool>>,
 
     // the actual program
     program: P,
@@ -366,6 +391,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            visibility: self.visibility.clone(),
             program: self.program.clone(),
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -545,6 +571,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            visibility: None,
             program,
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -681,6 +708,25 @@ impl<P: Program + Send + 'static + Clone> IcedElement<P> {
 // --- Core update cycle (rewritten for iced 0.15) ---
 
 impl<P: Program + Send + 'static> IcedElementInternal<P> {
+    fn sync_visibility(&mut self, now: IcedInstant) {
+        self.visibility = self.program.visibility(&self.theme).map(|visible| {
+            self.visibility
+                .take()
+                .unwrap_or_else(|| iced_core::Animation::new(visible))
+                .duration(self.theme.motion.animation)
+                .easing(iced_core::animation::Easing::Linear)
+                .go(visible, now)
+        });
+    }
+
+    fn frame_alpha(&self, alpha: f32, now: IcedInstant) -> f32 {
+        alpha
+            * self
+                .visibility
+                .as_ref()
+                .map_or(1.0, |visibility| visibility.interpolate(0.0, 1.0, now))
+    }
+
     /// Schedule a Task returned by program.update() onto the calloop executor.
     fn schedule_task(&self, task: Task<P::Message>) {
         if let Some(stream) = into_stream(task) {
@@ -748,10 +794,12 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             return;
         }
 
-        // When force-updating with an empty event queue, inject a synthetic event
-        // so that widget update() methods are called (e.g. animated_container
-        // needs update() to detect target property changes from the new view).
-        if force && self.event_queue.is_empty() {
+        // Rebuilt widgets finalize paint state on RedrawRequested, including
+        // button status. Every draw must receive it after the queued input.
+        if !matches!(
+            self.event_queue.last(),
+            Some(Event::Window(WindowEvent::RedrawRequested(_)))
+        ) {
             self.event_queue
                 .push(Event::Window(WindowEvent::RedrawRequested(
                     IcedInstant::now(),
@@ -829,10 +877,51 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             let element = self.program.view(&self.theme);
             let cache = std::mem::take(&mut self.cache);
             let mut interface = UserInterface::build(element, bounds, cache, &mut self.renderer);
+            let mut redraw_messages = Vec::new();
+            let (state, _) = interface.update(
+                &[Event::Window(WindowEvent::RedrawRequested(
+                    IcedInstant::now(),
+                ))],
+                cursor,
+                &mut self.renderer,
+                &mut redraw_messages,
+            );
+            match state {
+                user_interface::State::Updated {
+                    redraw_request,
+                    mouse_interaction,
+                    ..
+                } => {
+                    self.needs_redraw |= redraw_request != window::RedrawRequest::Wait;
+                    self.mouse_interaction = mouse_interaction;
+                }
+                user_interface::State::Outdated { .. } => self.needs_redraw = true,
+            }
             interface.draw(&mut self.renderer, &self.iced_theme, &style, cursor);
             self.cache = interface.into_cache();
+            // Do not discard messages emitted by redraw-aware widgets. Apply
+            // them now and rebuild next frame, avoiding an unbounded rebuild loop.
+            self.needs_redraw |= !redraw_messages.is_empty();
+            for msg in redraw_messages {
+                let task =
+                    self.program
+                        .update(msg, &self.handle, self.last_seat.lock().unwrap().as_ref());
+                self.schedule_task(task);
+            }
         }
         let message_loop_duration = msg_start.elapsed();
+
+        let now = IcedInstant::now();
+        self.sync_visibility(now);
+        self.needs_redraw |= self
+            .visibility
+            .as_ref()
+            .is_some_and(|animation| animation.is_animating(now));
+        if self.needs_redraw {
+            for output in &self.outputs {
+                request_redraw(output);
+            }
+        }
 
         let total_duration = update_start.elapsed();
 
@@ -1416,6 +1505,10 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         {
             profiler.animation_burst_start(element_id);
         }
+        let alpha = internal_ref.frame_alpha(alpha, IcedInstant::now());
+        if alpha <= 0.0 {
+            return;
+        }
         if std::mem::replace(&mut internal_ref.pending_realloc, false) {
             for (scale, (buffer, old_primitives)) in internal_ref.buffers.iter_mut() {
                 let buffer_size = internal_ref
@@ -1574,7 +1667,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     .to_logical(scale)
                     .upscale(internal_ref.additional_scale);
 
-                match BlurElement::from_state(
+                match BlurElement::from_state_with_appearance(
                     renderer,
                     &mut internal_ref.blur,
                     Rectangle::new(
@@ -1583,8 +1676,9 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     ),
                     scale.x,
                     blur_radii,
-                    CHROME_BLUR_STRENGTH,
+                    configured_blur_strength(true),
                     alpha,
+                    [internal_ref.theme.backdrop_saturate_popover(), 0.0, 0.0],
                 ) {
                     Ok(Some(elem)) => {
                         if let Some(push_below) = push_below {
@@ -1606,3 +1700,6 @@ render_elements! {
     UI=MemoryRenderBufferRenderElement<R>,
     Blur=BlurElement,
 }
+
+#[cfg(test)]
+mod tests;

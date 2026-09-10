@@ -79,6 +79,32 @@ pub const RESIZE_BORDER: i32 = 10;
 /// `BlurElement::from_surface` returns `None` for them.
 pub const WINDOW_BLUR_STRENGTH: usize = 2;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowRenderStep {
+    Header,
+    Border,
+    Client,
+}
+
+const HALO_RENDER_STEPS: [WindowRenderStep; 3] = [
+    WindowRenderStep::Header,
+    WindowRenderStep::Border,
+    WindowRenderStep::Client,
+];
+const STANDARD_RENDER_STEPS: [WindowRenderStep; 3] = [
+    WindowRenderStep::Border,
+    WindowRenderStep::Client,
+    WindowRenderStep::Header,
+];
+
+fn window_render_steps(halo_header: bool) -> &'static [WindowRenderStep] {
+    if halo_header {
+        &HALO_RENDER_STEPS
+    } else {
+        &STANDARD_RENDER_STEPS
+    }
+}
+
 /// Tracks which CosmicWindow currently has pointer_over_window=true.
 /// Updated by focus_under() on each pointer motion event.
 /// This provides geometry-based hover detection that cannot be fooled by fast pointer movement.
@@ -177,11 +203,19 @@ impl Focus {
         surface: &CosmicSurface,
         header_height: i32,
         header_input_height: i32,
+        header_offset: i32,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
         let geo = surface.geometry();
         let loc = location.to_i32_floor::<i32>() - geo.loc;
-        if loc.y < 0 && loc.x < 0 {
+        if header_offset < 0
+            && loc.x >= 0
+            && loc.x < geo.size.w
+            && loc.y >= header_offset
+            && loc.y < header_offset + header_input_height
+        {
+            Some(Focus::Header)
+        } else if loc.y < 0 && loc.x < 0 {
             Some(Focus::ResizeTopLeft)
         } else if loc.y < 0 && loc.x >= geo.size.w {
             Some(Focus::ResizeTopRight)
@@ -567,6 +601,14 @@ impl CosmicWindowInternal {
         super::header_bar::ssd_header_input_height(&self.theme.lock().unwrap()) as i32
     }
 
+    fn ssd_overhang(&self) -> i32 {
+        super::header_bar::ssd_header_overhang(&self.theme.lock().unwrap()) as i32
+    }
+
+    fn ssd_render_overhang(&self) -> i32 {
+        super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32
+    }
+
     fn uses_halo_header(&self) -> bool {
         super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
     }
@@ -873,7 +915,14 @@ impl CosmicWindow {
                     ));
                 }
 
-                if has_ssd && (point_i32.y - geo.loc.y < p.ssd_input_height()) {
+                let header_y = point_i32.y - geo.loc.y;
+                let in_header = if p.uses_halo_header() {
+                    let top = -p.ssd_overhang();
+                    header_y >= top && header_y < top + p.ssd_input_height()
+                } else {
+                    header_y < p.ssd_input_height()
+                };
+                if has_ssd && in_header {
                     window_ui = Some((
                         PointerFocusTarget::WindowUI(self.clone()),
                         Point::from((0., 0.)),
@@ -1058,11 +1107,9 @@ impl CosmicWindow {
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
-                if p.uses_halo_header() {
-                    geo.loc.y += p.ssd_height() as f64;
-                } else {
-                    geo.size.h += p.ssd_height() as f64;
-                }
+                // Conventional bars are part of the outer window bounds;
+                // Halo reserves no height, so this is a no-op for it.
+                geo.size.h += p.ssd_height() as f64;
             }
             geo = geo.upscale(scale);
             geo.loc += location.to_f64().to_logical(output_scale);
@@ -1173,6 +1220,27 @@ impl CosmicWindow {
             geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
         }
 
+        let render_steps = window_render_steps(halo_header);
+        if !is_embedded && render_steps.first() == Some(&WindowRenderStep::Header) {
+            let ssd_loc = location
+                + self.0.with_program(|p| {
+                    p.window.geometry().loc.to_physical_precise_round(scale)
+                        - Point::from((
+                            0,
+                            (p.ssd_render_overhang() as f64 * scale.y).round() as i32,
+                        ))
+                });
+            self.0.push_render_elements(
+                renderer,
+                ssd_loc,
+                scale,
+                alpha,
+                [0; 4],
+                &mut |elem| push_above(elem.into()),
+                None,
+            );
+        }
+
         // Also `squares_every_corner` rather than `is_maximized`: a window held
         // clear of the screen edges has corners to draw a border around, and the
         // border element is what carries `radii` — without it a rounded
@@ -1206,22 +1274,6 @@ impl CosmicWindow {
             push_above(elem);
         }
 
-        if has_ssd && !is_embedded && halo_header {
-            let ssd_loc = location
-                + self
-                    .0
-                    .with_program(|p| p.window.geometry().loc.to_physical_precise_round(scale));
-            self.0.push_render_elements(
-                renderer,
-                ssd_loc,
-                scale,
-                alpha,
-                [0; 4],
-                &mut |elem| push_above(elem.into()),
-                None,
-            );
-        }
-
         // MERGE: clipping/rounding of the toplevel surface now happens inside
         // `CosmicSurface::push_render_elements` (upstream folded ClippedSurfaceRenderElement into
         // SurfaceRenderElement), so the fork only forwards `clip` + `radii`.
@@ -1247,7 +1299,7 @@ impl CosmicWindow {
             );
         });
 
-        if has_ssd && !is_embedded && !halo_header {
+        if has_ssd && !is_embedded && render_steps.last() == Some(&WindowRenderStep::Header) {
             // Conventional SSD bars keep their original position behind the
             // client elements; only Halo deliberately overlaps the client.
             let mut header_radii = radii;
@@ -1374,7 +1426,7 @@ pub enum Message {
     Menu,
 }
 
-fn halo_backdrop_blur(
+pub(super) fn halo_backdrop_blur(
     layers: &[iced_tiny_skia::Layer],
     pill_height: f32,
     max_width: f32,
@@ -1533,6 +1585,12 @@ impl Program for CosmicWindowInternal {
         Color::TRANSPARENT
     }
 
+    fn visibility(&self, theme: &crate::comp_theme::CompTheme) -> Option<bool> {
+        super::header_bar::uses_halo_header(theme).then(|| {
+            self.pointer_over_window.load(Ordering::SeqCst) || self.activated.load(Ordering::SeqCst)
+        })
+    }
+
     fn backdrop_blur(
         &self,
         theme: &crate::comp_theme::CompTheme,
@@ -1552,12 +1610,8 @@ impl Program for CosmicWindowInternal {
             });
         }
 
-        let visible = self.pointer_over_window.load(Ordering::SeqCst)
-            || self.activated.load(Ordering::SeqCst);
-        if !visible {
-            return None;
-        }
-
+        // Keep the backdrop throughout fade-out; IcedElement applies the
+        // same animated alpha to it and the complete header buffer.
         halo_backdrop_blur(layers, theme.halo_style().pill_height(), size.w as f32)
     }
 
@@ -1665,7 +1719,13 @@ impl SpaceElement for CosmicWindow {
                 bbox.loc -= Point::from((RESIZE_BORDER, RESIZE_BORDER));
                 bbox.size += Size::from((RESIZE_BORDER * 2, RESIZE_BORDER * 2));
             }
-            if has_ssd {
+            if has_ssd && p.uses_halo_header() {
+                let halo_top = p.window.geometry().loc.y - p.ssd_render_overhang();
+                if halo_top < bbox.loc.y {
+                    bbox.size.h += bbox.loc.y - halo_top;
+                    bbox.loc.y = halo_top;
+                }
+            } else if has_ssd {
                 bbox.size.h += p.ssd_height();
             }
 
@@ -1823,6 +1883,7 @@ impl PointerTarget<State> for CosmicWindow {
                     &p.window,
                     if has_ssd { p.ssd_height() } else { 0 },
                     if has_ssd { p.ssd_input_height() } else { 0 },
+                    if has_ssd { -p.ssd_overhang() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -1844,7 +1905,10 @@ impl PointerTarget<State> for CosmicWindow {
             false
         });
 
-        event.location -= self.0.with_program(|p| p.window.geometry().loc.to_f64());
+        self.0.with_program(|p| {
+            event.location -= p.window.geometry().loc.to_f64();
+            event.location.y += p.ssd_render_overhang() as f64;
+        });
         PointerTarget::enter(&self.0, seat, data, &event);
 
         // After iced processes the event, read the mouse_interaction from the
@@ -1871,6 +1935,7 @@ impl PointerTarget<State> for CosmicWindow {
                     &p.window,
                     if has_ssd { p.ssd_height() } else { 0 },
                     if has_ssd { p.ssd_input_height() } else { 0 },
+                    if has_ssd { -p.ssd_overhang() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -1890,7 +1955,10 @@ impl PointerTarget<State> for CosmicWindow {
             false
         });
 
-        event.location -= self.0.with_program(|p| p.window.geometry().loc.to_f64());
+        self.0.with_program(|p| {
+            event.location -= p.window.geometry().loc.to_f64();
+            event.location.y += p.ssd_render_overhang() as f64;
+        });
         PointerTarget::motion(&self.0, seat, data, &event);
 
         // After iced processes the event, read the mouse_interaction from the
@@ -2069,6 +2137,7 @@ impl TouchTarget<State> for CosmicWindow {
         let mut event = event.clone();
         self.0.with_program(|p| {
             event.location -= p.window.geometry().loc.to_f64();
+            event.location.y += p.ssd_render_overhang() as f64;
         });
         TouchTarget::down(&self.0, seat, data, &event)
     }
@@ -2079,7 +2148,10 @@ impl TouchTarget<State> for CosmicWindow {
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent) {
         let mut event = event.clone();
-        event.location -= self.0.with_program(|p| p.window.geometry().loc.to_f64());
+        self.0.with_program(|p| {
+            event.location -= p.window.geometry().loc.to_f64();
+            event.location.y += p.ssd_render_overhang() as f64;
+        });
         TouchTarget::motion(&self.0, seat, data, &event)
     }
 
@@ -2376,6 +2448,26 @@ mod tests {
         assert_eq!(bounds.x, 80.0);
         assert_eq!(bounds.width, 240.0);
         assert_eq!(radii, [16; 4]);
+    }
+
+    #[test]
+    fn halo_blurs_the_window_border_before_drawing_its_ui() {
+        assert_eq!(
+            window_render_steps(true),
+            [
+                WindowRenderStep::Header,
+                WindowRenderStep::Border,
+                WindowRenderStep::Client,
+            ]
+        );
+        assert_eq!(
+            window_render_steps(false),
+            [
+                WindowRenderStep::Border,
+                WindowRenderStep::Client,
+                WindowRenderStep::Header,
+            ]
+        );
     }
 
     #[test]

@@ -339,6 +339,12 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                 active = true;
                 state.backend.schedule_render(&output);
             }
+            for output in shell.outputs() {
+                if utils::iced::take_redraw_request(output) {
+                    active = true;
+                    state.backend.schedule_render(output);
+                }
+            }
             active
         };
 

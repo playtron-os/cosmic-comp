@@ -512,6 +512,30 @@ impl BlurElement {
         strength: usize,
         alpha: f32,
     ) -> Result<Option<Self>, R::Error> {
+        Self::from_state_with_appearance(
+            renderer,
+            state,
+            geometry,
+            output_scale,
+            radii,
+            strength,
+            alpha,
+            [DEFAULT_SATURATION, DEFAULT_TINT, DEFAULT_BORDER],
+        )
+    }
+
+    /// Creates compositor-owned blur with an explicit saturation, tint, and border.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_state_with_appearance<R: ImportAll + AsGlowRenderer>(
+        renderer: &mut R,
+        state: &mut BlurState,
+        geometry: Rectangle<f64, Logical>,
+        output_scale: f64,
+        radii: [u8; 4],
+        strength: usize,
+        alpha: f32,
+        appearance: [f32; 3],
+    ) -> Result<Option<Self>, R::Error> {
         // Config applies to compositor-drawn chrome too. `from_surface` checks
         // this, but this constructor takes no protocol state and so used to blur
         // regardless -- leaving the iced surfaces frosted with blur turned off.
@@ -536,7 +560,11 @@ impl BlurElement {
             },
             strength,
             alpha,
-            BlurAppearance::default(),
+            BlurAppearance {
+                saturation: appearance[0],
+                tint: appearance[1],
+                border: appearance[2],
+            },
         )
     }
 

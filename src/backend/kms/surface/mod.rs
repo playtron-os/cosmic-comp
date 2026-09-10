@@ -1163,7 +1163,8 @@ impl SurfaceThreadState {
             QueueState::WaitingForEstimatedVBlankAndQueued { .. } => unreachable!(),
         };
 
-        if redraw_needed
+        if crate::utils::iced::take_redraw_request(&self.output)
+            || redraw_needed
             || crate::perf::is_stressing()
             || self.shell.read().animations_going()
             || self.adopt.is_some()
@@ -1194,7 +1195,8 @@ impl SurfaceThreadState {
 
         self.frame_callback_seq = self.frame_callback_seq.wrapping_add(1);
 
-        if force
+        if crate::utils::iced::take_redraw_request(&self.output)
+            || force
             || crate::perf::is_stressing()
             || self.shell.read().animations_going()
             || self.adopt.is_some()

@@ -16,17 +16,54 @@ use crate::comp_theme::CompTheme;
 
 /// Space reserved above the client surface in logical pixels.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
-    header_height_for(&**theme, theme.window_header_style()) as u32
+    let style = theme.window_header_style();
+    if style == WindowHeaderStyle::Halo {
+        0
+    } else {
+        header_height_for(&**theme, style) as u32
+    }
 }
 
 /// Height of the compositor chrome render layer.
 pub fn ssd_header_render_height(theme: &CompTheme) -> u32 {
-    header_render_height_for(&**theme, theme.window_header_style()) as u32
+    let padding = halo_shadow_padding(theme);
+    ssd_header_input_height(theme) + padding.top as u32 + padding.bottom as u32
 }
 
 /// Height routed to compositor chrome and its drag region.
 pub fn ssd_header_input_height(theme: &CompTheme) -> u32 {
-    ssd_header_render_height(theme)
+    header_render_height_for(&**theme, theme.window_header_style()) as u32
+}
+
+/// Render-only space for the pill shadow; it does not enlarge the drag region.
+fn halo_shadow_padding(theme: &CompTheme) -> iced_core::Padding {
+    let mut padding = iced_core::Padding::ZERO;
+    if uses_halo_header(theme) {
+        for shadow in theme
+            .shadow_popover()
+            .iter()
+            .filter(|s| !s.inset && s.color.a > 0.0)
+        {
+            let reach = shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
+            padding.top = padding.top.max((reach - shadow.offset.y).ceil());
+            padding.bottom = padding.bottom.max((reach + shadow.offset.y).ceil());
+        }
+    }
+    padding
+}
+
+/// Offset of the raster buffer, including shadow padding, above the client.
+pub fn ssd_header_render_overhang(theme: &CompTheme) -> u32 {
+    ssd_header_overhang(theme) + halo_shadow_padding(theme).top as u32
+}
+
+/// Distance Halo chrome renders above the client surface.
+pub fn ssd_header_overhang(theme: &CompTheme) -> u32 {
+    if uses_halo_header(theme) {
+        theme.halo_style().overhang as u32
+    } else {
+        0
+    }
 }
 
 /// Whether compositor decorations use chromeless Halo geometry.
@@ -169,7 +206,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .window_header_style(window_header_style)
             .title(Some(&self.title))
             .focused(self.focused)
-            .hovered(self.hovered || self.focused)
+            // Halo visibility is composited with its blur by IcedElement.
+            .hovered(uses_halo_header(theme) || self.hovered || self.focused)
             .is_windowed(!self.maximized)
             .backdrop_blur(uses_halo_header(theme))
             .opaque(true)
@@ -323,7 +361,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if uses_halo_header(theme) {
             return container(header_elem)
                 .width(Length::Fill)
-                .height(Length::Fixed(header_render_height))
+                .height(Length::Fixed(ssd_header_render_height(theme) as f32))
+                .padding(halo_shadow_padding(theme))
                 .into();
         }
         container(header_elem)
@@ -357,4 +396,30 @@ impl<'a, Message: Clone + 'static> From<HeaderBar<'a, Message>>
 /// Create a new header bar builder.
 pub fn header_bar<'a, Message: Clone + 'static>() -> HeaderBar<'a, Message> {
     HeaderBar::new()
+}
+
+#[cfg(test)]
+mod snapshot_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
+    use std::sync::Arc;
+
+    #[test]
+    fn halo_overhang_does_not_reserve_client_layout_space() {
+        let mut theme = DEFAULT_THEME_PAIR.load(false);
+        theme.window_header_style = WindowHeaderStyle::Halo;
+        let theme = CompTheme::new(Arc::new(theme), false);
+
+        assert_eq!(ssd_header_height(&theme), 0);
+        assert_eq!(ssd_header_overhang(&theme), 18);
+        let padding = halo_shadow_padding(&theme);
+        assert_eq!(
+            ssd_header_render_height(&theme),
+            34 + padding.top as u32 + padding.bottom as u32
+        );
+        assert_eq!(ssd_header_input_height(&theme), 34);
+    }
 }
