@@ -466,8 +466,8 @@ fn render_input_order_internal<R: 'static>(
             })?;
         }
 
-        // current workspace popups
-        let Some(workspace) = shell.workspaces().space_for_handle(&current.0) else {
+        // current workspace popups — in whichever realm holds it, as above
+        let Some(workspace) = shell.space_for_handle_any_realm(&current.0) else {
             return ControlFlow::Break(Err(OutputNoMode));
         };
 
