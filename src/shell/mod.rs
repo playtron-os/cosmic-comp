@@ -1403,6 +1403,20 @@ pub struct Workspaces {
     appearance: AppearanceConfig,
     // Persisted workspace to add on first `output_add`
     persisted_workspaces: Vec<PinnedWorkspace>,
+    /// Whether desktops come and go on their own — a spare kept at the end,
+    /// empties pruned — or only through the user.
+    dynamic: bool,
+}
+
+/// Whether desktops come and go on their own. `COSMIC_STATIC_WORKSPACES=1` in
+/// the compositor's environment leaves them to the user: no spare at the end,
+/// no pruning, a new one on every request.
+pub fn dynamic_desktops() -> bool {
+    !static_workspaces_requested(std::env::var("COSMIC_STATIC_WORKSPACES").ok().as_deref())
+}
+
+fn static_workspaces_requested(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("1" | "true" | "yes" | "on"))
 }
 
 impl Workspaces {
@@ -1418,6 +1432,7 @@ impl Workspaces {
             theme,
             appearance: config.cosmic_conf.appearance_settings,
             persisted_workspaces: config.cosmic_conf.pinned_workspaces.clone(),
+            dynamic: dynamic_desktops(),
         }
     }
 
@@ -1440,6 +1455,7 @@ impl Workspaces {
             theme: self.theme.clone(),
             appearance: self.appearance,
             persisted_workspaces: Vec::new(),
+            dynamic: self.dynamic,
         }
     }
 
@@ -1882,58 +1898,63 @@ impl Workspaces {
                     }
                 }
 
-                // add empty at the end, if necessary
-                if self
-                    .sets
-                    .values()
-                    .flat_map(|set| set.workspaces.last())
-                    .any(|w| !w.is_empty() || w.pinned)
-                {
-                    for set in self.sets.values_mut() {
-                        set.add_empty_workspace(workspace_state);
-                    }
-                }
-
-                // remove empty workspaces in between, if they are not active
-                let len = self.sets[0].workspaces.len();
-                let mut active = self.sets[0].active;
-                let mut keep = vec![true; len];
-                // false-positive: we iterate over multiple sets
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..len {
-                    let has_windows = self
+                // With explicit desktops nothing is added or taken away
+                // behind the user's back: no spare, no pruning.
+                if self.dynamic {
+                    // add empty at the end, if necessary
+                    if self
                         .sets
                         .values()
-                        .any(|s| !s.workspaces[i].can_auto_remove(xdg_activation_state));
-
-                    if !has_windows && i != active && i != len - 1 {
-                        for workspace in self.sets.values().map(|s| &s.workspaces[i]) {
-                            workspace_state.remove_workspace(workspace.handle);
+                        .flat_map(|set| set.workspaces.last())
+                        .any(|w| !w.is_empty() || w.pinned)
+                    {
+                        for set in self.sets.values_mut() {
+                            set.add_empty_workspace(workspace_state);
                         }
-                        keep[i] = false;
                     }
-                }
 
-                self.sets.values_mut().for_each(|s| {
-                    let mut iter = keep.iter();
-                    s.workspaces.retain(|_| *iter.next().unwrap());
-                });
-                active -= keep.iter().take(active + 1).filter(|keep| !**keep).count();
-                self.sets.values_mut().for_each(|s| {
-                    s.active = active;
-                });
+                    // remove empty workspaces in between, if they are not active
+                    let len = self.sets[0].workspaces.len();
+                    let mut active = self.sets[0].active;
+                    let mut keep = vec![true; len];
+                    // false-positive: we iterate over multiple sets
+                    #[allow(clippy::needless_range_loop)]
+                    for i in 0..len {
+                        let has_windows = self
+                            .sets
+                            .values()
+                            .any(|s| !s.workspaces[i].can_auto_remove(xdg_activation_state));
 
-                if keep.iter().any(|val| !(*val)) {
-                    for set in self.sets.values_mut() {
-                        set.update_workspace_idxs(workspace_state);
+                        if !has_windows && i != active && i != len - 1 {
+                            for workspace in self.sets.values().map(|s| &s.workspaces[i]) {
+                                workspace_state.remove_workspace(workspace.handle);
+                            }
+                            keep[i] = false;
+                        }
+                    }
+
+                    self.sets.values_mut().for_each(|s| {
+                        let mut iter = keep.iter();
+                        s.workspaces.retain(|_| *iter.next().unwrap());
+                    });
+                    active -= keep.iter().take(active + 1).filter(|keep| !**keep).count();
+                    self.sets.values_mut().for_each(|s| {
+                        s.active = active;
+                    });
+
+                    if keep.iter().any(|val| !(*val)) {
+                        for set in self.sets.values_mut() {
+                            set.update_workspace_idxs(workspace_state);
+                        }
                     }
                 }
             }
-            WorkspaceMode::OutputBound => {
+            WorkspaceMode::OutputBound if self.dynamic => {
                 for set in self.sets.values_mut() {
                     set.ensure_last_empty(workspace_state, xdg_activation_state);
                 }
             }
+            WorkspaceMode::OutputBound => {}
         }
 
         for set in self.sets.values_mut() {
@@ -2042,6 +2063,9 @@ impl Workspaces {
             for w in &mut s.workspaces {
                 w.tiling_layer.theme = theme.clone();
                 w.floating_layer.theme = theme.clone();
+                for fullscreen in &w.fullscreen_surfaces {
+                    fullscreen.halo.set_theme(theme.clone());
+                }
 
                 w.mapped()
                     .chain(w.minimized_windows.iter().flat_map(|m| m.mapped()))
@@ -2496,19 +2520,21 @@ impl Shell {
             .find_map(|realm| realm.space_for_handle_mut(handle))
     }
 
-    /// A fresh desktop in `group`: the trailing empty one the active realm
-    /// keeps, added first if the last is in use. Where it is, so it can be shown.
+    /// A fresh desktop in `group`, where it is so it can be shown: with
+    /// dynamic desktops the trailing empty one the realm keeps (added first if
+    /// the last is in use), with explicit desktops a new one every time.
     pub fn fresh_desktop_in_group(
         &mut self,
         group: &WorkspaceGroupHandle,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> Option<(Output, usize)> {
+        let dynamic = self.workspaces().dynamic;
         let (output, set) = self
             .workspaces_mut()
             .sets
             .iter_mut()
             .find(|(_, set)| set.group == *group)?;
-        if set.workspaces.last().is_none_or(|last| !last.is_empty()) {
+        if !dynamic || set.workspaces.last().is_none_or(|last| !last.is_empty()) {
             set.add_empty_workspace(workspace_state);
         }
         Some((output.clone(), set.workspaces.len() - 1))
@@ -7004,7 +7030,7 @@ impl Shell {
         let floating_exception = layout::has_floating_exception(&self.tiling_exceptions, &window);
 
         if should_be_fullscreen {
-            workspace.map_fullscreen(&window, &seat, None, None);
+            workspace.map_fullscreen(&window, &seat, None, None, loop_handle);
             if was_activated {
                 workspace_state.add_workspace_state(&workspace_handle, WState::Urgent);
             }
@@ -7985,6 +8011,7 @@ impl Shell {
                     None,
                     previous.clone().map(|p| p.previous_state),
                     previous.map(|p| p.previous_geometry),
+                    evlh,
                 );
                 window.clone().into()
             } else {
@@ -9040,7 +9067,7 @@ impl Shell {
                 window.mapped().unwrap().set_active(surface);
             }
             let from = minimize_rectangle(workspace.output(), &window.active_window());
-            if let Some((surface, restore, _)) = workspace.unminimize(window, from, seat) {
+            if let Some((surface, restore, _)) = workspace.unminimize(window, from, seat, loop_handle) {
                 toplevel_leave_output(&surface, &workspace.output);
                 toplevel_leave_workspace(&surface, &workspace.handle);
                 self.remap_unfullscreened_window(surface, restore, loop_handle);
@@ -9546,7 +9573,7 @@ impl Shell {
         &mut self,
         surface: &S,
         output: Output,
-        _loop_handle: &LoopHandle<'static, State>,
+        loop_handle: &LoopHandle<'static, State>,
     ) -> Option<KeyboardFocusTarget>
     where
         CosmicSurface: PartialEq<S>,
@@ -9628,6 +9655,7 @@ impl Shell {
                     was_stack,
                 })),
                 Some(from),
+                loop_handle,
             );
         } else {
             let workspace = self.space_for_mut(&mapped)?;
@@ -9677,6 +9705,7 @@ impl Shell {
                     WorkspaceRestoreData::Fullscreen(_) => unreachable!(),
                 },
                 Some(from),
+                loop_handle,
             );
         };
 
@@ -10030,5 +10059,20 @@ mod realm_transition_tests {
         assert_eq!(seed, realm_transition_seed("one", "two"));
         assert_ne!(seed, realm_transition_seed("two", "one"));
         assert!((0.0..=1.0).contains(&seed));
+    }
+}
+
+#[cfg(test)]
+mod desktop_policy_tests {
+    use super::static_workspaces_requested;
+
+    #[test]
+    fn only_a_clear_yes_turns_dynamic_desktops_off() {
+        for on in ["1", "true", "yes", "on", " 1 "] {
+            assert!(static_workspaces_requested(Some(on)), "{on:?}");
+        }
+        for off in [None, Some(""), Some("0"), Some("false"), Some("maybe")] {
+            assert!(!static_workspaces_requested(off), "{off:?}");
+        }
     }
 }

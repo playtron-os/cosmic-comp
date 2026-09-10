@@ -68,5 +68,11 @@ in
       cp -r usr/. $out/
       runHook postInstall
     '';
+
+    # What the compositor starts with, from `go-task deploy:nix COMP_ENV=...`,
+    # baked into the wrapper the app hook makes around it.
+    preFixup = ''
+      libcosmicAppWrapperArgs+=(@WRAP_ARGS@)
+    '';
   };
 }

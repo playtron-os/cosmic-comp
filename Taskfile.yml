@@ -359,6 +359,11 @@ tasks:
       PROFILE: '{{.PROFILE | default "release"}}'
       # cosmic-comp is the session; restarting it ends the one on the device.
       RESTART: '{{.RESTART | default "false"}}'
+      # Environment the compositor starts with, NAME=value pairs separated by
+      # spaces, baked into its wrapper: COMP_ENV='COSMIC_STATIC_WORKSPACES=1'.
+      COMP_ENV: '{{.COMP_ENV | default ""}}'
+      WRAP_ARGS:
+        sh: set -- {{.COMP_ENV}}; for kv; do printf '%s %s %s ' --set "${kv%%=*}" "${kv#*=}"; done
     preconditions:
       - sh: which rsync
         msg: "Prerequisite utility 'rsync' is not installed"
@@ -394,6 +399,7 @@ tasks:
           PROFILE: '{{.PROFILE}}'
           RPM_TARGET: '{{if eq .PROFILE "debug"}}dist:rpm:debug{{else}}dist:rpm{{end}}'
           SHELL_ATTR: '.#deploy'
+          WRAP_ARGS: '{{.WRAP_ARGS}}'
       # By regex: the element is named after the derivation, not the attribute,
       # and there is no replace - the previous deploy goes first.
       - |
@@ -427,6 +433,7 @@ tasks:
       RPM_TARGET: '{{.RPM_TARGET | default "dist:rpm"}}'
       PROFILE: '{{.PROFILE | default "release"}}'
       SHELL_ATTR: '{{.SHELL_ATTR | default ""}}'
+      WRAP_ARGS: '{{.WRAP_ARGS | default ""}}'
       # Home-relative, and its own directory: --delete into a tree you also work
       # in would discard uncommitted work. target/ survives between deploys.
       SRC_DIR: '{{.SRC_DIR | default (printf ".cache/kora-deploy/%s" .NAME)}}'
@@ -454,6 +461,7 @@ tasks:
         sed -e "s|@KORA_DIR@|$(cd {{.KORA_DIR}} && pwd)|g" \
             -e "s|@SRC@|{{.REMOTE_DIR}}/$(basename "$rpm")|g" \
             -e "s|@NAME@|{{.NAME}}|g" \
+            -e "s|@WRAP_ARGS@|{{.WRAP_ARGS}}|g" \
             pkg/nix/dev-package.nix.in > {{.REMOTE_DIR}}/dev.nix
         REMOTE
           ;;
@@ -487,6 +495,7 @@ tasks:
           sed -e "s|@KORA_DIR@|$kora|g" \
               -e "s|@SRC@|{{.REMOTE_DIR}}/$(basename "$rpm")|g" \
               -e "s|@NAME@|{{.NAME}}|g" \
+              -e "s|@WRAP_ARGS@|{{.WRAP_ARGS}}|g" \
               pkg/nix/dev-package.nix.in > {{.STAGE}}/dev.nix
           ssh {{.HOST}} 'mkdir -p {{.REMOTE_DIR}}'
           # --delete so an older deploy's RPM does not sit there being confusing;
