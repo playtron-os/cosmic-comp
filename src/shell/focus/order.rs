@@ -776,6 +776,13 @@ fn layer_surfaces<'a>(
         {
             return None;
         }
+        // A desktop's own picture: nothing from the layers the shell lives on.
+        if element_filter == ElementFilter::ExcludeShell
+            && (matches!(layer, Layer::Top | Layer::Overlay)
+                || s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE)
+        {
+            return None;
+        }
 
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id();
