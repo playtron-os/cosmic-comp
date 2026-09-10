@@ -6,10 +6,10 @@
     (modifiers: [Super], key: "q"): Close,
     (modifiers: [Alt], key: "F4"): Close,
 
-    (modifiers: [Super], key: "Left"): Focus(Left),
-    (modifiers: [Super], key: "Right"): Focus(Right),
-    (modifiers: [Super], key: "Up"): Focus(Up),
-    (modifiers: [Super], key: "Down"): Focus(Down),
+    (modifiers: [Super, Ctrl], key: "Left"): Focus(Left),
+    (modifiers: [Super, Ctrl], key: "Right"): Focus(Right),
+    (modifiers: [Super, Ctrl], key: "Up"): Focus(Up),
+    (modifiers: [Super, Ctrl], key: "Down"): Focus(Down),
     (modifiers: [Super], key: "h"): Focus(Left),
     (modifiers: [Super], key: "j"): Focus(Down),
     (modifiers: [Super], key: "k"): Focus(Up),
@@ -45,15 +45,15 @@
     (modifiers: [Super, Shift], key: "9"): MoveToWorkspace(9),
     (modifiers: [Super, Shift], key: "0"): MoveToLastWorkspace,
 
-    // Two axes, one modifier: Left/Right move between desktops, Up/Down between
-    // workspaces. Up/Down used to duplicate Left/Right, so nothing is lost.
+    // Two axes, one modifier: Super+Left/Right move between desktops, Super+Up/Down
+    // between workspaces; the tiling focus moves live under Super+Ctrl instead.
     // The realm bindings do nothing unless a workspace registry is running.
-    (modifiers: [Super, Ctrl], key: "Left"): PreviousWorkspace,
-    (modifiers: [Super, Ctrl], key: "Right"): NextWorkspace,
+    (modifiers: [Super], key: "Left"): PreviousWorkspace,
+    (modifiers: [Super], key: "Right"): NextWorkspace,
     (modifiers: [Super, Ctrl], key: "h"): PreviousWorkspace,
     (modifiers: [Super, Ctrl], key: "l"): NextWorkspace,
-    (modifiers: [Super, Ctrl], key: "Up"): PreviousRealm,
-    (modifiers: [Super, Ctrl], key: "Down"): NextRealm,
+    (modifiers: [Super], key: "Up"): PreviousRealm,
+    (modifiers: [Super], key: "Down"): NextRealm,
     (modifiers: [Super, Ctrl], key: "k"): PreviousRealm,
     (modifiers: [Super, Ctrl], key: "j"): NextRealm,
     // Super+Tab duplicated Alt+Tab exactly, so it costs nothing to give it the

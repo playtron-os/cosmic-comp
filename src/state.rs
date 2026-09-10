@@ -1034,10 +1034,18 @@ impl State {
                 shell.set_workspace_registry_present(false);
                 shell.set_active_workspace(None);
             }
-            Registry::Present(active) => {
+            Registry::Present { active, running } => {
                 shell.set_workspace_registry_present(true);
                 let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
+                // Every running workspace gets its realm now, not on first
+                // visit: a switcher can only show a desktop that exists.
+                {
+                    let mut guard = self.common.workspace_state.update();
+                    for id in &running {
+                        shell.ensure_realm(id, &mut guard);
+                    }
+                }
                 if let Some(active) = active {
                     let mut guard = self.common.workspace_state.update();
                     let animation = self.common.config.cosmic_conf.workspace_transition;

@@ -85,6 +85,30 @@ mod tests {
         }
     }
 
+    /// Super and an arrow moves between desktops and workspaces; the tiling
+    /// focus lives under Super+Ctrl.
+    #[test]
+    fn super_arrows_move_between_desktops_and_workspaces() {
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (combo, want) in [
+            ("Super+Left", shortcuts::Action::PreviousWorkspace),
+            ("Super+Right", shortcuts::Action::NextWorkspace),
+            ("Super+Up", shortcuts::Action::PreviousRealm),
+            ("Super+Down", shortcuts::Action::NextRealm),
+            (
+                "Super+Ctrl+Left",
+                shortcuts::Action::Focus(shortcuts::action::FocusDirection::Left),
+            ),
+        ] {
+            let binding = shortcuts::Binding::from_str(combo).unwrap();
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+        }
+    }
+
     /// Super+Tab is the workspace switch, not a second Alt+Tab.
     #[test]
     fn super_tab_switches_workspaces() {

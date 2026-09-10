@@ -2578,6 +2578,12 @@ impl Shell {
         for output in &outputs {
             realm.add_output(output, workspace_state);
         }
+        // Only the realm on screen advertises its groups on an output.
+        if id != self.active_realm {
+            for (output, set) in &realm.sets {
+                workspace_state.remove_group_output(&set.group, output);
+            }
+        }
         tracing::info!(realm = id, outputs = outputs.len(), "realm created");
         self.realms.insert(id.to_string(), realm);
     }

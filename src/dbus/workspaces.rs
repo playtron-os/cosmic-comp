@@ -41,7 +41,12 @@ pub struct ActiveWorkspace {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Registry {
     Absent,
-    Present(Option<ActiveWorkspace>),
+    Present {
+        active: Option<ActiveWorkspace>,
+        /// Every workspace whose services are up, the active one included.
+        /// Each needs a realm, or its desktops cannot be shown until visited.
+        running: Vec<String>,
+    },
 }
 
 pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
@@ -119,7 +124,8 @@ async fn watch(tx: calloop::channel::Sender<Registry>) -> zbus::Result<()> {
     Ok(())
 }
 
-/// The active workspace and its colour, or whether there is a registry at all.
+/// The active workspace and its colour, which workspaces are running, or
+/// whether there is a registry at all.
 async fn read(conn: &zbus::Connection) -> Registry {
     // Nobody owns the name, or whoever does will not answer — the same thing
     // from here.
@@ -132,13 +138,9 @@ async fn read(conn: &zbus::Connection) -> Registry {
     let Ok(id) = reply.body().deserialize::<String>() else {
         return Registry::Absent;
     };
-    // "Nothing active" comes back as an empty string; taken at face value it
-    // would tag every client with an id nothing can match.
-    if id.is_empty() {
-        return Registry::Present(None);
-    }
 
-    let accent = conn
+    // id, name, accent, tier, pinned.
+    let rows = conn
         .call_method(Some(DEST), PATH, Some(DEST), "List", &())
         .await
         .ok()
@@ -148,13 +150,31 @@ async fn read(conn: &zbus::Connection) -> Registry {
                 .deserialize::<Vec<(String, String, String, String, bool)>>()
                 .ok()
         })
-        .and_then(|rows| {
-            rows.into_iter()
-                .find(|(row_id, ..)| *row_id == id)
-                .and_then(|(_, _, accent, ..)| parse_accent(&accent))
-        });
+        .unwrap_or_default();
+    let running = rows
+        .iter()
+        .filter(|(_, _, _, tier, _)| tier != "cold")
+        .map(|(row_id, ..)| row_id.clone())
+        .collect();
 
-    Registry::Present(Some(ActiveWorkspace { id, accent }))
+    // "Nothing active" comes back as an empty string; taken at face value it
+    // would tag every client with an id nothing can match.
+    if id.is_empty() {
+        return Registry::Present {
+            active: None,
+            running,
+        };
+    }
+
+    let accent = rows
+        .iter()
+        .find(|(row_id, ..)| *row_id == id)
+        .and_then(|(_, _, accent, ..)| parse_accent(accent));
+
+    Registry::Present {
+        active: Some(ActiveWorkspace { id, accent }),
+        running,
+    }
 }
 
 /// Parse a registry `#rrggbb`, leaving malformed values for styling fallback.
