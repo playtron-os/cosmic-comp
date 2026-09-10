@@ -176,6 +176,7 @@ impl Focus {
     pub fn under(
         surface: &CosmicSurface,
         header_height: i32,
+        header_input_height: i32,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
         let geo = surface.geometry();
@@ -196,7 +197,7 @@ impl Focus {
             Some(Focus::ResizeLeft)
         } else if loc.x >= geo.size.w {
             Some(Focus::ResizeRight)
-        } else if loc.y < header_height {
+        } else if loc.y < header_input_height {
             Some(Focus::Header)
         } else {
             None
@@ -553,9 +554,21 @@ fn parse_desktop_override(path: &std::path::Path, app_id: &str) -> Option<Deskto
 }
 
 impl CosmicWindowInternal {
-    /// SSD header height derived from the current theme's window control style.
+    /// Space the active theme reserves above the client surface.
     fn ssd_height(&self) -> i32 {
-        icetron_p::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+        super::header_bar::ssd_header_height(&self.theme.lock().unwrap()) as i32
+    }
+
+    fn ssd_render_height(&self) -> i32 {
+        super::header_bar::ssd_header_render_height(&self.theme.lock().unwrap()) as i32
+    }
+
+    fn ssd_input_height(&self) -> i32 {
+        super::header_bar::ssd_header_input_height(&self.theme.lock().unwrap()) as i32
+    }
+
+    fn uses_halo_header(&self) -> bool {
+        super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
     }
 
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
@@ -740,7 +753,10 @@ impl CosmicWindow {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, icetron_p::prelude::header_height(&*theme) as i32),
+            (
+                width,
+                super::header_bar::ssd_header_render_height(&theme) as i32,
+            ),
             handle.clone(),
             theme,
         ));
@@ -800,7 +816,10 @@ impl CosmicWindow {
             }
         });
         if let Some(geo) = geo {
-            self.0.resize(Size::from((geo.size.w, self.ssd_height())));
+            self.0.resize(Size::from((
+                geo.size.w,
+                self.0.with_program(|p| p.ssd_render_height()),
+            )));
         }
     }
 
@@ -854,7 +873,7 @@ impl CosmicWindow {
                     ));
                 }
 
-                if has_ssd && (point_i32.y - geo.loc.y < p.ssd_height()) {
+                if has_ssd && (point_i32.y - geo.loc.y < p.ssd_input_height()) {
                     window_ui = Some((
                         PointerFocusTarget::WindowUI(self.clone()),
                         Point::from((0., 0.)),
@@ -1039,7 +1058,11 @@ impl CosmicWindow {
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
-                geo.size.h += p.ssd_height() as f64;
+                if p.uses_halo_header() {
+                    geo.loc.y += p.ssd_height() as f64;
+                } else {
+                    geo.size.h += p.ssd_height() as f64;
+                }
             }
             geo = geo.upscale(scale);
             geo.loc += location.to_f64().to_logical(output_scale);
@@ -1086,7 +1109,7 @@ impl CosmicWindow {
         let is_embedded = embed_render_info.is_some();
         let embed_corner_radius = embed_render_info.map(|info| info.corner_radius);
 
-        let (has_ssd, is_tiled, squares_every_corner, mut radii, appearance, has_blur) =
+        let (has_ssd, is_tiled, squares_every_corner, mut radii, appearance, has_blur, halo_header) =
             self.0.with_program(|p| {
                 let geo_size = SpaceElement::geometry(&p.window).size;
                 (
@@ -1096,6 +1119,7 @@ impl CosmicWindow {
                     embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
                     *p.appearance_conf.lock().unwrap(),
                     p.window.has_blur(),
+                    p.uses_halo_header(),
                 )
             });
         // Clipping is what rounds the CLIENT's surface; `radii` alone rounds
@@ -1109,11 +1133,13 @@ impl CosmicWindow {
         // did not: the SSD header draws its own top corners, so it followed
         // `compute_corner_radius` on its own, while the content below it was
         // never clipped at all.
+        let halo_header = has_ssd && halo_header;
         let clip = ((!is_tiled && appearance.clip_floating_windows)
-            || (is_tiled && appearance.clip_tiled_windows))
+            || (is_tiled && appearance.clip_tiled_windows)
+            || halo_header)
             && !squares_every_corner;
 
-        if has_ssd && !clip && !is_embedded {
+        if has_ssd && !halo_header && !clip && !is_embedded {
             // bottom corners
             radii[0] = 0;
             radii[2] = 0;
@@ -1137,7 +1163,11 @@ impl CosmicWindow {
             .with_program(|p| SpaceElement::geometry(&p.window).to_f64());
         geo.loc += location.to_f64().to_logical(scale);
         if has_ssd && !is_embedded {
-            geo.size.h += self.ssd_height() as f64;
+            if halo_header {
+                geo.loc.y += self.ssd_height() as f64;
+            } else {
+                geo.size.h += self.ssd_height() as f64;
+            }
         }
         if let Some(max_size) = max_size {
             geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
@@ -1176,12 +1206,28 @@ impl CosmicWindow {
             push_above(elem);
         }
 
+        if has_ssd && !is_embedded && halo_header {
+            let ssd_loc = location
+                + self
+                    .0
+                    .with_program(|p| p.window.geometry().loc.to_physical_precise_round(scale));
+            self.0.push_render_elements(
+                renderer,
+                ssd_loc,
+                scale,
+                alpha,
+                [0; 4],
+                &mut |elem| push_above(elem.into()),
+                None,
+            );
+        }
+
         // MERGE: clipping/rounding of the toplevel surface now happens inside
         // `CosmicSurface::push_render_elements` (upstream folded ClippedSurfaceRenderElement into
         // SurfaceRenderElement), so the fork only forwards `clip` + `radii`.
         self.0.with_program(|p| {
             let mut radii = radii;
-            if has_ssd && !is_embedded {
+            if has_ssd && !halo_header && !is_embedded {
                 // top corners are covered by the SSD header
                 radii[1] = 0;
                 radii[3] = 0;
@@ -1201,10 +1247,12 @@ impl CosmicWindow {
             );
         });
 
-        if has_ssd && !is_embedded {
-            // bottom corners belong to the surface, not the header
-            radii[0] = 0;
-            radii[2] = 0;
+        if has_ssd && !is_embedded && !halo_header {
+            // Conventional SSD bars keep their original position behind the
+            // client elements; only Halo deliberately overlaps the client.
+            let mut header_radii = radii;
+            header_radii[0] = 0;
+            header_radii[2] = 0;
             let ssd_loc = location
                 + self
                     .0
@@ -1214,7 +1262,7 @@ impl CosmicWindow {
                 ssd_loc,
                 scale,
                 alpha,
-                radii,
+                header_radii,
                 &mut |elem| push_above(elem.into()),
                 Some(&mut |elem| push_below(elem.into())),
             );
@@ -1229,7 +1277,10 @@ impl CosmicWindow {
         // Resize the IcedElement to the new SSD height so there's no gap
         // between header and window content after a theme change.
         let geo = self.0.with_program(|p| p.window.geometry());
-        self.0.resize(Size::from((geo.size.w, self.ssd_height())));
+        self.0.resize(Size::from((
+            geo.size.w,
+            self.0.with_program(|p| p.ssd_render_height()),
+        )));
     }
 
     pub fn update_appearance_conf(&self, appearance: &AppearanceConfig) {
@@ -1321,6 +1372,39 @@ pub enum Message {
     Maximize,
     Close,
     Menu,
+}
+
+fn halo_backdrop_blur(
+    layers: &[iced_tiny_skia::Layer],
+    pill_height: f32,
+    max_width: f32,
+) -> Option<(iced_core::Rectangle, [u8; 4])> {
+    layers
+        .iter()
+        .flat_map(|layer| layer.quads.iter())
+        .filter(|(quad, _)| {
+            (quad.bounds.height - pill_height).abs() <= 1.0
+                && quad.bounds.width >= pill_height
+                && quad.bounds.width <= max_width
+        })
+        .max_by(|(a, _), (b, _)| {
+            (a.bounds.width * a.bounds.height).total_cmp(&(b.bounds.width * b.bounds.height))
+        })
+        .map(|(quad, _)| {
+            let radius = quad.border.radius;
+            let maximum = quad.bounds.width.min(quad.bounds.height) * 0.5;
+            let to_u8 =
+                |value: f32| value.min(maximum).round().clamp(0.0, f32::from(u8::MAX)) as u8;
+            (
+                quad.bounds,
+                [
+                    to_u8(radius.top_left),
+                    to_u8(radius.top_right),
+                    to_u8(radius.bottom_right),
+                    to_u8(radius.bottom_left),
+                ],
+            )
+        })
 }
 
 impl Program for CosmicWindowInternal {
@@ -1447,6 +1531,34 @@ impl Program for CosmicWindowInternal {
     // transparent so the themed header bar (and any client blur behind it) shows through.
     fn background_color(&self, _theme: &crate::comp_theme::CompTheme) -> Color {
         Color::TRANSPARENT
+    }
+
+    fn backdrop_blur(
+        &self,
+        theme: &crate::comp_theme::CompTheme,
+        size: Size<i32, Logical>,
+        layers: &[iced_tiny_skia::Layer],
+        radii: [u8; 4],
+    ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+        if !super::header_bar::uses_halo_header(theme) {
+            return theme.header_backdrop_blur().then(|| {
+                (
+                    iced_core::Rectangle::with_size(iced_core::Size::new(
+                        size.w as f32,
+                        size.h as f32,
+                    )),
+                    radii,
+                )
+            });
+        }
+
+        let visible = self.pointer_over_window.load(Ordering::SeqCst)
+            || self.activated.load(Ordering::SeqCst);
+        if !visible {
+            return None;
+        }
+
+        halo_backdrop_blur(layers, theme.halo_style().pill_height(), size.w as f32)
     }
 
     fn foreground(
@@ -1710,6 +1822,7 @@ impl PointerTarget<State> for CosmicWindow {
                 let Some(next) = Focus::under(
                     &p.window,
                     if has_ssd { p.ssd_height() } else { 0 },
+                    if has_ssd { p.ssd_input_height() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -1757,6 +1870,7 @@ impl PointerTarget<State> for CosmicWindow {
                 let Some(next) = Focus::under(
                     &p.window,
                     if has_ssd { p.ssd_height() } else { 0 },
+                    if has_ssd { p.ssd_input_height() } else { 0 },
                     event.location,
                 ) else {
                     return false;
@@ -2229,6 +2343,39 @@ mod tests {
         assert!(!glob_match("*-humainos-chat", "humainos-chat"));
         assert!(glob_match("*", "anything"));
         assert!(glob_match("humainos-?hat", "humainos-chat"));
+    }
+
+    #[test]
+    fn halo_blur_uses_the_largest_pill_sized_quad() {
+        let mut layer = iced_tiny_skia::Layer::default();
+        let quad = |x, width, height| iced_core::renderer::Quad {
+            bounds: iced_core::Rectangle {
+                x,
+                y: 3.0,
+                width,
+                height,
+            },
+            border: iced_core::Border::default().rounded(9999.0),
+            ..Default::default()
+        };
+        layer.quads.push((
+            quad(20.0, 20.0, 20.0),
+            iced_core::Background::Color(Color::TRANSPARENT),
+        ));
+        layer.quads.push((
+            quad(0.0, 400.0, 34.0),
+            iced_core::Background::Color(Color::TRANSPARENT),
+        ));
+        layer.quads.push((
+            quad(80.0, 240.0, 31.0),
+            iced_core::Background::Color(Color::TRANSPARENT),
+        ));
+
+        let (bounds, radii) = halo_backdrop_blur(&[layer], 31.0, 400.0).unwrap();
+
+        assert_eq!(bounds.x, 80.0);
+        assert_eq!(bounds.width, 240.0);
+        assert_eq!(radii, [16; 4]);
     }
 
     #[test]

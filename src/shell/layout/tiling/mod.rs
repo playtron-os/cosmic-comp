@@ -5500,7 +5500,7 @@ fn render_new_tree_windows<R>(
     {
         let window_geo = window.geometry();
         let origin = {
-            let tab_height = icetron_p::prelude::header_height(&**theme) as i32;
+            let tab_height = icetron_p::prelude::bar_header_height(&**theme) as i32;
             let mut geo = focused_geo;
             geo.loc.x += tab_height;
             geo.size.h -= tab_height;

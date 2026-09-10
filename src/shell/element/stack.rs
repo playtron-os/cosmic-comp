@@ -151,7 +151,7 @@ impl CosmicStackInternal {
 
     /// Tab bar height derived from the current theme's window control style.
     fn tab_height(&self) -> i32 {
-        icetron_p::prelude::header_height(&**self.theme.lock().unwrap()) as i32
+        icetron_p::prelude::bar_header_height(&**self.theme.lock().unwrap()) as i32
     }
 
     pub fn swap_focus(&self, focus: Option<Focus>) -> Option<Focus> {
@@ -215,7 +215,7 @@ impl CosmicStack {
                 theme: Mutex::new(theme.clone()),
                 appearance_conf: Mutex::new(appearance),
             },
-            (width, icetron_p::prelude::header_height(&*theme) as i32),
+            (width, icetron_p::prelude::bar_header_height(&*theme) as i32),
             handle,
             theme,
         ))
@@ -1776,7 +1776,12 @@ impl PointerTarget<State> for CosmicStack {
         let mut event = event.clone();
         self.0.with_program(|p| {
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
-            let Some(next) = Focus::under(active_window, p.tab_height(), event.location) else {
+            let Some(next) = Focus::under(
+                active_window,
+                p.tab_height(),
+                p.tab_height(),
+                event.location,
+            ) else {
                 return;
             };
             let _old_focus = p.swap_focus(Some(next));
@@ -1805,7 +1810,12 @@ impl PointerTarget<State> for CosmicStack {
         self.0.with_program(|p| {
             let active = p.active.load(Ordering::SeqCst);
             let active_window = &p.windows.lock().unwrap()[active];
-            let Some(next) = Focus::under(active_window, p.tab_height(), event.location) else {
+            let Some(next) = Focus::under(
+                active_window,
+                p.tab_height(),
+                p.tab_height(),
+                event.location,
+            ) else {
                 return;
             };
             let _previous = p.swap_focus(Some(next));

@@ -264,6 +264,21 @@ pub trait Program {
         Color::TRANSPARENT
     }
 
+    fn backdrop_blur(
+        &self,
+        theme: &CompTheme,
+        size: Size<i32, Logical>,
+        _layers: &[Layer],
+        radii: [u8; 4],
+    ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+        theme.header_backdrop_blur().then(|| {
+            (
+                iced_core::Rectangle::with_size(IcedSize::new(size.w as f32, size.h as f32)),
+                radii,
+            )
+        })
+    }
+
     fn foreground(
         &self,
         pixels: &mut tiny_skia::PixmapMut<'_>,
@@ -1350,7 +1365,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         location: Point<i32, Physical>,
         mut scale: Scale<f64>,
         alpha: f32,
-        mut radii: [u8; 4],
+        radii: [u8; 4],
         push_above: &mut dyn FnMut(IcedRenderElement<R>),
         push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
     ) where
@@ -1532,30 +1547,42 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 Err(err) => tracing::warn!("What? {:?}", err),
             }
 
-            // MERGE: upstream gates this on `cosmic::Theme::transparent`, which callers set from
-            // `frosted_windows`/`frosted_system_interface`. `CompTheme` has no such flag, so the
-            // fork gates on the `header_backdrop_blur()` design token instead.
-            if internal_ref.theme.header_backdrop_blur() {
-                for radius in radii.iter_mut() {
+            // MERGE: upstream gates this on `cosmic::Theme::transparent`; the
+            // local Program decides which compositor chrome needs a backdrop.
+            let backdrop_blur = {
+                let IcedElementInternal {
+                    renderer,
+                    program,
+                    theme,
+                    size,
+                    ..
+                } = internal_ref;
+                program.backdrop_blur(theme, *size, renderer.layers(), radii)
+            };
+            if let Some((bounds, mut blur_radii)) = backdrop_blur {
+                for radius in blur_radii.iter_mut() {
                     *radius = ((*radius as f64) * internal_ref.additional_scale).round() as u8;
                 }
+
+                let local_bounds = Rectangle::<f64, Logical>::new(
+                    (bounds.x as f64, bounds.y as f64).into(),
+                    (bounds.width as f64, bounds.height as f64).into(),
+                )
+                .upscale(internal_ref.additional_scale);
+                let element_origin = location
+                    .to_f64()
+                    .to_logical(scale)
+                    .upscale(internal_ref.additional_scale);
 
                 match BlurElement::from_state(
                     renderer,
                     &mut internal_ref.blur,
                     Rectangle::new(
-                        location
-                            .to_f64()
-                            .to_logical(scale)
-                            .upscale(internal_ref.additional_scale),
-                        internal_ref
-                            .size
-                            .to_f64()
-                            .upscale(internal_ref.additional_scale)
-                            .to_i32_round(),
+                        element_origin + local_bounds.loc,
+                        local_bounds.size.to_i32_round(),
                     ),
                     scale.x,
-                    radii,
+                    blur_radii,
                     CHROME_BLUR_STRENGTH,
                     alpha,
                 ) {

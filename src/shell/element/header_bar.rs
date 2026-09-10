@@ -1,4 +1,4 @@
-//! Compositor header bar (SSD title bar) — wraps icetron's `app_header`.
+//! Compositor window chrome — wraps icetron's `app_header`.
 //!
 //! Provides a thin adapter between icetron's `app_header` component and the
 //! compositor's SSD decoration system. The header uses icetron's theme tokens
@@ -7,14 +7,31 @@
 use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, container, row, svg};
-use icetron_p::prelude::{animated_opacity, app_header, header_height, styled_text};
+use icetron_p::prelude::{
+    animated_opacity, app_header, header_height_for, header_render_height_for, styled_text,
+};
+use icetron_themes::WindowHeaderStyle;
 
 use crate::comp_theme::CompTheme;
 
-/// SSD header bar height in logical pixels for the given theme.
-/// Adds 1px for the bottom border rendered by app_header's `show_border`.
+/// Space reserved above the client surface in logical pixels.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
-    header_height(&**theme) as u32
+    header_height_for(&**theme, theme.window_header_style()) as u32
+}
+
+/// Height of the compositor chrome render layer.
+pub fn ssd_header_render_height(theme: &CompTheme) -> u32 {
+    header_render_height_for(&**theme, theme.window_header_style()) as u32
+}
+
+/// Height routed to compositor chrome and its drag region.
+pub fn ssd_header_input_height(theme: &CompTheme) -> u32 {
+    ssd_header_render_height(theme)
+}
+
+/// Whether compositor decorations use chromeless Halo geometry.
+pub fn uses_halo_header(theme: &CompTheme) -> bool {
+    theme.window_header_style() == WindowHeaderStyle::Halo
 }
 
 /// Application icon for the SSD header — leaked static SVG bytes or a raster image handle.
@@ -146,13 +163,15 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     /// Convert to an iced Element using icetron's app_header.
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
+        let window_header_style = theme.window_header_style();
 
         let mut header = app_header(&**theme)
+            .window_header_style(window_header_style)
             .title(Some(&self.title))
             .focused(self.focused)
-            .hovered(self.hovered)
+            .hovered(self.hovered || self.focused)
             .is_windowed(!self.maximized)
-            .backdrop_blur(false)
+            .backdrop_blur(uses_halo_header(theme))
             .opaque(true)
             .show_border(true);
 
@@ -160,16 +179,36 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         // We wrap in animated_opacity to replicate app_header's title fade behavior
         // (0.8 when unfocused, animates to 1.0 on hover/focus).
         {
-            let title_style = theme.header_title_text_style();
-            let title_color = theme.header_title_color();
-            let title_gap = theme.header_title_gap();
+            let (title_style, title_color, title_gap, icon_size, glyph_size) =
+                if uses_halo_header(theme) {
+                    let mut style = theme.text_styles().caption();
+                    let halo = theme.halo_style();
+                    style.font_weight = halo.title_font_weight;
+                    (
+                        style,
+                        theme.text_primary(),
+                        halo.gap,
+                        halo.control_size,
+                        halo.glyph_icon_size,
+                    )
+                } else {
+                    (
+                        theme.header_title_text_style(),
+                        theme.header_title_color(),
+                        theme.header_title_gap(),
+                        theme.ui_size_icon_sm(),
+                        theme.ui_size_icon_sm(),
+                    )
+                };
 
             let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                styled_text(&self.title, title_style, title_color).into();
+                styled_text(&self.title, title_style, title_color)
+                    .wrapping(iced_widget::text::Wrapping::None)
+                    .ellipsis(iced_widget::text::Ellipsis::End)
+                    .into();
 
             let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 if let Some(ref icon) = self.app_icon {
-                    let icon_size = theme.ui_size_icon_sm();
                     let icon_element: Element<
                         'a,
                         Message,
@@ -185,22 +224,48 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                             // which is what painted full-colour app marks flat
                             // title-grey. Only a symbolic glyph is recoloured.
                             let icon_tint = if *symbolic {
-                                title_color
+                                if uses_halo_header(theme) {
+                                    theme.primary()
+                                } else {
+                                    title_color
+                                }
                             } else {
                                 iced_core::Color::TRANSPARENT
                             };
                             Svg::new(handle)
-                                .width(icon_size)
-                                .height(icon_size)
+                                .width(glyph_size)
+                                .height(glyph_size)
                                 .style(move |_theme, _status| svg::Style {
                                     color: Some(icon_tint),
                                 })
                                 .into()
                         }
                         AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
-                            .width(icon_size)
-                            .height(icon_size)
+                            .width(glyph_size)
+                            .height(glyph_size)
                             .into(),
+                    };
+                    let icon_element: Element<
+                        'a,
+                        Message,
+                        iced_core::Theme,
+                        iced_tiny_skia::Renderer,
+                    > = if uses_halo_header(theme) {
+                        let bg = theme.primary_lighter();
+                        let radius = theme.radii_max();
+                        container(icon_element)
+                            .width(Length::Fixed(icon_size))
+                            .height(Length::Fixed(icon_size))
+                            .align_x(Alignment::Center)
+                            .align_y(Alignment::Center)
+                            .style(move |_theme| container::Style {
+                                background: Some(iced_core::Background::Color(bg)),
+                                border: iced_core::Border::default().rounded(radius),
+                                ..Default::default()
+                            })
+                            .into()
+                    } else {
+                        icon_element
                     };
                     row![icon_element, text_element]
                         .spacing(title_gap)
@@ -211,8 +276,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     text_element
                 };
 
-            // Replicate app_header's opacity animation logic
-            let target_opacity = if self.hovered || self.focused {
+            // The Halo animates as one pill; bar headers animate just the title.
+            let target_opacity = if uses_halo_header(theme) || self.hovered || self.focused {
                 1.0
             } else {
                 0.8
@@ -244,7 +309,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.on_right_click(msg);
         }
 
-        let header_height = header_height(&**theme);
+        let header_render_height = header_render_height_for(&**theme, window_header_style);
         // Force header background to fully opaque — the blur backdrop renders
         // behind the header and should not bleed through.
         let header_bg = theme.header_background();
@@ -255,9 +320,15 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         };
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
+        if uses_halo_header(theme) {
+            return container(header_elem)
+                .width(Length::Fill)
+                .height(Length::Fixed(header_render_height))
+                .into();
+        }
         container(header_elem)
             .width(Length::Fill)
-            .height(Length::Fixed(header_height))
+            .height(Length::Fixed(header_render_height))
             .style(move |_theme| container::Style {
                 background: Some(iced_core::Background::Color(header_bg)),
                 border: iced_core::Border {
