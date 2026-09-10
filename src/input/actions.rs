@@ -176,7 +176,7 @@ impl State {
             Action::Debug => {
                 let mut shell = self.common.shell.write();
                 shell.debug_active = !shell.debug_active;
-                for mapped in shell.workspaces.spaces().flat_map(|w| w.mapped()) {
+                for mapped in shell.workspaces().spaces().flat_map(|w| w.mapped()) {
                     mapped.set_debug(shell.debug_active);
                 }
             }

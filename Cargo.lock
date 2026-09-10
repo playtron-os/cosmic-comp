@@ -6651,7 +6651,7 @@ dependencies = [
 [[package]]
 name = "smithay-egui"
 version = "0.2.0"
-source = "git+https://github.com/Smithay/smithay-egui.git#65115521c756f356a7bcac8f1eeb715817a4666f"
+source = "git+https://github.com/Smithay/smithay-egui.git?rev=f34d50913003e0d62b0fb8999baf763d0960e3ef#f34d50913003e0d62b0fb8999baf763d0960e3ef"
 dependencies = [
  "egui",
  "egui_extras",

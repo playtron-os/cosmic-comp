@@ -174,6 +174,13 @@ tasks:
       - rm -rf .cache/{{.NAME}}
       - mkdir -p .cache/{{.NAME}}/usr/bin
       - install -Dm0755 "target/{{.TARGET_ARCH}}/{{.PROFILE}}/{{.NAME}}" ".cache/{{.NAME}}/usr/bin/{{.NAME}}"
+      # Nix's linker embeds dev-shell/store paths that Fedora's RPM checks
+      # reject. Clean only the packaged copy; the local build still needs them.
+      # The device's autoPatchelfHook supplies its own runtime paths on install.
+      - |
+        if [ -n "${IN_NIX_SHELL:-}" ]; then
+          patchelf --remove-rpath ".cache/{{.NAME}}/usr/bin/{{.NAME}}"
+        fi
       - install -Dm0644 "data/keybindings.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
       - install -Dm0644 "data/tiling-exceptions.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
       - install -Dm0644 "LICENSE" ".cache/{{.NAME}}/usr/share/licenses/cosmic-comp/LICENSE"

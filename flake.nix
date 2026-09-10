@@ -135,6 +135,7 @@
               rustPlatform.bindgenHook # sets LIBCLANG_PATH
               go-task # the inner `task dist:rpm`
               rpm # rpmbuild
+              patchelf # remove dev-shell RPATHs from the packaged binary
             ];
 
             buildInputs = with pkgsKora; [

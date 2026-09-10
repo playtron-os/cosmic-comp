@@ -191,7 +191,9 @@ iced_widget = { git = "https://github.com/playtron-os/iced.git" }
 [patch."https://github.com/pop-os/cosmic-settings-daemon"]
 cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings-daemon" }
 [patch.crates-io]
-smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git" }
+# Last revision before the InputTime migration; our Smithay fork still uses u32
+# event timestamps. Keep debug builds on the matching API until Smithay migrates.
+smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "f34d50913003e0d62b0fb8999baf763d0960e3ef" }
 smithay = { git = "https://github.com/playtron-os/smithay.git" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
