@@ -4,7 +4,7 @@ use crate::shell::focus::order::GameModeView;
 use crate::shell::layout::tiling::RestoreTilingState;
 use crate::wayland::handlers::xdg_activation::ActivationContext;
 use crate::{
-    backend::render::{BackdropShader, element::AsGlowRenderer},
+    backend::render::{BackdropShader, Key, Usage, element::AsGlowRenderer},
     shell::{
         OverviewMode, SeatMoveGrabState,
         layout::{
@@ -2499,6 +2499,16 @@ impl Workspace {
                             fullscreen_alpha,
                             &mut |element| fullscreen_elements.push(element.into()),
                         );
+                    }
+                    if let Some(flash) = fullscreen.surface.screenshot_flash_element(
+                        renderer,
+                        Key::Window(Usage::ScreenshotFlash, fullscreen.halo.key()),
+                        target_geo,
+                        [0; 4],
+                        fullscreen_alpha,
+                        &self.tiling_layer.theme,
+                    ) {
+                        fullscreen_elements.push(CosmicWindowRenderElement::Border(flash).into());
                     }
                     let animation_rescale = |elem| {
                         if (is_animating || scaling) && src.w > 0 && src.h > 0 {

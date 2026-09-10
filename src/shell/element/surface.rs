@@ -6,10 +6,13 @@ use smithay::backend::renderer::utils::with_renderer_surface_state;
 
 use crate::{
     backend::render::{
+        BackdropShader, Key,
+        animations::motion::Motion,
         element::AsGlowRenderer,
         shadow::ShadowShader,
         wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
     },
+    comp_theme::CompTheme,
     shell::focus::target::PointerFocusTarget,
     utils::prelude::*,
     wayland::handlers::{
@@ -24,7 +27,7 @@ use std::{
         Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smithay::{
@@ -220,6 +223,33 @@ struct Sticky(AtomicBool);
 
 #[derive(Default)]
 struct GlobalGeometry(Mutex<Option<Rectangle<i32, Global>>>);
+
+/// Screenshot feedback: a flash over the window body that fades out, started
+/// when the window was captured. It lives on the surface so every path that
+/// draws the body (floating window, stack tab, fullscreen) reads one state.
+#[derive(Default)]
+struct ScreenshotFlash(Mutex<Option<Instant>>);
+
+/// Peak opacity of the flash, from the prototype's `flashWindow`
+/// (`lib/runtime/run-command.ts`).
+const SCREENSHOT_FLASH_OPACITY: f32 = 0.85;
+
+/// Flash opacity `elapsed` into the fade, `None` once it has run out.
+fn screenshot_flash_alpha(elapsed: Duration, motion: &Motion) -> Option<f32> {
+    let duration = motion.screenshot_flash;
+    if duration.is_zero() || elapsed >= duration {
+        return None;
+    }
+    let t = (elapsed.as_secs_f32() / duration.as_secs_f32()).clamp(0.0, 1.0);
+    Some(SCREENSHOT_FLASH_OPACITY * (1.0 - motion.ease_standard(t)))
+}
+
+/// Window radii, `[bottom-right, top-right, bottom-left, top-left]` as the
+/// outline shader's uniforms are packed, to the backdrop shader's
+/// `[top-left, top-right, bottom-right, bottom-left]`.
+fn backdrop_corners(radii: [u8; 4]) -> [f32; 4] {
+    [radii[3], radii[1], radii[0], radii[2]].map(f32::from)
+}
 
 /// How to draw the shadow behind a popup that asked for one.
 ///
@@ -465,6 +495,55 @@ impl CosmicSurface {
             }),
             WindowSurface::X11(_) => None,
         }
+    }
+
+    fn screenshot_flash(&self) -> &ScreenshotFlash {
+        self.0
+            .user_data()
+            .get_or_insert_threadsafe(ScreenshotFlash::default)
+    }
+
+    /// Begin the flash. The caller schedules a redraw; frames keep coming while
+    /// [`Self::screenshot_flash_pending`] holds.
+    pub fn start_screenshot_flash(&self) {
+        *self.screenshot_flash().0.lock().unwrap() = Some(Instant::now());
+    }
+
+    /// Whether the flash still has frames to draw.
+    pub fn screenshot_flash_pending(&self) -> bool {
+        self.screenshot_flash().0.lock().unwrap().is_some()
+    }
+
+    /// The flash over `geo`, or `None` when there is nothing to draw. The read
+    /// that finds the fade finished clears the state, so that same frame draws
+    /// the window clean and no residual alpha is left on screen.
+    pub fn screenshot_flash_element<R: AsGlowRenderer>(
+        &self,
+        renderer: &R,
+        key: Key,
+        geo: Rectangle<i32, Local>,
+        radii: [u8; 4],
+        alpha: f32,
+        theme: &CompTheme,
+    ) -> Option<PixelShaderElement> {
+        let flash_alpha = {
+            let mut started = self.screenshot_flash().0.lock().unwrap();
+            let flash_alpha =
+                started.and_then(|start| screenshot_flash_alpha(start.elapsed(), &theme.motion));
+            if flash_alpha.is_none() {
+                *started = None;
+            }
+            flash_alpha?
+        };
+        let color = theme.text_primary();
+        Some(BackdropShader::element(
+            renderer,
+            key,
+            geo,
+            backdrop_corners(radii),
+            flash_alpha * alpha,
+            [color.r, color.g, color.b],
+        ))
     }
 
     pub fn global_geometry(&self) -> Option<Rectangle<i32, Global>> {
@@ -1485,5 +1564,33 @@ fn with_toplevel_state<T, F: FnOnce(Option<&smithay::wayland::shell::xdg::Toplev
         toplevel.with_pending_state(|pending| cb(Some(pending)))
     } else {
         toplevel.with_committed_state(cb)
+    }
+}
+
+#[cfg(test)]
+mod screenshot_flash_tests {
+    use super::*;
+    use crate::comp_theme::CompTheme;
+
+    #[test]
+    fn flash_starts_at_peak_and_is_gone_when_the_fade_ends() {
+        let motion = CompTheme::default().motion;
+        assert!(!motion.screenshot_flash.is_zero());
+        let alpha = |ms: u64| screenshot_flash_alpha(Duration::from_millis(ms), &motion);
+        assert_eq!(alpha(0), Some(SCREENSHOT_FLASH_OPACITY));
+        let half = motion.screenshot_flash / 2;
+        let mid = screenshot_flash_alpha(half, &motion).unwrap();
+        assert!(mid > 0.0 && mid < SCREENSHOT_FLASH_OPACITY);
+        assert_eq!(
+            screenshot_flash_alpha(motion.screenshot_flash, &motion),
+            None
+        );
+    }
+
+    #[test]
+    fn backdrop_corners_follow_the_outline_uniform_packing() {
+        // The outline shader packs `radius` as [r[3], r[1], r[0], r[2]] for
+        // (top-left, top-right, bottom-right, bottom-left).
+        assert_eq!(backdrop_corners([1, 2, 3, 4]), [4.0, 2.0, 1.0, 3.0]);
     }
 }

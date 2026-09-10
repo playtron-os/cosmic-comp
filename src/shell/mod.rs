@@ -3861,6 +3861,15 @@ impl Shell {
             .active_layer_resize_anim
             .as_ref()
             .is_some_and(|a| a.is_animating());
+        let screenshot_flash = self
+            .mapped()
+            .flat_map(|mapped| mapped.windows())
+            .any(|(window, _)| window.screenshot_flash_pending())
+            || self
+                .workspaces()
+                .spaces()
+                .flat_map(|workspace| workspace.get_fullscreen_surfaces())
+                .any(|fullscreen| fullscreen.surface.screenshot_flash_pending());
 
         workspace_sets
             || overview
@@ -3877,6 +3886,7 @@ impl Shell {
             || unlock_fade
             || lock_fade_in
             || layer_resize
+            || screenshot_flash
             || crate::backend::render::wayland::blur_effect::blur_fade_in_flight()
     }
 
@@ -5278,8 +5288,7 @@ impl Shell {
         // a growing one from the terminal arrange below, a shrinking one when
         // the slide ends. The event goes first so it precedes that configure.
         let held_ez = self.slide_hold_ez.unwrap_or(applied_ez);
-        let terminal = terminal_ez as i32;
-        let grow = terminal < held_ez;
+        let grow = terminal_ez < held_ez;
         let neighbours = self.slide_neighbours(&outputs, surface_id);
         for (output, layer) in &neighbours {
             let Some(from) = layer_map_for_output(output)
@@ -5288,7 +5297,7 @@ impl Shell {
             else {
                 continue;
             };
-            let to = Size::from((from.w + held_ez - terminal, from.h));
+            let to = Size::from((from.w + held_ez - terminal_ez, from.h));
             layer_size_transition::send_started(layer.wl_surface(), from, to, duration_ms);
             layer_map_for_output(output).hold_size(layer, !grow);
         }
@@ -5336,7 +5345,7 @@ impl Shell {
             self.slide_held.insert(layer.wl_surface().id());
         }
         if !neighbours.is_empty() {
-            self.slide_hold_ez = Some(if grow { terminal } else { held_ez });
+            self.slide_hold_ez = Some(if grow { terminal_ez } else { held_ez });
         }
 
         self.set_slide_active(true);

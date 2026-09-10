@@ -45,9 +45,12 @@ use smithay::{
         },
         rustix,
     },
-    wayland::selection::data_device::{
-        current_data_device_selection_userdata, request_data_device_client_selection,
-        set_data_device_selection,
+    wayland::selection::{
+        SelectionTarget,
+        data_device::{
+            current_data_device_selection_userdata, request_data_device_client_selection,
+            set_data_device_selection,
+        },
     },
 };
 use tracing::debug;
@@ -135,6 +138,29 @@ pub fn on_clipboard_cleared(state: &mut State) {
     state.common.clipboard_state.generation =
         state.common.clipboard_state.generation.wrapping_add(1);
     state.common.clipboard_state.cache.clear();
+}
+
+/// Offer `bytes` as `mime` on the regular clipboard straight from compositor
+/// memory, replacing whatever a client holds. It is served like a persisted
+/// selection, so it stays pasteable until the next copy.
+pub fn set_compositor_clipboard(
+    state: &mut State,
+    seat: &Seat<State>,
+    mime: String,
+    bytes: Vec<u8>,
+) {
+    if let Some(old) = state.common.clipboard_state.active.take() {
+        old.cancel(&state.common.event_loop_handle);
+    }
+    state.common.clipboard_state.generation =
+        state.common.clipboard_state.generation.wrapping_add(1);
+    let dh = state.common.display_handle.clone();
+    set_data_device_selection(&dh, seat, vec![mime.clone()], SelectionUserData::Persisted);
+    state.common.clipboard_state.cache =
+        HashMap::from([(mime.clone(), Arc::from(bytes.into_boxed_slice()))]);
+    // A compositor-owned selection never passes through
+    // `SelectionHandler::new_selection`, so Xwayland is told here.
+    state.bridge_selection_to_xwayland(SelectionTarget::Clipboard, Some(vec![mime]));
 }
 
 /// Write cached bytes for `mime_type` to `fd` on a detached thread. Used when a

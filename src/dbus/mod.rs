@@ -19,6 +19,7 @@ use a11y_keyboard_monitor::A11yKeyboardMonitorState;
 #[cfg(feature = "logind")]
 pub mod logind;
 mod name_owners;
+pub mod notifications;
 mod power;
 
 #[derive(Clone, Debug)]

@@ -1114,6 +1114,10 @@ impl CosmicWindow {
         self.0.with_program(|p| &p.window == window)
     }
 
+    pub(crate) fn key(&self) -> CosmicMappedKey {
+        CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)))
+    }
+
     pub fn offset(&self) -> Point<i32, Logical> {
         let has_ssd = self.0.with_program(|p| p.has_ssd(false));
         if has_ssd {
@@ -1430,6 +1434,21 @@ impl CosmicWindow {
                 // top corners are covered by the SSD header
                 radii[1] = 0;
                 radii[3] = 0;
+            }
+            let mut body = SpaceElement::geometry(&p.window).to_f64();
+            body.loc += window_loc.to_f64().to_logical(scale);
+            if let Some(max_size) = max_size {
+                body.size = body.size.clamp(Size::default(), max_size.to_f64());
+            }
+            if let Some(flash) = p.window.screenshot_flash_element(
+                renderer,
+                Key::Window(Usage::ScreenshotFlash, self.key()),
+                body.to_i32_round().as_local(),
+                radii,
+                alpha,
+                &p.theme.lock().unwrap(),
+            ) {
+                push_above(CosmicWindowRenderElement::Border(flash));
             }
             p.window.push_render_elements(
                 renderer,

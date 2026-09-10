@@ -224,6 +224,8 @@ pub enum Usage {
     PotentialGroupIndicator,
     SnappingIndicator,
     Border,
+    /// The screenshot flash over a window body.
+    ScreenshotFlash,
 }
 
 #[derive(Clone)]

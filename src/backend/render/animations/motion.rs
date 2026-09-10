@@ -85,6 +85,11 @@ pub struct Motion {
     pub panel_ease_cp: [f32; 4],
     /// `--ease-in-out` control points (layer open/close fade+rise).
     pub ease_in_out_cp: [f32; 4],
+    /// Screenshot flash fade over the captured window. Design `--duration-slow`,
+    /// which is icetron's `slower` step.
+    pub screenshot_flash: Duration,
+    /// `--ease-standard` control points (the screenshot flash fade).
+    pub ease_standard_cp: [f32; 4],
     /// Window/workspace spring (`spring_window`), macOS-smooth.
     pub window_spring: SpringParams,
 }
@@ -106,6 +111,8 @@ impl Motion {
             panel_slide: ms(theme.duration_slower()),
             panel_ease_cp: theme.ease_out_expo(),
             ease_in_out_cp: theme.ease_in_out(),
+            screenshot_flash: ms(theme.duration_slower()),
+            ease_standard_cp: theme.ease_default(),
             window_spring: spring_params(theme.spring_window()),
         }
     }
@@ -118,6 +125,11 @@ impl Motion {
     /// Eased `--ease-in-out` factor at progress `t`.
     pub fn ease_in_out(&self, t: f32) -> f32 {
         cubic_bezier_cp(t, self.ease_in_out_cp)
+    }
+
+    /// Eased `--ease-standard` factor at progress `t`.
+    pub fn ease_standard(&self, t: f32) -> f32 {
+        cubic_bezier_cp(t, self.ease_standard_cp)
     }
 }
 

@@ -918,6 +918,24 @@ impl CosmicStack {
             };
 
             let radii = radii.map(|[a, _, c, _]| [a, 0, c, 0]);
+            let mut body = SpaceElement::geometry(&windows[active]).to_f64();
+            body.loc += window_loc.to_f64().to_logical(scale);
+            if let Some(max_size) = max_size {
+                body.size = body.size.clamp(Size::default(), max_size.to_f64());
+            }
+            if let Some(flash) = windows[active].screenshot_flash_element(
+                renderer,
+                Key::Window(
+                    Usage::ScreenshotFlash,
+                    CosmicMappedKey(CosmicMappedKeyInner::Stack(Arc::downgrade(&self.0.0))),
+                ),
+                body.to_i32_round().as_local(),
+                radii.unwrap_or([0; 4]),
+                alpha,
+                &theme,
+            ) {
+                push_above(CosmicStackRenderElement::Border(flash));
+            }
             windows[active].push_render_elements(
                 renderer,
                 window_loc,
