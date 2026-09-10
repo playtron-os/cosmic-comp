@@ -2,6 +2,7 @@
 
 pub mod apply;
 pub mod deadlock;
+pub mod desktop_action;
 pub mod env;
 mod ids;
 pub mod memlog;

@@ -144,7 +144,7 @@ fn reload_theme(state: &mut State) {
         theme_name, is_dark
     );
 
-    let new_theme = match theme_name {
+    let mut new_theme = match theme_name {
         Some(ref name) => CompTheme::from_file(name, is_dark),
         None => {
             // No brand configured — use fallback with correct color mode
@@ -157,6 +157,7 @@ fn reload_theme(state: &mut State) {
         }
     };
 
+    new_theme.workspace_accent = state.common.theme.workspace_accent;
     state.common.theme = new_theme.clone();
     let shell = state.common.shell.clone();
     let mut workspace_guard = state.common.workspace_state.update();

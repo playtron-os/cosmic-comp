@@ -30,6 +30,8 @@ pub struct CompTheme {
     /// Motion tokens (durations, easing curves, springs) resolved from `theme`.
     /// Read by every animation instead of hardcoded constants.
     pub motion: crate::backend::render::animations::motion::Motion,
+    /// Accent of the workspace currently on screen; brand accent is the fallback.
+    pub workspace_accent: Option<Color>,
 }
 
 impl std::fmt::Debug for CompTheme {
@@ -59,6 +61,7 @@ impl Default for CompTheme {
             is_dark,
             active_hint: 3,
             gaps: (4, 4),
+            workspace_accent: None,
         }
     }
 }
@@ -71,6 +74,7 @@ impl CompTheme {
             is_dark,
             active_hint: 3,
             gaps: (4, 4),
+            workspace_accent: None,
         }
     }
 
@@ -137,6 +141,7 @@ impl CompTheme {
             is_dark,
             active_hint: 3,
             gaps: (4, 4),
+            workspace_accent: None,
         }
     }
 
@@ -157,6 +162,16 @@ impl CompTheme {
 
     pub fn accent_color(&self) -> Color {
         self.theme.primary()
+    }
+
+    pub fn halo_accent(&self) -> Color {
+        self.workspace_accent.unwrap_or_else(|| self.primary())
+    }
+
+    pub fn halo_accent_background(&self) -> Color {
+        let mut accent = self.halo_accent();
+        accent.a = self.primary_lighter().a;
+        accent
     }
 
     pub fn on_accent_color(&self) -> Color {

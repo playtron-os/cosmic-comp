@@ -41,11 +41,15 @@ fn layout(
     let element = header_bar()
         .theme(theme)
         .title(title)
+        .app_name("Files")
         .focused(true)
         .on_close(())
         .on_minimize(())
         .on_maximize(())
         .on_right_click(())
+        .on_screenshot(())
+        .on_fullscreen((), false)
+        .on_new_window(())
         .into_element();
     let size = Size::new(width, ssd_header_render_height(theme) as f32);
     let mut ui = UserInterface::build(
@@ -104,7 +108,7 @@ fn halo_partial_repaint_matches_fresh_frame() {
         tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
     let full = [Rectangle::with_size(viewport.logical_size())];
     draw(&mut old, &viewport, &mut pixels, &full);
-    let (mut current, _, _current_cache) = layout(&theme, 1024.0, "Explorer", 1.5);
+    let (mut current, _, _current_cache) = layout(&theme, 1024.0, "Files", 1.5);
     let damage = damage::group(
         damage::diff(
             old.layers(),
@@ -133,6 +137,82 @@ fn halo_partial_repaint_matches_fresh_frame() {
         different, 0,
         "partial repaint must not leave shadow remnants"
     );
+}
+
+#[test]
+fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
+    let mut theme = theme();
+    let accent = Color::from_rgb(0.18, 0.62, 0.91);
+    theme.workspace_accent = Some(accent);
+    let (mut renderer, viewport, _cache) = layout(&theme, 1024.0, "Explorer", 1.0);
+    let glyphs: Vec<_> = renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.images)
+        .filter_map(|image| match image {
+            iced_graphics::Image::Vector { svg, .. } => svg.color,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        glyphs.len(),
+        8,
+        "screenshot, record, menu, new, minimize, maximize, fullscreen, close"
+    );
+    for (index, color) in glyphs.into_iter().enumerate() {
+        assert_eq!(
+            color,
+            if index == 1 {
+                theme.text_quaternary()
+            } else {
+                theme.text_tertiary()
+            },
+            "ordinary icons, including the chevron, use neutral text tokens; record is disabled"
+        );
+    }
+    if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
+        let mut pixels =
+            tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+        draw(
+            &mut renderer,
+            &viewport,
+            &mut pixels,
+            &[Rectangle::with_size(viewport.logical_size())],
+        );
+        // Tiny-Skia's iced renderer emits BGRA for the compositor's ARGB buffer;
+        // PNG expects RGBA. This conversion is only for the saved preview.
+        for pixel in pixels.data_mut().chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        pixels
+            .save_png(std::path::PathBuf::from(dir).join("halo-controls.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn halo_app_name_is_a_secondary_label_only_for_a_distinct_title() {
+    let theme = theme();
+    let secondary_labels = |renderer: &mut Renderer| {
+        renderer
+            .layers()
+            .iter()
+            .flat_map(|layer| &layer.text)
+            .flat_map(|item| item.as_slice())
+            .filter(|text| match text {
+                iced_graphics::text::Text::Paragraph { color, .. }
+                | iced_graphics::text::Text::Cached { color, .. }
+                | iced_graphics::text::Text::Editor { color, .. } => {
+                    *color == theme.text_quaternary()
+                }
+                _ => false,
+            })
+            .count()
+    };
+    let (mut same, _, _same_cache) = layout(&theme, 1024.0, "Files", 1.0);
+    let (mut different, _, _different_cache) = layout(&theme, 1024.0, "Documents", 1.0);
+    assert_eq!(secondary_labels(&mut same), 0);
+    assert_eq!(secondary_labels(&mut different), 1);
 }
 
 #[test]

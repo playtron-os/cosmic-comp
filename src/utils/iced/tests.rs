@@ -22,6 +22,10 @@ impl Program for Header {
             .on_minimize(())
             .on_maximize(())
             .on_close(())
+            .on_right_click(())
+            .on_new_window(())
+            .on_screenshot(())
+            .on_fullscreen((), false)
             .into_element()
     }
 }

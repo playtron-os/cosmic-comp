@@ -1,4 +1,4 @@
-//! XDG icon resolution — delegates to `icetron_utils::icons::lookup_icon`.
+//! XDG icon resolution — delegates to `icetron_p::components::image::icons`.
 //!
 //! Provides convenience wrappers that produce iced `Svg` widgets from
 //! freedesktop icon names. The underlying `lookup_icon` caches resolved paths

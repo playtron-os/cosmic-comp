@@ -257,7 +257,12 @@ fn render_input_order_internal<R: 'static>(
 
     // calculate a bunch of stuff for workspace transitions
 
-    let Some(set) = shell.workspaces().sets.get(output) else {
+    // Any realm's desktop can be rendered here — a capture of one that is not
+    // on screen — so look the handle up in its own realm, not the active one.
+    let Some(set) = shell
+        .realm_for_handle(&current.0)
+        .and_then(|realm| realm.sets.get(output))
+    else {
         return ControlFlow::Break(Err(OutputNoMode));
     };
     let Some(workspace) = set.workspaces.iter().find(|w| w.handle == current.0) else {

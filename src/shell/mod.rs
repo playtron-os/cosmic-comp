@@ -2681,6 +2681,15 @@ impl Shell {
         self.active_workspace = workspace;
     }
 
+    pub fn set_workspace_accent(&mut self, accent: Option<iced_core::Color>, realm_changed: bool) {
+        if self.theme.workspace_accent == accent && !realm_changed {
+            return;
+        }
+        self.theme.workspace_accent = accent;
+        let theme = self.theme.clone();
+        self.workspaces_mut().set_theme(theme);
+    }
+
     /// Returns true exactly once, for adoption of the login workspace.
     pub fn take_initial_realm_activation(&mut self) -> bool {
         !std::mem::replace(&mut self.realm_initialized, true)

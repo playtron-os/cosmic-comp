@@ -6,11 +6,13 @@
 
 use iced_core::Alignment;
 use iced_core::{Element, Length};
-use iced_widget::{Svg, container, row, svg};
+use iced_widget::{Svg, button, container, mouse_area, row, svg, tooltip};
 use icetron_p::prelude::{
     animated_opacity, app_header, header_height_for, header_render_height_for, styled_text,
 };
+use icetron_p::{animation::transition::ButtonTransition, components::icons::icon_svg_inherit};
 use icetron_themes::WindowHeaderStyle;
+use icetron_themes::icons;
 
 use crate::comp_theme::CompTheme;
 
@@ -111,11 +113,17 @@ pub enum AppIcon {
 /// Builder for the compositor SSD header bar.
 pub struct HeaderBar<'a, Message> {
     title: String,
+    app_name: Option<String>,
     on_drag: Option<Message>,
     on_close: Option<Message>,
     on_minimize: Option<Message>,
     on_maximize: Option<Message>,
     on_right_click: Option<Message>,
+    on_screenshot: Option<Message>,
+    on_new_window: Option<Message>,
+    on_fullscreen: Option<Message>,
+    fullscreen: bool,
+    menu_open: bool,
     focused: bool,
     hovered: bool,
     maximized: bool,
@@ -138,11 +146,17 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     pub fn new() -> Self {
         Self {
             title: String::new(),
+            app_name: None,
             on_drag: None,
             on_close: None,
             on_minimize: None,
             on_maximize: None,
             on_right_click: None,
+            on_screenshot: None,
+            on_new_window: None,
+            on_fullscreen: None,
+            fullscreen: false,
+            menu_open: false,
             focused: false,
             hovered: false,
             maximized: false,
@@ -154,6 +168,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = title.into();
+        self
+    }
+
+    pub fn app_name(mut self, app_name: impl Into<String>) -> Self {
+        self.app_name = Some(app_name.into());
         self
     }
 
@@ -179,6 +198,27 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn on_right_click(mut self, msg: Message) -> Self {
         self.on_right_click = Some(msg);
+        self
+    }
+
+    pub fn on_screenshot(mut self, msg: Message) -> Self {
+        self.on_screenshot = Some(msg);
+        self
+    }
+
+    pub fn on_new_window(mut self, msg: Message) -> Self {
+        self.on_new_window = Some(msg);
+        self
+    }
+
+    pub fn on_fullscreen(mut self, msg: Message, fullscreen: bool) -> Self {
+        self.on_fullscreen = Some(msg);
+        self.fullscreen = fullscreen;
+        self
+    }
+
+    pub fn menu_open(mut self, open: bool) -> Self {
+        self.menu_open = open;
         self
     }
 
@@ -229,6 +269,9 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .backdrop_blur(uses_halo_header(theme))
             .opaque(true)
             .show_border(true);
+        if let Some(name) = self.app_name {
+            header = header.app_name(name);
+        }
 
         // Pass application icon with native SVG colors via title_content.
         // We wrap in animated_opacity to replicate app_header's title fade behavior
@@ -280,7 +323,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                             // title-grey. Only a symbolic glyph is recoloured.
                             let icon_tint = if *symbolic {
                                 if uses_halo_header(theme) {
-                                    theme.primary()
+                                    theme.halo_accent()
                                 } else {
                                     title_color
                                 }
@@ -306,7 +349,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         iced_core::Theme,
                         iced_tiny_skia::Renderer,
                     > = if uses_halo_header(theme) {
-                        let bg = theme.primary_lighter();
+                        let bg = theme.halo_accent_background();
                         let radius = theme.radii_max();
                         container(icon_element)
                             .width(Length::Fixed(icon_size))
@@ -347,6 +390,111 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.title_content(title_content);
         }
 
+        let halo = uses_halo_header(theme);
+        if halo {
+            let metrics = theme.halo_style();
+            let capture = row![
+                halo_button(
+                    icons::CAMERA,
+                    self.on_screenshot.clone(),
+                    "Screenshot window",
+                    HaloButtonRole::Tray,
+                    false,
+                    theme
+                ),
+                halo_button(
+                    icons::CIRCLE,
+                    None,
+                    "Recording — coming soon",
+                    HaloButtonRole::Tray,
+                    false,
+                    theme
+                ),
+            ]
+            .spacing(theme.spacing_0_5());
+            let divider = container(iced_widget::Space::new())
+                .width(metrics.border_width)
+                .height(metrics.divider_height)
+                .style(move |_| container::Style {
+                    background: Some(iced_core::Background::Color(theme.stroke_subtle())),
+                    ..Default::default()
+                });
+            let mut tray = row![divider, capture]
+                .spacing(metrics.gap)
+                .align_y(Alignment::Center);
+            if let Some(message) = self.on_right_click.clone() {
+                tray = tray.push(halo_button(
+                    icons::CHEVRON_DOWN,
+                    Some(message),
+                    "Window menu",
+                    HaloButtonRole::Menu,
+                    self.menu_open,
+                    theme,
+                ));
+            }
+            if let Some(message) = self.on_new_window.clone() {
+                tray = tray.push(halo_button(
+                    icons::PLUS,
+                    Some(message),
+                    "New Window",
+                    HaloButtonRole::Window,
+                    false,
+                    theme,
+                ));
+            }
+            let mut actions = row![].spacing(metrics.gap);
+            for (icon, message, label, destructive) in [
+                (icons::MINUS, self.on_minimize.clone(), "Minimize", false),
+                (
+                    if self.maximized {
+                        icons::MINIMIZE_2
+                    } else {
+                        icons::MAXIMIZE_2
+                    },
+                    self.on_maximize.clone(),
+                    if self.maximized {
+                        "Restore"
+                    } else {
+                        "Maximize"
+                    },
+                    false,
+                ),
+                (
+                    if self.fullscreen {
+                        icons::SHRINK
+                    } else {
+                        icons::FULLSCREEN
+                    },
+                    self.on_fullscreen.clone(),
+                    if self.fullscreen {
+                        "Leave fullscreen"
+                    } else {
+                        "Fullscreen"
+                    },
+                    false,
+                ),
+                (icons::X, self.on_close.clone(), "Close", true),
+            ] {
+                if let Some(message) = message {
+                    actions = actions.push(halo_button(
+                        icon,
+                        Some(message),
+                        label,
+                        if destructive {
+                            HaloButtonRole::Close
+                        } else {
+                            HaloButtonRole::Window
+                        },
+                        false,
+                        theme,
+                    ));
+                }
+            }
+            header = header
+                .trailing(tray)
+                .action_buttons(actions)
+                .menu_open(self.menu_open);
+        }
         if let Some(msg) = self.on_drag {
             header = header.on_drag(msg);
         }
@@ -360,7 +508,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if let Some(msg) = self.on_maximize {
             header = header.on_toggle_window(msg);
         }
-        if let Some(msg) = self.on_right_click {
+        if !halo && let Some(msg) = self.on_right_click.clone() {
             header = header.on_right_click(msg);
         }
 
@@ -376,6 +524,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
         if uses_halo_header(theme) {
+            let header_elem = if let Some(message) = self.on_right_click {
+                mouse_area(header_elem).on_right_press(message).into()
+            } else {
+                header_elem
+            };
             return container(header_elem)
                 .width(Length::Fill)
                 .height(Length::Fixed(ssd_header_render_height(theme) as f32))
@@ -400,6 +553,70 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             })
             .into()
     }
+}
+
+enum HaloButtonRole {
+    Tray,
+    Menu,
+    Window,
+    Close,
+}
+
+fn halo_button<'a, Message: Clone + 'static>(
+    icon: icetron_themes::Icon,
+    message: Option<Message>,
+    label: &'a str,
+    role: HaloButtonRole,
+    active: bool,
+    theme: &'a CompTheme,
+) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let metrics = theme.halo_style();
+    let icon_size = match role {
+        HaloButtonRole::Tray => metrics.glyph_icon_size,
+        HaloButtonRole::Menu => metrics.menu_icon_size,
+        HaloButtonRole::Window | HaloButtonRole::Close => metrics.control_icon_size,
+    };
+    let destructive = matches!(role, HaloButtonRole::Close);
+    let text_color = theme.text_tertiary();
+    let background = theme.overlay_5();
+    let disabled = theme.text_quaternary();
+    let button = button(
+        container(icon_svg_inherit(icon, icon_size))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(metrics.control_size)
+    .height(metrics.control_size)
+    .padding(0)
+    .on_press_maybe(message)
+    .standard_transition(&**theme)
+    .style(move |_, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            text_color: if matches!(status, button::Status::Disabled) {
+                disabled
+            } else if hovered || active {
+                theme.text_primary()
+            } else {
+                text_color
+            },
+            background: (hovered || active).then_some(iced_core::Background::Color(
+                if destructive && hovered {
+                    theme.feedback_error_primary()
+                } else {
+                    background
+                },
+            )),
+            border: iced_core::Border::default().rounded(theme.radii_max()),
+            ..Default::default()
+        }
+    });
+    tooltip(
+        button,
+        styled_text(label, theme.text_styles().caption(), theme.text_primary()),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 impl<'a, Message: Clone + 'static> From<HeaderBar<'a, Message>>

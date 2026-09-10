@@ -19,6 +19,7 @@ const ARROW_RIGHT_S_LINE: &[u8] = icetron_themes::icons::CHEVRON_RIGHT.bytes;
 const CHECK_LINE: &[u8] = icetron_themes::icons::CHECK.bytes;
 
 use icetron_p::prelude::styled_text;
+use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown};
 use smithay::{
     backend::{
         input::{ButtonState, TouchSlot},
@@ -60,6 +61,8 @@ use super::{GrabStartData, ResizeEdge};
 
 mod default;
 mod item;
+#[cfg(test)]
+mod tests;
 pub use self::default::*;
 
 pub struct MenuGrabState {
@@ -216,6 +219,7 @@ pub struct ContextMenu {
     items: Vec<Item>,
     selected: AtomicBool,
     row_width: Mutex<Option<f32>>,
+    halo: bool,
 }
 
 impl ContextMenu {
@@ -224,6 +228,7 @@ impl ContextMenu {
             items,
             selected: AtomicBool::new(false),
             row_width: Mutex::new(None),
+            halo: false,
         }
     }
 
@@ -264,7 +269,12 @@ impl Program for ContextMenu {
     ) -> Task<Self::Message> {
         match message {
             Message::ItemPressed(idx) => {
-                if let Some(Item::Entry { on_press, .. }) = self.items.get_mut(idx) {
+                if let Some(Item::Entry {
+                    on_press,
+                    disabled: false,
+                    ..
+                }) = self.items.get_mut(idx)
+                {
                     (on_press)(loop_handle);
                     self.selected.store(true, Ordering::SeqCst);
                 }
@@ -393,6 +403,38 @@ impl Program for ContextMenu {
     }
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        if self.halo {
+            let sections = self
+                .items
+                .iter()
+                .enumerate()
+                .map(|(idx, item)| match item {
+                    Item::Separator => DropdownSection::Divider,
+                    Item::Entry {
+                        title,
+                        shortcut,
+                        disabled,
+                        toggled,
+                        ..
+                    } => {
+                        let mut item = DropdownItem::new(title, Message::ItemPressed(idx))
+                            .disabled(*disabled)
+                            .active(*toggled);
+                        if let Some(shortcut) = shortcut {
+                            item = item.shortcut(shortcut);
+                        }
+                        DropdownSection::Item(item)
+                    }
+                    Item::Submenu { title, .. } => DropdownSection::Label(title.clone()),
+                })
+                .collect();
+            return container(
+                container(dropdown(&**theme).shadow(true).sections(sections))
+                    .width(Length::Fixed(theme.halo_style().menu_width)),
+            )
+            .padding(halo_menu_padding(theme))
+            .into();
+        }
         let width = self
             .row_width
             .lock()
@@ -584,6 +626,48 @@ impl Program for ContextMenu {
         .width(Length::Shrink)
         .into()
     }
+
+    fn backdrop_blur(
+        &self,
+        theme: &CompTheme,
+        size: Size<i32, Logical>,
+        _layers: &[iced_tiny_skia::Layer],
+        radii: [u8; 4],
+    ) -> Option<(IcedRectangle, [u8; 4])> {
+        if self.halo {
+            let padding = halo_menu_padding(theme);
+            Some((
+                IcedRectangle {
+                    x: padding.left,
+                    y: padding.top,
+                    width: (size.w as f32 - padding.left - padding.right).max(0.0),
+                    height: (size.h as f32 - padding.top - padding.bottom).max(0.0),
+                },
+                [theme.dropdown_radius().round().clamp(0.0, 255.0) as u8; 4],
+            ))
+        } else {
+            theme.header_backdrop_blur().then_some((
+                IcedRectangle::with_size(iced_core::Size::new(size.w as f32, size.h as f32)),
+                radii,
+            ))
+        }
+    }
+}
+
+fn halo_menu_padding(theme: &CompTheme) -> iced_core::Padding {
+    let mut padding = iced_core::Padding::ZERO;
+    for shadow in theme
+        .dropdown_shadow()
+        .iter()
+        .filter(|s| !s.inset && s.color.a > 0.0)
+    {
+        let reach = shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
+        padding.top = padding.top.max((reach - shadow.offset.y).ceil());
+        padding.bottom = padding.bottom.max((reach + shadow.offset.y).ceil());
+        padding.left = padding.left.max((reach - shadow.offset.x).ceil());
+        padding.right = padding.right.max((reach + shadow.offset.x).ceil());
+    }
+    padding
 }
 
 pub struct Element {
@@ -591,6 +675,22 @@ pub struct Element {
     position: Point<i32, Global>,
     pointer_entered: bool,
     touch_entered: Option<TouchSlot>,
+}
+
+impl Element {
+    fn input_bbox(&self) -> Rectangle<i32, Logical> {
+        let mut bounds = self.iced.bbox();
+        bounds.loc = self.position.as_logical();
+        if self.iced.with_program(|p| p.halo) {
+            let padding = self.iced.with_theme(halo_menu_padding);
+            bounds.loc += Point::from((padding.left as i32, padding.top as i32));
+            bounds.size -= Size::from((
+                (padding.left + padding.right) as i32,
+                (padding.top + padding.bottom) as i32,
+            ));
+        }
+        bounds
+    }
 }
 
 pub struct MenuGrab {
@@ -629,8 +729,7 @@ impl PointerGrab<State> for MenuGrab {
             };
 
             if let Some(i) = elements.iter().position(|elem| {
-                let mut bbox = elem.iced.bbox();
-                bbox.loc = elem.position.as_logical();
+                let bbox = elem.input_bbox();
 
                 bbox.contains(event_location.to_i32_floor())
             }) {
@@ -834,8 +933,7 @@ impl TouchGrab<State> for MenuGrab {
             };
 
             if let Some(i) = elements.iter().position(|elem| {
-                let mut bbox = elem.iced.bbox();
-                bbox.loc = elem.position.as_logical();
+                let bbox = elem.input_bbox();
 
                 bbox.contains(event_location.to_i32_floor())
             }) {
@@ -1095,8 +1193,62 @@ impl MenuGrab {
         handle: LoopHandle<'static, crate::state::State>,
         theme: CompTheme,
     ) -> MenuGrab {
+        Self::new_styled(
+            start_data,
+            seat,
+            items,
+            position,
+            alignment,
+            screen_space_relative,
+            handle,
+            theme,
+            false,
+        )
+    }
+
+    pub fn new_halo(
+        start_data: GrabStartData,
+        seat: &Seat<State>,
+        items: impl Iterator<Item = Item>,
+        position: Point<i32, Global>,
+        handle: LoopHandle<'static, State>,
+        theme: CompTheme,
+    ) -> MenuGrab {
+        Self::new_styled(
+            start_data,
+            seat,
+            items,
+            position,
+            MenuAlignment::CORNER,
+            None,
+            handle,
+            theme,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_styled(
+        start_data: GrabStartData,
+        seat: &Seat<State>,
+        items: impl Iterator<Item = Item>,
+        position: Point<i32, Global>,
+        alignment: MenuAlignment,
+        screen_space_relative: Option<f64>,
+        handle: LoopHandle<'static, State>,
+        theme: CompTheme,
+        halo: bool,
+    ) -> MenuGrab {
         let items = items.collect::<Vec<_>>();
-        let element = IcedElement::new(ContextMenu::new(items), Size::default(), handle, theme);
+        let mut menu = ContextMenu::new(items);
+        menu.halo = halo;
+        let position = if halo {
+            let padding = halo_menu_padding(&theme);
+            position - Point::from((padding.left as i32, padding.top as i32))
+        } else {
+            position
+        };
+        let element = IcedElement::new(menu, Size::default(), handle, theme);
         // Two-pass sizing: first pass measures natural width, second pass measures
         // final height with that width locked (mode switches from Shrink to Fill).
         let natural_size = element.minimum_size();

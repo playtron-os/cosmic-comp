@@ -68,6 +68,9 @@ use std::{
 use wayland_backend::server::ObjectId;
 
 use super::CosmicSurface;
+use crate::utils::desktop_action::{DesktopApp, NewWindowAction, glob_match};
+
+mod halo;
 
 pub const RESIZE_BORDER: i32 = 10;
 
@@ -171,6 +174,8 @@ pub struct CosmicWindowInternal {
     /// Desktop override from .desktop file with `X-Playtron-AppIdMatch`.
     /// Tuple: (app_id used for lookup, optional override).
     desktop_override: Mutex<(String, Option<DesktopOverride>)>,
+    desktop_app: Mutex<Option<DesktopApp>>,
+    menu_open: Arc<AtomicBool>,
     tiled: AtomicBool,
     /// Whether the window fills the output zone (position 0,0 and size >= zone).
     /// Used to give square corners to non-maximized windows that visually fill the screen.
@@ -478,33 +483,7 @@ fn shm_buffer_to_app_icon(
 struct DesktopOverride {
     forced_title: Option<String>,
     forced_icon: Option<String>,
-}
-
-/// Simple glob matching supporting `*` (any sequence) and `?` (single char).
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let (p, t) = (pattern.as_bytes(), text.as_bytes());
-    let (mut px, mut tx) = (0usize, 0usize);
-    let (mut star_px, mut star_tx) = (usize::MAX, 0usize);
-    while tx < t.len() {
-        if px < p.len() && (p[px] == b'?' || p[px] == t[tx]) {
-            px += 1;
-            tx += 1;
-        } else if px < p.len() && p[px] == b'*' {
-            star_px = px;
-            star_tx = tx;
-            px += 1;
-        } else if star_px != usize::MAX {
-            px = star_px + 1;
-            star_tx += 1;
-            tx = star_tx;
-        } else {
-            return false;
-        }
-    }
-    while px < p.len() && p[px] == b'*' {
-        px += 1;
-    }
-    px == p.len()
+    app: Option<DesktopApp>,
 }
 
 /// Scan XDG application directories for a .desktop file whose
@@ -584,10 +563,19 @@ fn parse_desktop_override(path: &std::path::Path, app_id: &str) -> Option<Deskto
     Some(DesktopOverride {
         forced_title,
         forced_icon,
+        app: DesktopApp::from_content(path, &content),
     })
 }
 
 impl CosmicWindowInternal {
+    fn new_window_action(&self) -> Option<NewWindowAction> {
+        self.desktop_app
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|app| app.new_window.clone())
+    }
+
     /// Space the active theme reserves above the client surface.
     fn ssd_height(&self) -> i32 {
         super::header_bar::ssd_header_height(&self.theme.lock().unwrap()) as i32
@@ -764,6 +752,7 @@ impl CosmicWindow {
         let last_title = window.title();
         let app_id = window.app_id();
         let desktop_ovr = find_desktop_override(&app_id);
+        let desktop_app = desktop_ovr.as_ref().and_then(|entry| entry.app.clone());
         let icon_name = desktop_ovr
             .as_ref()
             .and_then(|o| o.forced_icon.as_deref())
@@ -789,6 +778,8 @@ impl CosmicWindow {
                 cached_icon: Mutex::new((app_id.clone(), None)),
                 client_icon: Mutex::new((String::new(), None)),
                 desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
+                desktop_app: Mutex::new(desktop_app),
+                menu_open: Arc::new(AtomicBool::new(false)),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
                 output_edges: AtomicU8::new(super::OutputEdges::ALL.bits()),
@@ -810,7 +801,17 @@ impl CosmicWindow {
         let app_id_clone = app_id;
         std::thread::spawn(move || {
             let icon = resolve_app_icon(&icon_name);
+            let app = crate::utils::desktop_action::for_app(&app_id_clone);
             element.with_program(|p| {
+                if p.window.app_id() != app_id_clone {
+                    return;
+                }
+                {
+                    let mut cached_app = p.desktop_app.lock().unwrap();
+                    if cached_app.is_none() {
+                        *cached_app = app;
+                    }
+                }
                 *p.cached_icon.lock().unwrap() = (app_id_clone, icon);
             });
             element.force_update();
@@ -1424,6 +1425,9 @@ pub enum Message {
     Maximize,
     Close,
     Menu,
+    Screenshot,
+    Fullscreen,
+    NewWindow,
 }
 
 pub(super) fn halo_backdrop_blur(
@@ -1473,6 +1477,14 @@ impl Program for CosmicWindowInternal {
         last_seat: Option<&(Seat<State>, Serial)>,
     ) -> Task<Self::Message> {
         match message {
+            Message::Screenshot | Message::Fullscreen | Message::NewWindow => {
+                let surface = self.window.clone();
+                let action = self.new_window_action();
+                let seat = last_seat.map(|(seat, _)| seat.clone());
+                loop_handle.insert_idle(move |state| {
+                    halo::perform_action(state, &surface, seat.as_ref(), message, action.as_ref())
+                });
+            }
             Message::DragStart => {
                 if let Some((seat, serial)) = last_seat.cloned()
                     && let Some(surface) = self.window.wl_surface().map(Cow::into_owned)
@@ -1526,6 +1538,20 @@ impl Program for CosmicWindowInternal {
             }
             Message::Close => self.window.close(),
             Message::Menu => {
+                if self.uses_halo_header() {
+                    if let Some((seat, serial)) = last_seat.cloned()
+                        && let Some(start) =
+                            crate::shell::check_grab_preconditions(&seat, Some(serial), None)
+                    {
+                        let position = start.current_location(&seat).to_i32_round().as_global();
+                        let surface = self.window.clone();
+                        let action = self.new_window_action();
+                        loop_handle.insert_idle(move |state| {
+                            halo::open_menu(state, &surface, &seat, serial, start, position, action)
+                        });
+                    }
+                    return Task::none();
+                }
                 if let Some((seat, serial)) = last_seat.cloned()
                     && let Some(surface) = self.window.wl_surface().map(Cow::into_owned)
                 {
@@ -1593,7 +1619,8 @@ impl Program for CosmicWindowInternal {
             super::header_bar::halo_visibility(
                 theme,
                 self.pointer_over_window.load(Ordering::SeqCst)
-                    || self.activated.load(Ordering::SeqCst),
+                    || self.activated.load(Ordering::SeqCst)
+                    || self.menu_open.load(Ordering::SeqCst),
             )
         })
     }
@@ -1667,6 +1694,9 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_minimize(Message::Minimize)
             .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
+            .on_screenshot(Message::Screenshot)
+            .on_fullscreen(Message::Fullscreen, win.window.is_fullscreen(false))
+            .menu_open(win.menu_open.load(Ordering::SeqCst))
             .focused(focused)
             .hovered(hovered)
             .maximized(
@@ -1677,6 +1707,14 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             // margin those differ, and only the second decides the radius.
             .square_top(win.squares_top_corners())
             .theme(theme);
+        if let Some(app) = win.desktop_app.lock().unwrap().as_ref() {
+            if let Some(name) = &app.name {
+                header = header.app_name(name.clone());
+            }
+            if app.new_window.is_some() {
+                header = header.on_new_window(Message::NewWindow);
+            }
+        }
 
         // Pass the application icon if resolved. A client-set toplevel icon
         // (xdg-toplevel-icon) takes priority over the app_id-based icon —
@@ -1803,6 +1841,10 @@ impl SpaceElement for CosmicWindow {
             let mut cached = p.cached_icon.lock().unwrap();
             if cached.0 != app_id {
                 let new_ovr = find_desktop_override(&app_id);
+                *p.desktop_app.lock().unwrap() = new_ovr
+                    .as_ref()
+                    .and_then(|entry| entry.app.clone())
+                    .or_else(|| crate::utils::desktop_action::for_app(&app_id));
                 let icon_name = new_ovr
                     .as_ref()
                     .and_then(|o| o.forced_icon.as_deref())

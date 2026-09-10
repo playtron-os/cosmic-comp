@@ -2,6 +2,41 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+/// Launch an app through the existing workspace boundary, never through a shell.
+pub fn spawn_app_in_workspace(program: &str, args: &[String]) -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let workspaces = matches!(
+        std::env::var("COSMIC_WORKSPACES").ok().as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    );
+    let mut command = if workspaces {
+        let launcher = which("kora-launch").into_iter().next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "kora-launch is required for workspace app launches",
+            )
+        })?;
+        let mut command = Command::new(launcher);
+        command.arg("--");
+        command
+    } else {
+        let mut command = Command::new("setsid");
+        command.args(["--fork", "--"]);
+        command
+    };
+    command
+        .arg(program)
+        .args(args)
+        .env_remove("WGPU_POWER_PREF")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
 /// Binary directory searched after `PATH`, so an FHS install keeps resolving
 /// when the compositor is started with a stripped environment. On layouts where
 /// binaries do not live in `/usr/bin`, `PATH` is what carries the answer.

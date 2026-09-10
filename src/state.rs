@@ -1033,11 +1033,17 @@ impl State {
             Registry::Absent => {
                 shell.set_workspace_registry_present(false);
                 shell.set_active_workspace(None);
+                shell.set_workspace_accent(None, false);
+                self.common.theme.workspace_accent = None;
             }
             Registry::Present { active, running } => {
                 shell.set_workspace_registry_present(true);
                 let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
+                if active.is_none() {
+                    shell.set_workspace_accent(None, false);
+                    self.common.theme.workspace_accent = None;
+                }
                 // Every running workspace gets its realm now, not on first
                 // visit: a switcher can only show a desktop that exists.
                 {
@@ -1051,6 +1057,14 @@ impl State {
                     let animation = self.common.config.cosmic_conf.workspace_transition;
                     let initial = shell.take_initial_realm_activation();
                     shell.switch_realm(&active.id, (!initial).then_some(animation), &mut guard);
+                    let accent = active
+                        .accent
+                        .map(|[r, g, b]| iced_core::Color::from_rgb(r, g, b));
+                    shell.set_workspace_accent(
+                        accent,
+                        previous.as_deref() != Some(active.id.as_str()),
+                    );
+                    self.common.theme.workspace_accent = accent;
                     // `switch_realm` returns early for the realm already shown,
                     // and a client told of a transition that never runs would
                     // fade out and never come back.
