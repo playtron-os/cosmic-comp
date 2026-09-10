@@ -20,6 +20,10 @@ use std::{
 
 use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
+mod visibility;
+pub use visibility::Visibility;
+use visibility::{VisibilityAnimation, VisibilityFrame};
+
 // iced 0.15 direct imports (no libcosmic re-exports)
 use iced_core::{
     Color, Element, Font, Length, Pixels, Point as IcedPoint, Size as IcedSize,
@@ -282,9 +286,9 @@ pub trait Program {
         Color::TRANSPARENT
     }
 
-    /// Fade the complete UI buffer and its backdrop together when specified.
-    /// The view must keep its content at full visibility; this owns the fade.
-    fn visibility(&self, _theme: &CompTheme) -> Option<bool> {
+    /// Animate the complete UI buffer and its backdrop together when specified.
+    /// The view stays fully visible; this owns its fade and translation.
+    fn visibility(&self, _theme: &CompTheme) -> Option<Visibility> {
         None
     }
 
@@ -340,7 +344,8 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     event_queue: Vec<Event>,
     mouse_interaction: MouseInteraction,
     needs_redraw: bool,
-    visibility: Option<iced_core::Animation<bool>>,
+    visibility: Option<VisibilityAnimation>,
+    visibility_frame: VisibilityFrame,
 
     // the actual program
     program: P,
@@ -392,6 +397,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
             visibility: self.visibility.clone(),
+            visibility_frame: self.visibility_frame,
             program: self.program.clone(),
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -572,6 +578,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
             visibility: None,
+            visibility_frame: VisibilityFrame::VISIBLE,
             program,
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -709,22 +716,24 @@ impl<P: Program + Send + 'static + Clone> IcedElement<P> {
 
 impl<P: Program + Send + 'static> IcedElementInternal<P> {
     fn sync_visibility(&mut self, now: IcedInstant) {
-        self.visibility = self.program.visibility(&self.theme).map(|visible| {
-            self.visibility
+        self.visibility = self.program.visibility(&self.theme).map(|settings| {
+            let mut animation = self
+                .visibility
                 .take()
-                .unwrap_or_else(|| iced_core::Animation::new(visible))
-                .duration(self.theme.motion.animation)
-                .easing(iced_core::animation::Easing::Linear)
-                .go(visible, now)
+                .unwrap_or_else(|| VisibilityAnimation::new(settings));
+            animation.update(settings, now);
+            animation
         });
+        self.visibility_frame = self
+            .visibility
+            .as_ref()
+            .map_or(VisibilityFrame::VISIBLE, |animation| animation.frame(now));
     }
 
-    fn frame_alpha(&self, alpha: f32, now: IcedInstant) -> f32 {
-        alpha
-            * self
-                .visibility
-                .as_ref()
-                .map_or(1.0, |visibility| visibility.interpolate(0.0, 1.0, now))
+    /// Input positions are stored in the stationary buffer's coordinate space.
+    /// Reproject them every frame, including frames with no pointer motion.
+    fn local_position(&self, position: IcedPoint) -> IcedPoint {
+        position - self.visibility_frame.offset
     }
 
     /// Schedule a Task returned by program.update() onto the calloop executor.
@@ -806,9 +815,25 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
                 )));
         }
 
+        let now = match self.event_queue.last() {
+            Some(Event::Window(WindowEvent::RedrawRequested(now))) => *now,
+            _ => unreachable!("every update ends with RedrawRequested"),
+        };
+        self.sync_visibility(now);
+        let offset = self.visibility_frame.offset;
+        for event in &mut self.event_queue {
+            match event {
+                Event::Mouse(MouseEvent::CursorMoved { position })
+                | Event::Touch(TouchEvent::FingerPressed { position, .. })
+                | Event::Touch(TouchEvent::FingerMoved { position, .. })
+                | Event::Touch(TouchEvent::FingerLifted { position, .. })
+                | Event::Touch(TouchEvent::FingerLost { position, .. }) => *position -= offset,
+                _ => {}
+            }
+        }
         let cursor = self
             .cursor_pos
-            .map(|p| IcedPoint::new(p.x as f32, p.y as f32))
+            .map(|p| self.local_position(IcedPoint::new(p.x as f32, p.y as f32)))
             .map(Cursor::Available)
             .unwrap_or(Cursor::Unavailable);
 
@@ -911,7 +936,6 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         }
         let message_loop_duration = msg_start.elapsed();
 
-        let now = IcedInstant::now();
         self.sync_visibility(now);
         self.needs_redraw |= self
             .visibility
@@ -1505,7 +1529,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         {
             profiler.animation_burst_start(element_id);
         }
-        let alpha = internal_ref.frame_alpha(alpha, IcedInstant::now());
+        let alpha = internal_ref.visibility_frame.alpha(alpha);
         if alpha <= 0.0 {
             return;
         }
@@ -1522,6 +1546,9 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         }
 
         scale = scale * internal_ref.additional_scale;
+        // Preserve subpixel motion and use exactly the same origin for the
+        // texture (including its shadow) and the framebuffer blur capture.
+        let location = internal_ref.visibility_frame.location(location, scale);
         if let Some((buffer, old_layers)) = internal_ref.buffers.get_mut(&OrderedFloat(scale.x)) {
             let size: Size<i32, BufferCoords> = internal_ref
                 .size
@@ -1617,14 +1644,10 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
             match MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
-                location.to_f64(),
+                location,
                 buffer,
                 Some(alpha),
-                Some(Rectangle::from_size(
-                    size.to_f64()
-                        .to_logical(1., Transform::Normal)
-                        .to_i32_round(),
-                )),
+                Some(VisibilityFrame::texture_source(location, size)),
                 Some(
                     internal_ref
                         .size
@@ -1663,7 +1686,6 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 )
                 .upscale(internal_ref.additional_scale);
                 let element_origin = location
-                    .to_f64()
                     .to_logical(scale)
                     .upscale(internal_ref.additional_scale);
 

@@ -1585,9 +1585,16 @@ impl Program for CosmicWindowInternal {
         Color::TRANSPARENT
     }
 
-    fn visibility(&self, theme: &crate::comp_theme::CompTheme) -> Option<bool> {
+    fn visibility(
+        &self,
+        theme: &crate::comp_theme::CompTheme,
+    ) -> Option<crate::utils::iced::Visibility> {
         super::header_bar::uses_halo_header(theme).then(|| {
-            self.pointer_over_window.load(Ordering::SeqCst) || self.activated.load(Ordering::SeqCst)
+            super::header_bar::halo_visibility(
+                theme,
+                self.pointer_over_window.load(Ordering::SeqCst)
+                    || self.activated.load(Ordering::SeqCst),
+            )
         })
     }
 

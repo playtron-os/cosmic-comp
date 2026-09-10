@@ -14,6 +14,23 @@ use icetron_themes::WindowHeaderStyle;
 
 use crate::comp_theme::CompTheme;
 
+/// Motion of the live design prototype's `components/halo/halo.css`:
+/// translateY(3px -> 0), opacity via --ease-standard, slide via --ease-spring.
+/// Icetron calls that non-overshooting slide curve `ease_out_expo`; its
+/// `ease_spring` is a different, bouncing curve. The prototype's standard fade
+/// curve has no matching ThemeInterface role, so retain its control points here.
+pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils::iced::Visibility {
+    crate::utils::iced::Visibility {
+        visible,
+        duration: crate::backend::render::animations::motion::ms(
+            theme.animation_transition_duration_fade_default(),
+        ),
+        opacity_curve: [0.4, 0.0, 0.2, 1.0],
+        translation_curve: theme.ease_out_expo(),
+        hidden_offset: iced_core::Vector::new(0.0, 3.0),
+    }
+}
+
 /// Space reserved above the client surface in logical pixels.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     let style = theme.window_header_style();
