@@ -2449,7 +2449,7 @@ impl SurfaceThreadState {
     }
 }
 
-fn source_node_for_surface(w: &WlSurface) -> Option<DrmNode> {
+pub(crate) fn source_node_for_surface(w: &WlSurface) -> Option<DrmNode> {
     with_renderer_surface_state(w, |state| {
         state
             .buffer()
@@ -2490,7 +2490,20 @@ fn render_node_for_output(
     .flat_map(|w| w.wl_surface().and_then(|s| source_node_for_surface(&s)))
     .collect::<Vec<_>>();
 
-    if nodes.contains(target_node) || nodes.is_empty() {
+    render_node_for_windows(&nodes, primary_node, target_node)
+}
+
+/// The GPU to draw a workspace on, given where its windows' buffers live: the
+/// output's own unless every window is on the primary, which then imports
+/// nothing. A capture of the workspace must choose the same way, or textures
+/// held for one GPU are asked to draw on the other and the windows drop out.
+pub(crate) fn render_node_for_windows(
+    window_nodes: &[DrmNode],
+    primary_node: &DrmNode,
+    target_node: &DrmNode,
+) -> DrmNode {
+    if target_node == primary_node || window_nodes.contains(target_node) || window_nodes.is_empty()
+    {
         *target_node
     } else {
         *primary_node

@@ -312,6 +312,15 @@ pub fn render_workspace_to_buffer(
 
     let mut output = workspace.output().clone();
     let idx = realm.idx_for_handle(&output, &handle).unwrap();
+    // Where the desktop's windows' buffers live, for the choice of GPU below.
+    let window_nodes: Vec<smithay::backend::drm::DrmNode> = workspace
+        .mapped()
+        .filter_map(|mapped| {
+            let window = mapped.active_window();
+            let surface = window.wl_surface()?;
+            crate::backend::kms::source_node_for_surface(&surface)
+        })
+        .collect();
     std::mem::drop(shell);
 
     let mode = output
@@ -439,9 +448,13 @@ pub fn render_workspace_to_buffer(
     let common = &mut state.common;
 
     let renderer = match state.backend.offscreen_renderer(|kms| {
-        let render_node = kms
-            .target_node_for_output(&output)
-            .or(*kms.primary_node.read().unwrap())?;
+        // The GPU a frame of this output would draw on, not always the
+        // output's own: windows living on the primary render there.
+        let primary_node = *kms.primary_node.read().unwrap();
+        let output_node = kms.target_node_for_output(&output).or(primary_node)?;
+        let render_node = primary_node.map_or(output_node, |primary| {
+            crate::backend::kms::render_node_for_windows(&window_nodes, &primary, &output_node)
+        });
         let target_node = get_dmabuf(&buffer)
             .ok()
             .and_then(|dma| dma.node())
