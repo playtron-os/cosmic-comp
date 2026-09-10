@@ -56,7 +56,7 @@ impl WorkspaceHandler for State {
                 Request::Remove(handle) => {
                     let mut shell = self.common.shell.write();
                     let mut guard = self.common.workspace_state.update();
-                    shell.remove_empty_desktop(&handle, &mut guard);
+                    shell.remove_desktop(&handle, &mut guard);
                 }
                 Request::SetTilingState { workspace, state } => {
                     let mut shell = self.common.shell.write();

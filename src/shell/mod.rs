@@ -895,14 +895,7 @@ fn create_workspace(
     if active {
         state.add_workspace_state(&workspace_handle, WState::Active);
     }
-    state.set_workspace_capabilities(
-        &workspace_handle,
-        WorkspaceCapabilities::Activate
-            | WorkspaceCapabilities::SetTilingState
-            | WorkspaceCapabilities::Pin
-            | WorkspaceCapabilities::Move
-            | WorkspaceCapabilities::Remove,
-    );
+    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false));
     Workspace::new(
         workspace_handle,
         output.clone(),
@@ -936,14 +929,7 @@ fn create_workspace_from_pinned(
     if active {
         state.add_workspace_state(&workspace_handle, WState::Active);
     }
-    state.set_workspace_capabilities(
-        &workspace_handle,
-        WorkspaceCapabilities::Activate
-            | WorkspaceCapabilities::SetTilingState
-            | WorkspaceCapabilities::Pin
-            | WorkspaceCapabilities::Move
-            | WorkspaceCapabilities::Remove,
-    );
+    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false));
 
     if let Some(ref name) = pinned.name {
         state.set_workspace_name(&workspace_handle, name);
@@ -956,6 +942,19 @@ fn create_workspace_from_pinned(
         theme.clone(),
         appearance,
     )
+}
+
+/// What clients may do with a desktop. Removal is only offered where it can
+/// happen, so a switcher shows its trash only there.
+fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
+    let mut capabilities = WorkspaceCapabilities::Activate
+        | WorkspaceCapabilities::SetTilingState
+        | WorkspaceCapabilities::Pin
+        | WorkspaceCapabilities::Move;
+    if removable {
+        capabilities |= WorkspaceCapabilities::Remove;
+    }
+    capabilities
 }
 
 /// Fold `workspace` into `into`, moving every window across and dropping the now-empty
@@ -2540,21 +2539,40 @@ impl Shell {
         Some((output.clone(), set.workspaces.len() - 1))
     }
 
-    /// Remove `handle` if nothing is on it; a desktop with windows stays.
-    pub fn remove_empty_desktop(
+    /// Remove `handle`. A desktop with windows hands them to the one before it
+    /// (after it, for the first); the last desktop of a set stays.
+    pub fn remove_desktop(
         &mut self,
         handle: &WorkspaceHandle,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
     ) -> bool {
+        let seats: Vec<Seat<State>> = self.seats.iter().cloned().collect();
         for realm in self.realms.values_mut() {
             for set in realm.sets.values_mut() {
-                let Some(workspace) = set.workspaces.iter().find(|w| w.handle == *handle) else {
+                let Some(idx) = set.workspaces.iter().position(|w| w.handle == *handle) else {
                     continue;
                 };
-                if !workspace.is_empty() || set.workspaces.len() == 1 {
+                if set.workspaces.len() == 1 {
                     return false;
                 }
-                return set.remove_workspace(workspace_state, handle).is_some();
+                let Some(workspace) = set.remove_workspace(workspace_state, handle) else {
+                    return false;
+                };
+                if workspace.is_empty() {
+                    // The set's removal only moves a desktop between sets; the
+                    // protocol object is retired here, or clients keep listing it.
+                    workspace_state.remove_workspace(workspace.handle);
+                } else {
+                    let into = idx.saturating_sub(1);
+                    merge_workspaces(
+                        workspace,
+                        &mut set.workspaces[into],
+                        workspace_state,
+                        &seats,
+                    );
+                    set.workspaces[into].refresh();
+                }
+                return true;
             }
         }
         false
@@ -6496,6 +6514,23 @@ impl Shell {
         self.zoom_state.as_ref()
     }
 
+    /// Offer removal on the desktops it can happen to, in every realm: not the
+    /// only one of a set, and not the trailing empty one dynamic desktops keep.
+    fn refresh_removable(&self, workspace_state: &mut WorkspaceUpdateGuard<'_, State>) {
+        for realm in self.realms.values() {
+            for set in realm.sets.values() {
+                let len = set.workspaces.len();
+                for (i, workspace) in set.workspaces.iter().enumerate() {
+                    let spare = realm.dynamic && i + 1 == len && workspace.is_empty();
+                    workspace_state.set_workspace_capabilities(
+                        &workspace.handle,
+                        desktop_capabilities(len > 1 && !spare),
+                    );
+                }
+            }
+        }
+    }
+
     fn refresh(
         &mut self,
         xdg_activation_state: &XdgActivationState,
@@ -6551,6 +6586,7 @@ impl Shell {
 
         self.workspaces_mut()
             .refresh(workspace_state, xdg_activation_state);
+        self.refresh_removable(workspace_state);
 
         for output in self.outputs() {
             let mut map = layer_map_for_output(output);
