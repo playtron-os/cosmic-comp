@@ -892,16 +892,12 @@ impl LayerVisibilityContext {
 
 // MERGE: our blur-capture variants (`ExcludeBlurWindows`, `BlurCapture`,
 // `LayerBlurCapture`) and the unused `home_visibility()` placeholder are dropped —
-// upstream's blur reads the live framebuffer, so no capture pass exists any
-// more. `ExcludeShell` is the one capture-only filter left, for desktop previews.
+// upstream's blur reads the live framebuffer, so no capture pass (and no
+// capture-only filter) exists any more. This is `Copy` again, like upstream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementFilter {
     All,
     ExcludeWorkspaceOverview,
-    /// A desktop as its own content: wallpaper and windows, none of the shell
-    /// laid over every desktop alike — the bar, its popovers, a side panel. A
-    /// preview showing the switcher that asked for it is the picture this avoids.
-    ExcludeShell,
     LayerShellOnly,
 }
 

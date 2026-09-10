@@ -416,7 +416,7 @@ pub fn render_workspace_to_buffer(
                 None,
                 handle,
                 cursor_mode,
-                ElementFilter::ExcludeShell,
+                ElementFilter::ExcludeWorkspaceOverview,
             )?
         } else {
             let target = offscreen.expect("shm buffers should have an offscreen target");
@@ -434,7 +434,7 @@ pub fn render_workspace_to_buffer(
                 None,
                 handle,
                 cursor_mode,
-                ElementFilter::ExcludeShell,
+                ElementFilter::ExcludeWorkspaceOverview,
             )?
         };
 
@@ -448,17 +448,28 @@ pub fn render_workspace_to_buffer(
     let common = &mut state.common;
 
     let renderer = match state.backend.offscreen_renderer(|kms| {
-        // The GPU a frame of this output would draw on, not always the
-        // output's own: windows living on the primary render there.
+        // Draw where the windows' buffers live when they share a GPU, as a
+        // window capture does: a tiled buffer from the other GPU would not
+        // import on the output's, and the window would drop out of the picture.
         let primary_node = *kms.primary_node.read().unwrap();
         let output_node = kms.target_node_for_output(&output).or(primary_node)?;
-        let render_node = primary_node.map_or(output_node, |primary| {
-            crate::backend::kms::render_node_for_windows(&window_nodes, &primary, &output_node)
-        });
+        let shared = window_nodes
+            .first()
+            .filter(|node| window_nodes.iter().all(|other| other == *node))
+            .copied();
+        let render_node = shared.unwrap_or(output_node);
         let target_node = get_dmabuf(&buffer)
             .ok()
             .and_then(|dma| dma.node())
             .unwrap_or(render_node);
+        tracing::debug!(
+            ?window_nodes,
+            ?primary_node,
+            ?output_node,
+            ?render_node,
+            ?target_node,
+            "workspace capture: nodes"
+        );
 
         let buffer_format = match buffer_type(&buffer) {
             Some(BufferType::Dma) => Some(get_dmabuf(&buffer).unwrap().format().code),

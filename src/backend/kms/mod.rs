@@ -63,8 +63,8 @@ pub mod render;
 mod surface;
 use device::*;
 pub use surface::Timings;
+pub(crate) use surface::source_node_for_surface;
 pub(crate) use surface::{Surface, handoff_active};
-pub(crate) use surface::{render_node_for_windows, source_node_for_surface};
 
 use super::render::{CLEAR_COLOR, CursorMode, output_elements};
 
