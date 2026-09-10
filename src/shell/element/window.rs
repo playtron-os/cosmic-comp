@@ -1292,19 +1292,28 @@ impl CosmicWindow {
         let is_embedded = embed_render_info.is_some();
         let embed_corner_radius = embed_render_info.map(|info| info.corner_radius);
 
-        let (has_ssd, is_tiled, squares_every_corner, mut radii, appearance, has_blur, halo_header) =
-            self.0.with_program(|p| {
-                let geo_size = SpaceElement::geometry(&p.window).size;
-                (
-                    p.has_ssd(false),
-                    p.is_tiled(),
-                    p.squares_every_corner(),
-                    embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
-                    *p.appearance_conf.lock().unwrap(),
-                    p.window.has_blur(),
-                    p.uses_halo_header(),
-                )
-            });
+        let (
+            has_ssd,
+            is_tiled,
+            squares_every_corner,
+            mut radii,
+            appearance,
+            has_blur,
+            halo_header,
+            focused,
+        ) = self.0.with_program(|p| {
+            let geo_size = SpaceElement::geometry(&p.window).size;
+            (
+                p.has_ssd(false),
+                p.is_tiled(),
+                p.squares_every_corner(),
+                embed_corner_radius.unwrap_or_else(|| p.compute_corner_radius(geo_size, 0)),
+                *p.appearance_conf.lock().unwrap(),
+                p.window.has_blur(),
+                p.uses_halo_header(),
+                p.activated.load(Ordering::SeqCst),
+            )
+        });
         // Clipping is what rounds the CLIENT's surface; `radii` alone rounds
         // nothing without it. This used to be `&& !is_maximized`, on the same
         // assumption `compute_corner_radius` made — that maximized means
@@ -1316,6 +1325,7 @@ impl CosmicWindow {
         // did not: the SSD header draws its own top corners, so it followed
         // `compute_corner_radius` on its own, while the content below it was
         // never clipped at all.
+        let halo_focus = focused && halo_header && !is_embedded;
         let halo_header = has_ssd && halo_header;
         let clip = ((!is_tiled && appearance.clip_floating_windows)
             || (is_tiled && appearance.clip_tiled_windows)
@@ -1381,18 +1391,18 @@ impl CosmicWindow {
         // clear of the screen edges has corners to draw a border around, and the
         // border element is what carries `radii` — without it a rounded
         // maximized window has no outline at all.
-        if ((has_ssd || clip) && !squares_every_corner && !has_blur) || is_embedded {
+        if ((has_ssd || clip) && !squares_every_corner && (!has_blur || halo_focus)) || is_embedded
+        {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 
-            let (border_color, border_thickness) = self.0.with_program(|p| {
+            let (border_color, border_thickness, ring) = self.0.with_program(|p| {
                 let theme = p.theme.lock().unwrap();
-                let c = theme.window_border_color();
-                ([c.r, c.g, c.b], theme.window_border_width() as u8)
-            });
-            let border_alpha = self.0.with_program(|p| {
-                let theme = p.theme.lock().unwrap();
-                theme.window_border_color().a
+                (
+                    theme.focused_window_border(halo_focus),
+                    theme.window_border_width() as u8,
+                    theme.focused_window_ring(halo_focus),
+                )
             });
             // SSD windows: draw the border inset (inside the geo) so the
             // border overlays the header/surface edges with no gap at the top.
@@ -1403,11 +1413,25 @@ impl CosmicWindow {
                 geo.to_i32_round().as_local(),
                 border_thickness,
                 radii,
-                border_alpha * alpha,
+                border_color.a * alpha,
                 scale.x,
-                border_color,
+                [border_color.r, border_color.g, border_color.b],
             ));
             push_above(elem);
+            if let Some(ring) = ring.filter(|ring| ring.a > 0.0 && border_thickness > 0) {
+                push_above(CosmicWindowRenderElement::Border(
+                    IndicatorShader::focus_element(
+                        renderer,
+                        Key::Window(Usage::AccentFocusRing, window_key),
+                        geo.to_i32_round().as_local(),
+                        border_thickness,
+                        radii,
+                        ring.a * alpha,
+                        scale.x,
+                        [ring.r, ring.g, ring.b],
+                    ),
+                ));
+            }
         }
 
         // MERGE: clipping/rounding of the toplevel surface now happens inside
@@ -1617,7 +1641,7 @@ impl Program for CosmicWindowInternal {
         last_seat: Option<&(Seat<State>, Serial)>,
     ) -> Task<Self::Message> {
         match message {
-            Message::Screenshot | Message::Fullscreen | Message::NewWindow => {
+            Message::Screenshot | Message::Fullscreen | Message::NewWindow | Message::Maximize => {
                 let surface = self.window.clone();
                 let action = self.new_window_action();
                 let seat = last_seat.map(|(seat, _)| seat.clone());
@@ -1662,17 +1686,6 @@ impl Program for CosmicWindowInternal {
                     loop_handle.insert_idle(move |state| {
                         let mut shell = state.common.shell.write();
                         shell.minimize_request(&surface)
-                    });
-                }
-            }
-            Message::Maximize => {
-                if let Some(surface) = self.window.wl_surface().map(Cow::into_owned) {
-                    loop_handle.insert_idle(move |state| {
-                        let mut shell = state.common.shell.write();
-                        if let Some(mapped) = shell.element_for_surface(&surface).cloned() {
-                            let seat = shell.seats.last_active().clone();
-                            shell.maximize_toggle(&mapped, &seat, &state.common.event_loop_handle)
-                        }
                     });
                 }
             }

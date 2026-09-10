@@ -53,6 +53,7 @@ icetron-themes = { git = "ssh://git@github.com/playtron-os/icetron-themes.git", 
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
+palette = "0.7"
 libc = "0.2.177"
 libsystemd = { version = "0.7", optional = true }
 log-panics = { version = "2", features = ["with-backtrace"] }

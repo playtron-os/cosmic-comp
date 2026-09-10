@@ -459,20 +459,17 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 ));
             }
             let mut actions = row![].spacing(metrics.gap);
+            let restore = self.maximized || self.fullscreen;
             for (icon, message, label, destructive) in [
                 (icons::MINUS, self.on_minimize.clone(), "Minimize", false),
                 (
-                    if self.maximized {
+                    if restore {
                         icons::MINIMIZE_2
                     } else {
                         icons::MAXIMIZE_2
                     },
                     self.on_maximize.clone(),
-                    if self.maximized {
-                        "Restore"
-                    } else {
-                        "Maximize"
-                    },
+                    if restore { "Restore" } else { "Maximize" },
                     false,
                 ),
                 (

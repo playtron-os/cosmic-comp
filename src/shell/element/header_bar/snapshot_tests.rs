@@ -8,6 +8,126 @@ use iced_tiny_skia::{Layer, Renderer};
 use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
 use std::sync::Arc;
 
+#[test]
+fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
+    use iced_core::{
+        Event, Point,
+        widget::{Id, Operation},
+    };
+    use icetron_p::{
+        prelude::TooltipReport,
+        utils::platform::{now, test_clock},
+    };
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Maximize,
+        Fullscreen,
+    }
+    #[derive(Default)]
+    struct Tooltip(Option<String>);
+    impl Operation for Tooltip {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+        fn custom(&mut self, _: Option<&Id>, _: Rectangle, state: &mut dyn std::any::Any) {
+            if let Some(report) = state.downcast_ref::<TooltipReport>() {
+                self.0 = Some(report.label.clone());
+            }
+        }
+    }
+    let _clock = test_clock::Frozen::start();
+    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
+    tokens.duration_fast = 0.0;
+    let theme = CompTheme::new(Arc::new(tokens), true);
+    for (maximized, fullscreen, expected) in [
+        (false, false, "Maximize"),
+        (true, false, "Restore"),
+        (false, true, "Restore"),
+        (true, true, "Restore"),
+    ] {
+        let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
+        let header = header_bar()
+            .theme(&theme)
+            .title("Document")
+            .focused(true)
+            .maximized(maximized)
+            .on_maximize(Message::Maximize)
+            .on_fullscreen(Message::Fullscreen, fullscreen)
+            .into_element();
+        let size = Size::new(900.0, ssd_header_render_height(&theme) as f32);
+        let mut ui = UserInterface::build(
+            header,
+            size,
+            user_interface::Cache::default(),
+            &mut renderer,
+        );
+        ui.draw(
+            &mut renderer,
+            &theme.to_iced_theme(),
+            &Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        let metrics = theme.halo_style();
+        let (pill, _) = crate::shell::element::window::halo_backdrop_blur(
+            renderer.layers(),
+            metrics.pill_height(),
+            size.width,
+        )
+        .unwrap();
+        // Maximize is immediately left of the fullscreen button in this two-action header.
+        let point = Point::new(
+            pill.x + pill.width
+                - metrics.padding_horizontal
+                - 1.5 * metrics.control_size
+                - metrics.gap,
+            pill.center_y(),
+        );
+        let cursor = mouse::Cursor::Available(point);
+        let mut messages = Vec::new();
+        ui.update(
+            &[
+                Event::Mouse(mouse::Event::CursorMoved { position: point }),
+                Event::Window(iced_core::window::Event::RedrawRequested(now())),
+            ],
+            cursor,
+            &mut renderer,
+            &mut messages,
+        );
+        test_clock::advance(std::time::Duration::from_millis(400));
+        ui.update(
+            &[Event::Window(iced_core::window::Event::RedrawRequested(
+                now(),
+            ))],
+            cursor,
+            &mut renderer,
+            &mut messages,
+        );
+        ui.draw(
+            &mut renderer,
+            &theme.to_iced_theme(),
+            &Style::default(),
+            cursor,
+        );
+        let mut tooltip = Tooltip::default();
+        ui.operate(&renderer, &mut tooltip);
+        assert_eq!(
+            tooltip.0.as_deref(),
+            Some(expected),
+            "maximized={maximized}, fullscreen={fullscreen}"
+        );
+        ui.update(
+            &[
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ],
+            cursor,
+            &mut renderer,
+            &mut messages,
+        );
+        assert_eq!(messages, vec![Message::Maximize]);
+    }
+}
+
 fn theme() -> CompTheme {
     let mut theme = DEFAULT_THEME_PAIR.load(true);
     theme.window_header_style = WindowHeaderStyle::Halo;

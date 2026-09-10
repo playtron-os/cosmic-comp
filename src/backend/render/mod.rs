@@ -223,6 +223,7 @@ pub enum Usage {
     PotentialGroupIndicator,
     SnappingIndicator,
     Border,
+    AccentFocusRing,
 }
 
 #[derive(Clone)]

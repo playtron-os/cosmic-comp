@@ -1041,6 +1041,7 @@ dependencies = [
  "memmap2",
  "notify",
  "ordered-float",
+ "palette",
  "parking_lot",
  "png 0.18.1",
  "profiling",

@@ -63,11 +63,20 @@ pub(super) fn perform_action(
         Message::Minimize => state.common.shell.write().minimize_request(surface),
         Message::Maximize => {
             let mut shell = state.common.shell.write();
-            if let Some(mapped) = shell.element_for_surface(surface).cloned() {
-                let seat = seat
-                    .cloned()
-                    .unwrap_or_else(|| shell.seats.last_active().clone());
+            let seat = seat
+                .cloned()
+                .unwrap_or_else(|| shell.seats.last_active().clone());
+            // Fullscreen surfaces are no longer in the normal mapped-window list.
+            // Restore that state first, including its saved output/workspace and size.
+            let restored = shell.unfullscreen_request(surface, &state.common.event_loop_handle);
+            if restored.is_none()
+                && let Some(mapped) = shell.element_for_surface(surface).cloned()
+            {
                 shell.maximize_toggle(&mapped, &seat, &state.common.event_loop_handle);
+            }
+            drop(shell);
+            if let Some(target) = restored {
+                Shell::set_focus(state, Some(&target), &seat, None, false);
             }
         }
         Message::Fullscreen => {
@@ -97,6 +106,7 @@ fn menu_items(
     surface: &CosmicSurface,
     seat: &Seat<State>,
     action: Option<NewWindowAction>,
+    close_all: Option<Item>,
 ) -> Vec<Item> {
     let item = |title: String, message: Message| {
         let surface = surface.clone();
@@ -122,7 +132,7 @@ fn menu_items(
         Item::Separator,
         item(fl!("window-menu-minimize"), Message::Minimize),
         item(
-            if surface.is_maximized(false) {
+            if surface.is_maximized(false) || surface.is_fullscreen(false) {
                 "Restore".into()
             } else {
                 fl!("window-menu-maximize")
@@ -140,7 +150,89 @@ fn menu_items(
         Item::Separator,
         item(fl!("window-menu-close"), Message::Close),
     ]);
+    items.extend(close_all);
     items
+}
+
+fn select_app_windows<T: Clone + Eq + std::hash::Hash>(
+    app_id: &str,
+    origin_realm: &str,
+    current_realm: &str,
+    candidates: impl Iterator<Item = (T, String)>,
+) -> Vec<T> {
+    // Unknown app IDs must not group unrelated applications. A stale menu must
+    // not close an identically named app in a different workspace context.
+    if app_id.is_empty() || origin_realm != current_realm {
+        return Vec::new();
+    }
+    let mut seen = std::collections::HashSet::new();
+    candidates
+        .filter_map(|(window, candidate_app)| {
+            (candidate_app == app_id && seen.insert(window.clone())).then_some(window)
+        })
+        .collect()
+}
+
+fn app_windows(shell: &Shell, app_id: &str, origin_realm: &str) -> Vec<CosmicSurface> {
+    let mapped = shell
+        .mapped()
+        .flat_map(|mapped| mapped.windows().map(|(window, _)| window));
+    // mapped() includes normal minimized windows, but not minimized fullscreen
+    // surfaces. Deduplicate below, also covering windows in transition.
+    let minimized = shell.workspaces().iter().flat_map(|(_, set)| {
+        set.minimized_windows
+            .iter()
+            .chain(
+                set.workspaces
+                    .iter()
+                    .flat_map(|desktop| &desktop.minimized_windows),
+            )
+            .flat_map(|minimized| minimized.windows())
+    });
+    let fullscreen = shell
+        .workspaces()
+        .spaces()
+        .flat_map(|desktop| desktop.get_fullscreen_surfaces())
+        .map(|fullscreen| fullscreen.surface.clone());
+    let candidates = mapped
+        .chain(minimized)
+        .chain(fullscreen)
+        .filter(|window| {
+            window.alive() && !window.is_override_redirect() && !is_surface_embedded(window)
+        })
+        .map(|window| {
+            let app_id = window.app_id();
+            (window, app_id)
+        });
+    select_app_windows(app_id, origin_realm, shell.active_realm(), candidates)
+}
+
+fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
+    let app_id = origin.app_id();
+    let realm = shell.active_realm().to_owned();
+    let windows = app_windows(shell, &app_id, &realm);
+    if !has_multiple_app_windows(&windows, origin) {
+        return None;
+    }
+    Some(Item::new(fl!("window-menu-close-all"), move |handle| {
+        let app_id = app_id.clone();
+        let realm = realm.clone();
+        handle.insert_idle(move |state| {
+            let windows = {
+                let shell = state.common.shell.read();
+                app_windows(&shell, &app_id, &realm)
+            };
+            // Snapshot before closing, outside the shell lock. Normal close
+            // requests allow applications to ask about unsaved work.
+            for window in windows {
+                window.close();
+            }
+        });
+    }))
+}
+
+fn has_multiple_app_windows<T: PartialEq>(windows: &[T], origin: &T) -> bool {
+    windows.len() > 1 && windows.contains(origin)
 }
 
 pub(super) fn open_menu(
@@ -175,8 +267,9 @@ pub(super) fn open_menu(
     };
     let open = ui.with_program(|p| p.menu_open.clone());
     let theme = shell.theme().clone();
+    let close_all = close_all_item(&shell, surface);
     drop(shell);
-    let items = menu_items(surface, seat, action);
+    let items = menu_items(surface, seat, action, close_all);
     open.store(true, Ordering::SeqCst);
     ui.force_update();
     let grab = MenuGrab::new_halo(
@@ -204,6 +297,58 @@ pub(super) fn open_menu(
 mod tests {
     use super::*;
     use smithay::input::SeatState;
+
+    #[test]
+    fn close_all_counts_distinct_app_windows_and_requires_the_origin() {
+        let candidates = [
+            (1, "editor"),
+            (2, "editor"),
+            (1, "editor"),
+            (3, "terminal"),
+            (4, "Editor"),
+            (2, "editor"),
+        ];
+        let windows = select_app_windows(
+            "editor",
+            "work",
+            "work",
+            candidates.into_iter().map(|(id, app)| (id, app.to_owned())),
+        );
+        assert_eq!(windows, [1, 2]);
+        assert!(has_multiple_app_windows(&windows, &1));
+        assert!(!has_multiple_app_windows(&windows, &3));
+        assert!(!has_multiple_app_windows(&[1], &1));
+        assert!(!has_multiple_app_windows::<u32>(&[], &1));
+    }
+
+    #[test]
+    fn close_all_never_groups_unknown_apps_or_crosses_workspace_contexts() {
+        let unknown = [(1, String::new()), (2, String::new())];
+        assert!(select_app_windows("", "work", "work", unknown.into_iter()).is_empty());
+        let other_workspace = [(1, "editor".to_owned()), (2, "editor".to_owned())];
+        assert!(
+            select_app_windows("editor", "work", "personal", other_workspace.into_iter())
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn close_all_targets_follow_the_current_window_list() {
+        let before = [(1, "editor".to_owned()), (2, "editor".to_owned())];
+        let after = [
+            (2, "editor".to_owned()),
+            (3, "editor".to_owned()),
+            (4, "terminal".to_owned()),
+        ];
+        assert_eq!(
+            select_app_windows("editor", "work", "work", before.into_iter()),
+            [1, 2]
+        );
+        assert_eq!(
+            select_app_windows("editor", "work", "work", after.into_iter()),
+            [2, 3]
+        );
+    }
 
     #[test]
     fn fullscreen_reveals_only_at_top_edge_then_keeps_the_pill_interactive() {

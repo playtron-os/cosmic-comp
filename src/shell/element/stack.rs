@@ -886,19 +886,42 @@ impl CosmicStack {
             // edges by a reserved margin still has an outline to draw, and the
             // border element is what carries the radii.
             if !p.squaring_edges(maximized).squares_every_corner() && !is_embedded {
-                let c = theme.window_border_color();
-                push_above(CosmicStackRenderElement::Border(
-                    IndicatorShader::focus_element(
-                        renderer,
-                        Key::Window(Usage::Border, window_key.clone()),
-                        geo.to_i32_round().as_local(),
-                        theme.window_border_width() as u8,
-                        radii.unwrap_or([0; 4]),
-                        c.a * alpha,
-                        scale.x,
-                        [c.r, c.g, c.b],
-                    ),
-                ));
+                let focused = p.activated.load(Ordering::SeqCst);
+                let c = theme.focused_window_border(focused);
+                let thickness = theme.window_border_width() as u8;
+                let border =
+                    if theme.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
+                        IndicatorShader::element
+                    } else {
+                        IndicatorShader::focus_element
+                    };
+                push_above(CosmicStackRenderElement::Border(border(
+                    renderer,
+                    Key::Window(Usage::Border, window_key.clone()),
+                    geo.to_i32_round().as_local(),
+                    thickness,
+                    radii.unwrap_or([0; 4]),
+                    c.a * alpha,
+                    scale.x,
+                    [c.r, c.g, c.b],
+                )));
+                if let Some(ring) = theme
+                    .focused_window_ring(focused)
+                    .filter(|ring| ring.a > 0.0 && thickness > 0)
+                {
+                    push_above(CosmicStackRenderElement::Border(
+                        IndicatorShader::focus_element(
+                            renderer,
+                            Key::Window(Usage::AccentFocusRing, window_key),
+                            geo.to_i32_round().as_local(),
+                            thickness,
+                            radii.unwrap_or([0; 4]),
+                            ring.a * alpha,
+                            scale.x,
+                            [ring.r, ring.g, ring.b],
+                        ),
+                    ));
+                }
             };
 
             let radii = radii.map(|[a, _, c, _]| [a, 0, c, 0]);
