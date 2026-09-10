@@ -782,42 +782,12 @@ impl State {
                             _ => None,
                         };
 
+                        // Nothing to focus that way: only another output can
+                        // take the focus. Desktops have their own keys, so a
+                        // focus key never switches one.
                         if let Some(direction) = dir {
-                            if let Some(last_mod_serial) = seat.last_modifier_change() {
-                                let mut shell = self.common.shell.write();
-                                if !shell
-                                    .previous_workspace_idx
-                                    .as_ref()
-                                    .is_some_and(|(serial, _, _)| *serial == last_mod_serial)
-                                {
-                                    let current_output = seat.active_output();
-                                    let workspace_idx =
-                                        shell.workspaces().active_num(&current_output).1;
-                                    shell.previous_workspace_idx = Some((
-                                        last_mod_serial,
-                                        current_output.downgrade(),
-                                        workspace_idx,
-                                    ));
-                                }
-                            }
-
-                            let action = match (
-                                direction,
-                                self.common.config.cosmic_conf.workspaces.workspace_layout,
-                            ) {
-                                (Direction::Left, WorkspaceLayout::Horizontal)
-                                | (Direction::Up, WorkspaceLayout::Vertical) => {
-                                    Action::PreviousWorkspace
-                                }
-                                (Direction::Right, WorkspaceLayout::Horizontal)
-                                | (Direction::Down, WorkspaceLayout::Vertical) => {
-                                    Action::NextWorkspace
-                                }
-                                _ => Action::SwitchOutput(direction),
-                            };
-
                             self.handle_shortcut_action(
-                                action,
+                                Action::SwitchOutput(direction),
                                 seat,
                                 serial,
                                 time,

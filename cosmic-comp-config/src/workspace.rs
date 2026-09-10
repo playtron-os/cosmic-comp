@@ -39,8 +39,9 @@ pub enum WorkspaceMode {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceLayout {
-    #[default]
     Vertical,
+    /// Desktops sit side by side, as the switcher shows them.
+    #[default]
     Horizontal,
 }
 
