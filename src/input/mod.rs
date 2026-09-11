@@ -2175,7 +2175,6 @@ impl State {
                 .and_then(|f| f.wl_surface().map(|cow| cow.into_owned()));
 
             if event.state() == KeyState::Pressed {
-                drop(shell);
                 // The hold starts HERE, on the edge, not after a threshold.
                 //
                 // There is only one thing the key can mean at this point, so
@@ -2195,14 +2194,22 @@ impl State {
                     .key_pressed(focused_surface.as_ref())
                 {
                     tracing::debug!("Special key pressed - voice input started");
+                    // Suppressed so the release reaches us too rather than being
+                    // delivered to a client on its own.
+                    seat.supressed_keys().add(&handle, None);
+                    drop(shell);
+                    return FilterResult::Intercept(None);
                 }
-
-                // Suppressed so the release reaches us too rather than being
-                // delivered to a client on its own.
-                seat.supressed_keys().add(&handle, None);
             }
 
-            return FilterResult::Intercept(None);
+            // Nothing took the key: no receiver is registered to be summoned,
+            // or this is a release whose gesture the match above already
+            // finished (it returns for everything that was in flight). Either
+            // way the gesture does not own this edge, and swallowing it would
+            // strand the key — a bare `Super` bound to a shortcut never fired,
+            // because both of its edges ended here. Fall through to the global
+            // shortcuts instead, where a modifier-only binding queues on the
+            // press and fires on the release.
         }
 
         // Forward Right Super key (KEY_RIGHTMETA, keycode 134) to specific apps
