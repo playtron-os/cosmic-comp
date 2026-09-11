@@ -33,32 +33,35 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
 
-/// Kept on the surface while its controller is armed, where a render pass
-/// can read it without the controller in hand.
+/// Kept on the surface from the first time its controller is armed, for a
+/// render pass to read without the controller in hand. Never cleared: the
+/// click that dismisses a popover disarms it first, and it is still on
+/// screen for its exit animation after that.
 #[derive(Default)]
-struct DismissArmed(AtomicBool);
+struct DismissArmedOnce(AtomicBool);
 
-fn set_dismiss_armed(surface: &WlSurface, armed: bool) {
+fn mark_dismiss_armed(surface: &WlSurface) {
     with_states(surface, |states| {
         states
             .data_map
-            .insert_if_missing_threadsafe(DismissArmed::default);
+            .insert_if_missing_threadsafe(DismissArmedOnce::default);
         states
             .data_map
-            .get::<DismissArmed>()
+            .get::<DismissArmedOnce>()
             .unwrap()
             .0
-            .store(armed, Ordering::Relaxed);
+            .store(true, Ordering::Relaxed);
     });
 }
 
-/// Whether the surface is armed to dismiss on a click elsewhere: a popover,
-/// a menu, the launcher — up only for the moment, unlike a docked bar.
-pub fn is_dismiss_armed(surface: &WlSurface) -> bool {
+/// Whether the surface was ever armed to dismiss on a click elsewhere: a
+/// popover, a menu, the launcher — up only for the moment, unlike a docked
+/// bar, and on its way out once dismissed.
+pub fn was_dismiss_armed(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
         states
             .data_map
-            .get::<DismissArmed>()
+            .get::<DismissArmedOnce>()
             .is_some_and(|armed| armed.0.load(Ordering::Relaxed))
     })
 }
@@ -253,7 +256,6 @@ where
             zcosmic_layer_surface_dismiss_v1::Request::Destroy => {
                 // Unregister the controller
                 if let Ok(surface) = data.surface.upgrade() {
-                    set_dismiss_armed(&surface, false);
                     state.unregister_dismiss_controller(surface.id());
                 }
             }
@@ -262,7 +264,7 @@ where
                     let surface_id = surface.id().protocol_id();
                     info!(surface_id, "Dismiss controller armed");
                     *data.armed.lock().unwrap() = true;
-                    set_dismiss_armed(&surface, true);
+                    mark_dismiss_armed(&surface);
                 } else {
                     warn!("Arm called on dead surface");
                 }
@@ -272,7 +274,6 @@ where
                     let surface_id = surface.id().protocol_id();
                     debug!(surface_id, "Dismiss controller disarmed");
                     *data.armed.lock().unwrap() = false;
-                    set_dismiss_armed(&surface, false);
                 } else {
                     warn!("Disarm called on dead surface");
                 }
@@ -363,9 +364,6 @@ pub fn fire_dismiss(
         if let Some(data) = controller.data::<LayerSurfaceDismissControllerData>() {
             // Disarm
             *data.armed.lock().unwrap() = false;
-            if let Ok(surface) = data.surface.upgrade() {
-                set_dismiss_armed(&surface, false);
-            }
             // Send event
             controller.dismiss_requested();
             info!("Sent dismiss_requested event");
