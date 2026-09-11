@@ -496,7 +496,7 @@ pub fn render_workspace_to_buffer(
                     None,
                     handle,
                     cursor_mode,
-                    ElementFilter::ExcludeWorkspaceOverview,
+                    ElementFilter::ExcludeTransientShell,
                     None,
                 )?
                 .into_iter()
@@ -533,7 +533,7 @@ pub fn render_workspace_to_buffer(
                 None,
                 handle,
                 cursor_mode,
-                ElementFilter::ExcludeWorkspaceOverview,
+                ElementFilter::ExcludeTransientShell,
             )?
         } else {
             let target = offscreen.expect("shm buffers should have an offscreen target");
@@ -551,7 +551,7 @@ pub fn render_workspace_to_buffer(
                 None,
                 handle,
                 cursor_mode,
-                ElementFilter::ExcludeWorkspaceOverview,
+                ElementFilter::ExcludeTransientShell,
             )?
         };
 

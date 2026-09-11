@@ -892,12 +892,17 @@ impl LayerVisibilityContext {
 
 // MERGE: our blur-capture variants (`ExcludeBlurWindows`, `BlurCapture`,
 // `LayerBlurCapture`) and the unused `home_visibility()` placeholder are dropped —
-// upstream's blur reads the live framebuffer, so no capture pass (and no
-// capture-only filter) exists any more. This is `Copy` again, like upstream.
+// upstream's blur reads the live framebuffer, so no capture pass exists any
+// more. `ExcludeTransientShell` is the one capture-only filter, for previews.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementFilter {
     All,
     ExcludeWorkspaceOverview,
+    /// A desktop's picture with the shell that stays — the bar, a docked
+    /// panel — but not what is up only until the next click elsewhere:
+    /// popovers, menus, the launcher, the overview. The switcher asking for
+    /// previews would otherwise be in every one of them.
+    ExcludeTransientShell,
     LayerShellOnly,
 }
 

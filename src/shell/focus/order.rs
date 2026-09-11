@@ -28,7 +28,7 @@ use crate::{
         prelude::OutputExt,
         quirks::{WORKSPACE_OVERVIEW_NAMESPACE, workspace_overview_is_open},
     },
-    wayland::protocols::workspace::WorkspaceHandle,
+    wayland::protocols::{layer_surface_dismiss::is_dismiss_armed, workspace::WorkspaceHandle},
 };
 
 // MERGE: dropped `should_include_windows` — it only existed to special-case our
@@ -773,6 +773,13 @@ fn layer_surfaces<'a>(
         // Filter out workspace overview namespace
         if element_filter == ElementFilter::ExcludeWorkspaceOverview
             && s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE
+        {
+            return None;
+        }
+        // A desktop's picture keeps the shell, not its momentary surfaces: one
+        // armed to dismiss on a click elsewhere is a popover, a menu, the launcher.
+        if element_filter == ElementFilter::ExcludeTransientShell
+            && (is_dismiss_armed(s.wl_surface()) || s.namespace() == WORKSPACE_OVERVIEW_NAMESPACE)
         {
             return None;
         }
