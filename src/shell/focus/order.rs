@@ -153,8 +153,13 @@ fn render_input_order_internal<R: 'static>(
     element_filter: ElementFilter,
     mut callback: impl FnMut(Stage) -> ControlFlow<Result<R, OutputNoMode>, ()>,
 ) -> ControlFlow<Result<R, OutputNoMode>, ()> {
-    // Create home visibility context once for all layer surface filtering
-    let layer_visibility = LayerVisibilityContext::from_shell(shell);
+    // Create home visibility context once for all layer surface filtering.
+    // Relative to the realm being drawn: a preview of another workspace
+    // must show that workspace's own layer surfaces, not the active one's.
+    let realm = shell
+        .realm_of_handle(&current.0)
+        .unwrap_or_else(|| shell.active_realm());
+    let layer_visibility = LayerVisibilityContext::for_realm(shell, realm);
 
     // In game mode the fullscreen game is exclusive on its output: suppress all
     // desktop layer-shell surfaces (overlay/top/bottom/background) so the game is

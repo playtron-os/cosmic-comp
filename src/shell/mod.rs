@@ -5994,11 +5994,26 @@ impl Shell {
 
     /// The layer surfaces whose workspace is off screen right now.
     pub fn off_realm_layers(&self) -> std::collections::HashSet<ObjectId> {
+        self.off_realm_layers_for(&self.active_realm)
+    }
+
+    /// The layer surfaces that do not belong in a picture of `realm`: the
+    /// other workspaces' own, their wallpapers first of all. Machine-plane
+    /// surfaces belong in every picture.
+    pub fn off_realm_layers_for(&self, realm: &str) -> std::collections::HashSet<ObjectId> {
         self.layer_realms
             .iter()
-            .filter(|(_, workspace)| **workspace != self.active_realm)
+            .filter(|(_, workspace)| workspace.as_str() != realm)
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// The id of the realm a desktop belongs to.
+    pub fn realm_of_handle(&self, handle: &WorkspaceHandle) -> Option<&str> {
+        self.realms
+            .iter()
+            .find(|(_, realm)| realm.space_for_handle(handle).is_some())
+            .map(|(id, _)| id.as_str())
     }
 
     /// A layer surface the user can see and reach: not hidden by its client,

@@ -949,9 +949,17 @@ pub struct LayerVisibilityContext {
 impl LayerVisibilityContext {
     /// Create a new context from shell state
     pub fn from_shell(shell: &crate::shell::Shell) -> Self {
+        Self::for_realm(shell, shell.active_realm())
+    }
+
+    /// For a picture of `realm` — the one on screen, or another workspace
+    /// drawn for a preview. What is off-realm is relative to the workspace
+    /// being drawn, not the one you are standing in: a preview of another
+    /// workspace shows that workspace's wallpaper, not this one's.
+    pub fn for_realm(shell: &crate::shell::Shell, realm: &str) -> Self {
         Self {
             hidden_surfaces: shell.hidden_surfaces().clone(),
-            off_realm_surfaces: shell.off_realm_layers(),
+            off_realm_surfaces: shell.off_realm_layers_for(realm),
             sliding_surfaces: shell
                 .layer_slides
                 .iter()
