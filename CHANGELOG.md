@@ -1,3 +1,13 @@
+## [1.47.2](https://github.com/playtron-os/cosmic-comp/compare/v1.47.1...v1.47.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* a bare Super reaches its shortcut when nothing claims the special key ([cd4da4c](https://github.com/playtron-os/cosmic-comp/commit/cd4da4cfcc32dd9e32492c0984855185a3059265))
+* a layer surface that never commits stops the idle desktop redrawing for ever ([ffd36bb](https://github.com/playtron-os/cosmic-comp/commit/ffd36bbdfb379f1a6474e00c855f30a094bcbec2))
+* a workspace's wallpaper is no longer hidden by the machine's ([465b4ef](https://github.com/playtron-os/cosmic-comp/commit/465b4ef70c4e9fa67045e4cb84f7b399401f58d3))
+* deleting a workspace no longer freezes the desktop for five seconds ([f82140d](https://github.com/playtron-os/cosmic-comp/commit/f82140d0580e16782d75de92ae278c1729fbc31b))
+
 ## [1.47.1](https://github.com/playtron-os/cosmic-comp/compare/v1.47.0...v1.47.1) (2026-09-11)
 
 
