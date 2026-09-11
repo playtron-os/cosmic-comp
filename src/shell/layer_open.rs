@@ -30,6 +30,35 @@ pub const OPEN_RISE_PX: f32 = 6.0;
 /// Starting scale of the surface (design `scale: 0.97 → 1.0`).
 pub const START_SCALE: f32 = 0.97;
 
+/// Shared preset behind the visibility protocol's `fade` transition and
+/// compositor-owned popups, which have no wl_surface to send that request on.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FadeRise {
+    pub duration: Duration,
+    pub curve: [f32; 4],
+}
+
+impl FadeRise {
+    pub fn new(motion: motion::Motion) -> Self {
+        Self {
+            duration: motion.layer_open,
+            curve: motion.ease_in_out_cp,
+        }
+    }
+
+    pub fn factor(self, progress: f32) -> f32 {
+        motion::cubic_bezier_cp(progress, self.curve)
+    }
+
+    pub fn offset(factor: f32) -> f32 {
+        (1.0 - factor) * OPEN_RISE_PX
+    }
+
+    pub fn scale(factor: f32) -> f32 {
+        START_SCALE + factor * (1.0 - START_SCALE)
+    }
+}
+
 /// Which show/hide motion a surface plays.
 ///
 /// Both styles drive the same three channels through the same render path; they
@@ -101,7 +130,7 @@ impl LayerOpen {
     /// How long this style's entrance runs for.
     fn duration(&self) -> Duration {
         match self.style {
-            Style::FadeRise => self.motion.layer_open,
+            Style::FadeRise => FadeRise::new(self.motion).duration,
             Style::FluidReveal => FLUID_ENTER,
         }
     }
@@ -149,7 +178,7 @@ impl LayerOpen {
     /// overshoot is the effect; anything consuming this must not clamp it.
     pub fn factor(&self) -> f32 {
         match self.style {
-            Style::FadeRise => self.motion.ease_in_out(self.progress()),
+            Style::FadeRise => FadeRise::new(self.motion).factor(self.progress()),
             Style::FluidReveal => easing::EASE_OUT_BACK.y_at_x(self.progress()),
         }
     }
@@ -180,21 +209,20 @@ impl LayerOpen {
     /// `(0, 0)` — i.e. it slides UP.
     pub fn translate_offset(&self) -> (i32, i32) {
         let t = self.factor();
-        let rise = match self.style {
-            Style::FadeRise => OPEN_RISE_PX,
-            Style::FluidReveal => FLUID_ENTER_RISE_PX,
+        let offset = match self.style {
+            Style::FadeRise => FadeRise::offset(t),
+            Style::FluidReveal => (1.0 - t) * FLUID_ENTER_RISE_PX,
         };
-        (0, ((1.0 - t) * rise).round() as i32)
+        (0, offset.round() as i32)
     }
 
     /// Scale for the surface, rising to `1.0` about its CENTER.
     pub fn scale(&self) -> f32 {
         let t = self.factor();
-        let from = match self.style {
-            Style::FadeRise => START_SCALE,
-            Style::FluidReveal => FLUID_ENTER_SCALE,
-        };
-        from + t * (1.0 - from)
+        match self.style {
+            Style::FadeRise => FadeRise::scale(t),
+            Style::FluidReveal => FLUID_ENTER_SCALE + t * (1.0 - FLUID_ENTER_SCALE),
+        }
     }
 
     /// True while the animation is still running.

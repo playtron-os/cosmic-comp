@@ -46,6 +46,25 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
         opacity_curve: [0.4, 0.0, 0.2, 1.0],
         translation_curve: theme.ease_out_expo(),
         hidden_offset: iced_core::Vector::new(0.0, 3.0),
+        hidden_scale: 1.0,
+        animate_initial: false,
+    }
+}
+
+/// WindowFrame's focus draw uses Kora's --duration-slow (420ms) and
+/// --ease-standard, shared with the Halo fill. Icetron's similarly named
+/// tokens currently mean 500ms and a different ease-out curve; do not
+/// substitute them here. A zero-duration theme still disables the sweep.
+pub(crate) fn halo_focus_outline(
+    theme: &CompTheme,
+    focused: bool,
+    fullscreen: bool,
+) -> crate::utils::iced::FocusOutline {
+    crate::utils::iced::FocusOutline {
+        focused,
+        animate: !fullscreen && theme.duration_slower() > 0.0,
+        duration: std::time::Duration::from_millis(420),
+        curve: halo_visibility(theme, true).opacity_curve,
     }
 }
 
@@ -148,6 +167,7 @@ pub struct HeaderBar<'a, Message> {
     /// inset non-exclusive zone is still maximized (and still shows the restore
     /// button) while no longer touching the top edge.
     square_top: bool,
+    compositor_outline: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
 }
@@ -177,6 +197,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             hovered: false,
             maximized: false,
             square_top: false,
+            compositor_outline: false,
             theme: None,
             app_icon: None,
         }
@@ -270,12 +291,22 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
+    pub fn compositor_outline(mut self, enabled: bool) -> Self {
+        self.compositor_outline = enabled;
+        self
+    }
+
     /// Convert to an iced Element using icetron's app_header.
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
         let window_header_style = theme.window_header_style();
 
-        let mut header = app_header(&**theme)
+        let chrome_theme = if self.compositor_outline && uses_halo_header(theme) {
+            theme.halo_chrome_theme()
+        } else {
+            &**theme
+        };
+        let mut header = app_header(chrome_theme)
             .window_header_style(window_header_style)
             .title(Some(&self.title))
             .focused(self.focused)

@@ -266,6 +266,11 @@ impl Program for ContextMenu {
         "ContextMenu"
     }
 
+    fn visibility(&self, theme: &CompTheme) -> Option<crate::utils::iced::Visibility> {
+        self.halo
+            .then(|| crate::utils::iced::Visibility::fade_rise(theme.motion))
+    }
+
     fn update(
         &mut self,
         message: Self::Message,
@@ -683,17 +688,15 @@ pub struct Element {
 }
 
 impl Element {
-    fn input_bbox(&self) -> Rectangle<i32, Logical> {
-        let mut bounds = self.iced.bbox();
-        bounds.loc = self.position.as_logical();
-        if self.iced.with_program(|p| p.halo) {
-            let padding = self.iced.with_theme(halo_menu_padding);
-            bounds.loc += Point::from((padding.left as i32, padding.top as i32));
-            bounds.size -= Size::from((
-                (padding.left + padding.right) as i32,
-                (padding.top + padding.bottom) as i32,
-            ));
+    fn input_bbox(&self) -> Rectangle<f64, Logical> {
+        if self.iced.with_program(|p| p.halo)
+            && let Some(mut bounds) = self.iced.backdrop_input_bounds()
+        {
+            bounds.loc += self.position.as_logical().to_f64();
+            return bounds;
         }
+        let mut bounds = self.iced.bbox().to_f64();
+        bounds.loc = self.position.as_logical().to_f64();
         bounds
     }
 }
@@ -753,7 +756,7 @@ impl PointerGrab<State> for MenuGrab {
             if let Some(i) = elements.iter().position(|elem| {
                 let bbox = elem.input_bbox();
 
-                bbox.contains(event_location.to_i32_floor())
+                bbox.contains(event_location)
             }) {
                 let element = &mut elements[i];
 
@@ -968,7 +971,7 @@ impl TouchGrab<State> for MenuGrab {
             if let Some(i) = elements.iter().position(|elem| {
                 let bbox = elem.input_bbox();
 
-                bbox.contains(event_location.to_i32_floor())
+                bbox.contains(event_location)
             }) {
                 let element = &mut elements[i];
 

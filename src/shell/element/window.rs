@@ -1,7 +1,7 @@
 use crate::shell::element::surface::PopupShadow;
 use crate::{
     backend::render::{
-        IndicatorShader, Key, Usage, cursor::CursorState, element::AsGlowRenderer,
+        IndicatorShader, Key, OutlineFocus, Usage, cursor::CursorState, element::AsGlowRenderer,
         shadow::ShadowShader, wayland::SurfaceRenderElement,
     },
     hooks::{Decorations, HOOKS},
@@ -1371,6 +1371,7 @@ impl CosmicWindow {
         }
 
         let render_steps = window_render_steps(halo_header);
+        let mut focus_frame = None;
         if !is_embedded && render_steps.first() == Some(&WindowRenderStep::Header) {
             let ssd_loc = location
                 + self.0.with_program(|p| {
@@ -1380,7 +1381,7 @@ impl CosmicWindow {
                             (p.ssd_render_overhang() as f64 * scale.y).round() as i32,
                         ))
                 });
-            self.0.push_render_elements(
+            focus_frame = self.0.push_render_elements_with_focus(
                 renderer,
                 ssd_loc,
                 scale,
@@ -1400,27 +1401,42 @@ impl CosmicWindow {
             let window_key =
                 CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)));
 
-            let (border_color, border_thickness, ring) = self.0.with_program(|p| {
+            let (border_color, border_thickness, ring, neutral) = self.0.with_program(|p| {
                 let theme = p.theme.lock().unwrap();
                 (
                     theme.focused_window_border(halo_focus),
                     theme.window_border_width() as u8,
                     theme.focused_window_ring(halo_focus),
+                    theme.window_border_color(),
                 )
             });
             // SSD windows: draw the border inset (inside the geo) so the
             // border overlays the header/surface edges with no gap at the top.
             // CSD windows: same — draw the border inside the geo.
-            let elem = CosmicWindowRenderElement::Border(IndicatorShader::window_outline(
+            let elem = CosmicWindowRenderElement::Border(IndicatorShader::animated_outline(
                 renderer,
                 Key::Window(Usage::Border, window_key),
                 geo.as_local(),
-                border_thickness,
-                radii,
+                border_thickness.into(),
+                radii.map(f32::from),
                 alpha,
                 scale.x,
                 border_color,
-                ring,
+                if ring.is_some() {
+                    border_thickness.into()
+                } else {
+                    0.0
+                },
+                ring.unwrap_or(Color::TRANSPARENT),
+                // An as-yet unlaid-out Halo has no frame to sample. Hold the
+                // neutral border instead of briefly falling back to a fully
+                // accented static outline before the first measured draw.
+                halo_header.then(|| OutlineFocus {
+                    progress: focus_frame.map_or(0.0, |frame| frame.progress),
+                    tip: focus_frame.map_or(geo.size.w as f32 * 0.5, |frame| frame.bounds.x),
+                    halo: false,
+                    neutral,
+                }),
             ));
             push_above(elem);
         }
@@ -1812,6 +1828,21 @@ impl Program for CosmicWindowInternal {
         halo_backdrop_blur(layers, theme.halo_style().pill_height(), size.w as f32)
     }
 
+    fn focus_outline(
+        &self,
+        theme: &crate::comp_theme::CompTheme,
+    ) -> Option<crate::utils::iced::FocusOutline> {
+        (super::header_bar::uses_halo_header(theme) && !is_surface_embedded(&self.window)).then(
+            || {
+                super::header_bar::halo_focus_outline(
+                    theme,
+                    self.activated.load(Ordering::SeqCst),
+                    self.fullscreen_output.is_some() || self.window.is_fullscreen(true),
+                )
+            },
+        )
+    }
+
     fn foreground(
         &self,
         _pixels: &mut tiny_skia::PixmapMut<'_>,
@@ -1851,6 +1882,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         let focused = win.activated.load(Ordering::SeqCst);
 
         let mut header = super::header_bar::header_bar()
+            .compositor_outline(!is_surface_embedded(&win.window))
             .title(title)
             .on_drag(Message::DragStart)
             .on_close(Message::Close)

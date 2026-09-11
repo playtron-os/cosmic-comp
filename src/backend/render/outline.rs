@@ -2,6 +2,76 @@
 
 use crate::utils::prelude::*;
 use smithay::utils::{Physical, Rectangle};
+use smithay::{
+    backend::renderer::{
+        element::{Element, Id, Kind, RenderElement},
+        gles::element::PixelShaderElement,
+        glow::GlowRenderer,
+        utils::{CommitCounter, DamageSet, OpaqueRegions},
+    },
+    utils::{Buffer, Scale, Transform, user_data::UserDataMap},
+};
+
+/// Adapt a GLES outline to either the single-GPU or multi-GPU renderer.
+#[derive(Debug)]
+pub struct OutlineElement(pub PixelShaderElement);
+
+impl Element for OutlineElement {
+    fn id(&self) -> &Id {
+        self.0.id()
+    }
+    fn current_commit(&self) -> CommitCounter {
+        self.0.current_commit()
+    }
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.0.src()
+    }
+    fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+        self.0.geometry(scale)
+    }
+    fn transform(&self) -> Transform {
+        self.0.transform()
+    }
+    fn damage_since(
+        &self,
+        scale: Scale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.0.damage_since(scale, commit)
+    }
+    fn opaque_regions(&self, scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        self.0.opaque_regions(scale)
+    }
+    fn alpha(&self) -> f32 {
+        self.0.alpha()
+    }
+    fn kind(&self) -> Kind {
+        self.0.kind()
+    }
+}
+
+impl<R: super::element::AsGlowRenderer> RenderElement<R> for OutlineElement {
+    fn draw(
+        &self,
+        frame: &mut R::Frame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
+    ) -> Result<(), R::Error> {
+        RenderElement::<GlowRenderer>::draw(
+            &self.0,
+            R::glow_frame_mut(frame),
+            src,
+            dst,
+            damage,
+            opaque,
+            cache,
+        )
+        .map_err(R::from_gles_error)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Geometry {
@@ -12,7 +82,7 @@ pub(super) struct Geometry {
 }
 
 impl Geometry {
-    pub fn new(shape: Rectangle<f64, Local>, ring_width: u8, scale: f64) -> Self {
+    pub fn new(shape: Rectangle<f64, Local>, ring_width: f32, scale: f64) -> Self {
         // Keep a physical pixel outside the ring for coverage antialiasing.
         let padding = f64::from(ring_width) + 1.0 / scale;
         let left = (shape.loc.x - padding).floor() as i32;

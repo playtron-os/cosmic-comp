@@ -39,6 +39,112 @@ fn theme() -> CompTheme {
 }
 
 #[test]
+fn focus_outline_uses_one_redraw_clock_and_live_halo_geometry() {
+    struct FocusHeader {
+        focused: bool,
+        title: String,
+    }
+    impl Program for FocusHeader {
+        type Message = ();
+        fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
+            header_bar()
+                .theme(theme)
+                .compositor_outline(true)
+                .title(&self.title)
+                .focused(self.focused)
+                .on_close(())
+                .into_element()
+        }
+        fn focus_outline(&self, _: &CompTheme) -> Option<FocusOutline> {
+            Some(FocusOutline {
+                focused: self.focused,
+                animate: true,
+                duration: std::time::Duration::from_millis(420),
+                curve: [0.0, 0.0, 1.0, 1.0],
+            })
+        }
+        fn backdrop_blur(
+            &self,
+            theme: &CompTheme,
+            size: Size<i32, Logical>,
+            layers: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+            crate::shell::element::window::halo_backdrop_blur(
+                layers,
+                theme.halo_style().pill_height(),
+                size.w as f32,
+            )
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let element = IcedElement::new(
+        FocusHeader {
+            focused: false,
+            title: "Explorer".into(),
+        },
+        (800, ssd_header_render_height(&theme) as i32),
+        event_loop.handle(),
+        theme.clone(),
+    );
+    let mut internal = element.0.lock().unwrap();
+    let now = IcedInstant::now();
+    let redraw = |internal: &mut IcedElementInternal<FocusHeader>, ms| {
+        internal.needs_redraw = false;
+        internal
+            .event_queue
+            .push(Event::Window(WindowEvent::RedrawRequested(
+                now + std::time::Duration::from_millis(ms),
+            )));
+        internal.update(UpdateSource::AnimRedraw);
+        internal
+            .focus_outline_frame([0; 4], now + std::time::Duration::from_millis(ms))
+            .unwrap()
+    };
+    internal.program.focused = true;
+    // Focus is handled before the renderer gets its first frame. Layout, input
+    // handlers or GPU scheduling can take time without showing any outline.
+    internal
+        .event_queue
+        .push(Event::Window(WindowEvent::RedrawRequested(now)));
+    internal.update(UpdateSource::Input);
+    let start = redraw(&mut internal, 200);
+    assert_eq!(start.progress, 0.0);
+    assert!(internal.focus.is_animating());
+    let middle = redraw(&mut internal, 410);
+    assert!((middle.progress - 0.5).abs() < 0.01);
+    assert!(internal.focus.is_animating());
+    // Text/size changes relayout the actual pill but never restart focus gain.
+    internal.program.title = "A much longer conversation title for the focused app".into();
+    internal.size.w = 1000;
+    let resized = redraw(&mut internal, 410);
+    assert_eq!(middle.progress, resized.progress);
+    assert_ne!(middle.bounds, resized.bounds);
+    assert!((resized.bounds.center_x() - 500.0).abs() < 1.0);
+    let pill = internal
+        .renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.quads)
+        .find(|(quad, _)| quad.bounds == resized.bounds)
+        .unwrap();
+    assert_eq!(
+        pill.0.border.color,
+        Color::TRANSPARENT,
+        "no second static hairline"
+    );
+    assert_eq!(redraw(&mut internal, 620).progress, 1.0);
+    assert!(!internal.focus.is_animating());
+    assert_eq!(redraw(&mut internal, 700).progress, 1.0);
+    internal.program.focused = false;
+    assert_eq!(redraw(&mut internal, 701).progress, 0.0);
+    assert!(!internal.focus.is_animating());
+    // The shared theme keeps its neutral border for legacy/standalone headers.
+    assert_ne!(theme.window_border_color(), Color::TRANSPARENT);
+}
+
+#[test]
 fn fullscreen_halo_reveal_animates_inside_the_screen_and_hides_after_leave() {
     use crate::shell::element::header_bar::{fullscreen_header_offset, halo_is_visible};
     struct FullscreenHeader {
@@ -204,6 +310,332 @@ fn output(name: &str) -> Output {
             serial_number: String::new(),
         },
     )
+}
+
+#[test]
+fn popup_surface_animation_keeps_body_hit_testing_and_pointer_coordinates_in_sync() {
+    struct Popup;
+    impl Program for Popup {
+        type Message = ();
+        fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+            iced_widget::button(iced_widget::Space::new().width(100.0).height(40.0))
+                .padding(0)
+                .on_press(())
+                .into()
+        }
+        fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
+            Some(Visibility::fade_rise(theme.motion))
+        }
+        fn backdrop_blur(
+            &self,
+            _: &CompTheme,
+            size: Size<i32, Logical>,
+            _: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+            Some((
+                iced_core::Rectangle::with_size(IcedSize::new(size.w as f32, size.h as f32)),
+                [12; 4],
+            ))
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let element = IcedElement::new(Popup, (100, 40), event_loop.handle(), theme.clone());
+    let active_output = output("popup");
+    let now = IcedInstant::now();
+    let duration = theme.motion.layer_open;
+    {
+        let mut internal = element.0.lock().unwrap();
+        internal.outputs.insert(active_output.clone());
+        assert_eq!(internal.visibility_frame.opacity, 0.0);
+        // Measuring/resizing does not advance an unshown surface.
+        internal.sync_visibility(now + duration * 3);
+        assert_eq!(internal.visibility_frame.opacity, 0.0);
+        internal.start_visibility_frame(now);
+    }
+    for elapsed in [std::time::Duration::ZERO, duration / 2, duration] {
+        let (frame, body) = {
+            let mut internal = element.0.lock().unwrap();
+            internal.needs_redraw = false;
+            internal
+                .event_queue
+                .push(Event::Window(WindowEvent::RedrawRequested(now + elapsed)));
+            internal.update(UpdateSource::AnimRedraw);
+            assert_eq!(take_redraw_request(&active_output), elapsed < duration);
+            let frame = internal.visibility_frame;
+            let body = frame.bounds(iced_core::Rectangle::with_size(IcedSize::new(100.0, 40.0)));
+            let cursor = internal.local_position(body.center());
+            assert!((cursor.x - 50.0).abs() < 0.0001 && (cursor.y - 20.0).abs() < 0.0001);
+            (frame, body)
+        };
+        assert_eq!(element.backdrop_bounds().unwrap(), body);
+        let hit = element.backdrop_input_bounds().unwrap();
+        assert!((hit.loc.x - body.x as f64).abs() < 0.0001);
+        assert!((hit.size.w - 100.0 * frame.scale as f64).abs() < 0.0001);
+        for output_scale in [1.0, 1.5, 2.0] {
+            let origin = Point::<i32, Physical>::from((150, 240));
+            let pixel_origin = frame.location(origin, output_scale.into());
+            assert!((pixel_origin.x - 150.0 - body.x as f64 * output_scale).abs() < 0.0001);
+            assert!((pixel_origin.y - 240.0 - body.y as f64 * output_scale).abs() < 0.0001);
+        }
+    }
+    assert_eq!(
+        element.0.lock().unwrap().visibility_frame,
+        VisibilityFrame::VISIBLE
+    );
+}
+
+#[test]
+#[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
+fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<()> {
+    use smithay::backend::{
+        egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+        renderer::{
+            Bind, Offscreen, damage::OutputDamageTracker, element::Element as _,
+            gles::GlesRenderbuffer, glow::GlowRenderer,
+        },
+    };
+    use std::borrow::BorrowMut;
+    struct Popup;
+    impl Program for Popup {
+        type Message = ();
+        fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
+            Some(Visibility::fade_rise(theme.motion))
+        }
+        fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+            iced_widget::container(iced_widget::Space::new())
+                .width(120.0)
+                .height(64.0)
+                .style(|_| iced_widget::container::Style {
+                    background: Some(Color::from_rgba(0.2, 0.3, 0.4, 0.75).into()),
+                    border: iced_core::Border::default().rounded(12),
+                    ..Default::default()
+                })
+                .into()
+        }
+        fn backdrop_blur(
+            &self,
+            _: &CompTheme,
+            size: Size<i32, Logical>,
+            _: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+            Some((
+                iced_core::Rectangle::with_size(IcedSize::new(size.w as f32, size.h as f32)),
+                [12; 4],
+            ))
+        }
+    }
+    // SAFETY: a fresh surfaceless context, used only on this test thread.
+    let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
+    let context = EGLContext::new(&display)?;
+    let mut renderer = unsafe { GlowRenderer::new(context)? };
+    crate::backend::render::init_shaders(renderer.borrow_mut())?;
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    for scale in [1.0, 1.5, 2.0] {
+        let theme = theme();
+        let duration = theme.motion.layer_open;
+        let element = IcedElement::new(Popup, (120, 64), event_loop.handle(), theme);
+        let output = output("popup-gpu");
+        output.change_current_state(
+            None,
+            None,
+            Some(smithay::output::Scale::Fractional(scale)),
+            None,
+        );
+        SpaceElement::output_enter(&element, &output, element.bbox());
+        // Blur captures include a sampling gutter beyond the visible body.
+        // Compare their transform against an unanimated capture, not against
+        // the UI rectangle (which deliberately has no such gutter).
+        let mut reference_state = BlurState::default();
+        let reference = BlurElement::from_state(
+            &mut renderer,
+            &mut reference_state,
+            Rectangle::new(
+                Point::<f64, Physical>::from((150.0, 240.0)).to_logical(scale),
+                (120.0, 64.0).into(),
+            ),
+            scale,
+            [12; 4],
+            configured_blur_strength(true),
+            1.0,
+        )?
+        .expect("reference backdrop")
+        .geometry(scale.into());
+        let now = IcedInstant::now();
+        let mut previous_ui_id = None;
+        for elapsed in [std::time::Duration::ZERO, duration / 2, duration] {
+            let frame = {
+                let mut internal = element.0.lock().unwrap();
+                internal.start_visibility_frame(now);
+                internal.sync_visibility(now + elapsed);
+                // Freeze the deterministic sample; this is a GPU transform,
+                // not a reason to render the widget tree into another buffer.
+                internal.needs_redraw = false;
+                assert_eq!(internal.buffers.len(), 1);
+                internal.visibility_frame
+            };
+            let mut elements = Vec::new();
+            element.push_render_elements(
+                &mut renderer,
+                (150, 240).into(),
+                scale.into(),
+                1.0,
+                [12; 4],
+                &mut |e| elements.push(e),
+                None,
+            );
+            if elapsed.is_zero() {
+                assert!(
+                    elements.is_empty(),
+                    "no bare blur rectangle on the first frame"
+                );
+                continue;
+            }
+            let ui = elements
+                .iter()
+                .find(|e| matches!(e, IcedRenderElement::UI(_) | IcedRenderElement::ScaledUI(_)))
+                .unwrap();
+            let blur = elements
+                .iter()
+                .find(|e| {
+                    matches!(
+                        e,
+                        IcedRenderElement::Blur(_) | IcedRenderElement::ScaledBlur(_)
+                    )
+                })
+                .expect("animated backdrop");
+            let capture = blur.geometry(scale.into());
+            let animated_origin = frame
+                .location((150, 240).into(), scale.into())
+                .to_i32_round::<i32>();
+            let mut expected = reference;
+            expected.loc -= Point::from((150, 240));
+            expected = expected.to_f64().upscale(frame.scale as f64).to_i32_round();
+            expected.loc += animated_origin;
+            for (actual, expected) in [
+                (capture.loc.x, expected.loc.x),
+                (capture.loc.y, expected.loc.y),
+                (capture.size.w, expected.size.w),
+                (capture.size.h, expected.size.h),
+            ] {
+                assert!(
+                    actual.abs_diff(expected) <= 1,
+                    "blur capture did not follow the surface: {capture:?}, expected {expected}"
+                );
+            }
+            assert!((ui.alpha() - frame.opacity).abs() < 0.0001);
+            assert!((blur.alpha() - frame.opacity).abs() < 0.0001);
+            assert_eq!(
+                matches!(ui, IcedRenderElement::ScaledUI(_)),
+                elapsed < duration
+            );
+            if let Some(id) = &previous_ui_id {
+                assert_eq!(ui.id(), id, "opening must reuse its raster buffer");
+            }
+            previous_ui_id = Some(ui.id().clone());
+            let mut target = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+                &mut renderer,
+                Fourcc::Abgr8888,
+                (512, 512).into(),
+            )?;
+            let mut fb = renderer.bind(&mut target)?;
+            let mut damage = OutputDamageTracker::new((512, 512), scale, Transform::Normal);
+            // Exercise framebuffer capture through the scale wrapper as well
+            // as drawing. A stationary/missing backdrop must not be hidden by
+            // a geometry-only assertion.
+            damage.render_output(&mut renderer, &mut fb, 0, &elements, [0.2, 0.4, 0.7, 1.0])?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn focus_only_frames_do_not_rebuild_iced_and_stop_requesting_frames_when_settled() {
+    struct OutlineOnly {
+        focused: bool,
+        laid_out: bool,
+        views: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Program for OutlineOnly {
+        type Message = ();
+        fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+            self.views.fetch_add(1, Ordering::Relaxed);
+            iced_widget::Space::new().into()
+        }
+        fn focus_outline(&self, theme: &CompTheme) -> Option<FocusOutline> {
+            Some(crate::shell::element::header_bar::halo_focus_outline(
+                theme,
+                self.focused,
+                false,
+            ))
+        }
+        fn backdrop_blur(
+            &self,
+            _: &CompTheme,
+            _: Size<i32, Logical>,
+            _: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+            self.laid_out.then_some((
+                iced_core::Rectangle::new(IcedPoint::new(20.0, 0.0), IcedSize::new(80.0, 40.0)),
+                [20; 4],
+            ))
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let views = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let element = IcedElement::new(
+        OutlineOnly {
+            focused: false,
+            laid_out: false,
+            views: views.clone(),
+        },
+        (120, 40),
+        event_loop.handle(),
+        theme(),
+    );
+    let active = output("focus");
+    let idle = output("idle");
+    let mut internal = element.0.lock().unwrap();
+    internal.outputs.insert(active.clone());
+    let now = IcedInstant::now();
+    internal.program.focused = true;
+    internal
+        .event_queue
+        .push(Event::Window(WindowEvent::RedrawRequested(now)));
+    internal.update(UpdateSource::Input);
+    assert!(
+        !internal.needs_redraw,
+        "focus is shader-only, not a widget animation"
+    );
+    assert!(take_redraw_request(&active));
+    assert!(!take_redraw_request(&idle));
+    assert!(internal.focus_outline_frame([0; 4], now).is_none());
+    internal.program.laid_out = true;
+    let first = now + std::time::Duration::from_millis(200);
+    let view_count = views.load(Ordering::Relaxed);
+    for ms in [0, 16, 32, 210, 420, 500] {
+        let frame = internal
+            .focus_outline_frame([0; 4], first + std::time::Duration::from_millis(ms))
+            .unwrap();
+        if ms == 0 {
+            assert_eq!(frame.progress, 0.0);
+        } else if ms == 16 {
+            assert!(frame.progress > 0.0 && frame.progress < 0.01);
+        } else if ms >= 420 {
+            assert_eq!(frame.progress, 1.0);
+        }
+        assert_eq!(
+            views.load(Ordering::Relaxed),
+            view_count,
+            "no new widget tree for a focus-only frame"
+        );
+        assert!(!internal.needs_redraw);
+        assert_eq!(take_redraw_request(&active), ms < 420);
+        assert!(!take_redraw_request(&idle));
+    }
 }
 
 #[test]
@@ -445,6 +877,7 @@ fn halo_slide_keeps_fractional_placement_after_smithay_rounds_geometry() {
     let frame = VisibilityFrame {
         opacity: 0.5,
         offset: iced_core::Vector::new(0.0, 0.375),
+        scale: 1.0,
     };
     for scale in [1.0, 1.25, 1.5, 2.0] {
         let origin = Point::<i32, Physical>::from((100, 200));

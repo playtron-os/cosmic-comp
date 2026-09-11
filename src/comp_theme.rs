@@ -54,6 +54,9 @@ fn mix_border_accent(border: Color, accent: Color) -> Color {
 pub struct CompTheme {
     /// The underlying design token provider.
     theme: Arc<dyn ThemeInterface>,
+    /// The compositor supplies the Halo outline; keep its widget's fill,
+    /// layout and shadow, but do not rasterize a second static hairline.
+    halo_chrome: Arc<dyn ThemeInterface>,
     /// Whether this is a dark color scheme.
     pub is_dark: bool,
     /// Active window highlight border thickness (pixels).
@@ -88,20 +91,16 @@ impl Default for CompTheme {
     fn default() -> Self {
         let is_dark = true;
         let theme: Arc<dyn ThemeInterface> = Arc::new(DEFAULT_THEME_PAIR.load(is_dark));
-        Self {
-            motion: crate::backend::render::animations::motion::Motion::from_theme(&*theme),
-            theme,
-            is_dark,
-            active_hint: 3,
-            gaps: (4, 4),
-            workspace_accent: None,
-        }
+        Self::new(theme, is_dark)
     }
 }
 
 impl CompTheme {
     pub fn new(theme: Arc<dyn ThemeInterface>, is_dark: bool) -> Self {
+        let mut halo_chrome = DynamicTheme::from_theme(&*theme);
+        halo_chrome.window_border_color = Color::TRANSPARENT;
         Self {
+            halo_chrome: Arc::new(halo_chrome),
             motion: crate::backend::render::animations::motion::Motion::from_theme(&*theme),
             theme,
             is_dark,
@@ -168,19 +167,16 @@ impl CompTheme {
             "CompTheme loaded, window radius: {}", theme.radius_window()
         );
 
-        Self {
-            motion: crate::backend::render::animations::motion::Motion::from_theme(&*theme),
-            theme,
-            is_dark,
-            active_hint: 3,
-            gaps: (4, 4),
-            workspace_accent: None,
-        }
+        Self::new(theme, is_dark)
     }
 
     /// Access the underlying theme interface.
     pub fn theme(&self) -> &dyn ThemeInterface {
         &*self.theme
+    }
+
+    pub(crate) fn halo_chrome_theme(&self) -> &dyn ThemeInterface {
+        &*self.halo_chrome
     }
 
     /// Neutral mid-gray color for backdrop/indicator effects.

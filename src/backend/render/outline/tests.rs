@@ -9,7 +9,7 @@ fn canvas_maps_pixel_centres_to_the_unsnapped_shape() {
                     (origin + phase, 37.0 + phase).into(),
                     (303.5, 199.25).into(),
                 );
-                let geometry = Geometry::new(shape, 1, scale);
+                let geometry = Geometry::new(shape, 1.0, scale);
                 let pixels: Rectangle<i32, Physical> = geometry
                     .canvas
                     .as_logical()
@@ -181,5 +181,162 @@ fn gles_outline_has_consistent_edges_and_a_single_shared_blend() -> anyhow::Resu
         }
     }
     eprintln!("GLES outline verified at five scales and four pixel phases");
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
+fn gles_outline_focus_reveals_bidirectionally_and_lands_on_the_static_pixels() -> anyhow::Result<()>
+{
+    use crate::backend::render::{IndicatorShader, OutlineFocus};
+    use iced_core::Color;
+    use smithay::backend::{
+        allocator::Fourcc,
+        egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+        renderer::{
+            Bind, ExportMem, Offscreen, TextureMapping,
+            damage::OutputDamageTracker,
+            element::{Element, Id},
+            gles::GlesRenderbuffer,
+            glow::GlowRenderer,
+        },
+    };
+    use smithay::utils::Transform;
+    use std::borrow::BorrowMut;
+
+    // SAFETY: this surfaceless context is owned and used on this test thread.
+    let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
+    let context = EGLContext::new(&display)?;
+    let mut renderer = unsafe { GlowRenderer::new(context)? };
+    let shader = IndicatorShader::compile(renderer.borrow_mut())?;
+    renderer
+        .egl_context()
+        .user_data()
+        .insert_if_missing(|| IndicatorShader(shader));
+    let key = Id::new();
+    let neutral = Color::from_rgba(0.0, 0.0, 1.0, 0.5);
+    let accent = Color::from_rgba(1.0, 0.0, 0.0, 0.5);
+    let ring = Color::from_rgba(0.0, 1.0, 0.0, 0.22);
+
+    for halo in [false, true] {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for phase in [0.0, 0.25, 0.5, 0.75] {
+                let shape = Rectangle::new(
+                    (12.0 + phase, 13.0 + phase).into(),
+                    (100.0, if halo { 40.0 } else { 60.0 }).into(),
+                );
+                let mut previous_id = None;
+                let mut draw = |progress: Option<f32>,
+                                focused: bool|
+                 -> anyhow::Result<Vec<[u8; 4]>> {
+                    let element = IndicatorShader::animated_outline(
+                        &renderer,
+                        key.clone(),
+                        shape,
+                        if halo { 0.5 } else { 1.0 },
+                        [if halo { 20.0 } else { 9.0 }; 4],
+                        0.75,
+                        scale,
+                        if focused { accent } else { neutral },
+                        1.0,
+                        if focused { ring } else { Color::TRANSPARENT },
+                        progress.map(|progress| OutlineFocus {
+                            progress,
+                            tip: 30.0,
+                            halo,
+                            neutral,
+                        }),
+                    );
+                    if let Some(previous) = &previous_id {
+                        assert_eq!(
+                            previous,
+                            element.id(),
+                            "animation must retain damage identity"
+                        );
+                    }
+                    previous_id = Some(element.id().clone());
+                    let mut buffer = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+                        &mut renderer,
+                        Fourcc::Abgr8888,
+                        (256, 192).into(),
+                    )?;
+                    let mut fb = renderer.bind(&mut buffer)?;
+                    let mut tracker =
+                        OutputDamageTracker::new((256, 192), scale, Transform::Normal);
+                    tracker.render_output(&mut renderer, &mut fb, 0, &[element], [0.0; 4])?;
+                    let mapping = renderer.copy_framebuffer(
+                        &fb,
+                        Rectangle::from_size((256, 192).into()),
+                        Fourcc::Abgr8888,
+                    )?;
+                    let flipped = mapping.flipped();
+                    let bytes = renderer.map_texture(&mapping)?;
+                    Ok((0..192)
+                        .flat_map(|y| (0..256).map(move |x| (x, y)))
+                        .map(|(x, y)| {
+                            let y = if flipped { y } else { 191 - y };
+                            let i = (y * 256 + x) * 4;
+                            [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
+                        })
+                        .collect())
+                };
+                let start = draw(Some(0.0), true)?;
+                assert_eq!(start, draw(None, false)?, "start must be exactly neutral");
+                if !halo {
+                    let first = draw(Some(0.01), true)?;
+                    let settled = draw(None, true)?;
+                    let red_sum = |pixels: &[[u8; 4]]| {
+                        pixels.iter().map(|p| u64::from(p[0])).sum::<u64>() as f64
+                    };
+                    assert!(
+                        red_sum(&first) < red_sum(&settled) * 0.04,
+                        "the beginning of the sweep must reveal only a small part of the window outline"
+                    );
+                }
+                let mut previous = start;
+                for progress in [0.005, 0.01, 0.1, 0.25, 0.5, 0.75, 1.0] {
+                    let pixels = draw(Some(progress), true)?;
+                    for (before, after) in previous.iter().zip(&pixels) {
+                        assert!(
+                            after[0] >= before[0] && after[1] >= before[1] && after[2] <= before[2],
+                            "every pixel reveals monotonically, halo={halo}, progress={progress}"
+                        );
+                    }
+                    if scale == 1.0 && phase == 0.0 {
+                        for y in 10..80 {
+                            for x in 10..62 {
+                                let a = pixels[y * 256 + x];
+                                let b = pixels[y * 256 + (123 - x)];
+                                assert!(
+                                    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 1),
+                                    "left/right symmetry"
+                                );
+                            }
+                        }
+                        if progress == 0.5 {
+                            // Both start at the Halo ends. The window has reached
+                            // its sides, not bottom center; the Halo's center is last.
+                            let at = |x: usize, y: usize| pixels[(13 + y) * 256 + 12 + x];
+                            assert!(at(23, 0)[0] > 0);
+                            if halo {
+                                assert_eq!(at(50, 0)[0], 0);
+                                assert!(at(50, 0)[2] > 0);
+                            } else {
+                                assert!(at(0, 30)[0] > 0);
+                                assert_eq!(at(50, 59)[0], 0);
+                                assert!(at(50, 59)[2] > 0);
+                            }
+                        }
+                    }
+                    previous = pixels;
+                }
+                assert_eq!(
+                    previous,
+                    draw(None, true)?,
+                    "settling must not double-blend or flash"
+                );
+            }
+        }
+    }
     Ok(())
 }

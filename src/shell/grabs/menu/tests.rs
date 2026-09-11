@@ -5,6 +5,18 @@ use iced_runtime::{UserInterface, user_interface};
 use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
 
 #[test]
+fn halo_dropdown_opts_into_surface_motion_but_legacy_menus_do_not() {
+    let theme = CompTheme::default();
+    let mut menu = ContextMenu::new(vec![Item::new("New window", |_| {})]);
+    assert!(menu.visibility(&theme).is_none());
+    menu.halo = true;
+    assert_eq!(
+        menu.visibility(&theme),
+        Some(crate::utils::iced::Visibility::fade_rise(theme.motion))
+    );
+}
+
+#[test]
 fn halo_menu_hover_updates_seat_cursor_for_enabled_rows_only() {
     use iced_core::{
         Event, Point as IcedPoint, mouse,
@@ -84,7 +96,8 @@ fn halo_menu_hover_updates_seat_cursor_for_enabled_rows_only() {
 #[test]
 fn halo_dropdown_is_transparent_outside_its_blurred_body_and_anchored_at_click() {
     let event_loop = calloop::EventLoop::<State>::try_new().unwrap();
-    let theme = CompTheme::new(Arc::new(DEFAULT_THEME_PAIR.load(true)), true);
+    let mut theme = CompTheme::new(Arc::new(DEFAULT_THEME_PAIR.load(true)), true);
+    theme.motion.layer_open = std::time::Duration::ZERO; // This test measures the settled body.
     let mut menu = ContextMenu::new(vec![
         Item::new("New Window", |_| {}),
         Item::Separator,
@@ -166,12 +179,12 @@ fn halo_dropdown_is_transparent_outside_its_blurred_body_and_anchored_at_click()
     let body = element.input_bbox();
     assert_eq!(
         body.loc,
-        (100, 200).into(),
+        (100.0, 200.0).into(),
         "the menu body, not its shadow, starts at the saved click"
     );
-    assert_eq!(body.size.w, theme.halo_style().menu_width as i32);
+    assert_eq!(body.size.w, theme.halo_style().menu_width as f64);
     assert!(
-        !body.contains(Point::from((99, 200))),
+        !body.contains(Point::from((99.0, 200.0))),
         "shadow padding is an outside click"
     );
 }

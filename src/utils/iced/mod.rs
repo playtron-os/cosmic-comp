@@ -20,8 +20,11 @@ use std::{
 
 use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
+mod focus;
 mod tooltip;
 mod visibility;
+use focus::FocusAnimation;
+pub use focus::{FocusOutline, FocusOutlineFrame};
 pub use visibility::Visibility;
 use visibility::{VisibilityAnimation, VisibilityFrame};
 
@@ -60,8 +63,9 @@ use smithay::{
         renderer::{
             ImportMem,
             element::{
-                Kind,
+                Id, Kind,
                 memory::{MemoryRenderBuffer, MemoryRenderBufferRenderElement},
+                utils::RescaleRenderElement,
             },
         },
     },
@@ -92,6 +96,7 @@ use smithay::{
 // MERGE: upstream also imports `utils::iced::state::State`; the fork replaced that module
 // with `UserInterface` + `Cache` driven directly (iced 0.15, no libcosmic), so it is dropped.
 use crate::backend::render::{
+    IndicatorShader, OutlineElement, OutlineFocus,
     element::AsGlowRenderer,
     wayland::blur_effect::{BlurElement, BlurState, configured_blur_strength},
 };
@@ -293,6 +298,11 @@ pub trait Program {
         None
     }
 
+    /// Opt in to a compositor-drawn Halo outline and its shared focus clock.
+    fn focus_outline(&self, _theme: &CompTheme) -> Option<FocusOutline> {
+        None
+    }
+
     fn backdrop_blur(
         &self,
         theme: &CompTheme,
@@ -348,6 +358,8 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     needs_redraw: bool,
     visibility: Option<VisibilityAnimation>,
     visibility_frame: VisibilityFrame,
+    focus: FocusAnimation,
+    outline_id: Id,
 
     // the actual program
     program: P,
@@ -401,6 +413,8 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             needs_redraw: false,
             visibility: self.visibility.clone(),
             visibility_frame: self.visibility_frame,
+            focus: self.focus.clone(),
+            outline_id: Id::new(),
             program: self.program.clone(),
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -583,6 +597,8 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             needs_redraw: false,
             visibility: None,
             visibility_frame: VisibilityFrame::VISIBLE,
+            focus: FocusAnimation::default(),
+            outline_id: Id::new(),
             program,
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
@@ -612,7 +628,32 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         } = &mut *guard;
         program
             .backdrop_blur(theme, *size, renderer.layers(), [0; 4])
-            .map(|(bounds, _)| bounds + visibility_frame.offset)
+            .map(|(bounds, _)| visibility_frame.bounds(bounds))
+    }
+
+    /// Hit-test the painted body (not its shadow gutter), including surface
+    /// animation and application/zoom scale, in element-relative logical units.
+    pub(crate) fn backdrop_input_bounds(&self) -> Option<Rectangle<f64, Logical>> {
+        let mut guard = self.0.lock().unwrap();
+        let IcedElementInternal {
+            program,
+            theme,
+            size,
+            renderer,
+            visibility_frame,
+            additional_scale,
+            ..
+        } = &mut *guard;
+        program
+            .backdrop_blur(theme, *size, renderer.layers(), [0; 4])
+            .map(|(bounds, _)| {
+                let bounds = visibility_frame.bounds(bounds);
+                Rectangle::new(
+                    (bounds.x as f64, bounds.y as f64).into(),
+                    (bounds.width as f64, bounds.height as f64).into(),
+                )
+                .upscale(*additional_scale)
+            })
     }
 
     pub fn minimum_size(&self) -> Size<i32, Logical> {
@@ -736,6 +777,38 @@ impl<P: Program + Send + 'static + Clone> IcedElement<P> {
 // --- Core update cycle (rewritten for iced 0.15) ---
 
 impl<P: Program + Send + 'static> IcedElementInternal<P> {
+    fn start_visibility_frame(&mut self, now: IcedInstant) {
+        if self
+            .visibility
+            .as_mut()
+            .is_some_and(|animation| animation.start_on_draw(now))
+        {
+            self.sync_visibility(now);
+        }
+    }
+
+    fn focus_outline_frame(
+        &mut self,
+        radii: [u8; 4],
+        now: IcedInstant,
+    ) -> Option<FocusOutlineFrame> {
+        self.program.focus_outline(&self.theme)?;
+        let (bounds, radii) =
+            self.program
+                .backdrop_blur(&self.theme, self.size, self.renderer.layers(), radii)?;
+        let progress = self.focus.frame(now);
+        if self.focus.is_animating() {
+            for output in &self.outputs {
+                request_redraw(output);
+            }
+        }
+        Some(FocusOutlineFrame {
+            progress,
+            bounds,
+            radii,
+        })
+    }
+
     fn sync_visibility(&mut self, now: IcedInstant) {
         self.visibility = self.program.visibility(&self.theme).map(|settings| {
             let mut animation = self
@@ -748,13 +821,22 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         self.visibility_frame = self
             .visibility
             .as_ref()
-            .map_or(VisibilityFrame::VISIBLE, |animation| animation.frame(now));
+            .map_or(VisibilityFrame::VISIBLE, |animation| animation.frame(now))
+            .around(IcedPoint::new(
+                self.size.w as f32 * 0.5,
+                self.size.h as f32 * 0.5,
+            ));
+        if let Some(settings) = self.program.focus_outline(&self.theme) {
+            self.focus.update(settings);
+        } else {
+            self.focus = FocusAnimation::default();
+        }
     }
 
     /// Input positions are stored in the stationary buffer's coordinate space.
     /// Reproject them every frame, including frames with no pointer motion.
     fn local_position(&self, position: IcedPoint) -> IcedPoint {
-        position - self.visibility_frame.offset
+        self.visibility_frame.unproject(position)
     }
 
     /// Schedule a Task returned by program.update() onto the calloop executor.
@@ -841,14 +923,16 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             _ => unreachable!("every update ends with RedrawRequested"),
         };
         self.sync_visibility(now);
-        let offset = self.visibility_frame.offset;
+        let transform = self.visibility_frame;
         for event in &mut self.event_queue {
             match event {
                 Event::Mouse(MouseEvent::CursorMoved { position })
                 | Event::Touch(TouchEvent::FingerPressed { position, .. })
                 | Event::Touch(TouchEvent::FingerMoved { position, .. })
                 | Event::Touch(TouchEvent::FingerLifted { position, .. })
-                | Event::Touch(TouchEvent::FingerLost { position, .. }) => *position -= offset,
+                | Event::Touch(TouchEvent::FingerLost { position, .. }) => {
+                    *position = transform.unproject(*position)
+                }
                 _ => {}
             }
         }
@@ -964,7 +1048,9 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             .visibility
             .as_ref()
             .is_some_and(|animation| animation.is_animating(now));
-        if self.needs_redraw {
+        // Focus changes only GPU uniforms. Request an output frame without
+        // treating it as an Iced widget redraw (layout/text/tooltip rebuild).
+        if self.needs_redraw || self.focus.is_animating() {
             for output in &self.outputs {
                 request_redraw(output);
             }
@@ -1499,12 +1585,33 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
-        mut scale: Scale<f64>,
+        scale: Scale<f64>,
         alpha: f32,
         radii: [u8; 4],
         push_above: &mut dyn FnMut(IcedRenderElement<R>),
         push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
     ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        self.push_render_elements_with_focus(
+            renderer, location, scale, alpha, radii, push_above, push_below,
+        );
+    }
+
+    /// Return the exact frame used for the Halo, so its window cannot sample
+    /// a different instant (or reacquire state after another output advances it).
+    pub fn push_render_elements_with_focus<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
+        mut scale: Scale<f64>,
+        alpha: f32,
+        radii: [u8; 4],
+        push_above: &mut dyn FnMut(IcedRenderElement<R>),
+        push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
+    ) -> Option<FocusOutlineFrame>
+    where
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
@@ -1552,9 +1659,12 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         {
             profiler.animation_burst_start(element_id);
         }
+        let frame_time = IcedInstant::now();
+        internal_ref.start_visibility_frame(frame_time);
+        let focus_frame = internal_ref.focus_outline_frame(radii, frame_time);
         let alpha = internal_ref.visibility_frame.alpha(alpha);
         if alpha <= 0.0 {
-            return;
+            return focus_frame;
         }
         if std::mem::replace(&mut internal_ref.pending_realloc, false) {
             for (scale, (buffer, old_primitives)) in internal_ref.buffers.iter_mut() {
@@ -1568,11 +1678,14 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             }
         }
 
+        let output_scale = scale;
+        let surface_scale = internal_ref.visibility_frame.scale as f64;
         scale = scale * internal_ref.additional_scale;
         // Preserve subpixel motion and use exactly the same origin for the
         // texture (including its shadow) and the framebuffer blur capture.
         let location = internal_ref.visibility_frame.location(location, scale);
-        // Front-to-back: tooltip, its backdrop, header, then the header's backdrop.
+        // Front-to-back: tooltip and its backdrop, Halo outline, header fill,
+        // then the header's backdrop. The outline shares the fill's fade/slide.
         internal_ref.tooltip.push(
             renderer,
             &internal_ref.theme,
@@ -1582,6 +1695,41 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             alpha,
             push_above,
         );
+        if let Some(frame) = focus_frame {
+            let theme = &internal_ref.theme;
+            let zoom = internal_ref.additional_scale;
+            let bounds = frame.bounds;
+            let geometry = Rectangle::new(
+                (
+                    location.x / output_scale.x + bounds.x as f64 * zoom,
+                    location.y / output_scale.y + bounds.y as f64 * zoom,
+                )
+                    .into(),
+                (bounds.width as f64 * zoom, bounds.height as f64 * zoom).into(),
+            );
+            push_above(IcedRenderElement::Outline(OutlineElement(
+                IndicatorShader::animated_outline(
+                    renderer,
+                    internal_ref.outline_id.clone(),
+                    geometry,
+                    theme.halo_style().border_width * zoom as f32,
+                    frame.radii.map(|r| r as f32 * zoom as f32),
+                    alpha,
+                    output_scale.x,
+                    theme.focused_window_border(true),
+                    theme.window_border_width() * zoom as f32,
+                    theme
+                        .focused_window_ring(true)
+                        .unwrap_or(Color::TRANSPARENT),
+                    Some(OutlineFocus {
+                        progress: frame.progress,
+                        tip: 0.0,
+                        halo: true,
+                        neutral: theme.window_border_color(),
+                    }),
+                ),
+            )));
+        }
         if let Some((buffer, old_layers)) = internal_ref.buffers.get_mut(&OrderedFloat(scale.x)) {
             let size: Size<i32, BufferCoords> = internal_ref
                 .size
@@ -1691,7 +1839,19 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 Kind::Unspecified,
             ) {
                 Ok(buffer) => {
-                    push_above(buffer.into());
+                    if surface_scale == 1.0 {
+                        push_above(buffer.into());
+                    } else {
+                        // Scale the existing texture on the GPU, never resize
+                        // and rerasterize the menu's buffer on every frame.
+                        push_above(IcedRenderElement::ScaledUI(
+                            RescaleRenderElement::from_element(
+                                buffer,
+                                location.to_i32_round(),
+                                surface_scale,
+                            ),
+                        ));
+                    }
                 }
                 Err(err) => tracing::warn!("What? {:?}", err),
             }
@@ -1736,10 +1896,22 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     [internal_ref.theme.backdrop_saturate_popover(), 0.0, 0.0],
                 ) {
                     Ok(Some(elem)) => {
-                        if let Some(push_below) = push_below {
-                            push_below(elem.into())
+                        // Use the same GPU transform as the UI. Resizing the
+                        // blur itself would reallocate capture textures and
+                        // round its corner radii on every animation frame.
+                        let elem = if surface_scale == 1.0 {
+                            IcedRenderElement::Blur(elem)
                         } else {
-                            push_above(elem.into())
+                            IcedRenderElement::ScaledBlur(RescaleRenderElement::from_element(
+                                elem,
+                                location.to_i32_round(),
+                                surface_scale,
+                            ))
+                        };
+                        if let Some(push_below) = push_below {
+                            push_below(elem)
+                        } else {
+                            push_above(elem)
                         }
                     }
                     Ok(None) => {}
@@ -1747,13 +1919,17 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 }
             }
         }
+        focus_frame
     }
 }
 
 render_elements! {
     pub IcedRenderElement<R> where R: ImportMem + AsGlowRenderer, R::TextureId: Send;
     UI=MemoryRenderBufferRenderElement<R>,
+    ScaledUI=RescaleRenderElement<MemoryRenderBufferRenderElement<R>>,
     Blur=BlurElement,
+    ScaledBlur=RescaleRenderElement<BlurElement>,
+    Outline=OutlineElement,
 }
 
 #[cfg(test)]

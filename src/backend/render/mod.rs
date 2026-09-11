@@ -198,6 +198,7 @@ fn parse_clear_color(raw: &str) -> Option<Color32F> {
 
 pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag");
 mod outline;
+pub use outline::OutlineElement;
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // MERGE: our dual-Kawase / blurred-backdrop shaders (fragment + compute) and the
@@ -272,16 +273,27 @@ impl From<Id> for Key {
     }
 }
 
+/// A spatial reveal of the accent over the neutral outline, not a second border.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineFocus {
+    pub progress: f32,
+    /// Left Halo endpoint in window-local coordinates (ignored for the Halo).
+    pub tip: f32,
+    pub halo: bool,
+    pub neutral: iced_core::Color,
+}
+
 #[derive(PartialEq)]
 struct IndicatorSettings {
-    thickness: u8,
-    outer_radius: [u8; 4],
+    thickness: f32,
+    outer_radius: [f32; 4],
     alpha: f32,
     color: [f32; 4],
-    ring_width: u8,
+    ring_width: f32,
     ring_color: [f32; 4],
     geometry: outline::Geometry,
     scale: f64,
+    focus: Option<OutlineFocus>,
 }
 
 impl IndicatorSettings {
@@ -290,15 +302,27 @@ impl IndicatorSettings {
         vec![
             Uniform::new("color", premultiply(self.color)),
             Uniform::new("ring_color", premultiply(self.ring_color)),
-            Uniform::new("thickness", f32::from(self.thickness)),
-            Uniform::new("ring_width", f32::from(self.ring_width)),
+            Uniform::new("thickness", self.thickness),
+            Uniform::new("ring_width", self.ring_width),
+            Uniform::new(
+                "focus_mode",
+                self.focus.map_or(0.0, |f| if f.halo { 2.0 } else { 1.0 }),
+            ),
+            Uniform::new("focus_progress", self.focus.map_or(1.0, |f| f.progress)),
+            Uniform::new("focus_tip", self.focus.map_or(0.0, |f| f.tip)),
+            Uniform::new(
+                "neutral_color",
+                premultiply(self.focus.map_or(self.color, |f| {
+                    [f.neutral.r, f.neutral.g, f.neutral.b, f.neutral.a]
+                })),
+            ),
             Uniform::new(
                 "radius",
                 [
-                    self.outer_radius[3] as f32,
-                    self.outer_radius[1] as f32,
-                    self.outer_radius[0] as f32,
-                    self.outer_radius[2] as f32,
+                    self.outer_radius[3],
+                    self.outer_radius[1],
+                    self.outer_radius[0],
+                    self.outer_radius[2],
                 ],
             ),
             Uniform::new("scale", self.scale as f32),
@@ -317,6 +341,10 @@ impl IndicatorShader {
             &[
                 UniformName::new("color", UniformType::_4f),
                 UniformName::new("ring_color", UniformType::_4f),
+                UniformName::new("neutral_color", UniformType::_4f),
+                UniformName::new("focus_mode", UniformType::_1f),
+                UniformName::new("focus_progress", UniformType::_1f),
+                UniformName::new("focus_tip", UniformType::_1f),
                 UniformName::new("thickness", UniformType::_1f),
                 UniformName::new("ring_width", UniformType::_1f),
                 UniformName::new("scale", UniformType::_1f),
@@ -401,7 +429,40 @@ impl IndicatorShader {
         ring: Option<iced_core::Color>,
     ) -> PixelShaderElement {
         let ring = ring.filter(|color| color.a > 0.0 && thickness > 0);
-        let ring_width = if ring.is_some() { thickness } else { 0 };
+        Self::animated_outline(
+            renderer,
+            key,
+            geo,
+            thickness.into(),
+            outer_radius.map(f32::from),
+            alpha,
+            scale,
+            color,
+            if ring.is_some() {
+                thickness.into()
+            } else {
+                0.0
+            },
+            ring.unwrap_or(iced_core::Color::TRANSPARENT),
+            None,
+        )
+    }
+
+    /// Fractional strokes let the Halo retain its half-pixel hairline. Focus
+    /// changes only uniforms on this cached element, preserving damage identity.
+    pub fn animated_outline<R: AsGlowRenderer>(
+        renderer: &R,
+        key: impl Into<Key>,
+        geo: Rectangle<f64, Local>,
+        thickness: f32,
+        outer_radius: [f32; 4],
+        alpha: f32,
+        scale: f64,
+        color: iced_core::Color,
+        ring_width: f32,
+        ring_color: iced_core::Color,
+        focus: Option<OutlineFocus>,
+    ) -> PixelShaderElement {
         let rgba = |color: iced_core::Color| [color.r, color.g, color.b, color.a];
         let settings = IndicatorSettings {
             thickness,
@@ -410,8 +471,9 @@ impl IndicatorShader {
             scale,
             color: rgba(color),
             ring_width,
-            ring_color: rgba(ring.unwrap_or(iced_core::Color::TRANSPARENT)),
+            ring_color: rgba(ring_color),
             geometry: outline::Geometry::new(geo, ring_width, scale),
+            focus,
         };
 
         let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
