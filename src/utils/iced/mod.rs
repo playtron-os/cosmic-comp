@@ -356,6 +356,8 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     event_queue: Vec<Event>,
     mouse_interaction: MouseInteraction,
     needs_redraw: bool,
+    /// A dismissed surface keeps its last widget paint for the compositor exit.
+    render_only: bool,
     visibility: Option<VisibilityAnimation>,
     visibility_frame: VisibilityFrame,
     focus: FocusAnimation,
@@ -411,6 +413,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            render_only: self.render_only,
             visibility: self.visibility.clone(),
             visibility_frame: self.visibility_frame,
             focus: self.focus.clone(),
@@ -595,6 +598,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            render_only: false,
             visibility: None,
             visibility_frame: VisibilityFrame::VISIBLE,
             focus: FocusAnimation::default(),
@@ -717,6 +721,29 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         self.0.lock().unwrap().update(UpdateSource::Forced);
     }
 
+    /// The program must already request hidden visibility. Release queued
+    /// input and retain its last paint, like a hidden layer-shell surface:
+    /// only the compositor transform/alpha and live backdrop keep updating.
+    pub(crate) fn animate_exit(&self) {
+        self.0.lock().unwrap().animate_exit(IcedInstant::now());
+    }
+
+    /// A dismissed compositor surface may be retained until its exit ends.
+    /// Query the clock, not the last sampled frame: an output may have stopped
+    /// rendering while the close was in flight.
+    pub(crate) fn is_fully_hidden(&self) -> bool {
+        self.is_fully_hidden_at(IcedInstant::now())
+    }
+
+    pub(crate) fn is_fully_hidden_at(&self, now: IcedInstant) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .visibility
+            .as_ref()
+            .is_some_and(|animation| animation.is_fully_hidden(now))
+    }
+
     /// Read the element's theme. Ported from upstream (which hands out a `cosmic::Theme`)
     /// onto the fork's [`CompTheme`].
     pub fn with_theme<R: 'static>(&self, f: impl FnOnce(&CompTheme) -> R) -> R {
@@ -777,6 +804,36 @@ impl<P: Program + Send + 'static + Clone> IcedElement<P> {
 // --- Core update cycle (rewritten for iced 0.15) ---
 
 impl<P: Program + Send + 'static> IcedElementInternal<P> {
+    fn advance_exit(&mut self, now: IcedInstant) {
+        if !self.render_only {
+            return;
+        }
+        self.sync_visibility(now);
+        if self
+            .visibility
+            .as_ref()
+            .is_some_and(|animation| animation.is_animating(now))
+        {
+            for output in &self.outputs {
+                request_redraw(output);
+            }
+        }
+        self.needs_redraw = false;
+    }
+
+    fn animate_exit(&mut self, now: IcedInstant) {
+        self.render_only = true;
+        self.event_queue.clear();
+        self.cursor_pos = None;
+        self.touch_map.clear();
+        self.needs_redraw = false;
+        self.sync_visibility(now);
+        // Even an instant close needs a frame to erase the previous image.
+        for output in &self.outputs {
+            request_redraw(output);
+        }
+    }
+
     fn start_visibility_frame(&mut self, now: IcedInstant) {
         if self
             .visibility
@@ -1621,6 +1678,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         // Drive animation frames: if a previous update requested a redraw,
         // inject a RedrawRequested event so animation widgets can advance.
         let element_id = Arc::as_ptr(&self.0) as usize;
+        internal_ref.advance_exit(IcedInstant::now());
         if internal_ref.needs_redraw {
             internal_ref.needs_redraw = false;
             internal_ref

@@ -76,8 +76,71 @@ pub struct MenuGrabState {
     scale: Arc<Mutex<f64>>,
 }
 pub type SeatMenuGrabState = Mutex<Option<MenuGrabState>>;
+/// Render-only exits. These never participate in input routing or menu grabs.
+#[derive(Default)]
+pub struct ClosingMenus(Vec<MenuGrabState>);
+pub type SeatClosingMenus = Mutex<ClosingMenus>;
+
+impl ClosingMenus {
+    fn cleanup(&mut self, now: iced_core::time::Instant) {
+        self.0.retain(|menu| {
+            !menu
+                .elements
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|element| element.iced.is_fully_hidden_at(now))
+        });
+    }
+    pub fn render<R>(
+        &mut self,
+        renderer: &mut R,
+        output: &Output,
+        push: &mut dyn FnMut(IcedRenderElement<R>, bool),
+    ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        self.cleanup(iced_core::time::Instant::now());
+        // Newest exiting popup is nearest the still-active popup, if any.
+        for menu in self.0.iter().rev() {
+            menu.render(renderer, output, &mut |elem| {
+                push(elem, !menu.is_in_screen_space())
+            });
+        }
+    }
+
+    fn push(&mut self, menu: MenuGrabState) {
+        self.cleanup(iced_core::time::Instant::now());
+        if !menu.is_finished() {
+            self.0.push(menu);
+        }
+    }
+}
 
 impl MenuGrabState {
+    fn begin_close(&self) {
+        let mut elements = self.elements.lock().unwrap();
+        // Legacy menus have no surface transition and continue closing at once.
+        elements.retain(|element| element.iced.with_program(|menu| menu.halo));
+        for element in &mut *elements {
+            element.pointer_entered = false;
+            element.touch_entered = None;
+            element
+                .iced
+                .with_program(|menu| menu.closing.store(true, Ordering::SeqCst));
+            element.iced.animate_exit();
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.elements
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|element| element.iced.is_fully_hidden())
+    }
+
     pub fn render<R>(
         &self,
         renderer: &mut R,
@@ -225,6 +288,7 @@ pub struct ContextMenu {
     selected: AtomicBool,
     row_width: Mutex<Option<f32>>,
     halo: bool,
+    closing: AtomicBool,
 }
 
 impl ContextMenu {
@@ -234,6 +298,7 @@ impl ContextMenu {
             selected: AtomicBool::new(false),
             row_width: Mutex::new(None),
             halo: false,
+            closing: AtomicBool::new(false),
         }
     }
 
@@ -267,8 +332,10 @@ impl Program for ContextMenu {
     }
 
     fn visibility(&self, theme: &CompTheme) -> Option<crate::utils::iced::Visibility> {
-        self.halo
-            .then(|| crate::utils::iced::Visibility::fade_rise(theme.motion))
+        self.halo.then(|| crate::utils::iced::Visibility {
+            visible: !self.closing.load(Ordering::SeqCst),
+            ..crate::utils::iced::Visibility::fade_rise(theme.motion)
+        })
     }
 
     fn update(
@@ -277,6 +344,9 @@ impl Program for ContextMenu {
         loop_handle: &crate::utils::iced::ProgramLoop,
         last_seat: Option<&(Seat<State>, Serial)>,
     ) -> Task<Self::Message> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Task::none();
+        }
         match message {
             Message::ItemPressed(idx) => {
                 if let Some(Item::Entry {
@@ -1377,13 +1447,40 @@ impl MenuGrab {
 
 impl Drop for MenuGrab {
     fn drop(&mut self) {
-        self.seat
+        let mut active = self
+            .seat
             .user_data()
             .get::<SeatMenuGrabState>()
             .unwrap()
             .lock()
-            .unwrap()
-            .take();
+            .unwrap();
+        // A replacement grab can be installed before this old grab is dropped.
+        // Never remove the replacement's render/input state.
+        if active
+            .as_ref()
+            .is_some_and(|menu| Arc::ptr_eq(&menu.elements, &self.elements))
+        {
+            active.take();
+        }
+        drop(active);
+        let closing = MenuGrabState {
+            elements: self.elements.clone(),
+            screen_space_relative: self.screen_space_relative.clone(),
+            scale: self.scale.clone(),
+        };
+        closing.begin_close();
+        if !closing.is_finished() {
+            self.seat
+                .user_data()
+                .insert_if_missing_threadsafe(SeatClosingMenus::default);
+            self.seat
+                .user_data()
+                .get::<SeatClosingMenus>()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .push(closing);
+        }
         if let Some(on_close) = self.on_close.take() {
             on_close();
         }

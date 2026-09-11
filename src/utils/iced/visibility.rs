@@ -160,6 +160,42 @@ impl VisibilityAnimation {
             *self = Self::new(settings);
             return;
         }
+        // Surface popups use the same point-symmetric fade-rise curve as
+        // LayerClose. Reverse the entrance's timeline, not a fresh full-length
+        // interpolation from a partly visible frame. This matches the
+        // protocol's backdated close when dismissed halfway through opening.
+        let was_hidden = Visibility {
+            visible: false,
+            ..self.settings
+        }
+        .target();
+        let reverse_open = self.settings.animate_initial
+            && self.settings.visible
+            && !settings.visible
+            && self.settings
+                == Visibility {
+                    visible: true,
+                    ..settings
+                }
+            && self.from == was_hidden
+            && [settings.opacity_curve, settings.translation_curve]
+                .iter()
+                .all(|c| {
+                    (c[0] + c[2] - 1.0).abs() < 0.00001 && (c[1] + c[3] - 1.0).abs() < 0.00001
+                });
+        if reverse_open {
+            let opened = self.clock.interpolate(0.0, 1.0, now).clamp(0.0, 1.0);
+            let start = now
+                .checked_sub(settings.duration.mul_f32(1.0 - opened))
+                .unwrap_or(now);
+            self.from = VisibilityFrame::VISIBLE;
+            self.settings = settings;
+            self.clock = Animation::new(false)
+                .duration(settings.duration)
+                .easing(iced_core::animation::Easing::Linear)
+                .go(true, start);
+            return;
+        }
         // Retarget from both currently displayed values, not from the endpoints
         // or from eased absolute visibility (which jumps on asymmetric curves).
         self.from = self.frame(now);
@@ -189,6 +225,10 @@ impl VisibilityAnimation {
 
     pub fn is_animating(&self, now: Instant) -> bool {
         self.pending || self.clock.is_animating(now)
+    }
+
+    pub fn is_fully_hidden(&self, now: Instant) -> bool {
+        !self.settings.visible && !self.is_animating(now) && self.frame(now).opacity <= 0.0
     }
 }
 
@@ -265,11 +305,10 @@ mod tests {
             },
             half,
         );
-        assert_eq!(
-            animation.frame(half),
-            before,
-            "retarget all three channels without a jump"
-        );
+        let after = animation.frame(half);
+        assert!((after.opacity - before.opacity).abs() < 0.00001);
+        assert!((after.offset.y - before.offset.y).abs() < 0.00001);
+        assert!((after.scale - before.scale).abs() < 0.00001);
     }
 
     #[test]
@@ -293,5 +332,59 @@ mod tests {
         assert_eq!(animation.frame(now + settings.duration * 2).opacity, 0.0);
         assert!(animation.start_on_draw(now + settings.duration * 2));
         assert_eq!(animation.frame(now + settings.duration * 2).opacity, 0.0);
+    }
+
+    #[test]
+    fn popup_close_retraces_open_and_finishes_without_another_draw() {
+        let settings = Visibility::fade_rise(CompTheme::default().motion);
+        let now = Instant::now();
+        for fraction in [0.25, 0.5, 1.0] {
+            let mut animation = VisibilityAnimation::new(settings);
+            animation.start_on_draw(now);
+            let shown_for = settings.duration.mul_f32(fraction);
+            let dismissed = now + shown_for;
+            let before = animation.frame(dismissed);
+            animation.update(
+                Visibility {
+                    visible: false,
+                    ..settings
+                },
+                dismissed,
+            );
+            let after = animation.frame(dismissed);
+            assert!((after.opacity - before.opacity).abs() < 0.00001);
+            assert!((after.offset.y - before.offset.y).abs() < 0.00001);
+            assert!((after.scale - before.scale).abs() < 0.00001);
+            let halfway = animation.frame(dismissed + shown_for / 2);
+            assert!(halfway.opacity < after.opacity && halfway.scale < after.scale);
+            assert!(halfway.offset.y > after.offset.y);
+            assert!(!animation.is_fully_hidden(dismissed + shown_for / 2));
+            assert!(animation.is_fully_hidden(dismissed + shown_for + Duration::from_millis(1)));
+        }
+        let mut unseen = VisibilityAnimation::new(settings);
+        unseen.update(
+            Visibility {
+                visible: false,
+                ..settings
+            },
+            now,
+        );
+        assert!(
+            unseen.is_fully_hidden(now),
+            "an unshown menu must not flash on dismissal"
+        );
+        let mut disabled = VisibilityAnimation::new(Visibility {
+            duration: Duration::ZERO,
+            ..settings
+        });
+        disabled.update(
+            Visibility {
+                visible: false,
+                duration: Duration::ZERO,
+                ..settings
+            },
+            now,
+        );
+        assert!(disabled.is_fully_hidden(now));
     }
 }

@@ -32,7 +32,7 @@ use crate::{
         WorkspaceDelta, WorkspaceRenderElement,
         element::{CosmicMappedKey, window::CosmicWindowRenderElement},
         focus::{FocusTarget, Stage, render_input_order, target::WindowGroup},
-        grabs::{SeatMenuGrabState, SeatMoveGrabState},
+        grabs::{SeatClosingMenus, SeatMenuGrabState, SeatMoveGrabState},
         zoom::ZoomState,
     },
     utils::{prelude::*, quirks::workspace_overview_is_open},
@@ -904,6 +904,25 @@ pub fn cursor_elements<'a, 'frame, R>(
                     if should_scale { zoom_scale } else { 1.0 },
                 )));
             })
+        }
+        if let Some(closing) = seat.user_data().get::<SeatClosingMenus>() {
+            closing
+                .lock()
+                .unwrap()
+                .render(renderer, output, &mut |elem, should_scale| {
+                    push(CosmicElement::MoveGrab(RescaleRenderElement::from_element(
+                        elem.into(),
+                        if should_scale {
+                            focal_point
+                                .as_logical()
+                                .to_physical(output.current_scale().fractional_scale())
+                                .to_i32_round()
+                        } else {
+                            Point::from((0, 0))
+                        },
+                        if should_scale { zoom_scale } else { 1.0 },
+                    )));
+                });
         }
     }
 }

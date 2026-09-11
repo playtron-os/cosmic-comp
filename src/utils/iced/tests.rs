@@ -313,6 +313,76 @@ fn output(name: &str) -> Output {
 }
 
 #[test]
+fn popup_exit_is_render_only_and_requests_frames_until_hidden() {
+    struct Popup {
+        visible: bool,
+        views: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl Program for Popup {
+        type Message = ();
+        fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+            self.views.fetch_add(1, Ordering::SeqCst);
+            iced_widget::Space::new().into()
+        }
+        fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
+            Some(Visibility {
+                visible: self.visible,
+                ..Visibility::fade_rise(theme.motion)
+            })
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let duration = theme.motion.layer_open;
+    let views = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let element = IcedElement::new(
+        Popup {
+            visible: true,
+            views: views.clone(),
+        },
+        (100, 40),
+        event_loop.handle(),
+        theme,
+    );
+    let active = output("exit");
+    let now = IcedInstant::now();
+    let mut internal = element.0.lock().unwrap();
+    internal.outputs.insert(active.clone());
+    internal.start_visibility_frame(now);
+    internal.sync_visibility(now + duration);
+    assert_eq!(internal.visibility_frame, VisibilityFrame::VISIBLE);
+    internal.program.visible = false;
+    internal.cursor_pos = Some((50.0, 20.0).into());
+    internal
+        .event_queue
+        .push(Event::Mouse(MouseEvent::CursorMoved {
+            position: IcedPoint::new(50.0, 20.0),
+        }));
+    internal.animate_exit(now + duration);
+    assert!(internal.render_only);
+    assert!(internal.event_queue.is_empty() && internal.cursor_pos.is_none());
+    assert!(take_redraw_request(&active));
+    let before = views.load(Ordering::SeqCst);
+    for elapsed in [
+        std::time::Duration::ZERO,
+        duration / 2,
+        duration + std::time::Duration::from_millis(1),
+    ] {
+        internal.advance_exit(now + duration + elapsed);
+        assert_eq!(
+            views.load(Ordering::SeqCst),
+            before,
+            "keep the last paint, not a new hover state"
+        );
+        assert!(!internal.needs_redraw);
+        assert_eq!(take_redraw_request(&active), elapsed < duration);
+    }
+    assert_eq!(internal.visibility_frame.opacity, 0.0);
+    drop(internal);
+    assert!(element.is_fully_hidden_at(now + duration * 3));
+}
+
+#[test]
 fn popup_surface_animation_keeps_body_hit_testing_and_pointer_coordinates_in_sync() {
     struct Popup;
     impl Program for Popup {
@@ -397,11 +467,16 @@ fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<(
         },
     };
     use std::borrow::BorrowMut;
-    struct Popup;
+    struct Popup {
+        visible: bool,
+    }
     impl Program for Popup {
         type Message = ();
         fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
-            Some(Visibility::fade_rise(theme.motion))
+            Some(Visibility {
+                visible: self.visible,
+                ..Visibility::fade_rise(theme.motion)
+            })
         }
         fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
             iced_widget::container(iced_widget::Space::new())
@@ -436,7 +511,12 @@ fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<(
     for scale in [1.0, 1.5, 2.0] {
         let theme = theme();
         let duration = theme.motion.layer_open;
-        let element = IcedElement::new(Popup, (120, 64), event_loop.handle(), theme);
+        let element = IcedElement::new(
+            Popup { visible: true },
+            (120, 64),
+            event_loop.handle(),
+            theme,
+        );
         let output = output("popup-gpu");
         output.change_current_state(
             None,
@@ -465,11 +545,30 @@ fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<(
         .geometry(scale.into());
         let now = IcedInstant::now();
         let mut previous_ui_id = None;
-        for elapsed in [std::time::Duration::ZERO, duration / 2, duration] {
+        for (opening, elapsed) in [
+            (true, std::time::Duration::ZERO),
+            (true, duration / 2),
+            (true, duration),
+            (false, std::time::Duration::ZERO),
+            (false, duration / 2),
+            (false, duration + std::time::Duration::from_millis(1)),
+        ] {
             let frame = {
                 let mut internal = element.0.lock().unwrap();
-                internal.start_visibility_frame(now);
-                internal.sync_visibility(now + elapsed);
+                if opening {
+                    internal.start_visibility_frame(now);
+                    internal.sync_visibility(now + elapsed);
+                } else {
+                    if elapsed.is_zero() {
+                        internal.program.visible = false;
+                        internal.animate_exit(now + duration);
+                    }
+                    internal.render_only = true;
+                    internal.advance_exit(now + duration + elapsed);
+                    // Keep the deterministic sample during GPU submission;
+                    // advance_exit's real-time scheduling is tested separately.
+                    internal.render_only = false;
+                }
                 // Freeze the deterministic sample; this is a GPU transform,
                 // not a reason to render the widget tree into another buffer.
                 internal.needs_redraw = false;
@@ -486,10 +585,10 @@ fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<(
                 &mut |e| elements.push(e),
                 None,
             );
-            if elapsed.is_zero() {
+            if frame.opacity == 0.0 {
                 assert!(
                     elements.is_empty(),
-                    "no bare blur rectangle on the first frame"
+                    "no bare blur rectangle before opening or after closing"
                 );
                 continue;
             }
@@ -529,7 +628,7 @@ fn gles_popup_texture_and_blur_share_the_surface_animation() -> anyhow::Result<(
             assert!((blur.alpha() - frame.opacity).abs() < 0.0001);
             assert_eq!(
                 matches!(ui, IcedRenderElement::ScaledUI(_)),
-                elapsed < duration
+                frame.scale < 1.0
             );
             if let Some(id) = &previous_ui_id {
                 assert_eq!(ui.id(), id, "opening must reuse its raster buffer");
