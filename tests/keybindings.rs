@@ -63,15 +63,40 @@ fn laptop_function_row() {
 }
 
 /// Taking Super+i/Super+l for the function row must not cost a focus direction.
+/// Which chord reaches a direction is free to move -- Super+arrows walk desktops
+/// and realms now, so the tiling focus moves live under Super+Ctrl -- but every
+/// direction has to stay reachable by something.
 #[test]
 fn every_focus_direction_is_reachable() {
     let shortcuts = defaults();
 
+    for direction in [
+        FocusDirection::Left,
+        FocusDirection::Right,
+        FocusDirection::Up,
+        FocusDirection::Down,
+        FocusDirection::In,
+        FocusDirection::Out,
+    ] {
+        assert!(
+            shortcuts
+                .0
+                .values()
+                .any(|action| *action == Action::Focus(direction)),
+            "no binding reaches Focus({direction:?})"
+        );
+    }
+
+    // Super+l is the lock screen, so Focus(Right) has no vim-key chord and the
+    // arrow is the only way there; the rest of the vim keys still have to work.
+    assert_eq!(
+        action_for(&shortcuts, "Super+Ctrl+Right"),
+        Action::Focus(FocusDirection::Right)
+    );
     for (binding, direction) in [
-        ("Super+Left", FocusDirection::Left),
-        ("Super+Right", FocusDirection::Right),
-        ("Super+Up", FocusDirection::Up),
-        ("Super+Down", FocusDirection::Down),
+        ("Super+h", FocusDirection::Left),
+        ("Super+j", FocusDirection::Down),
+        ("Super+k", FocusDirection::Up),
         ("Super+u", FocusDirection::Out),
         ("Super+Shift+u", FocusDirection::In),
     ] {
