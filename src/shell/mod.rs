@@ -2639,6 +2639,116 @@ impl Shell {
         self.realms.insert(id.to_string(), realm);
     }
 
+    /// Which realms belong to a workspace that is gone.
+    ///
+    /// Keyed on every workspace the registry KNOWS, never on the ones it is
+    /// running: a workspace the user disables goes dormant, drops out of the
+    /// running set and keeps both its entry and its realm, so re-enabling it
+    /// finds the desktops it had. Only a workspace the registry no longer lists
+    /// at all has been deleted.
+    ///
+    /// The realm on screen is never doomed, whatever the registry says — the
+    /// active realm is an invariant, and the switch that moves off a deleted one
+    /// runs before this does.
+    fn doomed_realms<'a>(
+        realms: impl Iterator<Item = &'a String>,
+        known: &[String],
+        active: &str,
+    ) -> Vec<String> {
+        // A registry that lists nothing is one we failed to read, not a
+        // machine with no workspaces: there is always at least the default
+        // one, and `List` failing or failing to parse yields an empty set
+        // exactly like a machine wiped clean. Closing every window on a bus
+        // hiccup is not a trade worth making, so an empty list reaps nothing.
+        if known.is_empty() {
+            return Vec::new();
+        }
+        realms
+            .filter(|id| id.as_str() != active && !known.iter().any(|k| k == *id))
+            .cloned()
+            .collect()
+    }
+
+    /// Drop every realm the registry no longer lists — a workspace that has
+    /// been deleted — and take its windows with it.
+    ///
+    /// A workspace's own apps die with its slice, so what is left here is a
+    /// machine-plane app whose window happened to be placed in that realm.
+    /// Nothing would ever kill it: the realm is unreachable, so the window is
+    /// never drawn, never focusable, and yet still advertised — a taskbar
+    /// shows it running, and clicking does nothing, because the window it
+    /// names is in a workspace that no longer exists.
+    ///
+    /// So each is asked to close, and its toplevel is retired here rather than
+    /// waiting for a client that may never answer. Retiring the desktops and
+    /// their group matters for the same reason: a protocol object outliving
+    /// what it describes is a thing clients keep listing forever.
+    ///
+    /// The realm on screen is never removed, whatever the registry says: the
+    /// active one is an invariant, and the switch that moves off it comes
+    /// first.
+    pub fn retain_realms(
+        &mut self,
+        known: &[String],
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+        toplevel_info: &mut ToplevelInfoState<State, CosmicSurface>,
+    ) {
+        let doomed = Self::doomed_realms(self.realms.keys(), known, &self.active_realm);
+
+        for id in doomed {
+            let Some(realm) = self.realms.shift_remove(&id) else {
+                continue;
+            };
+            let mut closed = 0usize;
+            for (_output, set) in realm.sets {
+                let leftovers = set
+                    .minimized_windows
+                    .iter()
+                    .flat_map(|minimized| minimized.windows())
+                    .chain(
+                        set.sticky_layer
+                            .mapped()
+                            .flat_map(|m| m.windows().map(|(s, _)| s)),
+                    );
+                for surface in leftovers {
+                    surface.close();
+                    toplevel_info.remove_toplevel(&surface);
+                    closed += 1;
+                }
+                for workspace in set.workspaces {
+                    let surfaces = workspace
+                        .mapped()
+                        .flat_map(|m| m.windows().map(|(s, _)| s))
+                        .chain(
+                            workspace
+                                .minimized_windows
+                                .iter()
+                                .flat_map(|minimized| minimized.windows()),
+                        )
+                        .chain(
+                            workspace
+                                .fullscreen_surfaces
+                                .iter()
+                                .map(|fullscreen| fullscreen.surface.clone()),
+                        )
+                        .collect::<Vec<_>>();
+                    for surface in surfaces {
+                        surface.close();
+                        toplevel_info.remove_toplevel(&surface);
+                        closed += 1;
+                    }
+                    workspace_state.remove_workspace(workspace.handle);
+                }
+                workspace_state.remove_workspace_group(set.group);
+            }
+            tracing::info!(
+                realm = id,
+                windows = closed,
+                "realm removed with its workspace"
+            );
+        }
+    }
+
     /// Put a realm on screen.
     /// `None` adopts the login realm without presenting it as a user switch.
     ///
@@ -10164,6 +10274,48 @@ pub fn check_grab_preconditions(
 
 #[cfg(test)]
 mod realm_transition_tests {
+
+    /// A workspace the user disables goes dormant: the registry still lists
+    /// it, so its realm and the desktops in it survive and are there when it
+    /// is enabled again. Only a workspace the registry has forgotten is gone.
+    #[test]
+    fn a_dormant_workspace_keeps_its_realm_and_a_deleted_one_does_not() {
+        let realms = [
+            "default".to_string(),
+            "dormant".to_string(),
+            "deleted".to_string(),
+        ];
+        // `known` is every workspace the registry lists, whatever its tier —
+        // "dormant" is cold, not gone.
+        let known = ["default".to_string(), "dormant".to_string()];
+        assert_eq!(
+            super::Shell::doomed_realms(realms.iter(), &known, "default"),
+            ["deleted".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_realm_on_screen_is_never_reaped() {
+        // Deleting the workspace you are standing in switches first; until
+        // that lands the active realm must stay, or nothing names a realm.
+        let realms = ["gone".to_string()];
+        assert!(super::Shell::doomed_realms(realms.iter(), &[], "gone").is_empty());
+    }
+
+    /// `List` failing, or failing to parse, yields an empty set — which must
+    /// never be read as "every workspace was deleted".
+    #[test]
+    fn a_registry_that_answered_nothing_reaps_nothing() {
+        let realms = ["a".to_string(), "b".to_string()];
+        assert!(super::Shell::doomed_realms(realms.iter(), &[], "a").is_empty());
+    }
+
+    #[test]
+    fn a_registry_that_lists_everything_reaps_nothing() {
+        let realms = ["a".to_string(), "b".to_string()];
+        let known = ["a".to_string(), "b".to_string()];
+        assert!(super::Shell::doomed_realms(realms.iter(), &known, "a").is_empty());
+    }
     use cosmic_comp_config::WorkspaceTransition;
 
     use super::{realm_transition_seed, realm_window_alphas};

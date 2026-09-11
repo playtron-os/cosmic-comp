@@ -46,6 +46,11 @@ pub enum Registry {
         /// Every workspace whose services are up, the active one included.
         /// Each needs a realm, or its desktops cannot be shown until visited.
         running: Vec<String>,
+        /// Every workspace the registry lists, whatever its tier. A realm for
+        /// an id that is NOT in here belongs to a workspace that has been
+        /// deleted, and goes with it — `running` cannot say that, since a
+        /// workspace going cold leaves it too.
+        known: Vec<String>,
     },
 }
 
@@ -156,6 +161,7 @@ async fn read(conn: &zbus::Connection) -> Registry {
         .filter(|(_, _, _, tier, _)| tier != "cold")
         .map(|(row_id, ..)| row_id.clone())
         .collect();
+    let known: Vec<String> = rows.iter().map(|(row_id, ..)| row_id.clone()).collect();
 
     // "Nothing active" comes back as an empty string; taken at face value it
     // would tag every client with an id nothing can match.
@@ -163,6 +169,7 @@ async fn read(conn: &zbus::Connection) -> Registry {
         return Registry::Present {
             active: None,
             running,
+            known,
         };
     }
 
@@ -174,6 +181,7 @@ async fn read(conn: &zbus::Connection) -> Registry {
     Registry::Present {
         active: Some(ActiveWorkspace { id, accent }),
         running,
+        known,
     }
 }
 

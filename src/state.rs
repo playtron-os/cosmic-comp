@@ -1054,7 +1054,11 @@ impl State {
                 shell.set_workspace_accent(None, false);
                 self.common.theme.workspace_accent = None;
             }
-            Registry::Present { active, running } => {
+            Registry::Present {
+                active,
+                running,
+                known,
+            } => {
                 shell.set_workspace_registry_present(true);
                 let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
@@ -1083,6 +1087,10 @@ impl State {
                         previous.as_deref() != Some(active.id.as_str()),
                     );
                     self.common.theme.workspace_accent = accent;
+                    // After the switch, so a deleted workspace that was on
+                    // screen is no longer the active realm by the time its
+                    // realm is reaped.
+                    shell.retain_realms(&known, &mut guard, &mut self.common.toplevel_info_state);
                     // `switch_realm` returns early for the realm already shown,
                     // and a client told of a transition that never runs would
                     // fade out and never come back.
