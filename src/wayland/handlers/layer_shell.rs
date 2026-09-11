@@ -65,6 +65,10 @@ impl WlrLayerShellHandler for State {
         let surface_id = surface.wl_surface().id();
         let mut shell = self.common.shell.write();
 
+        // Read before the realm is forgotten below: whether this layer was on
+        // screen decides whether its death may latch the frame.
+        let torn_off_realm = shell.is_layer_off_realm(&surface_id);
+
         // Clean up visibility tracking for this surface
         shell.remove_hidden_surface(&surface_id);
         shell.remove_layer_realm(&surface_id);
@@ -138,7 +142,6 @@ impl WlrLayerShellHandler for State {
             .cloned();
 
         if let Some(output) = maybe_output {
-            use smithay::wayland::shell::wlr_layer::Layer;
             let torn_layer;
             {
                 let mut map = layer_map_for_output(&output);
@@ -149,7 +152,6 @@ impl WlrLayerShellHandler for State {
                 torn_layer = layer.layer();
                 map.unmap_layer(&layer);
             }
-            let torn_was_background = torn_layer == Layer::Background;
 
             // Latch the current frame the instant the outgoing UI dies, before the
             // schedule_render below composites a content-less frame the freeze would
@@ -160,11 +162,17 @@ impl WlrLayerShellHandler for State {
             // a desktop is spawned by cosmic-session with no child. Structural, unlike
             // "has no wallpaper", which is also true of a desktop whose cosmic-bg is
             // disabled or has crashed — there, every popup close would arm the hold.
+            // A workspace's own wallpaper dies with it, deleted or gone cold;
+            // off screen that changes nothing visible and must not park the
+            // output for five seconds.
             let is_kiosk = self.common.kiosk_child.is_some();
-            let should_arm = crate::freeze_on_exit_enabled()
-                && !shell.logout_hold
-                && (torn_was_background
-                    || (is_kiosk && matches!(torn_layer, Layer::Top | Layer::Overlay)));
+            let should_arm = freeze_hold_arms(
+                crate::freeze_on_exit_enabled(),
+                shell.logout_hold,
+                torn_layer,
+                torn_off_realm,
+                is_kiosk,
+            );
             if should_arm {
                 shell.logout_hold = true;
                 tracing::debug!(
@@ -197,5 +205,82 @@ impl WlrLayerShellHandler for State {
 
             self.backend.schedule_render(&output);
         }
+    }
+}
+
+/// Whether a layer surface's teardown latches the last frame for the session
+/// handoff. Desktop: the wallpaper on screen dying — a wallpaper change lands
+/// here too, and the fresh map releases it. The wallpaper of a workspace that
+/// is off screen dies with that workspace, and nothing on screen changed.
+/// Greeter: it has no wallpaper, so a Top or Overlay teardown is the signal.
+fn freeze_hold_arms(
+    enabled: bool,
+    already_held: bool,
+    torn: smithay::wayland::shell::wlr_layer::Layer,
+    torn_off_realm: bool,
+    is_kiosk: bool,
+) -> bool {
+    use smithay::wayland::shell::wlr_layer::Layer;
+    if !enabled || already_held {
+        return false;
+    }
+    match torn {
+        Layer::Background => !torn_off_realm,
+        Layer::Top | Layer::Overlay => is_kiosk,
+        Layer::Bottom => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::freeze_hold_arms;
+    use smithay::wayland::shell::wlr_layer::Layer;
+
+    #[test]
+    fn the_wallpaper_on_screen_dying_latches_the_frame() {
+        assert!(freeze_hold_arms(
+            true,
+            false,
+            Layer::Background,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn a_workspaces_wallpaper_dying_off_screen_holds_nothing() {
+        assert!(!freeze_hold_arms(
+            true,
+            false,
+            Layer::Background,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn only_the_greeter_arms_on_its_own_ui() {
+        assert!(freeze_hold_arms(true, false, Layer::Overlay, false, true));
+        assert!(freeze_hold_arms(true, false, Layer::Top, false, true));
+        assert!(!freeze_hold_arms(true, false, Layer::Overlay, false, false));
+        assert!(!freeze_hold_arms(true, false, Layer::Bottom, false, true));
+    }
+
+    #[test]
+    fn a_hold_is_neither_doubled_nor_armed_when_disabled() {
+        assert!(!freeze_hold_arms(
+            true,
+            true,
+            Layer::Background,
+            false,
+            false
+        ));
+        assert!(!freeze_hold_arms(
+            false,
+            false,
+            Layer::Background,
+            false,
+            false
+        ));
     }
 }

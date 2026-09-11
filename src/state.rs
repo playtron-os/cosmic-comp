@@ -1091,6 +1091,18 @@ impl State {
                     // screen is no longer the active realm by the time its
                     // realm is reaped.
                     shell.retain_realms(&known, &mut guard, &mut self.common.toplevel_info_state);
+                    // Deleting the workspace on screen kills its wallpaper while
+                    // it is still on screen, which arms the exit freeze. The
+                    // registry moving on says the desktop is alive: the switch
+                    // must not sit behind a five second hold.
+                    if shell.logout_hold && previous.as_deref() != Some(active.id.as_str()) {
+                        shell.logout_hold = false;
+                        tracing::debug!("logout hold: the workspace on screen changed, releasing");
+                        let outputs = shell.outputs().cloned().collect::<Vec<_>>();
+                        for output in &outputs {
+                            self.backend.schedule_render(output);
+                        }
+                    }
                     // `switch_realm` returns early for the realm already shown,
                     // and a client told of a transition that never runs would
                     // fade out and never come back.
