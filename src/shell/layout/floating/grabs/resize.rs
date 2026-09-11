@@ -47,6 +47,26 @@ pub struct ResizeData {
     pub initial_window_size: Size<i32, Logical>,
 }
 
+impl ResizeData {
+    /// Pin the opposite edge as client commits arrive. In particular, an
+    /// unmaximize-and-resize starts from the displayed maximized rectangle,
+    /// never the old Restore rectangle. Preserve unrelated position changes.
+    fn location_for_size(
+        self,
+        current: Point<i32, Local>,
+        size: Size<i32, Logical>,
+    ) -> Point<i32, Local> {
+        let mut location = current;
+        if self.edges.contains(ResizeEdge::LEFT) {
+            location.x = self.initial_window_location.x + (self.initial_window_size.w - size.w);
+        }
+        if self.edges.contains(ResizeEdge::TOP) {
+            location.y = self.initial_window_location.y + (self.initial_window_size.h - size.h);
+        }
+        location
+    }
+}
+
 /// State of the resize operation.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ResizeState {
@@ -610,24 +630,13 @@ impl ResizeSurfaceGrab {
             match *resize_state {
                 Some(ResizeState::Resizing(resize_data))
                 | Some(ResizeState::WaitingForCommit(resize_data)) => {
-                    let ResizeData {
-                        edges,
-                        initial_window_location,
-                        initial_window_size,
-                    } = resize_data;
-                    let initial_window_location = initial_window_location.to_global(output);
-
-                    if edges.intersects(ResizeEdge::TOP_LEFT) {
+                    if resize_data.edges.intersects(ResizeEdge::TOP_LEFT) {
                         let size = window.geometry().size;
-                        let mut new = location;
-                        if edges.intersects(ResizeEdge::LEFT) {
-                            new.x = initial_window_location.x + (initial_window_size.w - size.w);
-                        }
-                        if edges.intersects(ResizeEdge::TOP) {
-                            new.y = initial_window_location.y + (initial_window_size.h - size.h);
-                        }
-
-                        new_location = Some(new);
+                        new_location = Some(
+                            resize_data
+                                .location_for_size(location.to_local(output), size)
+                                .to_global(output),
+                        );
                     }
                 }
                 _ => {}
@@ -688,15 +697,12 @@ impl ResizeSurfaceGrab {
         let zone = layer_map_for_output(&self.output)
             .non_exclusive_zone()
             .as_local();
-        let mut final_loc = self.initial_window_location;
-        if self.edges.intersects(ResizeEdge::LEFT) {
-            final_loc.x = self.initial_window_location.x + self.initial_window_size.w
-                - self.last_window_size.w;
+        let final_loc = ResizeData {
+            edges: self.edges,
+            initial_window_location: self.initial_window_location,
+            initial_window_size: self.initial_window_size,
         }
-        if self.edges.intersects(ResizeEdge::TOP) {
-            final_loc.y = self.initial_window_location.y + self.initial_window_size.h
-                - self.last_window_size.h;
-        }
+        .location_for_size(self.initial_window_location, self.last_window_size);
         self.window.set_fills_output_zone(
             final_loc.x == zone.loc.x
                 && final_loc.y == zone.loc.y
@@ -717,5 +723,89 @@ impl Drop for ResizeSurfaceGrab {
     fn drop(&mut self) {
         let cursor_state = self.seat.user_data().get::<CursorState>().unwrap();
         cursor_state.lock().unwrap().unset_shape();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_from_an_inset_maximized_rectangle_keeps_the_opposite_edges_fixed() {
+        let initial_location = Point::<i32, Local>::from((48, 36));
+        let initial_size = Size::<i32, Logical>::from((1824, 992));
+        for edges in [
+            ResizeEdge::LEFT,
+            ResizeEdge::RIGHT,
+            ResizeEdge::TOP,
+            ResizeEdge::BOTTOM,
+            ResizeEdge::TOP_LEFT,
+            ResizeEdge::TOP_RIGHT,
+            ResizeEdge::BOTTOM_LEFT,
+            ResizeEdge::BOTTOM_RIGHT,
+        ] {
+            let data = ResizeData {
+                edges,
+                initial_window_location: initial_location,
+                initial_window_size: initial_size,
+            };
+            assert!(edges.is_valid());
+            assert_eq!(
+                data.location_for_size(initial_location, initial_size),
+                initial_location,
+                "pressing the edge must not move the window"
+            );
+            let size = Size::from((
+                initial_size.w
+                    - if edges.intersects(ResizeEdge::LEFT | ResizeEdge::RIGHT) {
+                        80
+                    } else {
+                        0
+                    },
+                initial_size.h
+                    - if edges.intersects(ResizeEdge::TOP | ResizeEdge::BOTTOM) {
+                        60
+                    } else {
+                        0
+                    },
+            ));
+            let location = data.location_for_size(initial_location, size);
+            if edges.contains(ResizeEdge::LEFT) {
+                assert_eq!(location.x + size.w, initial_location.x + initial_size.w);
+            } else {
+                assert_eq!(location.x, initial_location.x);
+            }
+            if edges.contains(ResizeEdge::TOP) {
+                assert_eq!(location.y + size.h, initial_location.y + initial_size.h);
+            } else {
+                assert_eq!(location.y, initial_location.y);
+            }
+        }
+    }
+
+    #[test]
+    fn resize_preserves_position_on_the_other_axis() {
+        let data = ResizeData {
+            edges: ResizeEdge::LEFT,
+            initial_window_location: (48, 36).into(),
+            initial_window_size: (1824, 992).into(),
+        };
+        assert_eq!(
+            data.location_for_size((48, 50).into(), (1724, 992).into()),
+            (148, 50).into()
+        );
+    }
+
+    #[test]
+    fn invalid_resize_edges_are_rejected_before_unmaximizing() {
+        for edges in [
+            ResizeEdge::empty(),
+            ResizeEdge::LEFT | ResizeEdge::RIGHT,
+            ResizeEdge::TOP | ResizeEdge::BOTTOM,
+            ResizeEdge::all(),
+            ResizeEdge::from_bits_retain(0x10),
+        ] {
+            assert!(!edges.is_valid());
+        }
     }
 }

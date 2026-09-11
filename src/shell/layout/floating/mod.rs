@@ -1993,25 +1993,70 @@ impl FloatingLayout {
         edge_snap_threshold: u32,
         release: ReleaseMode,
     ) -> Option<ResizeSurfaceGrab> {
-        if seat.get_pointer().is_some() {
+        if seat.get_pointer().is_some() && edges.is_valid() {
             let location = self.space.element_location(mapped)?.as_local();
             let size = mapped.geometry().size;
+            let output = self.space.outputs().next()?.clone();
+            // Capture the current bounds before clearing maximization. The
+            // grabbed edge must stay at the pointer, not jump to Restore's old
+            // rectangle (or race its pipelined configure animation).
+            let unmaximize = mapped.maximized_state.lock().unwrap().is_some()
+                || mapped.is_maximized(true)
+                || mapped.is_maximized(false);
+            if unmaximize {
+                self.prepare_maximized_resize(
+                    mapped,
+                    Rectangle::new(location, size.as_local()),
+                    &output,
+                );
+            }
             mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
-            Some(grabs::ResizeSurfaceGrab::new(
+            let grab = grabs::ResizeSurfaceGrab::new(
                 start_data,
                 mapped.clone(),
                 edges,
-                self.space.outputs().next().cloned().unwrap(),
+                output,
                 edge_snap_threshold,
                 location,
                 size,
                 seat,
                 release,
-            ))
+            );
+            if unmaximize {
+                mapped.set_resizing(true);
+                mapped.configure();
+            }
+            Some(grab)
         } else {
             None
         }
+    }
+
+    fn prepare_maximized_resize(
+        &mut self,
+        mapped: &CosmicMapped,
+        geometry: Rectangle<i32, Local>,
+        output: &Output,
+    ) {
+        // Cancel rather than settle into the animation's target: this gesture
+        // owns the new state, and must not briefly reassert maximized/tiled.
+        self.animations.remove(mapped);
+        self.clear_resize_overrides(mapped);
+        mapped.maximized_state.lock().unwrap().take();
+        mapped.floating_tiled.lock().unwrap().take();
+        mapped.set_maximized(false);
+        mapped.set_tiled(false);
+        mapped.set_fills_output_zone(false);
+        mapped.set_geometry(geometry.to_global(output));
+    }
+
+    fn clear_resize_overrides(&mut self, mapped: &CosmicMapped) {
+        self.pre_slide_positions.remove(mapped);
+        self.slide_target_geometries.remove(mapped);
+        self.slide_snapshots.lock().unwrap().remove(mapped);
+        self.pending_slide_snapshots.lock().unwrap().remove(mapped);
+        self.deferred_slide_configures.remove(mapped);
     }
 
     pub fn resize(
@@ -2448,6 +2493,17 @@ impl FloatingLayout {
             .into_iter()
         {
             mapped.set_bounds(geometry.size.as_logical());
+            let resizing = matches!(
+                *mapped.resize_state.lock().unwrap(),
+                Some(ResizeState::Resizing(_))
+            );
+            if resizing {
+                // Unmaximizing can reveal an auto-hidden panel and change the
+                // exclusive zone. The grab, not that layout pass, owns the
+                // window's geometry until release.
+                self.clear_resize_overrides(&mapped);
+                continue;
+            }
             let prev = self.space.element_geometry(&mapped).map(RectExt::as_local);
 
             let window_geometry = if mapped.is_maximized(true) {

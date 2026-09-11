@@ -119,6 +119,17 @@ bitflags::bitflags! {
 }
 
 impl ResizeEdge {
+    /// One edge, or two adjacent edges. Reject malformed client requests before
+    /// they can change a maximized window's state.
+    pub fn is_valid(self) -> bool {
+        !self.is_empty()
+            && Self::all().contains(self)
+            && !self.contains(Self::LEFT | Self::RIGHT)
+            && !self.contains(Self::TOP | Self::BOTTOM)
+    }
+}
+
+impl ResizeEdge {
     pub fn flip_direction(&mut self) {
         let mut new_edge = ResizeEdge::empty();
         if self.contains(ResizeEdge::TOP) {

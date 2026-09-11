@@ -9310,7 +9310,7 @@ impl Shell {
         let start_data =
             check_grab_preconditions(seat, serial, client_initiated.then_some(surface))?;
         let mapped = self.element_for_surface(surface).cloned()?;
-        if mapped.is_maximized(true) {
+        if mapped.is_fullscreen(true) || mapped.is_fullscreen(false) || !edges.is_valid() {
             return None;
         }
 
@@ -9335,6 +9335,10 @@ impl Shell {
             return None;
         }
 
+        let was_maximized = mapped.maximized_state.lock().unwrap().is_some()
+            || mapped.is_maximized(true)
+            || mapped.is_maximized(false);
+
         let floating_layer = if let Some(set) = self
             .workspaces_mut()
             .sets
@@ -9355,6 +9359,22 @@ impl Shell {
             edge_snap_threshold,
             ReleaseMode::NoMouseButtons,
         ) {
+            if was_maximized {
+                // Maximized tiled windows live in the floating layer as well
+                // as retaining a tiling slot for Restore. Manual resizing is a
+                // deliberate switch to floating; do not restore that old slot.
+                let has_tiling_node = mapped.tiling_node_id.lock().unwrap().is_some();
+                if has_tiling_node && let Some(workspace) = self.space_for_mut(&mapped) {
+                    match workspace.tiling_layer.unmap(&mapped, None) {
+                        Ok(_) => mapped.output_enter(workspace.output(), mapped.bbox()),
+                        Err(error) => tracing::warn!(
+                            ?error,
+                            "Failed to detach maximized window from tiling during resize"
+                        ),
+                    }
+                }
+                self.refresh_auto_hide();
+            }
             grab.into()
         } else {
             let ws = self.space_for_mut(&mapped)?;
