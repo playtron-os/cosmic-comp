@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{borrow::Borrow, collections::HashMap, sync::Mutex};
+use std::{borrow::Borrow, collections::HashMap, sync::Mutex, time::Duration};
+
+use calloop::{
+    LoopHandle, RegistrationToken,
+    timer::{TimeoutAction, Timer},
+};
 
 use smithay::{
     backend::{
@@ -17,7 +22,7 @@ use smithay::{
     input::{Seat, pointer::PointerHandle},
     output::Output,
     reexports::wayland_server::protocol::{wl_pointer::WlPointer, wl_shm::Format as ShmFormat},
-    utils::{Buffer as BufferCoords, Point, Size, Transform},
+    utils::{Buffer as BufferCoords, Physical, Point, Size, Transform},
     wayland::{
         dmabuf::get_dmabuf,
         image_capture_source::ImageCaptureSource,
@@ -36,7 +41,11 @@ use crate::{
     utils::prelude::{
         OutputExt, PointExt, PointGlobalExt, PointLocalExt, RectExt, RectLocalExt, SeatExt,
     },
-    wayland::protocols::image_capture_source::ImageCaptureSourceKind,
+    wayland::protocols::{
+        image_capture_source::ImageCaptureSourceKind,
+        kora_image_capture_size::{capture_size_hint, fit_within},
+        workspace::WorkspaceHandle,
+    },
 };
 
 mod render;
@@ -86,9 +95,12 @@ impl ImageCopyCaptureHandler for State {
                 .upgrade()
                 .and_then(|output| constraints_for_output(&output, &mut self.backend)),
             ImageCaptureSourceKind::Workspace(handle) => {
+                let hint = capture_size_hint(source);
                 let shell = self.common.shell.read();
-                let output = shell.space_for_handle_any_realm(&handle)?.output();
-                constraints_for_output(output, &mut self.backend)
+                let output = shell.space_for_handle_any_realm(&handle)?.output().clone();
+                drop(shell);
+                let size = workspace_capture_size(&output, hint)?;
+                constraints_for_output_sized(&output, size, &mut self.backend)
             }
             ImageCaptureSourceKind::Toplevel(window) => {
                 if let Some(window) = window.upgrade() {
@@ -129,15 +141,21 @@ impl ImageCopyCaptureHandler for State {
                 output.add_session(session);
             }
             ImageCaptureSourceKind::Workspace(handle) => {
+                let hint = capture_size_hint(&session.source());
                 let mut shell = self.common.shell.write();
                 let Some(workspace) = shell.space_for_handle_any_realm_mut(&handle) else {
                     session.stop();
                     return;
                 };
+                let Some(size) = workspace_capture_size(workspace.output(), hint) else {
+                    session.stop();
+                    return;
+                };
 
                 session.user_data().insert_if_missing_threadsafe(|| {
-                    Mutex::new(SessionUserData::new(OutputDamageTracker::from_output(
+                    Mutex::new(SessionUserData::new(workspace_damage_tracker(
                         workspace.output(),
+                        size,
                     )))
                 });
                 workspace.add_session(session);
@@ -351,6 +369,7 @@ impl ImageCopyCaptureHandler for State {
     }
 
     fn frame_aborted(&mut self, frame: FrameRef) {
+        self.common.parked_workspace_captures.remove_frame(&frame);
         let shell = self.common.shell.read();
         for mut output in shell.outputs().cloned() {
             output.remove_frame(&frame);
@@ -365,6 +384,9 @@ impl ImageCopyCaptureHandler for State {
                 }
             }
             ImageCaptureSourceKind::Workspace(handle) => {
+                self.common
+                    .parked_workspace_captures
+                    .remove_session(&session);
                 if let Some(workspace) = self
                     .common
                     .shell
@@ -411,20 +433,127 @@ impl ImageCopyCaptureHandler for State {
 }
 
 fn constraints_for_output(output: &Output, backend: &mut BackendData) -> Option<BufferConstraints> {
-    let mode = match output.current_mode() {
-        Some(mode) => mode.size.to_logical(1).to_buffer(1, Transform::Normal),
-        None => {
-            return None;
-        }
-    };
+    let size = workspace_capture_size(output, None)?;
+    constraints_for_output_sized(output, size, backend)
+}
 
+/// Constraints for a capture of `output` into a buffer of `size`.
+pub fn constraints_for_output_sized(
+    output: &Output,
+    size: Size<i32, BufferCoords>,
+    backend: &mut BackendData,
+) -> Option<BufferConstraints> {
     let mut renderer = backend
         .offscreen_renderer(|kms| {
             kms.target_node_for_output(output)
                 .or(*kms.primary_node.read().unwrap())
         })
-        .unwrap();
-    Some(constraints_for_renderer(mode, renderer.as_mut()))
+        .ok()?;
+    Some(constraints_for_renderer(size, renderer.as_mut()))
+}
+
+/// A workspace capture's buffer size: the output's mode, or a preview's size
+/// fitted to it when the client asked for one.
+pub fn workspace_capture_size(
+    output: &Output,
+    hint: Option<Size<i32, BufferCoords>>,
+) -> Option<Size<i32, BufferCoords>> {
+    let mode = output
+        .current_mode()?
+        .size
+        .to_logical(1)
+        .to_buffer(1, Transform::Normal);
+    Some(hint.map_or(mode, |hint| fit_within(mode, hint)))
+}
+
+/// The damage tracker of a workspace capture into a buffer of `size`: the
+/// output's own at full size, else one of the preview's size that still
+/// measures elements at the output's scale (they are shrunk when drawn).
+pub fn workspace_damage_tracker(
+    output: &Output,
+    size: Size<i32, BufferCoords>,
+) -> OutputDamageTracker {
+    if workspace_capture_size(output, None) == Some(size) {
+        OutputDamageTracker::from_output(output)
+    } else {
+        OutputDamageTracker::new(
+            Size::<i32, Physical>::from((size.w, size.h)),
+            output.current_scale().fractional_scale(),
+            output.current_transform(),
+        )
+    }
+}
+
+/// At most this often is a held capture looked at again: previews are live
+/// at up to thirty frames a second.
+const LIVE_CAPTURE_TICK: Duration = Duration::from_millis(33);
+
+/// Workspace captures waiting for their desktop to change. A capture of an
+/// unchanged desktop is held rather than answered with the same picture, and
+/// a tick looks in on the held ones while there are any; nothing is drawn or
+/// copied for a desktop that stays as it was.
+#[derive(Debug, Default)]
+pub struct ParkedWorkspaceCaptures {
+    frames: Vec<ParkedCapture>,
+    tick: Option<RegistrationToken>,
+}
+
+#[derive(Debug)]
+struct ParkedCapture {
+    session: SessionRef,
+    frame: Frame,
+    handle: WorkspaceHandle,
+}
+
+impl ParkedWorkspaceCaptures {
+    pub fn park(
+        &mut self,
+        session: SessionRef,
+        frame: Frame,
+        handle: WorkspaceHandle,
+        loop_handle: &LoopHandle<'static, State>,
+    ) {
+        self.frames.push(ParkedCapture {
+            session,
+            frame,
+            handle,
+        });
+        if self.tick.is_none() {
+            self.tick = loop_handle
+                .insert_source(Timer::from_duration(LIVE_CAPTURE_TICK), |_, _, state| {
+                    retry_parked_workspace_captures(state);
+                    let parked = &mut state.common.parked_workspace_captures;
+                    if parked.frames.is_empty() {
+                        parked.tick = None;
+                        TimeoutAction::Drop
+                    } else {
+                        TimeoutAction::ToDuration(LIVE_CAPTURE_TICK)
+                    }
+                })
+                .ok();
+        }
+    }
+
+    pub fn remove_frame(&mut self, frame: &FrameRef) {
+        self.frames.retain(|parked| parked.frame != *frame);
+    }
+
+    pub fn remove_session(&mut self, session: &SessionRef) {
+        self.frames.retain(|parked| parked.session != *session);
+    }
+}
+
+/// Draw every held capture whose desktop changed; the rest are held again.
+fn retry_parked_workspace_captures(state: &mut State) {
+    let parked = std::mem::take(&mut state.common.parked_workspace_captures.frames);
+    for ParkedCapture {
+        session,
+        frame,
+        handle,
+    } in parked
+    {
+        render_workspace_to_buffer(state, &session, frame, handle);
+    }
 }
 
 /// Stop every capture session bound to a toplevel that is going away, so that

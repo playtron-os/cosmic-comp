@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="kora_image_capture_size">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="captures rendered to fit a size of the client's choosing">
+    This protocol lets a client ask for captures of an image capture source
+    rendered to fit within a size of its choosing, rather than at the source's
+    own size.
+
+    A preview of a whole desktop holds a small fraction of the desktop's
+    pixels. Drawing it at that size in the compositor spares a full-size render
+    and the copy of every pixel of it to the client, which would only scale it
+    down again; a preview kept live then costs a preview's worth per frame.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="kora_image_capture_size_manager_v1" version="1">
+    <description summary="sizes for image capture sources">
+      Sets the size captures of a source are rendered to fit within.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Sizes already set stay in effect.
+      </description>
+    </request>
+
+    <request name="set_size">
+      <description summary="fit captures of a source within a size">
+        Captures of sessions created from this source afterwards are rendered
+        to fit within width by height buffer pixels, keeping the source's
+        aspect ratio; the session's buffer_size is the fitted size. A width or
+        height of zero restores the source's own size. Sessions created before
+        this request are not affected.
+
+        Which kinds of source honour the size is up to the compositor; captures
+        of any other kind keep the source's own size.
+      </description>
+      <arg name="source" type="object" interface="ext_image_capture_source_v1" summary="the source to size captures of"/>
+      <arg name="width" type="int" summary="largest width, in buffer pixels"/>
+      <arg name="height" type="int" summary="largest height, in buffer pixels"/>
+    </request>
+  </interface>
+</protocol>

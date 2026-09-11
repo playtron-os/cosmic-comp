@@ -14,7 +14,8 @@ use crate::{
     utils::prelude::OutputExt,
     wayland::{
         handlers::{
-            data_device::get_dnd_icon, image_copy_capture::SessionHolder,
+            data_device::get_dnd_icon,
+            image_copy_capture::{ParkedWorkspaceCaptures, SessionHolder},
             layer_surface_dismiss::DismissControllerRegistry,
         },
         protocols::{
@@ -25,6 +26,7 @@ use crate::{
             drm::WlDrmState,
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
+            kora_image_capture_size::CaptureSizeState,
             kora_workspace_realm::RealmState,
             layer_auto_hide::LayerAutoHideState,
             layer_corner_radius::LayerCornerRadiusState,
@@ -363,6 +365,7 @@ pub struct Common {
     pub size_transition_state: SizeTransitionState,
     /// Tells a switcher which workspace each desktop group belongs to.
     pub realm_state: RealmState,
+    pub capture_size_state: CaptureSizeState,
     /// Tells shell components when a workspace switch is animating, so they can
     /// fade their contents across it instead of swapping mid-animation.
     pub workspace_transition_state: WorkspaceTransitionState,
@@ -390,6 +393,7 @@ pub struct Common {
     pub output_capture_source_state: OutputCaptureSourceState,
     pub toplevel_capture_source_state: ToplevelCaptureSourceState,
     pub image_copy_capture_state: ImageCopyCaptureState,
+    pub parked_workspace_captures: ParkedWorkspaceCaptures,
     pub surface_embed_state: SurfaceEmbedManagerState,
     /// Pending PID-based embed requests waiting for matching toplevels
     pub pending_pid_embeds: std::collections::HashMap<u32, Vec<crate::wayland::protocols::surface_embed::zcosmic_embedded_surface_v1::ZcosmicEmbeddedSurfaceV1>>,
@@ -788,6 +792,7 @@ impl State {
         let usable_area_state = UsableAreaState::new::<Self>(dh);
         let size_transition_state = SizeTransitionState::new::<Self>(dh);
         let realm_state = RealmState::new::<Self>(dh);
+        let capture_size_state = CaptureSizeState::new::<Self>(dh);
         let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let session_hold_state = SessionHoldState::new::<Self>(dh);
@@ -949,6 +954,7 @@ impl State {
                 usable_area_state,
                 size_transition_state,
                 realm_state,
+                capture_size_state,
                 workspace_transition_state,
                 edge_resize_state,
                 session_hold_state,
@@ -969,6 +975,7 @@ impl State {
                 output_capture_source_state,
                 toplevel_capture_source_state,
                 image_copy_capture_state,
+                parked_workspace_captures: ParkedWorkspaceCaptures::default(),
                 surface_embed_state,
                 pending_pid_embeds: std::collections::HashMap::new(),
                 embedded_surfaces: std::collections::HashMap::new(),

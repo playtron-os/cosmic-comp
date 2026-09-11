@@ -10,7 +10,7 @@ use smithay::{
             damage::{Error as DTError, OutputDamageTracker, RenderOutputResult},
             element::{
                 RenderElement, UnderlyingStorage,
-                utils::{Relocate, RelocateRenderElement},
+                utils::{Relocate, RelocateRenderElement, RescaleRenderElement},
             },
             gles::{GlesError, GlesRenderbuffer},
             sync::SyncPoint,
@@ -37,20 +37,22 @@ use tracing::warn;
 
 use crate::{
     backend::render::{
-        CursorMode, ElementFilter, RendererRef,
+        CLEAR_COLOR, CursorMode, ElementFilter, RendererRef,
         cursor::{self, CursorRenderElement},
         element::{AsGlowRenderer, CosmicElement, DamageElement},
         render_workspace,
         wayland::SurfaceRenderElement,
+        workspace_elements,
     },
     shell::{CosmicMappedRenderElement, CosmicSurface, WorkspaceRenderElement},
     state::{Common, KmsNodes, State},
     utils::prelude::{PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
     wayland::{
         handlers::image_copy_capture::{
-            SessionData, SessionUserData, constraints_for_output, constraints_for_toplevel,
+            SessionData, SessionUserData, constraints_for_output_sized, constraints_for_toplevel,
+            workspace_capture_size, workspace_damage_tracker,
         },
-        protocols::workspace::WorkspaceHandle,
+        protocols::{kora_image_capture_size::capture_size_hint, workspace::WorkspaceHandle},
     },
 };
 
@@ -207,6 +209,20 @@ where
     }))
 }
 
+/// What drawing a session's frame came to: sent on its way, or handed back
+/// untouched because nothing in the picture changed.
+pub enum Rendered {
+    Sent(Option<PendingImageCopyData>),
+    Unchanged(Frame),
+}
+
+fn presented_now() -> Duration {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+}
+
+/// Draw a session's frame; one with nothing new in it is answered as it is.
 pub fn render_session<F, R>(
     renderer: &mut R,
     session: &SessionData,
@@ -214,6 +230,41 @@ pub fn render_session<F, R>(
     transform: Transform,
     render_fn: F,
 ) -> Result<Option<PendingImageCopyData>, DTError<R::Error>>
+where
+    R: AsGlowRenderer,
+    F: for<'d> FnOnce(
+        &WlBuffer,
+        &mut R,
+        Option<&mut R::Framebuffer<'_>>,
+        &'d mut OutputDamageTracker,
+        usize,
+        Vec<Rectangle<i32, BufferCoords>>,
+    ) -> Result<
+        (
+            RenderOutputResult<'d>,
+            Vec<smithay::backend::renderer::utils::Buffer>,
+        ),
+        DTError<R::Error>,
+    >,
+{
+    match render_session_holding(renderer, session, frame, transform, render_fn)? {
+        Rendered::Sent(pending) => Ok(pending),
+        Rendered::Unchanged(frame) => {
+            frame.success(transform, None, presented_now());
+            Ok(None)
+        }
+    }
+}
+
+/// Draw a session's frame, handing it back instead when nothing changed, for
+/// a caller that would rather wait for something to.
+pub fn render_session_holding<F, R>(
+    renderer: &mut R,
+    session: &SessionData,
+    frame: Frame,
+    transform: Transform,
+    render_fn: F,
+) -> Result<Rendered, DTError<R::Error>>
 where
     R: AsGlowRenderer,
     F: for<'d> FnOnce(
@@ -282,15 +333,19 @@ where
         frame.damage(),
     )?;
 
+    let Some(damage) = result.damage else {
+        return Ok(Rendered::Unchanged(frame));
+    };
     submit_buffer(
         frame,
         renderer,
         fb.as_mut(),
         transform,
-        result.damage.map(|x| x.as_slice()),
+        Some(damage.as_slice()),
         result.sync,
         buffers,
     )
+    .map(Rendered::Sent)
     .map_err(DTError::Rendering)
 }
 
@@ -323,20 +378,29 @@ pub fn render_workspace_to_buffer(
         .collect();
     std::mem::drop(shell);
 
-    let mode = output
-        .current_mode()
-        .map(|mode| mode.size.to_logical(1).to_buffer(1, Transform::Normal));
+    // A preview is drawn to fit the size its client asked for, not the output's.
+    let expected = workspace_capture_size(&output, capture_size_hint(&session.source()));
+    let preview = match (expected, workspace_capture_size(&output, None)) {
+        (Some(expected), Some(full)) if expected != full => Some(Scale {
+            x: f64::from(expected.w) / f64::from(full.w),
+            y: f64::from(expected.h) / f64::from(full.h),
+        }),
+        _ => None,
+    };
 
     let buffer = frame.buffer();
     let buffer_size = buffer_dimensions(&buffer).unwrap();
-    if mode != Some(buffer_size) {
-        let Some(constraints) = constraints_for_output(&output, &mut state.backend) else {
+    if expected != Some(buffer_size) {
+        let Some(constraints) = expected
+            .and_then(|size| constraints_for_output_sized(&output, size, &mut state.backend))
+        else {
             output.remove_session(session);
             return;
         };
+        let size = constraints.size;
         session.update_constraints(constraints);
         if let Some(data) = session.user_data().get::<SessionData>() {
-            *data.lock().unwrap() = SessionUserData::new(OutputDamageTracker::from_output(&output));
+            *data.lock().unwrap() = SessionUserData::new(workspace_damage_tracker(&output, size));
         }
         frame.fail(CaptureFailureReason::BufferConstraints);
         return;
@@ -353,6 +417,7 @@ pub fn render_workspace_to_buffer(
         common: &mut Common,
         output: &Output,
         handle: (WorkspaceHandle, usize),
+        preview: Option<Scale<f64>>,
     ) -> Result<
         (
             RenderOutputResult<'d>,
@@ -373,24 +438,31 @@ pub fn render_workspace_to_buffer(
             CursorMode::None
         };
 
+        let shrink = preview.unwrap_or(Scale::from(1.0));
         let area = output
             .current_mode()
             .ok_or(DTError::OutputNoMode(OutputNoMode))
             .map(
                 |mode| {
-                    mode.size
+                    let full = mode
+                        .size
                         .to_logical(1)
                         .to_buffer(1, Transform::Normal)
-                        .to_f64()
+                        .to_f64();
+                    Size::<f64, BufferCoords>::from((full.w * shrink.x, full.h * shrink.y))
                 }, /* TODO: Mode is Buffer..., why is this Physical in the first place */
             )?;
+        let output_scale = output.current_scale().fractional_scale();
         let additional_damage = (!additional_damage.is_empty()).then(|| {
             additional_damage
                 .into_iter()
                 .map(|rect| {
                     rect.to_f64()
                         .to_logical(
-                            output.current_scale().fractional_scale(),
+                            Scale {
+                                x: output_scale * shrink.x,
+                                y: output_scale * shrink.y,
+                            },
                             output.current_transform(),
                             &area,
                         )
@@ -398,6 +470,51 @@ pub fn render_workspace_to_buffer(
                 })
                 .collect()
         });
+
+        // A preview: the desktop's elements, shrunk to the buffer as they are
+        // drawn, so the GPU scales them and the copy out is a preview's worth.
+        if let Some(shrink) = preview {
+            let mut elements: Vec<RescaleRenderElement<CosmicElement<R>>> = additional_damage
+                .into_iter()
+                .flatten()
+                .map(|rect| {
+                    RescaleRenderElement::from_element(
+                        CosmicElement::from(DamageElement::new(rect)),
+                        Point::from((0, 0)),
+                        shrink,
+                    )
+                })
+                .collect();
+            elements.extend(
+                workspace_elements(
+                    None,
+                    renderer,
+                    &common.shell,
+                    None,
+                    common.clock.now(),
+                    output,
+                    None,
+                    handle,
+                    cursor_mode,
+                    ElementFilter::ExcludeWorkspaceOverview,
+                    None,
+                )?
+                .into_iter()
+                .map(|element| {
+                    RescaleRenderElement::from_element(element, Point::from((0, 0)), shrink)
+                }),
+            );
+            let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
+                let mut dmabuf = dmabuf.clone();
+                let mut fb = renderer.bind(&mut dmabuf).map_err(DTError::Rendering)?;
+                dt.render_output(renderer, &mut fb, age, &elements, *CLEAR_COLOR)?
+            } else {
+                let target = offscreen.expect("shm buffers should have an offscreen target");
+                dt.render_output(renderer, target, age, &elements, *CLEAR_COLOR)?
+            };
+            let buffers = render_element_buffers(renderer, &elements);
+            return Ok((res, buffers));
+        }
 
         let (res, elements) = if let Ok(dmabuf) = get_dmabuf(buffer) {
             let mut dmabuf = dmabuf.clone();
@@ -495,7 +612,7 @@ pub fn render_workspace_to_buffer(
     };
     let result = match renderer {
         RendererRef::Glow(renderer) => {
-            match render_session(
+            match render_session_holding(
                 renderer,
                 session.user_data().get::<SessionData>().unwrap(),
                 frame,
@@ -512,10 +629,11 @@ pub fn render_workspace_to_buffer(
                         common,
                         &output,
                         (handle, idx),
+                        preview,
                     )
                 },
             ) {
-                Ok(frame) => frame,
+                Ok(rendered) => Some(rendered),
                 Err(err) => {
                     tracing::warn!(?err, "Failed to render to screencopy buffer");
                     None
@@ -523,7 +641,7 @@ pub fn render_workspace_to_buffer(
             }
         }
         RendererRef::GlMulti(mut renderer) => {
-            match render_session(
+            match render_session_holding(
                 &mut renderer,
                 session.user_data().get::<SessionData>().unwrap(),
                 frame,
@@ -540,10 +658,11 @@ pub fn render_workspace_to_buffer(
                         common,
                         &output,
                         (handle, idx),
+                        preview,
                     )
                 },
             ) {
-                Ok(frame) => frame,
+                Ok(rendered) => Some(rendered),
                 Err(err) => {
                     tracing::warn!(?err, "Failed to render to screencopy buffer");
                     None
@@ -552,12 +671,21 @@ pub fn render_workspace_to_buffer(
         }
     };
 
-    if let Some(pending_image_copy_data) = result {
-        pending_image_copy_data.send_success_when_ready(
+    match result {
+        Some(Rendered::Sent(Some(pending))) => pending.send_success_when_ready(
             transform,
             &common.event_loop_handle,
             common.clock.now(),
-        );
+        ),
+        // Nothing changed: the frame waits for the desktop to, looked in on by
+        // the tick, and costs nothing meanwhile.
+        Some(Rendered::Unchanged(frame)) => common.parked_workspace_captures.park(
+            session.clone(),
+            frame,
+            handle,
+            &common.event_loop_handle,
+        ),
+        Some(Rendered::Sent(None)) | None => {}
     }
 }
 
