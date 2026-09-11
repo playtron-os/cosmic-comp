@@ -3968,10 +3968,24 @@ impl Shell {
             .iter()
             .any(|s| s.visibility.is_animating());
         let layer_open = self.layer_opens.iter().any(|o| o.is_animating());
-        let pending_open = !self.pending_layer_opens.is_empty();
+        // A pending entry is drained by the surface's next buffer commit, and
+        // the timeout that covers "no commit ever came" is only checked inside
+        // that same hook. A layer surface that never commits — one opened
+        // hidden, or one whose workspace is off screen, so it is never drawn
+        // and never asked for a frame — would otherwise hold this true for
+        // ever, and an idle desktop would redraw continuously waiting for it.
+        // Past its own window it is no longer an animation; the commit, if it
+        // ever comes, still starts the real one.
+        let pending_window = self.theme.motion.layer_open * PENDING_CONTENT_TIMEOUT_FACTOR;
+        let still_pending = |pending: &std::collections::HashMap<ObjectId, Instant>| {
+            pending
+                .values()
+                .any(|since| since.elapsed() < pending_window)
+        };
+        let pending_open = still_pending(&self.pending_layer_opens);
         let layer_close = self.layer_closes.iter().any(|c| c.is_animating());
         let fade_in = !self.layer_fade_in.is_empty();
-        let pending_fade = !self.pending_layer_fade_in.is_empty();
+        let pending_fade = still_pending(&self.pending_layer_fade_in);
         let fade_out = !self.layer_fade_out.is_empty();
         let unlock_fade = self.any_unlock_fade_in_flight();
         let lock_fade_in = self.any_lock_fade_in_in_flight();
