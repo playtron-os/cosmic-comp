@@ -68,6 +68,8 @@ pub struct CompTheme {
     pub motion: crate::backend::render::animations::motion::Motion,
     /// Accent of the workspace currently on screen; brand accent is the fallback.
     pub workspace_accent: Option<Color>,
+    /// The user asked for less motion: status marks hold still.
+    pub reduced_motion: bool,
 }
 
 impl std::fmt::Debug for CompTheme {
@@ -107,6 +109,7 @@ impl CompTheme {
             active_hint: 3,
             gaps: (4, 4),
             workspace_accent: None,
+            reduced_motion: false,
         }
     }
 

@@ -788,6 +788,7 @@ impl State {
 
         let clock = Clock::new();
         let config = Config::load(&handle);
+        let reduced_motion = config.cosmic_conf.reduced_motion;
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
         let backdrop_color_state = BackdropColorState::new::<Self>(dh);
         let compositor_state = CompositorState::new::<Self>(dh);
@@ -948,7 +949,11 @@ impl State {
                 perf_capture: Default::default(),
 
                 kiosk_child: None,
-                theme: crate::comp_theme::CompTheme::from_current(),
+                theme: {
+                    let mut theme = crate::comp_theme::CompTheme::from_current();
+                    theme.reduced_motion = reduced_motion;
+                    theme
+                },
 
                 animated_resize_state,
                 backdrop_color_state,

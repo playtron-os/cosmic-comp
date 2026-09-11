@@ -128,6 +128,9 @@ pub struct CosmicCompConfig {
     /// selection. Set to `false` to opt out (the compositor then holds no
     /// clipboard contents in memory).
     pub clipboard_persistence: bool,
+    /// Draw status marks still instead of animating them,
+    /// for users who asked for less motion.
+    pub reduced_motion: bool,
 }
 
 impl Default for CosmicCompConfig {
@@ -173,6 +176,7 @@ impl Default for CosmicCompConfig {
             cursor_hide_timeout: None,
             activation_policy: ActivationPolicy::default(),
             clipboard_persistence: true,
+            reduced_motion: false,
         }
     }
 }

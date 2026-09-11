@@ -158,6 +158,7 @@ fn reload_theme(state: &mut State) {
     };
 
     new_theme.workspace_accent = state.common.theme.workspace_accent;
+    new_theme.reduced_motion = state.common.theme.reduced_motion;
     state.common.theme = new_theme.clone();
     let shell = state.common.shell.clone();
     let mut workspace_guard = state.common.workspace_state.update();

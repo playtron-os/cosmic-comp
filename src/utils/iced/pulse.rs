@@ -45,6 +45,8 @@ pub struct PulsingDot {
     color: Color,
     glow: f32,
     easing: [f32; 4],
+    /// Reduced motion: hold still at full opacity, ask for no frames.
+    still: bool,
 }
 
 #[derive(Default)]
@@ -61,10 +63,20 @@ impl PulsingDot {
             color,
             glow,
             easing,
+            still: false,
         }
     }
 
+    /// Hold still at full opacity, the prototype's reduced-motion rule.
+    pub fn still(mut self, still: bool) -> Self {
+        self.still = still;
+        self
+    }
+
     fn opacity(&self, state: &State) -> f32 {
+        if self.still {
+            return 1.0;
+        }
         match (state.epoch, state.now) {
             (Some(epoch), Some(now)) => breath(now - epoch, PERIOD, FLOOR, self.easing),
             _ => 1.0,
@@ -104,6 +116,9 @@ impl<Message> Widget<Message, iced_core::Theme, iced_tiny_skia::Renderer> for Pu
         shell: &mut Shell<'_, Message>,
         _viewport: &Rectangle,
     ) {
+        if self.still {
+            return;
+        }
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
             let state = tree.state.downcast_mut::<State>();
             state.epoch.get_or_insert(*now);
@@ -181,6 +196,19 @@ mod tests {
         for ms in (800..1600).step_by(50) {
             assert!(at(ms + 50) >= at(ms) - 1e-4, "brightens at {ms}");
         }
+    }
+
+    #[test]
+    fn a_still_dot_holds_full_opacity_mid_breath() {
+        let epoch = Instant::now();
+        let state = State {
+            epoch: Some(epoch),
+            now: Some(epoch + Duration::from_millis(800)),
+        };
+        let breathing = PulsingDot::new(5.0, Color::WHITE, 5.0, EASE);
+        assert!(breathing.opacity(&state) < 0.5);
+        let still = PulsingDot::new(5.0, Color::WHITE, 5.0, EASE).still(true);
+        assert_eq!(still.opacity(&state), 1.0);
     }
 
     #[test]

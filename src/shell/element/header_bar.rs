@@ -634,6 +634,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     }
 }
 
+/// The prototype's "on" mark (`.kora-halo__tray-item--on::after` in
+/// `halo.css`): a 5px dot 1px in from the corner, glowing 5px. No token
+/// carries these, so they are literal.
+const RECORD_DOT_PX: f32 = 5.0;
+const RECORD_DOT_INSET_PX: f32 = 1.0;
+
 enum HaloButtonRole {
     /// A pinned command; `on` is a stateful one currently active.
     Tray {
@@ -670,13 +676,13 @@ fn halo_button<'a, Message: Clone + 'static>(
         .center_x(Length::Fill)
         .center_y(Length::Fill);
     let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if on {
-        let dot = theme.spacing_1();
         let mark = crate::utils::iced::pulse::PulsingDot::new(
-            dot,
+            RECORD_DOT_PX,
             theme.feedback_error_primary(),
-            dot,
+            RECORD_DOT_PX,
             theme.motion.ease_standard_cp,
-        );
+        )
+        .still(theme.reduced_motion);
         iced_widget::stack![
             glyph,
             container(mark)
@@ -684,7 +690,7 @@ fn halo_button<'a, Message: Clone + 'static>(
                 .height(Length::Fill)
                 .align_x(iced_core::alignment::Horizontal::Right)
                 .align_y(iced_core::alignment::Vertical::Top)
-                .padding(theme.spacing_0_5()),
+                .padding(RECORD_DOT_INSET_PX),
         ]
         .into()
     } else {

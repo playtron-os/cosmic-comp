@@ -1155,6 +1155,23 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     state.common.config.cosmic_conf.clipboard_persistence = new;
                 }
             }
+            "reduced_motion" => {
+                let new = get_config::<bool>(&config, "reduced_motion");
+                if new != state.common.config.cosmic_conf.reduced_motion {
+                    state.common.config.cosmic_conf.reduced_motion = new;
+                    state.common.theme.reduced_motion = new;
+                    // Decorations copy the theme when built; push it so a
+                    // breathing mark stops (or starts) now.
+                    let theme = state.common.theme.clone();
+                    let shell = state.common.shell.clone();
+                    let mut workspace_guard = state.common.workspace_state.update();
+                    shell.write().set_theme(
+                        theme,
+                        &state.common.xdg_activation_state,
+                        &mut workspace_guard,
+                    );
+                }
+            }
             _ => {}
         }
     }
