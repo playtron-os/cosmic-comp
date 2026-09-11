@@ -1,3 +1,10 @@
+## [1.47.1](https://github.com/playtron-os/cosmic-comp/compare/v1.47.0...v1.47.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* a preview of another workspace shows that workspace's own wallpaper ([dc8308b](https://github.com/playtron-os/cosmic-comp/commit/dc8308be18a4d9c92ab736c0c8ab604c40dc9f67))
+
 # [1.47.0](https://github.com/playtron-os/cosmic-comp/compare/v1.46.0...v1.47.0) (2026-09-11)
 
 
