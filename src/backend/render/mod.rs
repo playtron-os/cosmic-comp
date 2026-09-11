@@ -935,8 +935,9 @@ pub type EguiState = ();
 pub struct LayerVisibilityContext {
     /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     pub hidden_surfaces: std::collections::HashSet<ObjectId>,
-    /// Layer surfaces belonging to a workspace that is not on screen: never
-    /// drawn, whatever their client does, and never captured.
+    /// Layer surfaces that do not belong in this picture: another workspace's,
+    /// and the machine plane's wallpaper where this realm paints its own.
+    /// Never drawn, whatever their client does, and never captured.
     pub off_realm_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that currently have active slide animations
     pub sliding_surfaces: std::collections::HashSet<ObjectId>,
@@ -947,19 +948,19 @@ pub struct LayerVisibilityContext {
 }
 
 impl LayerVisibilityContext {
-    /// Create a new context from shell state
-    pub fn from_shell(shell: &crate::shell::Shell) -> Self {
-        Self::for_realm(shell, shell.active_realm())
-    }
-
-    /// For a picture of `realm` — the one on screen, or another workspace
-    /// drawn for a preview. What is off-realm is relative to the workspace
-    /// being drawn, not the one you are standing in: a preview of another
-    /// workspace shows that workspace's wallpaper, not this one's.
-    pub fn for_realm(shell: &crate::shell::Shell, realm: &str) -> Self {
+    /// For a picture of `realm` on `output` — the realm on screen, or another
+    /// workspace drawn for a preview. What is off-realm is relative to the
+    /// workspace being drawn, not the one you are standing in: a preview of
+    /// another workspace shows that workspace's wallpaper, not this one's.
+    pub fn for_realm(shell: &crate::shell::Shell, output: &Output, realm: &str) -> Self {
+        let mut off_realm_surfaces = shell.off_realm_layers_for(realm);
+        // One ground to a picture: a realm painting its own wallpaper covers
+        // the machine plane's, which is drawn in every realm and would
+        // otherwise win or lose the top by the order the two happened to map.
+        off_realm_surfaces.extend(shell.covered_machine_backgrounds(output, realm));
         Self {
             hidden_surfaces: shell.hidden_surfaces().clone(),
-            off_realm_surfaces: shell.off_realm_layers_for(realm),
+            off_realm_surfaces,
             sliding_surfaces: shell
                 .layer_slides
                 .iter()

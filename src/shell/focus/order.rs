@@ -159,7 +159,7 @@ fn render_input_order_internal<R: 'static>(
     let realm = shell
         .realm_of_handle(&current.0)
         .unwrap_or_else(|| shell.active_realm());
-    let layer_visibility = LayerVisibilityContext::for_realm(shell, realm);
+    let layer_visibility = LayerVisibilityContext::for_realm(shell, output, realm);
 
     // In game mode the fullscreen game is exclusive on its output: suppress all
     // desktop layer-shell surfaces (overlay/top/bottom/background) so the game is

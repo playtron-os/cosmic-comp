@@ -86,6 +86,8 @@ fn peer_pid(stream: &UnixStream) -> Option<u32> {
 /// workspace and is visible everywhere, and an unknown active workspace means
 /// no workspace registry is running — in which case nothing should change from
 /// today's behaviour.
+use std::collections::HashSet;
+
 /// The realm a new window goes to: its client's workspace when it has one,
 /// else the one on screen.
 pub fn realm_for(client: Option<&str>, active: &str) -> String {
@@ -99,9 +101,69 @@ pub fn visible_in(client: Option<&str>, active: Option<&str>) -> bool {
     }
 }
 
+/// The machine plane's grounds that a realm's own ground covers, given every
+/// ground on one output and the workspace each belongs to.
+///
+/// A workspace runs its own wallpaper and the session runs one for the machine
+/// plane, which belongs to no workspace and so is drawn in every realm. Both
+/// are Background-layer surfaces on the same output, and which of them lands on
+/// top is otherwise only the order their clients committed: the two race every
+/// login, and the machine's solid colour wins whenever it gets there last.
+///
+/// A realm that paints its own ground hides the machine's. A realm that paints
+/// none keeps it — its wallpaper still coming up, or down altogether — so the
+/// fallback stands and no desktop is left bare.
+pub fn covered_machine_grounds<'a, Id, I>(grounds: I, realm: &str) -> HashSet<Id>
+where
+    Id: Eq + std::hash::Hash,
+    I: IntoIterator<Item = (Id, Option<&'a str>)>,
+{
+    let grounds = grounds.into_iter().collect::<Vec<_>>();
+    if !grounds.iter().any(|(_, ground)| *ground == Some(realm)) {
+        return HashSet::new();
+    }
+    grounds
+        .into_iter()
+        .filter_map(|(id, ground)| ground.is_none().then_some(id))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ids stand in for surfaces; only the realm each ground belongs to matters.
+    fn grounds<'a>(rows: &[(u32, Option<&'a str>)]) -> Vec<(u32, Option<&'a str>)> {
+        rows.to_vec()
+    }
+
+    #[test]
+    fn a_realm_that_paints_its_own_ground_covers_the_machines() {
+        let covered =
+            covered_machine_grounds(grounds(&[(1, None), (2, Some("meridian"))]), "meridian");
+        assert_eq!(covered, HashSet::from([1]));
+    }
+
+    #[test]
+    fn a_realm_with_no_ground_of_its_own_keeps_the_machines() {
+        let covered =
+            covered_machine_grounds(grounds(&[(1, None), (2, Some("default"))]), "meridian");
+        assert!(
+            covered.is_empty(),
+            "a workspace whose wallpaper is down falls back"
+        );
+    }
+
+    #[test]
+    fn another_realms_ground_is_left_to_the_realm_filter() {
+        let all = grounds(&[(1, None), (2, Some("default")), (3, Some("meridian"))]);
+        assert_eq!(covered_machine_grounds(all, "meridian"), HashSet::from([1]));
+    }
+
+    #[test]
+    fn nothing_is_covered_where_no_workspace_paints() {
+        assert!(covered_machine_grounds(grounds(&[(1, None)]), "default").is_empty());
+    }
 
     #[test]
     fn resolves_a_workspace_from_its_slice() {

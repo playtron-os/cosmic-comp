@@ -6022,6 +6022,32 @@ impl Shell {
             .collect()
     }
 
+    /// The machine plane's wallpapers that `realm`'s own wallpaper covers on
+    /// `output`: what keeps one ground to a picture.
+    ///
+    /// The session runs a wallpaper for the machine plane and every workspace
+    /// runs its own. The machine's belongs to no workspace, so it is drawn in
+    /// every realm, and nothing but the order the two mapped decides which is
+    /// on top. See `workspace_tag::covered_machine_grounds`.
+    pub fn covered_machine_backgrounds(
+        &self,
+        output: &Output,
+        realm: &str,
+    ) -> std::collections::HashSet<ObjectId> {
+        let grounds = {
+            let map = layer_map_for_output(output);
+            map.layers()
+                .filter(|layer| layer.layer() == Layer::Background)
+                .map(|layer| {
+                    let id = layer.wl_surface().id();
+                    let ground = self.layer_realms.get(&id).map(String::as_str);
+                    (id, ground)
+                })
+                .collect::<Vec<_>>()
+        };
+        crate::workspace_tag::covered_machine_grounds(grounds, realm)
+    }
+
     /// The id of the realm a desktop belongs to.
     pub fn realm_of_handle(&self, handle: &WorkspaceHandle) -> Option<&str> {
         self.realms
