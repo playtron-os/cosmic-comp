@@ -23,6 +23,16 @@ pub struct Visibility {
 }
 
 impl Visibility {
+    /// Tooltip xdg_popups use the surface preset's opacity, without the
+    /// layer-shell card's translation/scale (see Stage::LayerPopup rendering).
+    pub fn fade(motion: crate::backend::render::animations::motion::Motion) -> Self {
+        Self {
+            hidden_offset: Vector::ZERO,
+            hidden_scale: 1.0,
+            ..Self::fade_rise(motion)
+        }
+    }
+
     pub fn fade_rise(motion: crate::backend::render::animations::motion::Motion) -> Self {
         let preset = crate::shell::layer_open::FadeRise::new(motion);
         Self {

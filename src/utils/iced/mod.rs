@@ -828,6 +828,8 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         self.touch_map.clear();
         self.needs_redraw = false;
         self.sync_visibility(now);
+        self.tooltip.report = None;
+        self.tooltip.sync(&self.theme, now);
         // Even an instant close needs a frame to erase the previous image.
         for output in &self.outputs {
             request_redraw(output);
@@ -1101,13 +1103,23 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         let message_loop_duration = msg_start.elapsed();
 
         self.sync_visibility(now);
+        // A hidden owner must not create a new tooltip (e.g. a keyboard-focused
+        // control on hidden fullscreen chrome). Existing tips still fade out.
+        if self
+            .program
+            .visibility(&self.theme)
+            .is_some_and(|visibility| !visibility.visible)
+        {
+            self.tooltip.report = None;
+        }
+        self.tooltip.sync(&self.theme, now);
         self.needs_redraw |= self
             .visibility
             .as_ref()
             .is_some_and(|animation| animation.is_animating(now));
         // Focus changes only GPU uniforms. Request an output frame without
         // treating it as an Iced widget redraw (layout/text/tooltip rebuild).
-        if self.needs_redraw || self.focus.is_animating() {
+        if self.needs_redraw || self.focus.is_animating() || self.tooltip.is_animating(now) {
             for output in &self.outputs {
                 request_redraw(output);
             }
@@ -1720,6 +1732,23 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         let frame_time = IcedInstant::now();
         internal_ref.start_visibility_frame(frame_time);
         let focus_frame = internal_ref.focus_outline_frame(radii, frame_time);
+        internal_ref.tooltip.advance(frame_time);
+        if internal_ref.tooltip.is_animating(frame_time) {
+            for output in &internal_ref.outputs {
+                request_redraw(output);
+            }
+        }
+        // Tooltips have their own fade lifetime. Let an outgoing chip finish
+        // even as the Halo fades/slides away; still inherit window-level alpha.
+        internal_ref.tooltip.push(
+            renderer,
+            &internal_ref.theme,
+            location.to_f64(),
+            scale * internal_ref.additional_scale,
+            internal_ref.additional_scale,
+            alpha,
+            push_above,
+        );
         let alpha = internal_ref.visibility_frame.alpha(alpha);
         if alpha <= 0.0 {
             return focus_frame;
@@ -1742,17 +1771,8 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         // Preserve subpixel motion and use exactly the same origin for the
         // texture (including its shadow) and the framebuffer blur capture.
         let location = internal_ref.visibility_frame.location(location, scale);
-        // Front-to-back: tooltip and its backdrop, Halo outline, header fill,
-        // then the header's backdrop. The outline shares the fill's fade/slide.
-        internal_ref.tooltip.push(
-            renderer,
-            &internal_ref.theme,
-            location,
-            scale,
-            internal_ref.additional_scale,
-            alpha,
-            push_above,
-        );
+        // The tooltip was emitted above. The outline shares the header fill's
+        // own fade/slide; neither is part of the tooltip's independent lifetime.
         if let Some(frame) = focus_frame {
             let theme = &internal_ref.theme;
             let zoom = internal_ref.additional_scale;

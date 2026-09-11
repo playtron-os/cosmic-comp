@@ -659,6 +659,9 @@ fn halo_button<'a, Message: Clone + 'static>(
     animated_tooltip(button, label, &**theme)
         .position(tooltip::Position::Bottom)
         .enabled(!menu_open)
+        // Icetron owns the hover/focus delay and suppression; the compositor
+        // fades the separate surface and its backdrop in AND out together.
+        .animation_duration(std::time::Duration::ZERO)
         .compositor_managed(true)
         .into()
 }

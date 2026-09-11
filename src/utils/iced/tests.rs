@@ -738,7 +738,7 @@ fn focus_only_frames_do_not_rebuild_iced_and_stop_requesting_frames_when_settled
 }
 
 #[test]
-fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
+fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
     use icetron_p::utils::platform::test_clock;
     use std::time::Duration;
     let _clock = test_clock::Frozen::start();
@@ -746,6 +746,7 @@ fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
     let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
     tokens.duration_fast = 120.0;
+    tokens.duration_normal = 120.0;
     let theme = CompTheme::new(Arc::new(tokens), true);
     let element = IcedElement::new(
         Header { visible: true },
@@ -780,16 +781,18 @@ fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
             .event_queue
             .push(Event::Window(WindowEvent::RedrawRequested(now)));
         internal.update(UpdateSource::AnimRedraw);
+        internal.tooltip.advance(now);
     };
     step(&mut internal, 0);
     step(&mut internal, 399);
     assert!(internal.tooltip.report.is_none());
     step(&mut internal, 400);
-    let first = internal
-        .tooltip
-        .report
-        .clone()
-        .expect("tooltip must open at the deadline");
+    assert_eq!(
+        internal.tooltip.report.as_ref().unwrap().opacity,
+        1.0,
+        "widget supplies the request, not a second fade"
+    );
+    let first = internal.tooltip.snapshots()[0].clone();
     assert_eq!(first.label, "Close");
     assert_eq!(first.opacity, 0.0);
     assert!(
@@ -797,16 +800,16 @@ fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
         "operation must report laid-out, not zero, coordinates"
     );
     step(&mut internal, 460);
-    let middle = internal.tooltip.report.clone().unwrap();
+    let middle = internal.tooltip.snapshots()[0].clone();
     assert!(
-        (middle.opacity - 0.685).abs() < 0.01,
-        "CSS ease-out is not a linear fade"
+        (middle.opacity - 0.5).abs() < 0.01,
+        "use the surface fade preset"
     );
     step(&mut internal, 520);
-    let last = internal.tooltip.report.clone().unwrap();
+    let last = internal.tooltip.snapshots()[0].clone();
     assert_eq!(last.opacity, 1.0);
-    assert!((last.bounds.y - first.bounds.y - 3.0).abs() < 0.01);
-    assert!(last.bounds.y > middle.bounds.y);
+    assert_eq!(last.bounds, first.bounds);
+    assert_eq!(last.bounds, middle.bounds);
     // Native Iced button transitions still read wall time. Stop those independently
     // before checking that the tooltip itself has no remaining frame requests.
     let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
@@ -822,7 +825,16 @@ fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
         .push(Event::Mouse(MouseEvent::ButtonPressed(MouseButton::Left)));
     step(&mut internal, 540);
     assert!(internal.tooltip.report.is_none());
+    assert_eq!(
+        internal.tooltip.snapshots()[0].label,
+        "Close",
+        "retain the outgoing chip after click suppression"
+    );
+    step(&mut internal, 600);
+    let fading = internal.tooltip.snapshots()[0].opacity;
+    assert!(fading > 0.0 && fading < 1.0);
     step(&mut internal, 1000);
+    assert!(internal.tooltip.snapshots().is_empty());
     assert!(
         internal.tooltip.report.is_none(),
         "click suppression lasts until leave"
@@ -840,7 +852,7 @@ fn halo_tooltip_delays_slides_fades_and_dismisses_without_input_locks() {
         "re-entry must restart the delay"
     );
     step(&mut internal, 1420);
-    assert_eq!(internal.tooltip.report.as_ref().unwrap().opacity, 0.0);
+    assert_eq!(internal.tooltip.snapshots()[0].opacity, 0.0);
 }
 
 #[test]

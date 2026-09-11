@@ -39,7 +39,17 @@ struct Raster {
 
 #[derive(Default)]
 pub(super) struct Surface {
+    /// Current widget request, not the lifetime/opacity of the painted chip.
     pub report: Option<TooltipReport>,
+    active: Option<Tip>,
+    closing: Vec<Tip>,
+}
+
+struct Tip {
+    report: TooltipReport,
+    settings: Visibility,
+    animation: VisibilityAnimation,
+    frame: VisibilityFrame,
     content: Option<(String, IcedSize)>,
     rasters: HashMap<OrderedFloat<f64>, Raster>,
     blur: BlurState,
@@ -138,6 +148,114 @@ fn rasterize(label: &str, body: IcedSize, theme: &CompTheme, scale: f64) -> Opti
 
 impl Surface {
     pub fn invalidate(&mut self) {
+        for tip in self.active.iter_mut().chain(&mut self.closing) {
+            tip.invalidate();
+        }
+    }
+
+    /// Keep outgoing labels/rasters separate from a replacement tooltip, just
+    /// like agentos-panel's closing tooltip surfaces. No widget fade is used.
+    pub fn sync(&mut self, theme: &CompTheme, now: IcedInstant) {
+        if self.active.as_ref().is_some_and(|tip| {
+            self.report
+                .as_ref()
+                .is_none_or(|report| report.label != tip.report.label)
+        }) {
+            let mut tip = self.active.take().unwrap();
+            tip.animation.update(
+                Visibility {
+                    visible: false,
+                    ..tip.settings
+                },
+                now,
+            );
+            if !tip.animation.is_fully_hidden(now) {
+                self.closing.push(tip);
+            }
+        }
+        if let Some(report) = &self.report {
+            if let Some(tip) = &mut self.active {
+                tip.report = report.clone();
+            } else {
+                let settings = Visibility::fade(theme.motion);
+                let animation = VisibilityAnimation::new(settings);
+                let frame = animation.frame(now);
+                self.active = Some(Tip {
+                    report: report.clone(),
+                    settings,
+                    animation,
+                    frame,
+                    content: None,
+                    rasters: HashMap::new(),
+                    blur: BlurState::default(),
+                });
+            }
+        }
+        self.closing
+            .retain(|tip| !tip.animation.is_fully_hidden(now));
+    }
+
+    /// Sample at compositor draw time, so a slow initial layout cannot consume
+    /// the fade offscreen. Tooltip-only frames need no header widget rebuild.
+    pub fn advance(&mut self, now: IcedInstant) {
+        if let Some(tip) = &mut self.active {
+            tip.animation.start_on_draw(now);
+        }
+        for tip in self.active.iter_mut().chain(&mut self.closing) {
+            tip.frame = tip.animation.frame(now);
+        }
+        self.closing
+            .retain(|tip| !tip.animation.is_fully_hidden(now));
+    }
+
+    pub fn is_animating(&self, now: IcedInstant) -> bool {
+        self.active
+            .iter()
+            .chain(&self.closing)
+            .any(|tip| tip.animation.is_animating(now))
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshots(&self) -> Vec<TooltipReport> {
+        self.active
+            .iter()
+            .chain(self.closing.iter().rev())
+            .map(|tip| TooltipReport {
+                opacity: tip.frame.opacity,
+                ..tip.report.clone()
+            })
+            .collect()
+    }
+
+    pub fn push<R>(
+        &mut self,
+        renderer: &mut R,
+        theme: &CompTheme,
+        origin: Point<f64, Physical>,
+        scale: Scale<f64>,
+        additional_scale: f64,
+        parent_alpha: f32,
+        push: &mut dyn FnMut(IcedRenderElement<R>),
+    ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        for tip in self.active.iter_mut().chain(self.closing.iter_mut().rev()) {
+            tip.push(
+                renderer,
+                theme,
+                origin,
+                scale,
+                additional_scale,
+                parent_alpha,
+                push,
+            );
+        }
+    }
+}
+
+impl Tip {
+    fn invalidate(&mut self) {
         self.content = None;
         self.rasters.clear();
     }
@@ -155,10 +273,11 @@ impl Surface {
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        let Some(report) = self.report.as_ref().filter(|r| r.opacity > 0.0) else {
+        let alpha = parent_alpha * self.frame.opacity;
+        if alpha <= 0.0 {
             return;
-        };
-        let alpha = parent_alpha * report.opacity;
+        }
+        let report = &self.report;
         let body = report.bounds;
         if self
             .content
@@ -234,6 +353,254 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn report(label: &str, x: f32) -> TooltipReport {
+        TooltipReport {
+            label: label.into(),
+            bounds: IcedRectangle {
+                x,
+                y: 60.0,
+                width: 120.0,
+                height: 24.0,
+            },
+            opacity: 1.0,
+        }
+    }
+
+    #[test]
+    fn tooltip_fades_from_first_draw_and_retains_its_label_on_exit() {
+        let theme = CompTheme::default();
+        let duration = theme.motion.layer_open;
+        let now = IcedInstant::now();
+        let mut surface = Surface {
+            report: Some(report("Close", 20.0)),
+            ..Surface::default()
+        };
+        surface.sync(&theme, now);
+        let first_draw = now + std::time::Duration::from_secs(2);
+        surface.advance(first_draw);
+        assert_eq!(surface.snapshots()[0].opacity, 0.0);
+        surface.advance(first_draw + duration / 2);
+        let middle = surface.snapshots()[0].clone();
+        assert!((middle.opacity - 0.5).abs() < 0.00001);
+        assert_eq!(
+            middle.bounds,
+            report("Close", 20.0).bounds,
+            "fade only, like panel tooltips"
+        );
+        surface.report = None;
+        surface.sync(&theme, first_draw + duration / 2);
+        surface.advance(first_draw + duration / 2);
+        assert!(surface.active.is_none());
+        assert_eq!(surface.snapshots()[0].label, "Close");
+        assert!((surface.snapshots()[0].opacity - middle.opacity).abs() < 0.00001);
+        surface.advance(first_draw + duration + std::time::Duration::from_millis(1));
+        assert!(surface.snapshots().is_empty());
+        assert!(!surface.is_animating(first_draw + duration * 2));
+    }
+
+    #[test]
+    fn replacing_tooltips_keeps_old_and_new_labels_separate() {
+        let theme = CompTheme::default();
+        let duration = theme.motion.layer_open;
+        let now = IcedInstant::now();
+        let mut surface = Surface {
+            report: Some(report("Close", 20.0)),
+            ..Surface::default()
+        };
+        surface.sync(&theme, now);
+        surface.advance(now);
+        surface.advance(now + duration);
+        surface.report = Some(report("Minimize", 80.0));
+        surface.sync(&theme, now + duration);
+        surface.advance(now + duration);
+        let frames = surface.snapshots();
+        assert_eq!(
+            (frames[0].label.as_str(), frames[0].opacity),
+            ("Minimize", 0.0)
+        );
+        assert_eq!(
+            (frames[1].label.as_str(), frames[1].opacity),
+            ("Close", 1.0)
+        );
+        assert_eq!(frames[1].bounds.x, 20.0);
+        surface.advance(now + duration * 2);
+        assert_eq!(surface.snapshots(), vec![report("Minimize", 80.0)]);
+    }
+
+    #[test]
+    fn unseen_and_zero_duration_tooltips_do_not_flash_or_linger() {
+        let mut theme = CompTheme::default();
+        let now = IcedInstant::now();
+        let mut surface = Surface {
+            report: Some(report("Close", 20.0)),
+            ..Surface::default()
+        };
+        surface.sync(&theme, now);
+        surface.report = None;
+        surface.sync(&theme, now);
+        assert!(surface.snapshots().is_empty());
+        theme.motion.layer_open = std::time::Duration::ZERO;
+        surface.report = Some(report("Close", 20.0));
+        surface.sync(&theme, now);
+        surface.advance(now);
+        assert_eq!(surface.snapshots()[0].opacity, 1.0);
+        assert!(!surface.is_animating(now));
+        surface.report = None;
+        surface.sync(&theme, now);
+        assert!(surface.snapshots().is_empty());
+    }
+
+    #[test]
+    #[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
+    fn gles_tooltip_fade_keeps_chip_shadow_and_blur_together() -> anyhow::Result<()> {
+        use smithay::backend::{
+            egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+            renderer::{
+                Bind, Offscreen, damage::OutputDamageTracker, element::Element as _,
+                gles::GlesRenderbuffer, glow::GlowRenderer,
+            },
+        };
+        use std::borrow::BorrowMut;
+        // SAFETY: a fresh surfaceless context used exclusively on this thread.
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
+        let context = EGLContext::new(&display)?;
+        let mut renderer = unsafe { GlowRenderer::new(context)? };
+        crate::backend::render::init_shaders(renderer.borrow_mut())?;
+        let theme = CompTheme::default();
+        let duration = theme.motion.layer_open;
+        for scale in [1.0, 1.5, 2.0] {
+            let now = IcedInstant::now();
+            let mut surface = Surface {
+                report: Some(report("Close", 20.0)),
+                ..Surface::default()
+            };
+            surface.sync(&theme, now);
+            let mut previous = None;
+            for (closing, elapsed) in [
+                (false, std::time::Duration::ZERO),
+                (false, duration / 2),
+                (false, duration),
+                (true, std::time::Duration::ZERO),
+                (true, duration / 2),
+                (true, duration + std::time::Duration::from_millis(1)),
+            ] {
+                let at = now
+                    + elapsed
+                    + if closing {
+                        duration
+                    } else {
+                        std::time::Duration::ZERO
+                    };
+                if closing && elapsed.is_zero() {
+                    surface.report = None;
+                    surface.sync(&theme, at);
+                }
+                surface.advance(at);
+                let mut elements = Vec::new();
+                surface.push(
+                    &mut renderer,
+                    &theme,
+                    (80.0, 80.0).into(),
+                    scale.into(),
+                    1.0,
+                    0.8,
+                    &mut |e| elements.push(e),
+                );
+                let opacity = surface.snapshots().first().map_or(0.0, |r| r.opacity);
+                if opacity == 0.0 {
+                    assert!(
+                        elements.is_empty(),
+                        "no bare blur or shadow before/after the fade"
+                    );
+                    continue;
+                }
+                assert_eq!(
+                    elements.len(),
+                    2,
+                    "one complete chip/shadow texture and one backdrop"
+                );
+                let state: Vec<_> = elements
+                    .iter()
+                    .map(|e| (e.id().clone(), e.geometry(scale.into())))
+                    .collect();
+                if let Some(previous) = &previous {
+                    assert_eq!(
+                        &state, previous,
+                        "fade without rerasterizing or moving either element"
+                    );
+                }
+                previous = Some(state);
+                for element in &elements {
+                    assert!((element.alpha() - opacity * 0.8).abs() < 0.0001);
+                }
+                let mut target = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+                    &mut renderer,
+                    Fourcc::Abgr8888,
+                    (512, 512).into(),
+                )?;
+                let mut fb = renderer.bind(&mut target)?;
+                let mut damage = OutputDamageTracker::new((512, 512), scale, Transform::Normal);
+                damage.render_output(&mut renderer, &mut fb, 0, &elements, [0.2, 0.4, 0.7, 1.0])?;
+            }
+        }
+
+        // The chip has its own exit lifetime, even if its header disappears at
+        // once. This exercises IcedElement's actual alpha-zero early-return path.
+        struct Owner {
+            visible: bool,
+        }
+        impl Program for Owner {
+            type Message = ();
+            fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+                iced_widget::Space::new().into()
+            }
+            fn visibility(&self, _: &CompTheme) -> Option<Visibility> {
+                Some(Visibility {
+                    visible: self.visible,
+                    duration: std::time::Duration::ZERO,
+                    animate_initial: false,
+                    ..Visibility::fade(CompTheme::default().motion)
+                })
+            }
+        }
+        let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+        let owner = IcedElement::new(
+            Owner { visible: true },
+            (240, 80),
+            event_loop.handle(),
+            theme.clone(),
+        );
+        {
+            let mut internal = owner.0.lock().unwrap();
+            let now = IcedInstant::now();
+            internal.tooltip.report = Some(report("Close", 20.0));
+            internal.tooltip.sync(&theme, now - duration * 2);
+            internal.tooltip.advance(now - duration * 2);
+            internal.tooltip.advance(now);
+            internal.program.visible = false;
+            internal.update(UpdateSource::Forced);
+            assert_eq!(internal.visibility_frame.opacity, 0.0);
+            assert!(internal.tooltip.report.is_none());
+            assert_eq!(internal.tooltip.closing.len(), 1);
+        }
+        let mut elements = Vec::new();
+        owner.push_render_elements(
+            &mut renderer,
+            (80, 80).into(),
+            1.0.into(),
+            1.0,
+            [0; 4],
+            &mut |e| elements.push(e),
+            None,
+        );
+        assert_eq!(
+            elements.len(),
+            2,
+            "the outgoing tooltip still paints over a hidden header"
+        );
+        Ok(())
+    }
     #[test]
     fn raster_reserves_shadow_space_separately_from_body() {
         let theme = CompTheme::new(
