@@ -1,3 +1,15 @@
+# [1.47.0](https://github.com/playtron-os/cosmic-comp/compare/v1.46.0...v1.47.0) (2026-09-11)
+
+
+### Bug Fixes
+
+* a deleted workspace takes its realm, and the windows left in it, with it ([2bd4dd6](https://github.com/playtron-os/cosmic-comp/commit/2bd4dd6b46abea92f98de803dc6f401aa0a4d67d))
+
+
+### Features
+
+* a layer surface belongs to a workspace, and shows only while it is on screen ([192e5b7](https://github.com/playtron-os/cosmic-comp/commit/192e5b7981f485a915a9e4afb65c332dc70fd02a))
+
 # [1.46.0](https://github.com/playtron-os/cosmic-comp/compare/v1.45.0...v1.46.0) (2026-09-11)
 
 
