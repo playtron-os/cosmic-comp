@@ -569,6 +569,13 @@ pub struct Shell {
     /// Surface IDs that should only be visible when in home mode
     /// Surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     hidden_surfaces: std::collections::HashSet<ObjectId>,
+    /// The workspace each layer surface belongs to, for the ones that belong
+    /// to one: a workspace client's, from its cgroup when it is mapped, or
+    /// what a machine-plane client assigned (`kora_workspace_realm_v1`). A
+    /// surface in here is drawn, hit-tested and captured only while its
+    /// workspace is on screen — the way the workspace's windows are. Absent
+    /// means machine-plane: the panel, the dock, visible from everywhere.
+    layer_realms: std::collections::HashMap<ObjectId, String>,
     /// The last exclusive zone each layer surface's client actually committed,
     /// recorded before any compositor override. The slide animation scribbles
     /// animated values into `LayerSurfaceCachedState`, so this map is the only
@@ -2881,6 +2888,7 @@ impl Shell {
             )),
             tiling_exceptions,
             hidden_surfaces: std::collections::HashSet::new(),
+            layer_realms: std::collections::HashMap::new(),
             client_exclusive_zones: std::collections::HashMap::new(),
 
             // Layer surface fade-in tracking
@@ -5850,6 +5858,46 @@ impl Shell {
         self.hidden_surfaces.contains(surface_id)
     }
 
+    /// Put a layer surface in a workspace: shown only while it is on screen.
+    pub fn assign_layer_realm(&mut self, surface_id: ObjectId, workspace: String) {
+        tracing::debug!(
+            ?surface_id,
+            workspace,
+            "layer surface assigned to a workspace"
+        );
+        self.layer_realms.insert(surface_id, workspace);
+    }
+
+    /// Forget a layer surface's workspace (it is being destroyed).
+    pub fn remove_layer_realm(&mut self, surface_id: &ObjectId) {
+        self.layer_realms.remove(surface_id);
+    }
+
+    /// Is this layer surface's workspace off screen? A machine-plane surface
+    /// belongs to none and is never off screen.
+    pub fn is_layer_off_realm(&self, surface_id: &ObjectId) -> bool {
+        !crate::workspace_tag::visible_in(
+            self.layer_realms.get(surface_id).map(String::as_str),
+            Some(self.active_realm.as_str()),
+        )
+    }
+
+    /// The layer surfaces whose workspace is off screen right now.
+    pub fn off_realm_layers(&self) -> std::collections::HashSet<ObjectId> {
+        self.layer_realms
+            .iter()
+            .filter(|(_, workspace)| **workspace != self.active_realm)
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// A layer surface the user can see and reach: not hidden by its client,
+    /// and not one of a workspace that is off screen. What focus and input
+    /// go by.
+    pub fn is_layer_shown(&self, surface_id: &ObjectId) -> bool {
+        !self.is_surface_hidden(surface_id) && !self.is_layer_off_realm(surface_id)
+    }
+
     /// Check if a layer surface was created without a specific output
     pub fn is_output_agnostic_layer(&self, surface_id: &ObjectId) -> bool {
         self.output_agnostic_layers.contains(surface_id)
@@ -7582,6 +7630,18 @@ impl Shell {
         let pending = self.pending_layers.remove(pos);
 
         let surface_id = pending.surface.wl_surface().id();
+        // A workspace client's layer surfaces belong to its workspace, no
+        // request needed and none honoured; an assignment made before the
+        // map (a machine-plane client's) stands.
+        if let Some(workspace) = pending.surface.wl_surface().client().and_then(|client| {
+            client
+                .get_data::<crate::state::ClientState>()
+                .and_then(|state| state.workspace.clone())
+        }) {
+            self.layer_realms
+                .entry(surface_id.clone())
+                .or_insert(workspace);
+        }
         let is_hidden = self.hidden_surfaces.contains(&surface_id);
 
         let wants_focus = if is_hidden {

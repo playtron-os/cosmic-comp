@@ -126,6 +126,16 @@ mod tests {
     }
 
     #[test]
+    fn a_layer_surface_shows_only_while_its_workspace_is_on_screen() {
+        // What `Shell::is_layer_off_realm` goes by: the surface's workspace
+        // against the one on screen — a machine-plane surface has none and
+        // is never off screen.
+        assert!(visible_in(Some("meridian"), Some("meridian")));
+        assert!(!visible_in(Some("meridian"), Some("default")));
+        assert!(visible_in(None, Some("default")));
+    }
+
+    #[test]
     fn a_client_outside_every_workspace_is_machine_plane() {
         // The panel, dock, launcher, notifications and OSD all land here and
         // are meant to be visible from every workspace.

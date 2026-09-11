@@ -743,7 +743,7 @@ fn focus_target_is_valid(
             // landed on one is "valid" forever and refresh_focus never repairs it
             // (the exclusive arm above and update_focus_target already check this).
             layer_map_for_output(output).layers().any(|l| l == &layer)
-                && !shell.is_surface_hidden(&layer.wl_surface().id())
+                && shell.is_layer_shown(&layer.wl_surface().id())
         }
         KeyboardFocusTarget::Group(WindowGroup { node, .. }) => shell
             .workspaces()
@@ -781,8 +781,8 @@ pub(crate) fn update_focus_target(
                 let data = layer_surface.cached_state();
                 (data.keyboard_interactivity, data.layer)
                     == (KeyboardInteractivity::Exclusive, layer)
-                    // Skip hidden surfaces — they should not receive focus
-                    && !shell.is_surface_hidden(&layer_surface.wl_surface().id())
+                    // Skip hidden and off-screen-workspace surfaces — no focus
+                    && shell.is_layer_shown(&layer_surface.wl_surface().id())
             })
             .cloned()
             .map(KeyboardFocusTarget::from)
@@ -849,8 +849,8 @@ fn exclusive_layer_surface_layer(shell: &Shell) -> Option<Layer> {
     let mut layer = None;
     for output in shell.outputs() {
         for layer_surface in layer_map_for_output(output).layers() {
-            // Skip hidden surfaces — they should not claim exclusive focus
-            if shell.is_surface_hidden(&layer_surface.wl_surface().id()) {
+            // Skip hidden and off-screen-workspace surfaces — no exclusive focus
+            if !shell.is_layer_shown(&layer_surface.wl_surface().id()) {
                 continue;
             }
             let data = layer_surface.cached_state();

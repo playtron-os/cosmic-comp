@@ -787,6 +787,11 @@ fn layer_surfaces<'a>(
 
         // Get visibility and alpha for this surface using home visibility context
         let surface_id = s.wl_surface().id();
+        // Its workspace is off screen: not drawn, not hit, not captured — and
+        // no fade below may bring it back on a screen it does not belong to.
+        if layer_visibility.off_realm_surfaces.contains(&surface_id) {
+            return None;
+        }
         let (mut visible, mut alpha) = layer_visibility.surface_visibility(&surface_id);
 
         // Apply layer fade-in alpha if this surface is still fading in

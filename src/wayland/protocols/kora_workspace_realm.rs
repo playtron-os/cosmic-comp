@@ -32,6 +32,7 @@ use std::collections::HashSet;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
     backend::{GlobalId, ObjectId},
+    protocol::wl_surface::WlSurface,
 };
 
 use super::workspace::{WorkspaceGroupHandle, WorkspaceHandler};
@@ -52,7 +53,7 @@ impl RealmState {
             + Dispatch<KoraWorkspaceRealmManagerV1, ()>
             + 'static,
     {
-        let global = dh.create_global::<D, KoraWorkspaceRealmManagerV1, _>(1, ());
+        let global = dh.create_global::<D, KoraWorkspaceRealmManagerV1, _>(2, ());
         RealmState {
             global,
             instances: Vec::new(),
@@ -114,6 +115,10 @@ pub trait RealmHandler {
     fn realm_state_mut(&mut self) -> &mut RealmState;
     /// Every desktop group with the id of the workspace that owns it.
     fn realm_groups(&self) -> Vec<(String, WorkspaceGroupHandle)>;
+    /// The workspace `client` was launched into; `None` is machine-plane.
+    fn client_workspace(&self, client: &Client) -> Option<String>;
+    /// A machine-plane client put `surface`'s layer surface in workspace `id`.
+    fn assign_layer_realm(&mut self, surface: &WlSurface, id: String);
 }
 
 impl<D> GlobalDispatch<KoraWorkspaceRealmManagerV1, (), D> for RealmState
@@ -146,7 +151,7 @@ where
 {
     fn request(
         state: &mut D,
-        _client: &Client,
+        client: &Client,
         resource: &KoraWorkspaceRealmManagerV1,
         request: kora_workspace_realm_manager_v1::Request,
         _data: &(),
@@ -156,6 +161,18 @@ where
         match request {
             kora_workspace_realm_manager_v1::Request::Destroy => {
                 state.realm_state_mut().remove(resource);
+            }
+            kora_workspace_realm_manager_v1::Request::Assign { surface, id } => {
+                // A client inside a workspace has its layer surfaces there
+                // already; letting it name another would be a way out.
+                if let Some(own) = state.client_workspace(client) {
+                    resource.post_error(
+                        kora_workspace_realm_manager_v1::Error::NotPermitted,
+                        format!("a client in workspace {own} cannot assign surfaces to workspaces"),
+                    );
+                    return;
+                }
+                state.assign_layer_realm(&surface, id);
             }
         }
     }

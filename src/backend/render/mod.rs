@@ -935,6 +935,9 @@ pub type EguiState = ();
 pub struct LayerVisibilityContext {
     /// Set of surface IDs that are explicitly hidden by client (layer_surface_visibility protocol)
     pub hidden_surfaces: std::collections::HashSet<ObjectId>,
+    /// Layer surfaces belonging to a workspace that is not on screen: never
+    /// drawn, whatever their client does, and never captured.
+    pub off_realm_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that currently have active slide animations
     pub sliding_surfaces: std::collections::HashSet<ObjectId>,
     /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
@@ -948,6 +951,7 @@ impl LayerVisibilityContext {
     pub fn from_shell(shell: &crate::shell::Shell) -> Self {
         Self {
             hidden_surfaces: shell.hidden_surfaces().clone(),
+            off_realm_surfaces: shell.off_realm_layers(),
             sliding_surfaces: shell
                 .layer_slides
                 .iter()
@@ -963,7 +967,8 @@ impl LayerVisibilityContext {
     /// Only the `layer_surface_visibility` protocol decides this now; the
     /// home-mode fade that used to share the call is gone.
     pub fn surface_visibility(&self, surface_id: &ObjectId) -> (bool, f32) {
-        if self.hidden_surfaces.contains(surface_id) {
+        if self.hidden_surfaces.contains(surface_id) || self.off_realm_surfaces.contains(surface_id)
+        {
             (false, 0.0)
         } else {
             (true, 1.0)

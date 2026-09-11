@@ -67,6 +67,7 @@ impl WlrLayerShellHandler for State {
 
         // Clean up visibility tracking for this surface
         shell.remove_hidden_surface(&surface_id);
+        shell.remove_layer_realm(&surface_id);
         shell.remove_client_exclusive_zone(&surface_id);
         shell.remove_layer_fade_in(&surface_id);
         shell.remove_layer_fade_out(&surface_id);

@@ -30,11 +30,20 @@
     can lay desktops out under the workspace that owns them.
   </description>
 
-  <interface name="kora_workspace_realm_manager_v1" version="1">
+  <interface name="kora_workspace_realm_manager_v1" version="2">
     <description summary="realm of each desktop group">
       Binding this global announces the workspace of every desktop group the
       client can see, and of every group announced afterwards.
+
+      From version 2 a machine-plane client may also put a layer surface of
+      its own into a workspace, so it is shown, focusable and capturable only
+      while that workspace is on screen — the way a workspace's own windows
+      are. A client inside a workspace has its layer surfaces there already.
     </description>
+    <enum name="error">
+      <entry name="not_permitted" value="0"
+             summary="the client is inside a workspace; its surfaces are already scoped to it"/>
+    </enum>
 
     <request name="destroy" type="destructor">
       <description summary="destroy the manager">
@@ -51,5 +60,19 @@
       <arg name="group" type="object" interface="ext_workspace_group_handle_v1"/>
       <arg name="id" type="string" summary="workspace registry id"/>
     </event>
+    <request name="assign" since="2">
+      <description summary="put a layer surface in a workspace">
+        The layer surface backed by `surface` belongs to the Kora workspace
+        `id` from now on: the compositor renders it, hit-tests it and
+        captures it only while that workspace is on screen. Assigning again
+        moves it; destroying the surface forgets it.
+
+        Only a client outside every workspace may ask. One inside a workspace
+        gets the not_permitted error: its layer surfaces are scoped to its own
+        workspace by the compositor, and it cannot put one anywhere else.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface" summary="a wl_surface with a layer surface role"/>
+      <arg name="id" type="string" summary="workspace registry id"/>
+    </request>
   </interface>
 </protocol>
