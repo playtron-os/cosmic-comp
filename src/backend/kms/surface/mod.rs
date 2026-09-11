@@ -388,6 +388,7 @@ impl Surface {
         let thread_token = evlh
             .insert_source(rx2, move |command, _, state| match command {
                 Event::Msg(SurfaceCommand::SendFrames(sequence)) => {
+                    crate::spin::bump(crate::spin::SEND_FRAMES_MAIN);
                     if output_clone.mirroring().is_some() {
                         return;
                     }
@@ -516,7 +517,10 @@ impl Surface {
         let _ = self.thread_command.send(ThreadCommand::VBlank(metadata));
     }
 
+    #[track_caller]
     pub fn schedule_render(&self) {
+        crate::spin::bump(crate::spin::SCHEDULE_RENDER);
+        crate::spin::note_site(std::panic::Location::caller());
         if self.dpms {
             let _ = self.thread_command.send(ThreadCommand::ScheduleRender);
         }
@@ -805,9 +809,11 @@ fn surface_thread(
                 let _ = sync.send(());
             }
             Event::Msg(ThreadCommand::VBlank(metadata)) => {
+                crate::spin::bump(crate::spin::CMD_VBLANK);
                 state.on_vblank(metadata);
             }
             Event::Msg(ThreadCommand::ScheduleRender) => {
+                crate::spin::bump(crate::spin::CMD_SCHEDULE_RENDER);
                 if !startup_done.load(Ordering::SeqCst) {
                     return;
                 }
@@ -837,6 +843,7 @@ fn surface_thread(
                 state.vrr_mode = vrr;
             }
             Event::Msg(ThreadCommand::AdoptFrozenFrame(dmabuf)) => {
+                crate::spin::bump(crate::spin::CMD_ADOPT);
                 state.adopt = Some(AdoptFrame::new(dmabuf));
                 // Same guard as ScheduleRender: redraw needs the active seat, which does
                 // not exist until startup completes (panics "No seat?").
@@ -975,6 +982,7 @@ impl SurfaceThreadState {
         // If this surface is live (has a compositor), a freshly (re)added renderer means
         // we should repaint promptly — this is how a surface recovers after a GPU-reset
         // teardown. During initial setup `compositor` is still None, so this is a no-op.
+        crate::spin::bump(crate::spin::NODE_ADDED);
         if self.compositor.is_some() {
             self.render_failure_count = 0;
             self.queue_redraw(true);
@@ -994,6 +1002,7 @@ impl SurfaceThreadState {
 
     #[profiling::function]
     fn on_vblank(&mut self, metadata: Option<DrmEventMetadata>) {
+        crate::spin::bump(crate::spin::ON_VBLANK);
         let Some(compositor) = self.compositor.as_mut() else {
             return;
         };
@@ -1163,12 +1172,18 @@ impl SurfaceThreadState {
             QueueState::WaitingForEstimatedVBlankAndQueued { .. } => unreachable!(),
         };
 
-        if crate::utils::iced::take_redraw_request(&self.output)
-            || redraw_needed
-            || crate::perf::is_stressing()
-            || self.shell.read().animations_going()
-            || self.adopt.is_some()
-        {
+        let why_iced = crate::utils::iced::take_redraw_request(&self.output);
+        let why_stress = crate::perf::is_stressing();
+        let why_animations = self.shell.read().animations_going();
+        let why_adopt = self.adopt.is_some();
+        crate::spin::why(
+            why_iced,
+            redraw_needed,
+            why_stress,
+            why_animations,
+            why_adopt,
+        );
+        if why_iced || redraw_needed || why_stress || why_animations || why_adopt {
             let vblank_frame = tracy_client::Client::running()
                 .unwrap()
                 .non_continuous_frame(self.vblank_frame_name);
@@ -1181,6 +1196,7 @@ impl SurfaceThreadState {
 
     #[profiling::function]
     fn on_estimated_vblank(&mut self, force: bool) {
+        crate::spin::bump(crate::spin::ON_ESTIMATED_VBLANK);
         match mem::replace(&mut self.state, QueueState::Idle) {
             QueueState::Idle => unreachable!(),
             QueueState::Queued(_) => unreachable!(),
@@ -1195,18 +1211,24 @@ impl SurfaceThreadState {
 
         self.frame_callback_seq = self.frame_callback_seq.wrapping_add(1);
 
-        if crate::utils::iced::take_redraw_request(&self.output)
-            || force
-            || crate::perf::is_stressing()
-            || self.shell.read().animations_going()
-            || self.adopt.is_some()
-        {
+        let why_iced = crate::utils::iced::take_redraw_request(&self.output);
+        let why_stress = crate::perf::is_stressing();
+        let why_animations = self.shell.read().animations_going();
+        let why_adopt = self.adopt.is_some();
+        crate::spin::why(why_iced, force, why_stress, why_animations, why_adopt);
+        if why_iced || force || why_stress || why_animations || why_adopt {
             self.queue_redraw(false);
         }
         self.send_frame_callbacks();
     }
 
+    #[track_caller]
     fn queue_redraw(&mut self, force: bool) {
+        crate::spin::bump(crate::spin::QUEUE_REDRAW);
+        if force {
+            crate::spin::bump(crate::spin::QUEUE_REDRAW_FORCED);
+        }
+        crate::spin::note_site(std::panic::Location::caller());
         let Some(_compositor) = self.compositor.as_mut() else {
             return;
         };
@@ -1216,6 +1238,7 @@ impl SurfaceThreadState {
             self.state = QueueState::WaitingForVBlank {
                 redraw_needed: true,
             };
+            crate::spin::bump(crate::spin::QUEUE_SKIP_WAITING_VBLANK);
             return;
         }
 
@@ -1225,6 +1248,7 @@ impl SurfaceThreadState {
 
                 // A redraw is already queued.
                 QueueState::Queued(_) | QueueState::WaitingForEstimatedVBlankAndQueued { .. } => {
+                    crate::spin::bump(crate::spin::QUEUE_SKIP_ALREADY_QUEUED);
                     return;
                 }
                 _ => unreachable!(),
@@ -1236,16 +1260,20 @@ impl SurfaceThreadState {
 
         let timer = if render_start.is_zero() {
             trace!("Running late for frame.");
+            crate::spin::bump(crate::spin::RENDER_LATE_IMMEDIATE);
             // TODO triple buffering
             Timer::immediate()
         } else {
             Timer::from_duration(render_start)
         };
+        crate::spin::bump(crate::spin::QUEUE_INSERTED);
 
         let token = self
             .loop_handle
             .insert_source(timer, move |_time, _, state| {
+                crate::spin::bump(crate::spin::RENDER_TIMER_FIRED);
                 if let Err(err) = state.redraw(estimated_presentation) {
+                    crate::spin::bump(crate::spin::REDRAW_ERR);
                     // Recognize a GPU context reset anywhere in the error's source chain —
                     // render_frame and the offscreen/postprocess passes both preserve the
                     // typed chain down to GlesError::ContextReset — and ask the main thread
@@ -1287,6 +1315,7 @@ impl SurfaceThreadState {
                         }
                     }
                 } else {
+                    crate::spin::bump(crate::spin::REDRAW_OK);
                     // Reset failure count on success
                     state.render_failure_count = 0;
                 }
@@ -1305,6 +1334,7 @@ impl SurfaceThreadState {
                 };
             }
             QueueState::Queued(old_token) if force => {
+                crate::spin::bump(crate::spin::QUEUE_REMOVED_OLD);
                 self.loop_handle.remove(*old_token);
                 self.state = QueueState::Queued(token);
             }
@@ -1312,6 +1342,7 @@ impl SurfaceThreadState {
                 estimated_vblank,
                 queued_render,
             } if force => {
+                crate::spin::bump(crate::spin::QUEUE_REMOVED_OLD);
                 self.loop_handle.remove(*queued_render);
                 self.state = QueueState::WaitingForEstimatedVBlankAndQueued {
                     estimated_vblank: *estimated_vblank,
@@ -2407,6 +2438,7 @@ impl SurfaceThreadState {
 
         trace!("queueing estimated vblank timer to fire in {duration:?}");
 
+        crate::spin::bump(crate::spin::EST_VBLANK_QUEUED);
         let timer = Timer::from_duration(duration);
         let token = self
             .loop_handle
@@ -2435,6 +2467,7 @@ impl SurfaceThreadState {
     }
 
     fn send_frame_callbacks(&mut self) {
+        crate::spin::bump(crate::spin::SEND_FRAMES_SURFACE);
         if self.mirroring.is_none() {
             let _ = self
                 .thread_sender
