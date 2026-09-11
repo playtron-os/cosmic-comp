@@ -3236,6 +3236,10 @@ impl FloatingLayout {
             &mut |elem| below.push(elem),
         );
         elements.extend(below);
+        // Blur backdrops draw only through a damage tracker (they need
+        // `capture_framebuffer` first), and the scratch texture has nothing
+        // behind it to blur anyway.
+        elements.retain(|elem| !elem.is_framebuffer_effect());
         if elements.is_empty() {
             return None;
         }

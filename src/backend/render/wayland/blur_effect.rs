@@ -1119,6 +1119,11 @@ where
         opaque_regions: &[Rectangle<i32, Physical>],
         cache: Option<&UserDataMap>,
     ) -> Result<(), R::Error> {
+        // No cache means no damage tracker ran `capture_framebuffer` first: an
+        // offscreen draw with nothing behind it to blur. Draw no backdrop.
+        let Some(cache) = cache else {
+            return Ok(());
+        };
         let src_to_geo = self.geometry.size / self.src;
         let src_log = src
             .upscale(src_to_geo)
@@ -1135,7 +1140,6 @@ where
             })
             .flat_map(|rect| damage.iter().flat_map(move |r| r.intersection(rect)))
             .collect::<Vec<_>>();
-        let cache = cache.expect("Framebuffer element without cache?");
         let Some(texture) = cache.get::<BlurTexture<R::TextureId>>() else {
             return Err(R::from_gles_error(GlesError::BlitError));
         };
