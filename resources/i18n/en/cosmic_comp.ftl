@@ -38,7 +38,7 @@ window-menu-record = Record window
 window-menu-stop-recording = Stop recording
 recording-app-name = Recording
 recording-started = Recording this window
-recording-saved-to = Recording saved to:
+recording-stopped = Recording stopped
 recording-failed = Recording failed
 recording-window-not-capturable = This window cannot be captured
 

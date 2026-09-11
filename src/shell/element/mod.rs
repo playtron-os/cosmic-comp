@@ -1067,6 +1067,16 @@ impl CosmicMapped {
         }
     }
 
+    /// Rebuild the decoration's view, for state it reads that changed
+    /// outside its own messages. A redraw alone would paint the old view.
+    pub(crate) fn force_update(&self) {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => w.0.force_update(),
+            CosmicMappedInternal::Stack(s) => s.0.force_update(),
+            CosmicMappedInternal::_GenericCatcher(_) => {}
+        }
+    }
+
     pub fn key(&self) -> CosmicMappedKey {
         CosmicMappedKey(match &self.element {
             CosmicMappedInternal::Stack(stack) => {

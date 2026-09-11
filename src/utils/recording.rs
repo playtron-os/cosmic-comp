@@ -28,16 +28,24 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
         Recording::Idle => start(state, surface),
         Recording::Active { id, .. } => {
             let surface = surface.clone();
+            let stopping = id.clone();
             state
                 .common
                 .dbus_state
-                .stop_recording(id, move |state, reply| match reply {
-                    Ok(path) => finished(state, &surface, &path),
-                    Err(error) => {
-                        warn!(%error, "Failed to stop the recording");
-                        surface.set_recording(Recording::Idle);
-                        refresh_halo(state, &surface);
-                        notify(state, fl!("recording-failed"), error);
+                .stop_recording(id, move |state, reply| {
+                    // The recorder's RecordingStopped may have landed first
+                    // and already cleared and announced it; one toast, not two.
+                    if !carries(&surface, &stopping) {
+                        return;
+                    }
+                    match reply {
+                        Ok(path) => finished(state, &surface, &path),
+                        Err(error) => {
+                            warn!(%error, "Failed to stop the recording");
+                            surface.set_recording(Recording::Idle);
+                            refresh_halo(state, &surface);
+                            notify(state, fl!("recording-failed"), error);
+                        }
                     }
                 });
         }
@@ -115,24 +123,28 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
 fn finished(state: &mut State, surface: &CosmicSurface, path: &str) {
     surface.set_recording(Recording::Idle);
     refresh_halo(state, surface);
-    notify(state, fl!("recording-saved-to"), path.to_owned());
+    notify(state, fl!("recording-stopped"), path.to_owned());
+}
+
+/// Whether `surface` is recording as `id` right now.
+fn carries(surface: &CosmicSurface, id: &str) -> bool {
+    matches!(surface.recording(), Recording::Active { id: ref active, .. } if active == id)
 }
 
 /// The window whose recording carries `id`, mapped or fullscreen.
 fn surface_recording(state: &State, id: &str) -> Option<CosmicSurface> {
     let shell = state.common.shell.read();
-    let carries = |surface: &CosmicSurface| matches!(surface.recording(), Recording::Active { id: ref active, .. } if active == id);
     shell
         .mapped()
         .flat_map(|mapped| mapped.windows().map(|(window, _)| window))
-        .find(carries)
+        .find(|surface| carries(surface, id))
         .or_else(|| {
             shell
                 .workspaces()
                 .spaces()
                 .flat_map(|workspace| workspace.get_fullscreen_surfaces())
                 .map(|fullscreen| fullscreen.surface.clone())
-                .find(carries)
+                .find(|surface| carries(surface, id))
         })
 }
 

@@ -671,14 +671,12 @@ fn halo_button<'a, Message: Clone + 'static>(
         .center_y(Length::Fill);
     let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if on {
         let dot = theme.spacing_1();
-        let mark = container(iced_widget::Space::new())
-            .width(dot)
-            .height(dot)
-            .style(move |_| container::Style {
-                background: Some(iced_core::Background::Color(theme.feedback_error_primary())),
-                border: iced_core::Border::default().rounded(theme.radii_max()),
-                ..Default::default()
-            });
+        let mark = crate::utils::iced::pulse::PulsingDot::new(
+            dot,
+            theme.feedback_error_primary(),
+            dot,
+            theme.motion.ease_standard_cp,
+        );
         iced_widget::stack![
             glyph,
             container(mark)

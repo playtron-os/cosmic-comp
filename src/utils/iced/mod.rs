@@ -21,6 +21,7 @@ use std::{
 use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
 mod focus;
+pub mod pulse;
 mod tooltip;
 mod visibility;
 use focus::FocusAnimation;

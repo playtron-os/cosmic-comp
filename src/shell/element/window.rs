@@ -1114,11 +1114,12 @@ impl CosmicWindow {
         self.0.with_program(|p| &p.window == window)
     }
 
-    /// Redraw whichever halo shows `surface`, mapped or fullscreen, so a
-    /// state its glyphs reflect (a recording) is drawn.
+    /// Rebuild whichever halo shows `surface`, mapped or fullscreen, so a
+    /// state its glyphs reflect (a recording) is drawn without waiting for
+    /// the pointer to bring the next update.
     pub(crate) fn refresh_halo(shell: &crate::shell::Shell, surface: &CosmicSurface) {
         if let Some(mapped) = shell.element_for_surface(surface) {
-            mapped.force_redraw();
+            mapped.force_update();
         }
         if let Some(fullscreen) = shell
             .workspaces()
