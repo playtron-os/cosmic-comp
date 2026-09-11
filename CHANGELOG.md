@@ -1,3 +1,56 @@
+# [1.46.0](https://github.com/playtron-os/cosmic-comp/compare/v1.45.0...v1.46.0) (2026-09-11)
+
+
+### Bug Fixes
+
+* a window maps into its process's workspace, on screen or not ([cd45c3e](https://github.com/playtron-os/cosmic-comp/commit/cd45c3e01f9cb5b2c038c532adeb877162bb12af))
+* allow resize from handle while maximized ([1f93146](https://github.com/playtron-os/cosmic-comp/commit/1f93146796be9cbf81541d575759d58544af55ce))
+* animate Halo dropdown dismissal ([a408f84](https://github.com/playtron-os/cosmic-comp/commit/a408f84c8cbaddc143f2ff23cc8ba1152a23b5de))
+* antialias window outlines at fractional scales ([1c58eef](https://github.com/playtron-os/cosmic-comp/commit/1c58eef467f6bc3ad5f61d73c728ea88a59582d1))
+* cosmic-comp dev package must list the dlopen'd GL stack ([fab169b](https://github.com/playtron-os/cosmic-comp/commit/fab169b41a2cbf3092d035c911c504a559550800))
+* keep a blur-backed window's slide snapshot from aborting the compositor ([1f57b05](https://github.com/playtron-os/cosmic-comp/commit/1f57b053643af6ec1dd2bbf843a2104a6d2b1ee1))
+* keep a wide side panel from being arranged over the bar ([d92cff2](https://github.com/playtron-os/cosmic-comp/commit/d92cff27348e199aa782d7576083e6b0df847992))
+* keep another workspace's windows out of the toplevel listing ([c3ae5f2](https://github.com/playtron-os/cosmic-comp/commit/c3ae5f2b6b4d1314d94640c31314023d7d4b7a5e))
+* let workspace shards clear the screen ([4936d7e](https://github.com/playtron-os/cosmic-comp/commit/4936d7e2d3899028c35770d1baabe3229a0c7135))
+* match the profile element by regex when replacing a deploy ([8a8fc70](https://github.com/playtron-os/cosmic-comp/commit/8a8fc70b6eafce7be0e9f5c25d7718c928409906))
+* point nix:run at the shell that can resolve the toolchain ([983500d](https://github.com/playtron-os/cosmic-comp/commit/983500daf5edc21ba6b3af46a4e44ccc704d497b)), closes [.#deploy](https://github.com/./issues/deploy)
+* read a client's workspace from the deepest slice ([b8fb5db](https://github.com/playtron-os/cosmic-comp/commit/b8fb5dbaed6a4679e1af9b3430121486989b999b))
+* round a maximized window's bottom corners too ([5356b6c](https://github.com/playtron-os/cosmic-comp/commit/5356b6c6251cae9641be0a10459f35d2216da4f3))
+* shatter the rendered workspace image ([42506e0](https://github.com/playtron-os/cosmic-comp/commit/42506e0528bbb67be8459d041aa32c4945c8f061))
+* skip workspace transition at login ([6147fc2](https://github.com/playtron-os/cosmic-comp/commit/6147fc22fa8f330a5931e53853704c154f1f901f))
+* stop rescaling the bar while a side panel slides ([577bc9d](https://github.com/playtron-os/cosmic-comp/commit/577bc9df736880413906760e8eb1a81c694ee5a6))
+* support local Nix debug deployment builds ([0901f1c](https://github.com/playtron-os/cosmic-comp/commit/0901f1c886159e7de52813bbf2837013a3ac3efc))
+* synchronize halo header compositing and interactions ([64443cb](https://github.com/playtron-os/cosmic-comp/commit/64443cbf56703314f536b9b6247418028ea874db))
+* update deps ([0ac9f6f](https://github.com/playtron-os/cosmic-comp/commit/0ac9f6fbb4a6bb53628b744f1b8c9df6f4d1a5fb))
+
+
+### Features
+
+* add configurable workspace transitions ([ca06485](https://github.com/playtron-os/cosmic-comp/commit/ca06485606f8588716c4576545001e289f79f52e))
+* add deploy:nix for remote Kora hosts ([72d7eef](https://github.com/playtron-os/cosmic-comp/commit/72d7eef80290128807240dac26e7fd8ad0382d67))
+* add fade animation to halo header tooltips ([e0e915c](https://github.com/playtron-os/cosmic-comp/commit/e0e915c95dfacbf85877304aa20a172d69d63c0e))
+* add focused window accents and complete Halo window actions ([dc031f5](https://github.com/playtron-os/cosmic-comp/commit/dc031f570e9cac7586af1989debd7f3bbb8c3708))
+* add halo ssd window header support ([731c417](https://github.com/playtron-os/cosmic-comp/commit/731c4170da3477f1c8ec6ecd21592b03d8da626a))
+* animate Halo focus outlines and dropdowns ([e03dd74](https://github.com/playtron-os/cosmic-comp/commit/e03dd7433710a422b47c4ad5f04b1e0f400063d8))
+* capture any realm's desktop, and say which realm a group is ([74903c9](https://github.com/playtron-os/cosmic-comp/commit/74903c9e8de7cd650f549cd8efe4e87e912f5837))
+* complete Halo tooltips, menus and fullscreen edge reveal ([627128b](https://github.com/playtron-os/cosmic-comp/commit/627128b478843b3ac5a8b683e8a45ccaf88d0646))
+* complete Halo window controls and app identity ([0da2192](https://github.com/playtron-os/cosmic-comp/commit/0da219221000a59b14d88140c3e15e4da2b77d0b))
+* deploy:nix builds on the device instead of in a container ([8c5fc7b](https://github.com/playtron-os/cosmic-comp/commit/8c5fc7b8ea336fda48e33d5d1d0d21eb3c8d55e3)), closes [.#deploy](https://github.com/./issues/deploy)
+* gate workspaces on COSMIC_WORKSPACES, and stop losing the registry to a startup race ([933d8e5](https://github.com/playtron-os/cosmic-comp/commit/933d8e59f99b45759c8fd0e0a6e3590f79983890))
+* give the airlock its own weight ([54107ab](https://github.com/playtron-os/cosmic-comp/commit/54107aba013aec2810188cd1d449e7b2d2d15730))
+* let a client add a desktop or remove an empty one ([95fd74d](https://github.com/playtron-os/cosmic-comp/commit/95fd74df989695e7b3d85bb9cf20d9111422c238))
+* match Halo reveal motion to the design prototype ([482e96c](https://github.com/playtron-os/cosmic-comp/commit/482e96cb154d874d8d977aa753062a112a136523))
+* NextRealm/PreviousRealm are real shortcuts, not a hardcoded intercept ([5aca0b2](https://github.com/playtron-os/cosmic-comp/commit/5aca0b23ccf02fc8affc6cf63f56d59cd9200303))
+* one Workspaces per realm — the vertical axis ([549be36](https://github.com/playtron-os/cosmic-comp/commit/549be3661f2586a428d52096433b88676329fa8d))
+* round the corners a maximized window does not press against ([b853262](https://github.com/playtron-os/cosmic-comp/commit/b85326209dbb5fcdf5fc3f681d53cd695dcf4f6e))
+* slide the screen when you cross a workspace boundary ([54d181b](https://github.com/playtron-os/cosmic-comp/commit/54d181b3b7298dc5b744edd7be151a800e2f9867))
+* Super+Ctrl+Up/Down switch workspaces — the vertical axis ([dca61af](https://github.com/playtron-os/cosmic-comp/commit/dca61af0f213cded67d4de68d617e251cc04353a))
+* Super+Tab switches workspaces ([6576012](https://github.com/playtron-os/cosmic-comp/commit/6576012d263f531adb40669ee143043fb434ffe3))
+* tag clients with their workspace and refuse cross-workspace capture ([26ead2e](https://github.com/playtron-os/cosmic-comp/commit/26ead2ec5ae6219592b38b999095b214caed0c3c))
+* tell a bar once where a side panel's slide takes its width ([cbd131e](https://github.com/playtron-os/cosmic-comp/commit/cbd131ec7d5cf770881be254bd6b06d27270da8a))
+* tell shell components when a workspace switch is animating ([1c68d10](https://github.com/playtron-os/cosmic-comp/commit/1c68d10351742e990a8b89b40484147adc83473c))
+* the airlock wash — the workspace announces itself in its own colour ([a00d07b](https://github.com/playtron-os/cosmic-comp/commit/a00d07bed04a85e7c2b1b33b8a977e81849092aa))
+
 # [1.45.0](https://github.com/playtron-os/cosmic-comp/compare/v1.44.0...v1.45.0) (2026-09-06)
 
 
