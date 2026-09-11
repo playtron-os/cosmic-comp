@@ -39,11 +39,13 @@ fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
     let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
     tokens.duration_fast = 0.0;
     let theme = CompTheme::new(Arc::new(tokens), true);
+    let maximize = crate::fl!("window-menu-maximize");
+    let restore = crate::fl!("window-menu-restore");
     for (maximized, fullscreen, expected) in [
-        (false, false, "Maximize"),
-        (true, false, "Restore"),
-        (false, true, "Restore"),
-        (true, true, "Restore"),
+        (false, false, maximize.as_str()),
+        (true, false, restore.as_str()),
+        (false, true, restore.as_str()),
+        (true, true, restore.as_str()),
     ] {
         let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
         let header = header_bar()
@@ -150,6 +152,17 @@ fn layout(
     title: &str,
     scale: f32,
 ) -> (Renderer, Viewport, user_interface::Cache) {
+    layout_with(theme, width, title, scale, |header| header)
+}
+
+/// [`layout`] with the header adjusted before it is built.
+fn layout_with(
+    theme: &CompTheme,
+    width: f32,
+    title: &str,
+    scale: f32,
+    configure: impl for<'a> FnOnce(HeaderBar<'a, ()>) -> HeaderBar<'a, ()>,
+) -> (Renderer, Viewport, user_interface::Cache) {
     static FONTS: std::sync::Once = std::sync::Once::new();
     FONTS.call_once(|| {
         let mut fonts = iced_graphics::text::font_system().write().unwrap();
@@ -169,8 +182,8 @@ fn layout(
         .on_right_click(())
         .on_screenshot(())
         .on_fullscreen((), false)
-        .on_new_window(())
-        .into_element();
+        .on_new_window(());
+    let element = configure(element).into_element();
     let size = Size::new(width, ssd_header_render_height(theme) as f32);
     let mut ui = UserInterface::build(
         element,
@@ -307,6 +320,36 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
         pixels
             .save_png(std::path::PathBuf::from(dir).join("halo-controls.png"))
             .unwrap();
+    }
+}
+
+#[test]
+fn halo_record_glyph_turns_destructive_while_recording() {
+    let theme = theme();
+    let (mut renderer, _viewport, _cache) =
+        layout_with(&theme, 1024.0, "Explorer", 1.0, |header| {
+            header.on_record(()).recording(true)
+        });
+    let glyphs: Vec<_> = renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.images)
+        .filter_map(|image| match image {
+            iced_graphics::Image::Vector { svg, .. } => svg.color,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(glyphs.len(), 8, "the dot is a quad, not a ninth glyph");
+    for (index, color) in glyphs.into_iter().enumerate() {
+        assert_eq!(
+            color,
+            if index == 1 {
+                theme.feedback_error_primary()
+            } else {
+                theme.text_tertiary()
+            },
+            "only the active Record glyph wears the destructive colour"
+        );
     }
 }
 

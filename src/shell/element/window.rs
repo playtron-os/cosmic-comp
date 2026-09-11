@@ -1114,6 +1114,22 @@ impl CosmicWindow {
         self.0.with_program(|p| &p.window == window)
     }
 
+    /// Redraw whichever halo shows `surface`, mapped or fullscreen, so a
+    /// state its glyphs reflect (a recording) is drawn.
+    pub(crate) fn refresh_halo(shell: &crate::shell::Shell, surface: &CosmicSurface) {
+        if let Some(mapped) = shell.element_for_surface(surface) {
+            mapped.force_redraw();
+        }
+        if let Some(fullscreen) = shell
+            .workspaces()
+            .spaces()
+            .flat_map(|workspace| &workspace.fullscreen_surfaces)
+            .find(|fullscreen| &fullscreen.surface == surface)
+        {
+            fullscreen.halo.0.force_update();
+        }
+    }
+
     pub(crate) fn key(&self) -> CosmicMappedKey {
         CosmicMappedKey(CosmicMappedKeyInner::Window(Arc::downgrade(&self.0.0)))
     }
@@ -1612,6 +1628,7 @@ pub enum Message {
     Close,
     Menu,
     Screenshot,
+    Record,
     Fullscreen,
     NewWindow,
 }
@@ -1663,7 +1680,11 @@ impl Program for CosmicWindowInternal {
         last_seat: Option<&(Seat<State>, Serial)>,
     ) -> Task<Self::Message> {
         match message {
-            Message::Screenshot | Message::Fullscreen | Message::NewWindow | Message::Maximize => {
+            Message::Screenshot
+            | Message::Record
+            | Message::Fullscreen
+            | Message::NewWindow
+            | Message::Maximize => {
                 let surface = self.window.clone();
                 let action = self.new_window_action();
                 let seat = last_seat.map(|(seat, _)| seat.clone());
@@ -1890,6 +1911,8 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
             .on_screenshot(Message::Screenshot)
+            .on_record(Message::Record)
+            .recording(win.window.is_recording())
             .on_fullscreen(
                 Message::Fullscreen,
                 win.fullscreen_output.is_some() || win.window.is_fullscreen(false),

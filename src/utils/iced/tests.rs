@@ -793,7 +793,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
         "widget supplies the request, not a second fade"
     );
     let first = internal.tooltip.snapshots()[0].clone();
-    assert_eq!(first.label, "Close");
+    assert_eq!(first.label, crate::fl!("window-menu-close"));
     assert_eq!(first.opacity, 0.0);
     assert!(
         first.bounds.y > pill.y,

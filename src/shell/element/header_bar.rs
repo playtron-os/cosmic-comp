@@ -16,6 +16,7 @@ use icetron_themes::WindowHeaderStyle;
 use icetron_themes::icons;
 
 use crate::comp_theme::CompTheme;
+use crate::fl;
 
 /// Fullscreen Halo sits 10 px inside the output in the prototype, excluding both
 /// the raster's shadow padding and the widget's own top inset.
@@ -155,6 +156,8 @@ pub struct HeaderBar<'a, Message> {
     on_maximize: Option<Message>,
     on_right_click: Option<Message>,
     on_screenshot: Option<Message>,
+    on_record: Option<Message>,
+    recording: bool,
     on_new_window: Option<Message>,
     on_fullscreen: Option<Message>,
     fullscreen: bool,
@@ -189,6 +192,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             on_maximize: None,
             on_right_click: None,
             on_screenshot: None,
+            on_record: None,
+            recording: false,
             on_new_window: None,
             on_fullscreen: None,
             fullscreen: false,
@@ -240,6 +245,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn on_screenshot(mut self, msg: Message) -> Self {
         self.on_screenshot = Some(msg);
+        self
+    }
+
+    pub fn on_record(mut self, msg: Message) -> Self {
+        self.on_record = Some(msg);
+        self
+    }
+
+    /// Whether the window is being recorded: the Record glyph turns
+    /// destructive and carries a dot, and its tooltip offers to stop.
+    pub fn recording(mut self, recording: bool) -> Self {
+        self.recording = recording;
         self
     }
 
@@ -444,16 +461,20 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 halo_button(
                     icons::CAMERA,
                     self.on_screenshot.clone(),
-                    "Screenshot window",
-                    HaloButtonRole::Tray,
+                    fl!("halo-screenshot-window"),
+                    HaloButtonRole::Tray { on: false },
                     self.menu_open,
                     theme
                 ),
                 halo_button(
                     icons::CIRCLE,
-                    None,
-                    "Recording — coming soon",
-                    HaloButtonRole::Tray,
+                    self.on_record.clone(),
+                    if self.recording {
+                        fl!("window-menu-stop-recording")
+                    } else {
+                        fl!("window-menu-record")
+                    },
+                    HaloButtonRole::Tray { on: self.recording },
                     self.menu_open,
                     theme
                 ),
@@ -473,7 +494,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 tray = tray.push(halo_button(
                     icons::CHEVRON_DOWN,
                     Some(message),
-                    "Window menu",
+                    fl!("halo-window-menu"),
                     HaloButtonRole::Menu,
                     self.menu_open,
                     theme,
@@ -483,7 +504,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 tray = tray.push(halo_button(
                     icons::PLUS,
                     Some(message),
-                    "New Window",
+                    fl!("window-menu-new-window"),
                     HaloButtonRole::Window,
                     self.menu_open,
                     theme,
@@ -492,7 +513,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             let mut actions = row![].spacing(metrics.gap);
             let restore = self.maximized || self.fullscreen;
             for (icon, message, label, destructive) in [
-                (icons::MINUS, self.on_minimize.clone(), "Minimize", false),
+                (
+                    icons::MINUS,
+                    self.on_minimize.clone(),
+                    fl!("window-menu-minimize"),
+                    false,
+                ),
                 (
                     if restore {
                         icons::MINIMIZE_2
@@ -500,7 +526,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         icons::MAXIMIZE_2
                     },
                     self.on_maximize.clone(),
-                    if restore { "Restore" } else { "Maximize" },
+                    if restore {
+                        fl!("window-menu-restore")
+                    } else {
+                        fl!("window-menu-maximize")
+                    },
                     false,
                 ),
                 (
@@ -511,13 +541,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     },
                     self.on_fullscreen.clone(),
                     if self.fullscreen {
-                        "Leave fullscreen"
+                        fl!("window-menu-leave-fullscreen")
                     } else {
-                        "Fullscreen"
+                        fl!("window-menu-fullscreen")
                     },
                     false,
                 ),
-                (icons::X, self.on_close.clone(), "Close", true),
+                (
+                    icons::X,
+                    self.on_close.clone(),
+                    fl!("window-menu-close"),
+                    true,
+                ),
             ] {
                 if let Some(message) = message {
                     actions = actions.push(halo_button(
@@ -600,7 +635,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 }
 
 enum HaloButtonRole {
-    Tray,
+    /// A pinned command; `on` is a stateful one currently active.
+    Tray {
+        on: bool,
+    },
     Menu,
     Window,
     Close,
@@ -609,7 +647,7 @@ enum HaloButtonRole {
 fn halo_button<'a, Message: Clone + 'static>(
     icon: icetron_themes::Icon,
     message: Option<Message>,
-    label: &'a str,
+    label: impl ToString,
     role: HaloButtonRole,
     menu_open: bool,
     theme: &'a CompTheme,
@@ -617,45 +655,72 @@ fn halo_button<'a, Message: Clone + 'static>(
     let metrics = theme.halo_style();
     let active = menu_open && matches!(role, HaloButtonRole::Menu);
     let icon_size = match role {
-        HaloButtonRole::Tray => metrics.glyph_icon_size,
+        HaloButtonRole::Tray { .. } => metrics.glyph_icon_size,
         HaloButtonRole::Menu => metrics.menu_icon_size,
         HaloButtonRole::Window | HaloButtonRole::Close => metrics.control_icon_size,
     };
     let destructive = matches!(role, HaloButtonRole::Close);
+    // A stateful command that is on wears the destructive colour, hovered
+    // or not: the tint says "capturing", and hovering is how it is stopped.
+    let on = matches!(role, HaloButtonRole::Tray { on: true });
     let text_color = theme.text_tertiary();
     let background = theme.overlay_5();
     let disabled = theme.text_quaternary();
-    let button = button(
-        container(icon_svg_inherit(icon, icon_size))
-            .center_x(Length::Fill)
-            .center_y(Length::Fill),
-    )
-    .width(metrics.control_size)
-    .height(metrics.control_size)
-    .padding(0)
-    .on_press_maybe(message)
-    .standard_transition(&**theme)
-    .style(move |_, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        button::Style {
-            text_color: if matches!(status, button::Status::Disabled) {
-                disabled
-            } else if hovered || active {
-                theme.text_primary()
-            } else {
-                text_color
-            },
-            background: (hovered || active).then_some(iced_core::Background::Color(
-                if destructive && hovered {
+    let glyph = container(icon_svg_inherit(icon, icon_size))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill);
+    let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if on {
+        let dot = theme.spacing_1();
+        let mark = container(iced_widget::Space::new())
+            .width(dot)
+            .height(dot)
+            .style(move |_| container::Style {
+                background: Some(iced_core::Background::Color(theme.feedback_error_primary())),
+                border: iced_core::Border::default().rounded(theme.radii_max()),
+                ..Default::default()
+            });
+        iced_widget::stack![
+            glyph,
+            container(mark)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(iced_core::alignment::Horizontal::Right)
+                .align_y(iced_core::alignment::Vertical::Top)
+                .padding(theme.spacing_0_5()),
+        ]
+        .into()
+    } else {
+        glyph.into()
+    };
+    let button = button(content)
+        .width(metrics.control_size)
+        .height(metrics.control_size)
+        .padding(0)
+        .on_press_maybe(message)
+        .standard_transition(&**theme)
+        .style(move |_, status| {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                text_color: if matches!(status, button::Status::Disabled) {
+                    disabled
+                } else if on {
                     theme.feedback_error_primary()
+                } else if hovered || active {
+                    theme.text_primary()
                 } else {
-                    background
+                    text_color
                 },
-            )),
-            border: iced_core::Border::default().rounded(theme.radii_max()),
-            ..Default::default()
-        }
-    });
+                background: (hovered || active).then_some(iced_core::Background::Color(
+                    if destructive && hovered {
+                        theme.feedback_error_primary()
+                    } else {
+                        background
+                    },
+                )),
+                border: iced_core::Border::default().rounded(theme.radii_max()),
+                ..Default::default()
+            }
+        });
     animated_tooltip(button, label, &**theme)
         .position(tooltip::Position::Bottom)
         .enabled(!menu_open)

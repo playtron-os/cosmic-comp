@@ -23,6 +23,7 @@ use crate::{
 };
 use std::{
     borrow::Cow,
+    path::PathBuf,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -223,6 +224,22 @@ struct Sticky(AtomicBool);
 
 #[derive(Default)]
 struct GlobalGeometry(Mutex<Option<Rectangle<i32, Global>>>);
+
+/// A window's recording through `one.playtron.Capture1`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Recording {
+    #[default]
+    Idle,
+    /// Asked the recorder; no id yet.
+    Starting,
+    Active {
+        id: String,
+        path: PathBuf,
+    },
+}
+
+#[derive(Default)]
+struct RecordingState(Mutex<Recording>);
 
 /// Screenshot feedback: a flash over the window body that fades out, started
 /// when the window was captured. It lives on the surface so every path that
@@ -495,6 +512,25 @@ impl CosmicSurface {
             }),
             WindowSurface::X11(_) => None,
         }
+    }
+
+    fn recording_state(&self) -> &RecordingState {
+        self.0
+            .user_data()
+            .get_or_insert_threadsafe(RecordingState::default)
+    }
+
+    pub fn recording(&self) -> Recording {
+        self.recording_state().0.lock().unwrap().clone()
+    }
+
+    pub fn set_recording(&self, recording: Recording) {
+        *self.recording_state().0.lock().unwrap() = recording;
+    }
+
+    /// Whether the halo shows this window as recording: started or starting.
+    pub fn is_recording(&self) -> bool {
+        !matches!(self.recording(), Recording::Idle)
     }
 
     fn screenshot_flash(&self) -> &ScreenshotFlash {

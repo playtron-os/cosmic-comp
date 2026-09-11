@@ -11,7 +11,6 @@
 
 use std::{
     cell::Cell,
-    ffi::OsStr,
     io::Write,
     path::{Path, PathBuf},
     rc::Rc,
@@ -40,26 +39,14 @@ use crate::{
     fl,
     shell::element::CosmicSurface,
     state::{State, advertised_node_for_surface},
+    utils::captures::{self, CaptureKind},
 };
 
-/// Where captures go. Relative, it is taken under the window's home (its
-/// workspace's root, or `$HOME` outside one); absolute, every capture lands
-/// in that one place.
-pub const DIR_ENV: &str = "COSMIC_SCREENSHOT_DIR";
-const DEFAULT_DIR: &str = "Captures/Screenshots";
-/// Same variable and values as kora-workspaces' `DefaultRoot`: `home`/`HOME`
-/// roots the default workspace at `$HOME` itself; anything else, unset
-/// included, at `~/Workspaces/default`.
-const DEFAULT_ROOT_ENV: &str = "KORA_DEFAULT_WORKSPACE_ROOT";
-const WORKSPACES_DIR: &str = "Workspaces";
-const DEFAULT_WORKSPACE: &str = "default";
 /// Icon name shared with `cosmic-screenshot`, so both toasts look the same.
 const NOTIFICATION_ICON: &str = "com.system76.CosmicScreenshot";
 /// Toast lifetime in milliseconds, as `cosmic-screenshot` sends it.
 const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 const PNG_MIME: &str = "image/png";
-/// Longest file stem: the 255-byte name limit less `_NN.png`.
-const MAX_STEM_BYTES: usize = 247;
 /// Captures of one window within the same second before giving up on a name.
 const NAME_ATTEMPTS: u32 = 100;
 
@@ -130,22 +117,7 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
         }
     }
 
-    // A machine-plane window has no workspace of its own; its capture goes
-    // where the user is standing, so it is reachable from there.
-    let workspace = {
-        let shell = state.common.shell.read();
-        shell
-            .client_workspace(surface)
-            .or_else(|| shell.active_workspace().map(ToString::to_string))
-    };
-    let directory = std::env::var_os("HOME").map(|home| {
-        capture_directory(
-            Path::new(&home),
-            workspace.as_deref(),
-            default_root_is_home(std::env::var(DEFAULT_ROOT_ENV).ok().as_deref()),
-            std::env::var_os(DIR_ENV).as_deref(),
-        )
-    });
+    let directory = captures::directory_for(state, surface, CaptureKind::Screenshot);
     if directory.is_none() {
         warn!("HOME is not set; the screenshot is only copied");
     }
@@ -248,38 +220,6 @@ fn encode(capture: &Capture) -> anyhow::Result<Vec<u8>> {
     Ok(png)
 }
 
-fn default_root_is_home(value: Option<&str>) -> bool {
-    matches!(value, Some("home" | "HOME"))
-}
-
-/// The home a window's files live in, seen from the machine plane: its
-/// workspace's root, or the user's home outside a workspace.
-fn workspace_home(home: &Path, workspace: Option<&str>, default_root_is_home: bool) -> PathBuf {
-    match workspace {
-        None => home.to_path_buf(),
-        Some(DEFAULT_WORKSPACE) if default_root_is_home => home.to_path_buf(),
-        Some(id) => home.join(WORKSPACES_DIR).join(id),
-    }
-}
-
-/// Where a capture of a window in `workspace` is saved, with `configured`
-/// being [`DIR_ENV`].
-fn capture_directory(
-    home: &Path,
-    workspace: Option<&str>,
-    default_root_is_home: bool,
-    configured: Option<&OsStr>,
-) -> PathBuf {
-    let dir = configured
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| PathBuf::from(DEFAULT_DIR), PathBuf::from);
-    if dir.is_absolute() {
-        dir
-    } else {
-        workspace_home(home, workspace, default_root_is_home).join(dir)
-    }
-}
-
 /// Write `png` into `directory`, named from the window title and the time. A
 /// name that is taken gets a counter rather than replacing the earlier capture.
 fn save(directory: &Path, title: &str, png: &[u8]) -> Option<PathBuf> {
@@ -291,7 +231,7 @@ fn save(directory: &Path, title: &str, png: &[u8]) -> Option<PathBuf> {
         );
         return None;
     }
-    let stem = file_stem(title, &jiff::Zoned::now());
+    let stem = captures::file_stem(title, &jiff::Zoned::now());
     let created = (0..NAME_ATTEMPTS).find_map(|attempt| {
         let path = directory.join(file_name(&stem, attempt));
         match std::fs::File::create_new(&path) {
@@ -319,19 +259,6 @@ fn save(directory: &Path, title: &str, png: &[u8]) -> Option<PathBuf> {
     }
 }
 
-/// `<title>_<date>_<time>`, made safe for the filesystem and short enough to
-/// leave room for a counter and the extension.
-fn file_stem(title: &str, time: &jiff::Zoned) -> String {
-    let mut stem =
-        sanitize_filename::sanitize(format!("{}_{}", title, time.strftime("%Y-%m-%d_%H-%M-%S")));
-    let mut end = MAX_STEM_BYTES.min(stem.len());
-    while !stem.is_char_boundary(end) {
-        end -= 1;
-    }
-    stem.truncate(end);
-    stem
-}
-
 fn file_name(stem: &str, attempt: u32) -> String {
     if attempt == 0 {
         format!("{stem}.png")
@@ -344,29 +271,10 @@ fn file_name(stem: &str, attempt: u32) -> String {
 mod tests {
     use super::*;
 
-    fn at(hour: i8, minute: i8, second: i8) -> jiff::Zoned {
-        jiff::civil::date(2026, 9, 10)
-            .at(hour, minute, second, 0)
-            .in_tz("UTC")
-            .unwrap()
-    }
-
     #[test]
-    fn file_stem_is_title_and_time_without_path_hostile_characters() {
-        assert_eq!(
-            file_stem("Notes: draft/final", &at(14, 25, 30)),
-            "Notes draftfinal_2026-09-10_14-25-30"
-        );
+    fn file_names_count_up_after_the_first() {
         assert_eq!(file_name("a", 0), "a.png");
         assert_eq!(file_name("a", 3), "a_3.png");
-    }
-
-    #[test]
-    fn file_stem_is_cut_on_a_character_boundary() {
-        let stem = file_stem(&"é".repeat(300), &at(0, 0, 0));
-        assert!(stem.len() <= MAX_STEM_BYTES);
-        assert!(stem.len() > MAX_STEM_BYTES - 2);
-        assert!(stem.chars().all(|c| c == 'é'));
     }
 
     #[test]
@@ -385,47 +293,6 @@ mod tests {
         assert_eq!((info.width, info.height), (2, 1));
         assert_eq!(info.color_type, png::ColorType::Rgba);
         assert_eq!(&decoded[..info.buffer_size()], &capture.pixels[..]);
-    }
-
-    #[test]
-    fn captures_land_in_the_window_workspace_home() {
-        let home = Path::new("/home/u");
-        let dir = |workspace, root_is_home, env: Option<&str>| {
-            capture_directory(home, workspace, root_is_home, env.map(OsStr::new))
-        };
-        assert_eq!(
-            dir(None, false, None),
-            Path::new("/home/u/Captures/Screenshots")
-        );
-        assert_eq!(
-            dir(Some("meridian"), false, None),
-            Path::new("/home/u/Workspaces/meridian/Captures/Screenshots")
-        );
-        assert_eq!(
-            dir(Some("default"), false, None),
-            Path::new("/home/u/Workspaces/default/Captures/Screenshots")
-        );
-        assert_eq!(
-            dir(Some("default"), true, None),
-            Path::new("/home/u/Captures/Screenshots")
-        );
-        assert!(default_root_is_home(Some("home")));
-        assert!(default_root_is_home(Some("HOME")));
-        assert!(!default_root_is_home(Some("workspaces")));
-        assert!(!default_root_is_home(None));
-    }
-
-    #[test]
-    fn the_directory_variable_moves_captures() {
-        let home = Path::new("/home/u");
-        let dir = |workspace, env| capture_directory(home, workspace, false, Some(OsStr::new(env)));
-        assert_eq!(
-            dir(Some("meridian"), "Shots"),
-            Path::new("/home/u/Workspaces/meridian/Shots")
-        );
-        assert_eq!(dir(Some("meridian"), "/srv/shots"), Path::new("/srv/shots"));
-        assert_eq!(dir(None, "/srv/shots"), Path::new("/srv/shots"));
-        assert_eq!(dir(None, ""), Path::new("/home/u/Captures/Screenshots"));
     }
 
     #[test]

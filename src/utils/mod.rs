@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod apply;
+pub mod captures;
 pub mod deadlock;
 pub mod desktop_action;
 pub mod env;
@@ -15,6 +16,7 @@ pub mod iced_profiler;
 pub mod prelude;
 pub mod process;
 pub mod quirks;
+pub mod recording;
 pub mod rlimit;
 pub mod screenshot;
 pub mod timing;

@@ -54,6 +54,7 @@ pub(super) fn perform_action(
     }
     match message {
         Message::Screenshot => crate::utils::screenshot::screenshot_window(state, surface),
+        Message::Record => crate::utils::recording::toggle(state, surface),
         Message::NewWindow => {
             if let Some(action) = new_window {
                 action.launch();
@@ -123,17 +124,24 @@ fn menu_items(
     };
     let mut items = Vec::new();
     if action.is_some() {
-        items.push(item("New Window".into(), Message::NewWindow));
+        items.push(item(fl!("window-menu-new-window"), Message::NewWindow));
         items.push(Item::Separator);
     }
     items.extend([
         item(fl!("window-menu-screenshot"), Message::Screenshot),
-        Item::new("Record — coming soon", |_| {}).disabled(true),
+        item(
+            if surface.is_recording() {
+                fl!("window-menu-stop-recording")
+            } else {
+                fl!("window-menu-record")
+            },
+            Message::Record,
+        ),
         Item::Separator,
         item(fl!("window-menu-minimize"), Message::Minimize),
         item(
             if surface.is_maximized(false) || surface.is_fullscreen(false) {
-                "Restore".into()
+                fl!("window-menu-restore")
             } else {
                 fl!("window-menu-maximize")
             },
@@ -141,7 +149,7 @@ fn menu_items(
         ),
         item(
             if surface.is_fullscreen(false) {
-                "Leave fullscreen".into()
+                fl!("window-menu-leave-fullscreen")
             } else {
                 fl!("window-menu-fullscreen")
             },

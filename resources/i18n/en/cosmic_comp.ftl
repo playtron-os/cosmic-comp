@@ -21,6 +21,9 @@ window-menu-unstack-all = Unstack windows
 window-menu-unstack = Unstack window
 window-menu-sticky = Sticky window
 window-menu-close = Close
+window-menu-new-window = New Window
+window-menu-restore = Restore
+window-menu-leave-fullscreen = Leave fullscreen
 window-menu-close-all = Close all windows
 window-menu-resize-edge-top = Top
 window-menu-resize-edge-left = Left
@@ -30,3 +33,14 @@ window-menu-resize-edge-bottom = Bottom
 screenshot-app-name = Screenshot
 screenshot-saved-to = Screenshot saved to:
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
+
+window-menu-record = Record window
+window-menu-stop-recording = Stop recording
+recording-app-name = Recording
+recording-started = Recording this window
+recording-saved-to = Recording saved to:
+recording-failed = Recording failed
+recording-window-not-capturable = This window cannot be captured
+
+halo-screenshot-window = Screenshot window
+halo-window-menu = Window menu

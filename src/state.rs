@@ -161,8 +161,14 @@ use std::{
 #[folder = "resources/i18n"]
 struct Localizations;
 
-pub static LANG_LOADER: LazyLock<FluentLanguageLoader> =
-    LazyLock::new(|| fluent_language_loader!());
+pub static LANG_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
+    let loader = fluent_language_loader!();
+    // The fallback language from the start, so a string asked for before
+    // `run` selects the user's languages (a test, an early message) is text
+    // rather than a placeholder.
+    let _ = i18n_embed::select(&loader, &Localizations, &[]);
+    loader
+});
 
 #[macro_export]
 macro_rules! fl {

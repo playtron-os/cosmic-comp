@@ -285,6 +285,14 @@ where
     }
 }
 
+/// The identifier `toplevel` carries on `ext-foreign-toplevel-list`, which is
+/// how a capture client names the window it wants.
+pub fn foreign_toplevel_identifier(toplevel: &impl Window) -> Option<String> {
+    let state = toplevel.user_data().get::<ToplevelState>()?;
+    let guard = state.lock().unwrap();
+    guard.foreign_handle().map(|handle| handle.identifier())
+}
+
 pub fn toplevel_enter_output(toplevel: &impl Window, output: &Output) {
     if let Some(state) = toplevel.user_data().get::<ToplevelState>() {
         state.lock().unwrap().outputs.push(output.clone());

@@ -13,6 +13,7 @@ use std::{
 use tracing::{error, warn};
 
 pub mod a11y_keyboard_monitor;
+pub mod capture;
 pub mod game_mode;
 pub mod workspaces;
 use a11y_keyboard_monitor::A11yKeyboardMonitorState;
@@ -93,6 +94,15 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
     let a11y_keyboard_monitor_state =
         A11yKeyboardMonitorState::new(conn, &name_owners, &state.0.executor).await?;
     *state.0.a11y_keyboard_monitor.borrow_mut() = Some(a11y_keyboard_monitor_state);
+    let recorder = state.clone();
+    state.spawn(async move {
+        if let Err(err) = capture::watch_stopped(recorder).await {
+            warn!(
+                ?err,
+                "Not following the recorder; recordings will not end on their own"
+            );
+        }
+    });
     Ok(())
 }
 
