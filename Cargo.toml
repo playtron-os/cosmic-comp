@@ -116,6 +116,7 @@ branch = "feature/copy_clone"
 git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
+rev = "679f1bd0383dc5d6b0a7df9032eca2e07ecafc30"
 git = "https://github.com/playtron-os/smithay.git"
 default-features = false
 features = [
