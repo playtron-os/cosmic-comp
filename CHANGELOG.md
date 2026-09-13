@@ -1,3 +1,10 @@
+## [1.47.3](https://github.com/playtron-os/cosmic-comp/compare/v1.47.2...v1.47.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* update smithay to fix layer ordering ([d9d789d](https://github.com/playtron-os/cosmic-comp/commit/d9d789d4dd7f21470734e143d1ef40a18c02635d))
+
 ## [1.47.2](https://github.com/playtron-os/cosmic-comp/compare/v1.47.1...v1.47.2) (2026-09-11)
 
 
