@@ -196,7 +196,7 @@ cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings
 # Last revision before the InputTime migration; our Smithay fork still uses u32
 # event timestamps. Keep debug builds on the matching API until Smithay migrates.
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "f34d50913003e0d62b0fb8999baf763d0960e3ef" }
-smithay = { git = "https://github.com/playtron-os/smithay.git" }
+smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "679f1bd0383dc5d6b0a7df9032eca2e07ecafc30" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
 #iced = { path = "../iced" }

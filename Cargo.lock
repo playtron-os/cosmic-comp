@@ -1055,7 +1055,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "smallvec",
- "smithay",
+ "smithay 0.7.0 (git+https://github.com/playtron-os/smithay.git)",
  "smithay-egui",
  "thiserror 2.0.20",
  "tikv-jemalloc-ctl",
@@ -1482,7 +1482,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1818,7 +1818,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3713,7 +3713,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4410,7 +4410,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4982,7 +4982,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5546,7 +5546,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6086,7 +6086,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6099,7 +6099,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6156,7 +6156,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6552,6 +6552,41 @@ checksum = "b9be42f50aa861c555654aa3a37f52f4b1074bacf4e48fe0ef7fa584e80f1f0f"
 [[package]]
 name = "smithay"
 version = "0.7.0"
+source = "git+https://github.com/playtron-os/smithay.git?rev=679f1bd0383dc5d6b0a7df9032eca2e07ecafc30#679f1bd0383dc5d6b0a7df9032eca2e07ecafc30"
+dependencies = [
+ "appendlist",
+ "atomic_float",
+ "bitflags 2.13.2",
+ "calloop 0.14.4",
+ "cgmath",
+ "cursor-icon",
+ "downcast-rs",
+ "drm-fourcc",
+ "errno",
+ "gl_generator",
+ "glow",
+ "indexmap 2.14.2",
+ "libc",
+ "libloading",
+ "profiling",
+ "rand 0.9.5",
+ "reis",
+ "rustix 1.1.4",
+ "sha2 0.10.9",
+ "smallvec",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "wayland-protocols",
+ "wayland-protocols-misc",
+ "wayland-protocols-wlr",
+ "wayland-server",
+ "xkbcommon 0.9.0",
+]
+
+[[package]]
+name = "smithay"
+version = "0.7.0"
 source = "git+https://github.com/playtron-os/smithay.git#c9753d46454c19b2a3ce5a5a73b53b527981c577"
 dependencies = [
  "aliasable",
@@ -6676,7 +6711,7 @@ dependencies = [
  "egui_glow",
  "image",
  "log",
- "smithay",
+ "smithay 0.7.0 (git+https://github.com/playtron-os/smithay.git?rev=679f1bd0383dc5d6b0a7df9032eca2e07ecafc30)",
  "xkbcommon 0.8.0",
 ]
 
@@ -6712,7 +6747,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6917,7 +6952,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7413,7 +7448,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -8047,7 +8082,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
