@@ -1,3 +1,10 @@
+# [1.48.0](https://github.com/playtron-os/cosmic-comp/compare/v1.47.4...v1.48.0) (2026-09-15)
+
+
+### Features
+
+* **halo:** add joined headers with per-window overlay opt-in ([57ddfde](https://github.com/playtron-os/cosmic-comp/commit/57ddfdeb952b3c4f2fbc78ea2ba41207b978de74))
+
 ## [1.47.4](https://github.com/playtron-os/cosmic-comp/compare/v1.47.3...v1.47.4) (2026-09-15)
 
 
