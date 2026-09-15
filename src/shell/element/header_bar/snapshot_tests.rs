@@ -9,6 +9,150 @@ use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
 use std::sync::Arc;
 
 #[test]
+fn halo_header_double_click_toggles_without_stealing_button_clicks_or_drags() {
+    use iced_core::{
+        Event, Point, Vector,
+        widget::{Id, Operation},
+    };
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Toggle,
+        Drag,
+        Close,
+        Menu,
+    }
+    #[derive(Clone, Copy)]
+    enum Target {
+        Title,
+        Maximize,
+        Close,
+    }
+    #[derive(Clone, Copy)]
+    enum Gesture {
+        Single,
+        Double,
+        Drag,
+        DoubleThenDrag,
+        Right,
+    }
+    #[derive(Default)]
+    struct Title(Option<Rectangle>);
+    impl Operation for Title {
+        fn traverse(&mut self, f: &mut dyn FnMut(&mut dyn Operation)) {
+            f(self);
+        }
+        fn text(&mut self, _: Option<&Id>, bounds: Rectangle, text: &str) {
+            if text == "Gesture target" {
+                self.0 = Some(bounds);
+            }
+        }
+    }
+
+    let theme = theme();
+    for maximized in [false, true] {
+        for (target, gesture, expected) in [
+            (Target::Title, Gesture::Single, vec![]),
+            (Target::Title, Gesture::Double, vec![Message::Toggle]),
+            (
+                Target::Title,
+                Gesture::DoubleThenDrag,
+                vec![Message::Toggle],
+            ),
+            (Target::Title, Gesture::Drag, vec![Message::Drag]),
+            (Target::Title, Gesture::Right, vec![Message::Menu]),
+            (
+                Target::Maximize,
+                Gesture::Double,
+                vec![Message::Toggle, Message::Toggle],
+            ),
+            (
+                Target::Close,
+                Gesture::Double,
+                vec![Message::Close, Message::Close],
+            ),
+        ] {
+            let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
+            let header = header_bar()
+                .theme(&theme)
+                .title("Gesture target")
+                .focused(true)
+                .maximized(maximized)
+                .on_drag(Message::Drag)
+                .on_maximize(Message::Toggle)
+                .on_close(Message::Close)
+                .on_right_click(Message::Menu)
+                .into_element();
+            let size = Size::new(900.0, ssd_header_render_height(&theme) as f32);
+            let mut ui = UserInterface::build(
+                header,
+                size,
+                user_interface::Cache::default(),
+                &mut renderer,
+            );
+            ui.draw(
+                &mut renderer,
+                &theme.to_iced_theme(),
+                &Style::default(),
+                mouse::Cursor::Unavailable,
+            );
+            let mut title = Title::default();
+            ui.operate(&renderer, &mut title);
+            let metrics = theme.halo_style();
+            let (pill, _) = crate::shell::element::window::halo_backdrop_blur(
+                renderer.layers(),
+                metrics.pill_height(),
+                size.width,
+            )
+            .unwrap();
+            let point = match target {
+                Target::Title => title.0.expect("laid-out title").center(),
+                Target::Close => Point::new(
+                    pill.x + pill.width - metrics.padding_horizontal - metrics.control_size * 0.5,
+                    pill.center_y(),
+                ),
+                Target::Maximize => Point::new(
+                    pill.x + pill.width
+                        - metrics.padding_horizontal
+                        - metrics.control_size * 1.5
+                        - metrics.gap,
+                    pill.center_y(),
+                ),
+            };
+            let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            let release = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+            let moved = Event::Mouse(mouse::Event::CursorMoved {
+                position: point + Vector::new(10.0, 0.0),
+            });
+            let events = match gesture {
+                Gesture::Single => vec![press, release],
+                Gesture::Double => vec![press.clone(), release.clone(), press, release],
+                Gesture::DoubleThenDrag => {
+                    vec![press.clone(), release.clone(), press, moved, release]
+                }
+                Gesture::Drag => vec![press, moved, release],
+                Gesture::Right => vec![
+                    Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                    Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+                ],
+            };
+            let mut messages = Vec::new();
+            let mut cursor = mouse::Cursor::Available(point);
+            for event in
+                std::iter::once(Event::Mouse(mouse::Event::CursorMoved { position: point }))
+                    .chain(events)
+            {
+                if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
+                    cursor = mouse::Cursor::Available(position);
+                }
+                ui.update(&[event], cursor, &mut renderer, &mut messages);
+            }
+            assert_eq!(messages, expected, "maximized={maximized}");
+        }
+    }
+}
+
+#[test]
 fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
     use iced_core::{
         Event, Point,

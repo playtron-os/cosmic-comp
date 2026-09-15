@@ -6,12 +6,15 @@
 
 use iced_core::Alignment;
 use iced_core::{Element, Length};
-use iced_widget::{Svg, button, container, mouse_area, row, svg, tooltip};
+use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::prelude::{
     animated_opacity, animated_tooltip, app_header, header_height_for, header_render_height_for,
     styled_text,
 };
-use icetron_p::{animation::transition::ButtonTransition, components::icons::icon_svg_inherit};
+use icetron_p::{
+    animation::transition::ButtonTransition,
+    components::{draggable::draggable, icons::icon_svg_inherit},
+};
 use icetron_themes::WindowHeaderStyle;
 use icetron_themes::icons;
 
@@ -574,7 +577,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 .action_buttons(actions)
                 .menu_open(self.menu_open);
         }
-        if let Some(msg) = self.on_drag {
+        if !halo && let Some(msg) = self.on_drag.clone() {
             header = header.on_drag(msg);
         }
         if let Some(msg) = self.on_close {
@@ -584,7 +587,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.on_minimize(msg);
         }
         // app_header uses on_toggle_window for maximize/unmaximize
-        if let Some(msg) = self.on_maximize {
+        if !halo && let Some(msg) = self.on_maximize.clone() {
             header = header.on_toggle_window(msg);
         }
         if !halo && let Some(msg) = self.on_right_click.clone() {
@@ -603,11 +606,20 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
         if uses_halo_header(theme) {
-            let header_elem = if let Some(message) = self.on_right_click {
-                mouse_area(header_elem).on_right_press(message).into()
-            } else {
-                header_elem
-            };
+            // Own all gestures beside the custom controls. Do not also wire
+            // AppHeader's inner drag area, which would consume these events.
+            let mut gestures = draggable(header_elem);
+            if let Some(message) = self.on_drag {
+                gestures = gestures.on_drag(message);
+            }
+            if let Some(message) = self.on_maximize {
+                gestures = gestures.on_double_click(message);
+            }
+            if let Some(message) = self.on_right_click {
+                gestures = gestures.on_right_click(message);
+            }
+            let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                gestures.into();
             return container(header_elem)
                 .width(Length::Fill)
                 .height(Length::Fixed(ssd_header_render_height(theme) as f32))
