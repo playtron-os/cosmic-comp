@@ -12,6 +12,7 @@ pub mod backdrop_color;
 pub mod blur;
 pub mod corner_radius;
 pub mod drm;
+pub mod halo_header;
 pub mod image_capture_source;
 pub mod keyboard_layout;
 pub mod kora_image_capture_size;

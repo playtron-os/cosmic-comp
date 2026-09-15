@@ -66,19 +66,29 @@ pub(crate) fn halo_focus_outline(
 ) -> crate::utils::iced::FocusOutline {
     crate::utils::iced::FocusOutline {
         focused,
+        bottom_border: true,
         animate: !fullscreen && theme.duration_slower() > 0.0,
         duration: std::time::Duration::from_millis(420),
         curve: halo_visibility(theme, true).opacity_curve,
     }
 }
 
-/// Space reserved above the client surface in logical pixels.
+/// Baseline decoration space; overlay Halo reserves none.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     let style = theme.window_header_style();
     if style == WindowHeaderStyle::Halo {
         0
     } else {
         header_height_for(&**theme, style) as u32
+    }
+}
+
+/// Joined Halo is real decoration space; protocol opt-in Halo stays an overlay.
+pub(crate) fn ssd_header_height_for(theme: &CompTheme, joined: bool) -> u32 {
+    if uses_halo_header(theme) && joined {
+        theme.halo_style().pill_height().ceil() as u32
+    } else {
+        ssd_header_height(theme)
     }
 }
 
@@ -124,9 +134,30 @@ pub fn ssd_header_overhang(theme: &CompTheme) -> u32 {
     }
 }
 
-/// Whether compositor decorations use chromeless Halo geometry.
+/// Whether the active theme selects Halo chrome.
 pub fn uses_halo_header(theme: &CompTheme) -> bool {
     theme.window_header_style() == WindowHeaderStyle::Halo
+}
+
+/// Extra lift for clients that have not opted into an overlapping Halo.
+/// The pill's bottom edge sits flush against the top of the client.
+pub(crate) fn halo_header_lift(theme: &CompTheme, allows_overlay: bool) -> i32 {
+    if !uses_halo_header(theme) || allows_overlay {
+        return 0;
+    }
+    let metrics = theme.halo_style();
+    (metrics.top_inset + metrics.pill_height() - ssd_header_overhang(theme) as f32)
+        .ceil()
+        .max(0.0) as i32
+}
+
+/// Position relative to the outer window, whose joined header is above the client.
+pub(crate) fn halo_header_offset(theme: &CompTheme, joined: bool) -> i32 {
+    if uses_halo_header(theme) {
+        halo_header_lift(theme, !joined) - ssd_header_height_for(theme, joined) as i32
+    } else {
+        0
+    }
 }
 
 /// Application icon for the SSD header — leaked static SVG bytes or a raster image handle.
@@ -174,6 +205,7 @@ pub struct HeaderBar<'a, Message> {
     /// button) while no longer touching the top edge.
     square_top: bool,
     compositor_outline: bool,
+    joined_to_window: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
 }
@@ -206,6 +238,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             maximized: false,
             square_top: false,
             compositor_outline: false,
+            joined_to_window: false,
             theme: None,
             app_icon: None,
         }
@@ -316,6 +349,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
+    pub(crate) fn joined_to_window(mut self, joined: bool) -> Self {
+        self.joined_to_window = joined;
+        self
+    }
+
     /// Convert to an iced Element using icetron's app_header.
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
@@ -327,6 +365,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             &**theme
         };
         let mut header = app_header(chrome_theme)
+            .joined_to_window(self.joined_to_window)
             .window_header_style(window_header_style)
             .title(Some(&self.title))
             .focused(self.focused)
@@ -770,12 +809,13 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn halo_overhang_does_not_reserve_client_layout_space() {
+    fn overlay_halo_does_not_reserve_client_layout_space() {
         let mut theme = DEFAULT_THEME_PAIR.load(false);
         theme.window_header_style = WindowHeaderStyle::Halo;
         let theme = CompTheme::new(Arc::new(theme), false);
 
         assert_eq!(ssd_header_height(&theme), 0);
+        assert_eq!(ssd_header_height_for(&theme, false), 0);
         assert_eq!(ssd_header_overhang(&theme), 18);
         let padding = halo_shadow_padding(&theme);
         assert_eq!(
@@ -783,5 +823,22 @@ mod tests {
             34 + padding.top as u32 + padding.bottom as u32
         );
         assert_eq!(ssd_header_input_height(&theme), 34);
+    }
+
+    #[test]
+    fn joined_halo_reserves_only_the_visible_header() {
+        let mut tokens = DEFAULT_THEME_PAIR.load(false);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        let theme = CompTheme::new(Arc::new(tokens), false);
+        let reserved = ssd_header_height_for(&theme, true) as i32;
+        assert_eq!(reserved, 31);
+        let overhang = ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, true);
+        assert_eq!(
+            overhang, 3,
+            "only the widget's invisible top inset lies outside the frame"
+        );
+        assert_eq!(ssd_header_input_height(&theme) as i32 - overhang, reserved);
+        assert!(reserved < ssd_header_render_height(&theme) as i32);
+        assert_eq!(halo_header_offset(&theme, false), 0);
     }
 }

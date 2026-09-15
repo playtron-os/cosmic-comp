@@ -91,96 +91,121 @@ fn gles_outline_has_consistent_edges_and_a_single_shared_blend() -> anyhow::Resu
         .insert_if_missing(|| IndicatorShader(program));
     let key = Id::new();
     let output_size: Size<i32, Physical> = (256, 192).into();
-    for parent_alpha in [1.0, 0.5] {
-        let border_alpha = if parent_alpha == 1.0 { 1.0 } else { 0.5 };
-        let ring_alpha = if parent_alpha == 1.0 { 1.0 } else { 0.25 };
-        let mut previous_id = None;
-        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
-            for phase in [0.0, 0.25, 0.5, 0.75] {
-                let shape =
-                    Rectangle::new((12.0 + phase, 13.0 + phase).into(), (100.0, 60.0).into());
-                let element = IndicatorShader::window_outline(
-                    &renderer,
-                    key.clone(),
-                    shape,
-                    1,
-                    [9; 4],
-                    parent_alpha,
-                    scale,
-                    Color::from_rgba(1.0, 0.0, 0.0, border_alpha),
-                    Some(Color::from_rgba(0.0, 1.0, 0.0, ring_alpha)),
-                );
-                if let Some(previous) = &previous_id {
-                    assert_eq!(
-                        previous,
-                        element.id(),
-                        "moving/resizing must retain the render element ID"
+    for (radii, bottom_border) in [([9.0; 4], true), ([0.0, 9.0, 0.0, 9.0], false)] {
+        for parent_alpha in [1.0, 0.5] {
+            let border_alpha = if parent_alpha == 1.0 { 1.0 } else { 0.5 };
+            let ring_alpha = if parent_alpha == 1.0 { 1.0 } else { 0.25 };
+            let mut previous_id = None;
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                for phase in [0.0, 0.25, 0.5, 0.75] {
+                    let shape =
+                        Rectangle::new((12.0 + phase, 13.0 + phase).into(), (100.0, 60.0).into());
+                    let element = IndicatorShader::animated_outline_with_bottom_border(
+                        &renderer,
+                        key.clone(),
+                        shape,
+                        1.0,
+                        radii,
+                        parent_alpha,
+                        scale,
+                        Color::from_rgba(1.0, 0.0, 0.0, border_alpha),
+                        1.0,
+                        Color::from_rgba(0.0, 1.0, 0.0, ring_alpha),
+                        None,
+                        bottom_border,
                     );
-                }
-                previous_id = Some(element.id().clone());
-                let mut buffer = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
-                    &mut renderer,
-                    Fourcc::Abgr8888,
-                    (256, 192).into(),
-                )?;
-                let mut fb = renderer.bind(&mut buffer)?;
-                let mut tracker = OutputDamageTracker::new(output_size, scale, Transform::Normal);
-                tracker.render_output(&mut renderer, &mut fb, 0, &[element], [0.0; 4])?;
-                let mapping = renderer.copy_framebuffer(
-                    &fb,
-                    Rectangle::from_size((256, 192).into()),
-                    Fourcc::Abgr8888,
-                )?;
-                let flipped = mapping.flipped();
-                let bytes = renderer.map_texture(&mapping)?;
-                let pixel = |x: usize, y: usize| {
-                    // flipped() is relative to GL's bottom-left origin.
-                    let y = if flipped { y } else { 191 - y };
-                    let i = (y * 256 + x) * 4;
-                    [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
-                        .map(|v| f64::from(v) / 255.0)
-                };
-                let cx = ((shape.loc.x + shape.size.w / 2.0) * scale).floor() as usize;
-                let cy = ((shape.loc.y + shape.size.h / 2.0) * scale).floor() as usize;
-                // Red is the inner border; green is the adjacent outer ring.
-                // Integrated alpha must equal logical width * scale * style alpha * parent alpha.
-                let left: [f64; 2] =
-                    std::array::from_fn(|channel| (0..cx).map(|x| pixel(x, cy)[channel]).sum());
-                let right: [f64; 2] =
-                    std::array::from_fn(|channel| (cx..256).map(|x| pixel(x, cy)[channel]).sum());
-                let top: [f64; 2] =
-                    std::array::from_fn(|channel| (0..cy).map(|y| pixel(cx, y)[channel]).sum());
-                let bottom: [f64; 2] =
-                    std::array::from_fn(|channel| (cy..192).map(|y| pixel(cx, y)[channel]).sum());
-                for side in [left, right, top, bottom] {
-                    assert!(
-                        (side[0] - scale * f64::from(border_alpha * parent_alpha)).abs() < 0.016,
-                        "border: scale={scale}, phase={phase}, sides={left:?}/{right:?}/{top:?}/{bottom:?}"
-                    );
-                    assert!(
-                        (side[1] - scale * f64::from(ring_alpha * parent_alpha)).abs() < 0.016,
-                        "ring: scale={scale}, phase={phase}, sides={left:?}/{right:?}/{top:?}/{bottom:?}"
-                    );
-                }
-                for y in 0..192 {
-                    for x in 0..256 {
-                        let [red, green, blue, alpha] = pixel(x, y);
-                        assert!(
-                            (alpha - red - green).abs() < 0.012,
-                            "shared edge must be a single premultiplied sum"
+                    if let Some(previous) = &previous_id {
+                        assert_eq!(
+                            previous,
+                            element.id(),
+                            "moving/resizing must retain the render element ID"
                         );
-                        assert_eq!(blue, 0.0);
+                    }
+                    previous_id = Some(element.id().clone());
+                    let mut buffer = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+                        &mut renderer,
+                        Fourcc::Abgr8888,
+                        (256, 192).into(),
+                    )?;
+                    let mut fb = renderer.bind(&mut buffer)?;
+                    let mut tracker =
+                        OutputDamageTracker::new(output_size, scale, Transform::Normal);
+                    tracker.render_output(&mut renderer, &mut fb, 0, &[element], [0.0; 4])?;
+                    let mapping = renderer.copy_framebuffer(
+                        &fb,
+                        Rectangle::from_size((256, 192).into()),
+                        Fourcc::Abgr8888,
+                    )?;
+                    let flipped = mapping.flipped();
+                    let bytes = renderer.map_texture(&mapping)?;
+                    let pixel = |x: usize, y: usize| {
+                        // flipped() is relative to GL's bottom-left origin.
+                        let y = if flipped { y } else { 191 - y };
+                        let i = (y * 256 + x) * 4;
+                        [bytes[i], bytes[i + 1], bytes[i + 2], bytes[i + 3]]
+                            .map(|v| f64::from(v) / 255.0)
+                    };
+                    let cx = ((shape.loc.x + shape.size.w / 2.0) * scale).floor() as usize;
+                    let cy = ((shape.loc.y + shape.size.h / 2.0) * scale).floor() as usize;
+                    // Red is the inner border; green is the adjacent outer ring.
+                    // Integrated alpha must equal logical width * scale * style alpha * parent alpha.
+                    let left: [f64; 2] =
+                        std::array::from_fn(|channel| (0..cx).map(|x| pixel(x, cy)[channel]).sum());
+                    let right: [f64; 2] = std::array::from_fn(|channel| {
+                        (cx..256).map(|x| pixel(x, cy)[channel]).sum()
+                    });
+                    let top: [f64; 2] =
+                        std::array::from_fn(|channel| (0..cy).map(|y| pixel(cx, y)[channel]).sum());
+                    let bottom: [f64; 2] = std::array::from_fn(|channel| {
+                        (cy..192).map(|y| pixel(cx, y)[channel]).sum()
+                    });
+                    for (index, side) in [left, right, top, bottom].into_iter().enumerate() {
+                        let width = if index == 3 && !bottom_border {
+                            0.0
+                        } else {
+                            scale
+                        };
+                        assert!(
+                            (side[0] - width * f64::from(border_alpha * parent_alpha)).abs()
+                                < 0.016,
+                            "border: scale={scale}, phase={phase}, sides={left:?}/{right:?}/{top:?}/{bottom:?}"
+                        );
+                        assert!(
+                            (side[1] - width * f64::from(ring_alpha * parent_alpha)).abs() < 0.016,
+                            "ring: scale={scale}, phase={phase}, sides={left:?}/{right:?}/{top:?}/{bottom:?}"
+                        );
+                    }
+                    for y in 0..192 {
+                        for x in 0..256 {
+                            let [red, green, blue, alpha] = pixel(x, y);
+                            assert!(
+                                (alpha - red - green).abs() < 0.012,
+                                "shared edge must be a single premultiplied sum"
+                            );
+                            assert_eq!(blue, 0.0);
+                        }
+                    }
+                    assert_eq!(
+                        pixel(cx, cy),
+                        [0.0; 4],
+                        "the client interior stays transparent"
+                    );
+                    if !bottom_border && scale == 1.0 && phase == 0.0 {
+                        let x = shape.loc.x as usize;
+                        let y = shape.loc.y as usize;
+                        assert_eq!(pixel(x, y), [0.0; 4], "top-left must be rounded");
+                        assert_eq!(pixel(x + 99, y), [0.0; 4], "top-right must be rounded");
+                        assert!(pixel(x, y + 59)[0] > 0.2 * f64::from(parent_alpha * border_alpha));
+                        assert!(
+                            pixel(x + 99, y + 59)[0] > 0.2 * f64::from(parent_alpha * border_alpha),
+                            "bottom-right must be square; vertical strokes still reach the join"
+                        );
                     }
                 }
-                assert_eq!(
-                    pixel(cx, cy),
-                    [0.0; 4],
-                    "the client interior stays transparent"
-                );
             }
         }
+        eprintln!("GLES outline verified at five scales and four pixel phases");
     }
-    eprintln!("GLES outline verified at five scales and four pixel phases");
     Ok(())
 }
 

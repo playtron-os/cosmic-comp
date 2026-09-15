@@ -64,8 +64,8 @@ pub mod input;
 mod logger;
 pub mod perf;
 pub mod session;
-pub mod spin;
 pub mod shell;
+pub mod spin;
 pub mod state;
 #[cfg(feature = "systemd")]
 pub mod systemd;

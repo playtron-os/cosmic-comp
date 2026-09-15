@@ -164,6 +164,7 @@ impl CompTheme {
             theme_name,
             is_dark,
             using_fallback,
+            header_style = ?theme.window_header_style(),
             radius_window = theme.radius_window(),
             bg_color = ?theme.fill_default(),
             text_color = ?theme.text_primary(),

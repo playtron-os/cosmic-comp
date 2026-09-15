@@ -7,6 +7,7 @@ use crate::backend::render::animations::motion::cubic_bezier_cp;
 #[derive(Clone, Copy, Debug)]
 pub struct FocusOutline {
     pub focused: bool,
+    pub bottom_border: bool,
     pub animate: bool,
     pub duration: Duration,
     pub curve: [f32; 4],
@@ -16,7 +17,9 @@ pub struct FocusOutline {
 pub struct FocusOutlineFrame {
     pub progress: f32,
     pub bounds: iced_core::Rectangle,
+    /// Smithay order: bottom-right, top-right, bottom-left, top-left.
     pub radii: [u8; 4],
+    pub bottom_border: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -110,6 +113,7 @@ mod tests {
         let mut animation = FocusAnimation::default();
         let mut settings = FocusOutline {
             focused: true,
+            bottom_border: true,
             animate: true,
             duration: Duration::from_millis(420),
             curve: [0.0, 0.0, 1.0, 1.0],
@@ -143,6 +147,7 @@ mod tests {
             let mut animation = FocusAnimation::default();
             animation.update(FocusOutline {
                 focused: true,
+                bottom_border: true,
                 animate,
                 duration,
                 curve: [0.0, 0.0, 1.0, 1.0],

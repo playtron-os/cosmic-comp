@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="kora_halo_header_v1">
+  <copyright>
+    Copyright © 2026 Playtron
+
+    Permission to use, copy, modify, distribute, and sell this software and its
+    documentation for any purpose is hereby granted without fee, provided that
+    the above copyright notice appear in all copies and that both that copyright
+    notice and this permission notice appear in supporting documentation, and
+    that the name of the copyright holders not be used in advertising or
+    publicity pertaining to distribution of the software without specific,
+    written prior permission. The copyright holders make no representations
+    about the suitability of this software for any purpose. It is provided "as
+    is" without express or implied warranty.
+  </copyright>
+  <interface name="kora_halo_header_manager_v1" version="1">
+    <description summary="opt into overlay server-side Halo decorations">
+      By default, the compositor places Halo fully above the client content.
+      Its visible height is included in the window's outer geometry and excluded
+      from the size configured for client content, including when maximized.
+      A Halo-aware client may opt into the original overlapping layout and
+      keep its own controls clear of the floating header instead.
+
+      This does not negotiate server-side decorations: clients must still use
+      xdg-decoration for that. Client-side decorated windows, fullscreen edge
+      reveal, and embedded surfaces are unaffected. If the global is absent,
+      clients must work with ordinary server-side decoration geometry.
+    </description>
+    <enum name="error">
+      <entry name="invalid_surface" value="0" summary="surface is not an xdg_toplevel"/>
+      <entry name="already_configured" value="1" summary="initial configure has been sent"/>
+      <entry name="invalid_mode" value="2" summary="unknown header mode"/>
+    </enum>
+    <enum name="mode">
+      <entry name="reserved" value="0" summary="joined Halo with reserved decoration space (default)"/>
+      <entry name="overlay" value="1" summary="client supports an overlapping Halo"/>
+    </enum>
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroying this object does not change any surface's mode.
+      </description>
+    </request>
+    <request name="set_mode">
+      <description summary="choose layout before the initial surface commit">
+        The surface must have an xdg_toplevel role. Call after get_toplevel and
+        before the initial wl_surface.commit, so the first configure accounts for
+        the requested header placement. A request after the initial configure is a protocol
+        error. The mode persists for the lifetime of the wl_surface, including
+        unmap/remap cycles. No other surface, including a transient child,
+        inherits this mode.
+
+        In overlay mode the client is responsible for keeping its controls
+        clear of the Halo. This request does not hide the compositor's Halo.
+      </description>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="mode" type="uint" enum="mode"/>
+    </request>
+  </interface>
+</protocol>

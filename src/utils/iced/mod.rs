@@ -304,6 +304,7 @@ pub trait Program {
         None
     }
 
+    /// Bounds and corner radii in Smithay's BR, TR, BL, TL order.
     fn backdrop_blur(
         &self,
         theme: &CompTheme,
@@ -852,7 +853,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         radii: [u8; 4],
         now: IcedInstant,
     ) -> Option<FocusOutlineFrame> {
-        self.program.focus_outline(&self.theme)?;
+        let outline = self.program.focus_outline(&self.theme)?;
         let (bounds, radii) =
             self.program
                 .backdrop_blur(&self.theme, self.size, self.renderer.layers(), radii)?;
@@ -866,6 +867,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             progress,
             bounds,
             radii,
+            bottom_border: outline.bottom_border,
         })
     }
 
@@ -1787,7 +1789,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 (bounds.width as f64 * zoom, bounds.height as f64 * zoom).into(),
             );
             push_above(IcedRenderElement::Outline(OutlineElement(
-                IndicatorShader::animated_outline(
+                IndicatorShader::animated_outline_with_bottom_border(
                     renderer,
                     internal_ref.outline_id.clone(),
                     geometry,
@@ -1806,6 +1808,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                         halo: true,
                         neutral: theme.window_border_color(),
                     }),
+                    frame.bottom_border,
                 ),
             )));
         }

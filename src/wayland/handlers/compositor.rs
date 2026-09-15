@@ -557,6 +557,18 @@ impl State {
                 .find(|pending| pending.surface.wl_surface().as_deref() == Some(surface))
                 && let Some(toplevel) = pending.surface.0.toplevel()
             {
+                let ssd_h = if pending.fullscreen.is_none()
+                    && !pending.surface.is_decorated(true)
+                    && !crate::wayland::handlers::surface_embed::is_surface_embedded(
+                        &pending.surface,
+                    ) {
+                    crate::shell::element::header_bar::ssd_header_height_for(
+                        shell.theme(),
+                        !crate::wayland::protocols::halo_header::allows_overlay(surface),
+                    ) as i32
+                } else {
+                    0
+                };
                 let initial_size = if let Some(output) = pending.fullscreen.as_ref() {
                     Some(output.geometry().size.as_logical())
                 } else if pending.maximized {
@@ -571,7 +583,7 @@ impl State {
                         state.states.set(ToplevelState::TiledTop);
                         state.states.set(ToplevelState::TiledBottom);
                     });
-                    Some(zone.size)
+                    Some(Size::from((zone.size.w, (zone.size.h - ssd_h).max(1))))
                 } else {
                     // For floating windows, set bounds so the client picks a
                     // size that won't be further reduced by map_internal().
@@ -580,13 +592,8 @@ impl State {
                     // height so that content + SSD header fits within the cap.
                     let active_output = shell.seats.last_active().active_output();
                     let zone = layer_map_for_output(&active_output).non_exclusive_zone();
-                    let has_ssd = !pending.surface.is_decorated(true);
-                    let ssd_h = if has_ssd {
-                        icetron_p::prelude::header_height(&**shell.theme()) as i32
-                    } else {
-                        0
-                    };
-                    let bounds = Size::from((zone.size.w / 3 * 2, zone.size.h / 3 * 2 - ssd_h));
+                    let bounds =
+                        Size::from((zone.size.w / 3 * 2, (zone.size.h / 3 * 2 - ssd_h).max(1)));
                     toplevel.with_pending_state(|state| {
                         state.bounds = Some(bounds);
                     });

@@ -568,3 +568,58 @@ fn halo_shadow_padding_preserves_pill_and_blur_position() {
     assert_eq!(ssd_header_input_height(&theme), 34);
     assert_eq!(ssd_header_height(&theme), 0);
 }
+
+#[test]
+fn attached_halo_is_flush_with_square_bottom_corners() {
+    let theme = theme();
+    let mut floating_size = None;
+    for joined in [false, true] {
+        let (mut renderer, _, _cache) = layout_with(&theme, 900.0, "Explorer", 1.5, |header| {
+            header.joined_to_window(joined)
+        });
+        let (pill, radii) = super::super::window::halo_backdrop_blur(
+            renderer.layers(),
+            theme.halo_style().pill_height(),
+            900.0,
+        )
+        .expect("the actual background/shadow shape supplies the blur corners");
+        let size = (pill.width, pill.height);
+        if let Some(expected) = floating_size {
+            assert_eq!(size, expected, "joining Halo must not resize or replace it");
+        } else {
+            floating_size = Some(size);
+        }
+        let reserved = ssd_header_height_for(&theme, joined);
+        let offset = halo_header_offset(&theme, joined);
+        let top = pill.y - ssd_header_render_overhang(&theme) as f32 - offset as f32;
+        let bottom = top + pill.height;
+        assert_eq!(radii, if joined { [0, 16, 0, 16] } else { [16; 4] });
+        let (quad, _) = renderer
+            .layers()
+            .iter()
+            .flat_map(|layer| &layer.quads)
+            .find(|(quad, _)| quad.bounds == pill && quad.border.width > 0.0)
+            .expect("the Halo's own border quad");
+        let width = theme.halo_style().border_width;
+        assert_eq!(
+            quad.border.sides,
+            joined.then_some([width, width, 0.0, width])
+        );
+        assert_eq!(bottom, if joined { reserved as f32 } else { 16.0 });
+        if joined {
+            assert_eq!(
+                top, 0.0,
+                "maximized/tiled Halo must start inside the allocated frame"
+            );
+            assert_eq!(
+                reserved as f32, pill.height,
+                "reserve the visible header, not its shadow buffer"
+            );
+        } else {
+            assert_eq!(
+                reserved, 0,
+                "protocol opt-in keeps the original overlay geometry"
+            );
+        }
+    }
+}

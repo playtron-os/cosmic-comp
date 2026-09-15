@@ -12,6 +12,7 @@ uniform float focus_mode;
 uniform float focus_progress;
 uniform float focus_tip;
 uniform float thickness;
+uniform float bottom_border;
 uniform float ring_width;
 uniform vec4 radius;
 uniform float scale;
@@ -86,14 +87,28 @@ void main() {
     float inner = 0.0;
 
     if (thickness > 0.0) {
-        inner = coverage(location - vec2(thickness), shape_size - vec2(2.0 * thickness),
+        vec2 inner_size = shape_size - vec2(2.0 * thickness);
+        if (bottom_border == 0.0) {
+            // Extend the hole through the join, retaining both vertical sides.
+            inner_size.y += thickness + ring_width + 1.0 / scale;
+        }
+        inner = coverage(location - vec2(thickness), inner_size,
             max(radius - vec4(thickness), vec4(0.0)));
     }
 
     float outer = body;
     if (ring_width > 0.0) {
-        outer = coverage(location + vec2(ring_width), shape_size + vec2(2.0 * ring_width),
-            radius + vec4(ring_width));
+        vec2 outer_size = shape_size + vec2(2.0 * ring_width);
+        vec4 outer_radius = radius + vec4(ring_width);
+        if (bottom_border == 0.0) {
+            outer_radius.zw = vec2(0.0);
+        }
+        outer = coverage(location + vec2(ring_width), outer_size, outer_radius);
+        if (bottom_border == 0.0) {
+            // Clip at the join without shortening the backing rectangle: that
+            // would clamp the top arc radius and change its stroke weight.
+            outer = min(outer, clamp(0.5 + (shape_size.y - location.y) * scale, 0.0, 1.0));
+        }
     }
     // These regions are disjoint parts of the same pixel. Add their premultiplied
     // contributions; separate over-blends would darken the shared antialiased edge.

@@ -58,6 +58,7 @@ fn focus_outline_uses_one_redraw_clock_and_live_halo_geometry() {
         fn focus_outline(&self, _: &CompTheme) -> Option<FocusOutline> {
             Some(FocusOutline {
                 focused: self.focused,
+                bottom_border: true,
                 animate: true,
                 duration: std::time::Duration::from_millis(420),
                 curve: [0.0, 0.0, 1.0, 1.0],

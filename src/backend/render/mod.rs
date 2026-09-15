@@ -286,6 +286,7 @@ pub struct OutlineFocus {
 #[derive(PartialEq)]
 struct IndicatorSettings {
     thickness: f32,
+    bottom_border: bool,
     outer_radius: [f32; 4],
     alpha: f32,
     color: [f32; 4],
@@ -303,6 +304,7 @@ impl IndicatorSettings {
             Uniform::new("color", premultiply(self.color)),
             Uniform::new("ring_color", premultiply(self.ring_color)),
             Uniform::new("thickness", self.thickness),
+            Uniform::new("bottom_border", if self.bottom_border { 1.0 } else { 0.0 }),
             Uniform::new("ring_width", self.ring_width),
             Uniform::new(
                 "focus_mode",
@@ -346,6 +348,7 @@ impl IndicatorShader {
                 UniformName::new("focus_progress", UniformType::_1f),
                 UniformName::new("focus_tip", UniformType::_1f),
                 UniformName::new("thickness", UniformType::_1f),
+                UniformName::new("bottom_border", UniformType::_1f),
                 UniformName::new("ring_width", UniformType::_1f),
                 UniformName::new("scale", UniformType::_1f),
                 UniformName::new("radius", UniformType::_4f),
@@ -463,9 +466,41 @@ impl IndicatorShader {
         ring_color: iced_core::Color,
         focus: Option<OutlineFocus>,
     ) -> PixelShaderElement {
+        Self::animated_outline_with_bottom_border(
+            renderer,
+            key,
+            geo,
+            thickness,
+            outer_radius,
+            alpha,
+            scale,
+            color,
+            ring_width,
+            ring_color,
+            focus,
+            true,
+        )
+    }
+
+    /// An attached Halo leaves its bottom edge to the window's own border.
+    pub fn animated_outline_with_bottom_border<R: AsGlowRenderer>(
+        renderer: &R,
+        key: impl Into<Key>,
+        geo: Rectangle<f64, Local>,
+        thickness: f32,
+        outer_radius: [f32; 4],
+        alpha: f32,
+        scale: f64,
+        color: iced_core::Color,
+        ring_width: f32,
+        ring_color: iced_core::Color,
+        focus: Option<OutlineFocus>,
+        bottom_border: bool,
+    ) -> PixelShaderElement {
         let rgba = |color: iced_core::Color| [color.r, color.g, color.b, color.a];
         let settings = IndicatorSettings {
             thickness,
+            bottom_border,
             outer_radius,
             alpha,
             scale,

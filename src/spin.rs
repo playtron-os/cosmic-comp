@@ -179,7 +179,9 @@ fn report_every(secs: u64) {
         .spawn(move || {
             let mut previous = [0u64; N];
             let mut previous_sites = [0u64; SLOTS];
-            tracing::warn!("[spin] counting; a summary follows every {secs}s, as events per second");
+            tracing::warn!(
+                "[spin] counting; a summary follows every {secs}s, as events per second"
+            );
             loop {
                 std::thread::sleep(Duration::from_secs(secs));
                 let mut line = String::new();
@@ -208,11 +210,7 @@ fn report_every(secs: u64) {
                 }
                 sites.sort_by(|a, b| b.0.cmp(&a.0));
                 for (rate, loc) in sites.iter().take(8) {
-                    tracing::warn!(
-                        "[spin]   caller {}:{} = {rate}/s",
-                        loc.file(),
-                        loc.line()
-                    );
+                    tracing::warn!("[spin]   caller {}:{} = {rate}/s", loc.file(), loc.line());
                 }
                 let lost = SITES_OVERFLOWED.load(Relaxed);
                 if lost != 0 {

@@ -213,10 +213,24 @@ impl Focus {
         header_offset: i32,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
-        let geo = surface.geometry();
+        Self::under_geometry(
+            surface.geometry(),
+            header_height,
+            header_input_height,
+            header_offset,
+            location,
+        )
+    }
+
+    fn under_geometry(
+        geo: Rectangle<i32, Logical>,
+        header_height: i32,
+        header_input_height: i32,
+        header_offset: i32,
+        location: Point<f64, Logical>,
+    ) -> Option<Focus> {
         let loc = location.to_i32_floor::<i32>() - geo.loc;
-        if header_offset < 0
-            && loc.x >= 0
+        if loc.x >= 0
             && loc.x < geo.size.w
             && loc.y >= header_offset
             && loc.y < header_offset + header_input_height
@@ -238,8 +252,6 @@ impl Focus {
             Some(Focus::ResizeLeft)
         } else if loc.x >= geo.size.w {
             Some(Focus::ResizeRight)
-        } else if loc.y < header_input_height {
-            Some(Focus::Header)
         } else {
             None
         }
@@ -580,7 +592,8 @@ impl CosmicWindowInternal {
 
     /// Space the active theme reserves above the client surface.
     fn ssd_height(&self) -> i32 {
-        super::header_bar::ssd_header_height(&self.theme.lock().unwrap()) as i32
+        super::header_bar::ssd_header_height_for(&self.theme.lock().unwrap(), self.joined_halo())
+            as i32
     }
 
     fn ssd_render_height(&self) -> i32 {
@@ -592,11 +605,24 @@ impl CosmicWindowInternal {
     }
 
     fn ssd_overhang(&self) -> i32 {
-        super::header_bar::ssd_header_overhang(&self.theme.lock().unwrap()) as i32
+        let offset = self.halo_offset();
+        super::header_bar::ssd_header_overhang(&self.theme.lock().unwrap()) as i32 + offset
     }
 
     fn ssd_render_overhang(&self) -> i32 {
-        super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32
+        let offset = self.halo_offset();
+        super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32 + offset
+    }
+
+    fn halo_offset(&self) -> i32 {
+        super::header_bar::halo_header_offset(&self.theme.lock().unwrap(), self.joined_halo())
+    }
+
+    fn joined_halo(&self) -> bool {
+        let allows_overlay = self.window.wl_surface().is_some_and(|surface| {
+            crate::wayland::protocols::halo_header::allows_overlay(&surface)
+        });
+        self.fullscreen_output.is_none() && !is_surface_embedded(&self.window) && !allows_overlay
     }
 
     fn uses_halo_header(&self) -> bool {
@@ -1264,9 +1290,13 @@ impl CosmicWindow {
 
             let mut geo = SpaceElement::geometry(&p.window).to_f64();
             if has_ssd {
-                // Conventional bars are part of the outer window bounds;
-                // Halo reserves no height, so this is a no-op for it.
-                geo.size.h += p.ssd_height() as f64;
+                if p.uses_halo_header() {
+                    // Halo casts its own shadow; don't shadow an empty full-width
+                    // band beside it. Keep the body's shadow on the client.
+                    geo.loc.y += p.ssd_height() as f64;
+                } else {
+                    geo.size.h += p.ssd_height() as f64;
+                }
             }
             geo = geo.upscale(scale);
             geo.loc += location.to_f64().to_logical(output_scale);
@@ -1657,11 +1687,13 @@ pub(crate) fn halo_backdrop_blur(
                 |value: f32| value.min(maximum).round().clamp(0.0, f32::from(u8::MAX)) as u8;
             (
                 quad.bounds,
+                // Smithay outline/blur order is BR, TR, BL, TL, not Iced's
+                // clockwise TL, TR, BR, BL order.
                 [
-                    to_u8(radius.top_left),
-                    to_u8(radius.top_right),
                     to_u8(radius.bottom_right),
+                    to_u8(radius.top_right),
                     to_u8(radius.bottom_left),
+                    to_u8(radius.top_left),
                 ],
             )
         })
@@ -1814,7 +1846,7 @@ impl Program for CosmicWindowInternal {
         theme: &crate::comp_theme::CompTheme,
     ) -> Option<crate::utils::iced::Visibility> {
         super::header_bar::uses_halo_header(theme).then(|| {
-            super::header_bar::halo_visibility(
+            let mut visibility = super::header_bar::halo_visibility(
                 theme,
                 super::header_bar::halo_is_visible(
                     self.fullscreen_output.is_some(),
@@ -1822,7 +1854,12 @@ impl Program for CosmicWindowInternal {
                     self.activated.load(Ordering::SeqCst),
                     self.menu_open.load(Ordering::SeqCst),
                 ),
-            )
+            );
+            if self.joined_halo() {
+                // Approach the join from above, never through client content.
+                visibility.hidden_offset.y = -visibility.hidden_offset.y.abs();
+            }
+            visibility
         })
     }
 
@@ -1856,11 +1893,13 @@ impl Program for CosmicWindowInternal {
     ) -> Option<crate::utils::iced::FocusOutline> {
         (super::header_bar::uses_halo_header(theme) && !is_surface_embedded(&self.window)).then(
             || {
-                super::header_bar::halo_focus_outline(
+                let mut outline = super::header_bar::halo_focus_outline(
                     theme,
                     self.activated.load(Ordering::SeqCst),
                     self.fullscreen_output.is_some() || self.window.is_fullscreen(true),
-                )
+                );
+                outline.bottom_border = !self.joined_halo();
+                outline
             },
         )
     }
@@ -1904,6 +1943,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         let focused = win.activated.load(Ordering::SeqCst);
 
         let mut header = super::header_bar::header_bar()
+            .joined_to_window(win.joined_halo())
             .compositor_outline(!is_surface_embedded(&win.window))
             .title(title)
             .on_drag(Message::DragStart)
@@ -1986,14 +2026,15 @@ impl SpaceElement for CosmicWindow {
                 bbox.loc -= Point::from((RESIZE_BORDER, RESIZE_BORDER));
                 bbox.size += Size::from((RESIZE_BORDER * 2, RESIZE_BORDER * 2));
             }
+            if has_ssd {
+                bbox.size.h += p.ssd_height();
+            }
             if has_ssd && p.uses_halo_header() {
                 let halo_top = p.window.geometry().loc.y - p.ssd_render_overhang();
                 if halo_top < bbox.loc.y {
                     bbox.size.h += bbox.loc.y - halo_top;
                     bbox.loc.y = halo_top;
                 }
-            } else if has_ssd {
-                bbox.size.h += p.ssd_height();
             }
 
             bbox
@@ -2676,6 +2717,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn joined_halo_routes_input_above_its_reserved_client_origin() {
+        let geo = Rectangle::new((7, 9).into(), (800, 600).into());
+        let hit = |x, y| Focus::under_geometry(geo, 31, 34, -3, Point::from((x + 7.0, y + 9.0)));
+        assert_eq!(hit(100.0, 0.0), Some(Focus::Header));
+        assert_eq!(hit(100.0, 30.9), Some(Focus::Header));
+        assert_eq!(hit(100.0, 31.0), None);
+        assert_eq!(hit(100.0, 40.0), None);
+        assert_eq!(hit(-1.0, 40.0), Some(Focus::ResizeLeft));
+        assert_eq!(hit(100.0, 630.9), None);
+        assert_eq!(hit(100.0, 631.0), Some(Focus::ResizeBottom));
+    }
+
+    #[test]
     fn glob_match_handles_the_chromium_app_id_shape() {
         // Chromium app windows report `chrome-<url host>__-<profile directory>`.
         assert!(glob_match(
@@ -2723,6 +2777,33 @@ mod tests {
         assert_eq!(bounds.x, 80.0);
         assert_eq!(bounds.width, 240.0);
         assert_eq!(radii, [16; 4]);
+    }
+
+    #[test]
+    fn halo_corners_are_converted_from_iced_to_renderer_order() {
+        let mut layer = iced_tiny_skia::Layer::default();
+        let quad = iced_core::renderer::Quad {
+            bounds: iced_core::Rectangle::new((80.0, 3.0).into(), (240.0, 31.0).into()),
+            border: iced_core::Border {
+                radius: iced_core::border::Radius {
+                    top_left: 3.0,
+                    top_right: 5.0,
+                    bottom_right: 7.0,
+                    bottom_left: 11.0,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        layer
+            .quads
+            .push((quad, iced_core::Background::Color(Color::BLACK)));
+        let (_, radii) = halo_backdrop_blur(&[layer], 31.0, 400.0).unwrap();
+        assert_eq!(
+            radii,
+            [7, 5, 11, 3],
+            "BR, TR, BL, TL for both blur and outline"
+        );
     }
 
     #[test]

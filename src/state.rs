@@ -24,6 +24,7 @@ use crate::{
             backdrop_color::BackdropColorState,
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
+            halo_header::HaloHeaderState,
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
             kora_image_capture_size::CaptureSizeState,
@@ -363,6 +364,7 @@ pub struct Common {
     pub backdrop_color_state: BackdropColorState,
     pub compositor_state: CompositorState,
     pub corner_radius_state: CornerRadiusState,
+    pub halo_header_state: HaloHeaderState,
     pub layer_corner_radius_state: LayerCornerRadiusState,
     pub layer_shadow_state: LayerShadowManagerState,
     pub layer_auto_hide_state: LayerAutoHideState,
@@ -793,6 +795,7 @@ impl State {
         let backdrop_color_state = BackdropColorState::new::<Self>(dh);
         let compositor_state = CompositorState::new::<Self>(dh);
         let corner_radius_state = CornerRadiusState::new::<Self>(dh);
+        let halo_header_state = HaloHeaderState::new(dh);
         let layer_corner_radius_state = LayerCornerRadiusState::new::<Self>(dh);
         let layer_shadow_state = LayerShadowManagerState::new::<Self>(dh);
         let layer_auto_hide_state = LayerAutoHideState::new::<Self>(dh);
@@ -959,6 +962,7 @@ impl State {
                 backdrop_color_state,
                 compositor_state,
                 corner_radius_state,
+                halo_header_state,
                 layer_corner_radius_state,
                 layer_shadow_state,
                 layer_auto_hide_state,
