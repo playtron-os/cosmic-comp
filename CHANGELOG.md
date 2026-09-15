@@ -1,3 +1,10 @@
+## [1.47.4](https://github.com/playtron-os/cosmic-comp/compare/v1.47.3...v1.47.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* add proper actions to halo window header ([e933b8d](https://github.com/playtron-os/cosmic-comp/commit/e933b8dc6a9fc008a80ec983e654a72cd5abb834))
+
 ## [1.47.3](https://github.com/playtron-os/cosmic-comp/compare/v1.47.2...v1.47.3) (2026-09-13)
 
 
