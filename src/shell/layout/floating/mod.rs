@@ -36,7 +36,7 @@ use smithay::{
     wayland::seat::WaylandFocus,
 };
 
-use crate::shell::element::surface::PopupShadow;
+use crate::shell::element::surface::{PopupShadow, PopupStyle};
 use crate::{
     backend::render::{BackdropShader, IndicatorShader, Key, Usage, element::AsGlowRenderer},
     shell::{
@@ -3186,7 +3186,7 @@ impl FloatingLayout {
         let output_scale = output.current_scale().fractional_scale();
         // Resolved once: the theme is the same for every popup on the output,
         // and this allocates.
-        let shadow_layers = self.theme.dropdown_shadow();
+        let popup_style = PopupStyle::from_theme(self.theme.theme());
 
         for elem in self
             .animations
@@ -3234,10 +3234,10 @@ impl FloatingLayout {
                     scanout_node,
                     push,
                     Some(PopupShadow {
-                        // The same shadow an application draws under its own
-                        // menus, so a compositor-drawn one is not a different
-                        // weight from a client-drawn one.
-                        layers: &shadow_layers,
+                        // Unless the theme opts into glass, the same shadow an
+                        // application draws under its own menus, so a
+                        // compositor-drawn one is not a different weight.
+                        style: &popup_style,
                         push: &mut |element| shadows.push(element),
                     }),
                 );

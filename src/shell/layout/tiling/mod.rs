@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::shell::element::surface::PopupShadow;
+use crate::shell::element::surface::{PopupShadow, PopupStyle};
 use crate::{
     backend::render::{
         ACTIVE_GROUP_COLOR, BackdropShader, GROUP_COLOR, IndicatorShader, Key, Usage,
@@ -4267,7 +4267,7 @@ impl TilingLayout {
         let output_scale = self.output.current_scale().fractional_scale();
         // Resolved once: the theme is the same for every popup on the output,
         // and this allocates.
-        let shadow_layers = theme.dropdown_shadow();
+        let popup_style = PopupStyle::from_theme(theme.theme());
 
         let (target_tree, duration, _) = if self.queue.animation_start.is_some() {
             self.queue
@@ -4337,7 +4337,7 @@ impl TilingLayout {
                 percentage,
                 swap_desc.is_some(),
                 scanout_node,
-                &shadow_layers,
+                &popup_style,
                 window_alpha,
                 push,
             );
@@ -4380,7 +4380,7 @@ impl TilingLayout {
             overview,
             swap_desc.clone(),
             scanout_node,
-            &shadow_layers,
+            &popup_style,
             window_alpha,
             push,
         );
@@ -5075,7 +5075,7 @@ fn render_old_tree_popups<R>(
     percentage: f32,
     is_swap_mode: bool,
     scanout_node: Option<DrmNode>,
-    shadow_layers: &[iced_core::Shadow],
+    popup_style: &PopupStyle,
     window_alpha: f32,
     push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
 ) where
@@ -5105,7 +5105,7 @@ fn render_old_tree_popups<R>(
                 scanout_node,
                 push,
                 Some(PopupShadow {
-                    layers: shadow_layers,
+                    style: popup_style,
                     push: &mut |element| shadows.push(element),
                 }),
             );
@@ -5328,7 +5328,7 @@ fn render_new_tree_popups<R>(
     overview: (OverviewMode, Option<(SwapIndicator, Option<&Tree<Data>>)>),
     swap_desc: Option<NodeDesc>,
     scanout_node: Option<DrmNode>,
-    shadow_layers: &[iced_core::Shadow],
+    popup_style: &PopupStyle,
     window_alpha: f32,
     push: &mut dyn FnMut(CosmicMappedRenderElement<R>),
 ) where
@@ -5378,7 +5378,7 @@ fn render_new_tree_popups<R>(
                     scanout_node,
                     push,
                     Some(PopupShadow {
-                        layers: shadow_layers,
+                        style: popup_style,
                         push: &mut |element| shadows.push(element),
                     }),
                 );

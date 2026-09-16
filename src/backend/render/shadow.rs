@@ -31,6 +31,7 @@ pub struct ShadowParameters {
     shadow_color: [f32; 4],
     shadow_offset: [f32; 2],
     shadow_softness: f32,
+    shadow_spread: f32,
 }
 type ShadowCache = RefCell<HashMap<CosmicMappedKey, (ShadowParameters, PixelShaderElement)>>;
 /// Cache for layer surface shadows.
@@ -86,6 +87,7 @@ impl ShadowShader {
             shadow_color,
             shadow_offset,
             shadow_softness,
+            shadow_spread: 0.0,
         };
         let ceil = |logical: f64| (logical * scale).ceil() / scale;
 
@@ -253,6 +255,8 @@ impl ShadowShader {
         shadow_color: [f32; 4],
         shadow_offset: [f32; 2],
         shadow_softness: f32,
+        // Grows the shadow box, or shrinks it when negative, like CSS spread.
+        shadow_spread: f32,
     ) -> PixelShaderElement {
         let params = ShadowParameters {
             geo,
@@ -262,6 +266,7 @@ impl ShadowShader {
             shadow_color,
             shadow_offset,
             shadow_softness,
+            shadow_spread,
         };
         let ceil = |logical: f64| (logical * scale).ceil() / scale;
 
@@ -290,7 +295,6 @@ impl ShadowShader {
 
             // Shadow parameters from caller
             let softness = shadow_softness as f64;
-            let spread = 0.;
             let offset = [shadow_offset[0] as f64, shadow_offset[1] as f64];
             let color = shadow_color;
 
@@ -308,25 +312,15 @@ impl ShadowShader {
             let width = ceil(sigma * 4.);
 
             let offset: Point<f64, Local> = Point::new(ceil(offset[0]), ceil(offset[1]));
-            let spread = ceil(spread.abs()).copysign(spread);
-            let offset = offset - Point::new(spread, spread);
-
-            let box_size = if spread >= 0. {
-                geo.size + Size::new(spread, spread).upscale(2.)
-            } else {
-                geo.size - Size::new(-spread, -spread).upscale(2.)
-            };
+            let spread = ceil((shadow_spread as f64).abs()).copysign(shadow_spread as f64);
 
             let win_radius = radius;
-            let radius = radius.map(|r| if r > 0. { r.saturating_add(spread) } else { 0. });
-
-            let shader_size = geo.size
-                + Size::from((width + offset.x.abs(), width + offset.y.abs())).upscale(2.)
-                + Size::new(spread, spread).upscale(2.);
-            let mut shader_geo = Rectangle::new(
-                Point::from((-width - offset.x.abs(), -width - offset.y.abs())),
-                shader_size,
-            );
+            let LayerShadowGeometry {
+                offset,
+                box_size,
+                radius,
+                mut shader_geo,
+            } = layer_shadow_geometry(geo.size, radius, offset, width, spread);
 
             // Primary shadow transforms
             let window_geo = Rectangle::new(Point::new(0., 0.) - shader_geo.loc, geo.size);
@@ -411,5 +405,134 @@ impl ShadowShader {
         }
 
         cache.get(&key).unwrap().2.clone()
+    }
+}
+
+/// One shadow layer's box around a surface, and the shader area that holds it blurred.
+#[derive(Debug, PartialEq)]
+struct LayerShadowGeometry {
+    /// Box origin relative to the surface, spread applied.
+    offset: Point<f64, Local>,
+    box_size: Size<f64, Local>,
+    radius: [f64; 4],
+    shader_geo: Rectangle<f64, Local>,
+}
+
+/// Negative spread shrinks the box to no less than empty and its corners to no
+/// less than square: smithay asserts on a negative `Size`, and the shader cannot
+/// draw a negative radius.
+fn layer_shadow_geometry(
+    size: Size<f64, Local>,
+    radius: [f64; 4],
+    offset: Point<f64, Local>,
+    width: f64,
+    spread: f64,
+) -> LayerShadowGeometry {
+    let offset = offset - Point::new(spread, spread);
+    let box_size = Size::new(
+        (size.w + spread * 2.).max(0.),
+        (size.h + spread * 2.).max(0.),
+    );
+    let radius = radius.map(|r| if r > 0. { (r + spread).max(0.) } else { 0. });
+    // A shrunk box already fits in the area an unspread one needs.
+    let margin = spread.max(0.);
+    let shader_geo = Rectangle::new(
+        Point::new(-width - offset.x.abs(), -width - offset.y.abs()),
+        size + Size::new(
+            width + offset.x.abs() + margin,
+            width + offset.y.abs() + margin,
+        )
+        .upscale(2.),
+    );
+    LayerShadowGeometry {
+        offset,
+        box_size,
+        radius,
+        shader_geo,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 32px blur, as design shadow-3's widest layer.
+    const WIDTH: f64 = 64.;
+
+    fn geometry(
+        size: (f64, f64),
+        radius: f64,
+        offset: (f64, f64),
+        spread: f64,
+    ) -> LayerShadowGeometry {
+        layer_shadow_geometry(
+            Size::new(size.0, size.1),
+            [radius; 4],
+            Point::new(offset.0, offset.1),
+            WIDTH,
+            spread,
+        )
+    }
+
+    /// The blurred box has to fit the drawn area, or the shadow is cut off flat.
+    fn assert_holds_blurred_box(g: &LayerShadowGeometry) {
+        let blurred = Rectangle::<f64, Local>::new(
+            g.offset - Point::new(WIDTH, WIDTH),
+            g.box_size + Size::new(WIDTH, WIDTH).upscale(2.),
+        );
+        assert!(
+            g.shader_geo.contains_rect(blurred),
+            "{g:?} does not hold {blurred:?}"
+        );
+    }
+
+    /// Design shadow-3 carries spread -8. That built a negative `Size`, which
+    /// smithay debug-asserts on, and on a popup under 16px a negative box.
+    #[test]
+    fn negative_spread_on_a_tiny_popup_does_not_panic() {
+        let g = geometry((10., 10.), 8., (0., 12.), -8.);
+        assert_eq!(g.box_size, Size::new(0., 0.));
+        assert_eq!(g.radius, [0.; 4]);
+        assert_holds_blurred_box(&g);
+    }
+
+    #[test]
+    fn negative_spread_never_makes_a_negative_radius() {
+        let g = layer_shadow_geometry(
+            Size::new(200., 100.),
+            [4., 0., 12., 8.],
+            Point::new(0., 12.),
+            WIDTH,
+            -8.,
+        );
+        assert_eq!(g.radius, [0., 0., 4., 0.]);
+    }
+
+    #[test]
+    fn spread_grows_or_shrinks_the_box_about_its_offset() {
+        let grown = geometry((200., 100.), 8., (0., 12.), 4.);
+        assert_eq!(grown.box_size, Size::new(208., 108.));
+        assert_eq!(grown.offset, Point::new(-4., 8.));
+        assert_eq!(grown.radius, [12.; 4]);
+        assert_holds_blurred_box(&grown);
+
+        let shrunk = geometry((200., 100.), 8., (0., 12.), -8.);
+        assert_eq!(shrunk.box_size, Size::new(184., 84.));
+        assert_eq!(shrunk.offset, Point::new(8., 20.));
+        assert_holds_blurred_box(&shrunk);
+    }
+
+    /// Spread 0, which every layer-shell shadow passes, keeps the geometry it had.
+    #[test]
+    fn zero_spread_is_unchanged() {
+        assert_eq!(
+            geometry((200., 100.), 8., (0., 12.), 0.),
+            LayerShadowGeometry {
+                offset: Point::new(0., 12.),
+                box_size: Size::new(200., 100.),
+                radius: [8.; 4],
+                shader_geo: Rectangle::new(Point::new(-64., -76.), Size::new(328., 252.)),
+            }
+        );
     }
 }

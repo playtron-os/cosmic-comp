@@ -13,7 +13,10 @@ use tracing::warn;
 
 use crate::backend::render::{
     element::AsGlowRenderer,
-    wayland::{blur_effect::BlurElement, clipped_surface::ClippedSurfaceRenderElement},
+    wayland::{
+        blur_effect::{BlurDefaults, BlurElement},
+        clipped_surface::ClippedSurfaceRenderElement,
+    },
 };
 
 pub mod blur_effect;
@@ -36,7 +39,7 @@ pub fn push_render_elements_from_surface_tree<R>(
     should_clip: bool,
     radii: [u8; 4],
     blur_geometry: impl Into<Option<Rectangle<f64, Logical>>>,
-    blur_strength: usize,
+    blur_defaults: impl Into<BlurDefaults>,
     kind: impl Into<KindEvaluation>,
     push_above: &mut dyn FnMut(SurfaceRenderElement<R>),
     mut push_below: Option<&mut dyn FnMut(SurfaceRenderElement<R>)>,
@@ -47,6 +50,7 @@ pub fn push_render_elements_from_surface_tree<R>(
     let location = location.into().to_f64();
     let geometry = geometry.into();
     let blur_geometry = blur_geometry.into();
+    let blur_defaults = blur_defaults.into();
     let scale = scale.into();
     let kind = kind.into();
     let mut passed_main = false;
@@ -96,7 +100,7 @@ pub fn push_render_elements_from_surface_tree<R>(
                                 blur_geo,
                                 scale.x,
                                 radii,
-                                blur_strength,
+                                blur_defaults,
                                 alpha,
                             );
                             let elem: SurfaceRenderElement<R> = if radii.iter().any(|r| *r != 0)

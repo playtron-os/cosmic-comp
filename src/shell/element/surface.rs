@@ -1,4 +1,5 @@
 use iced_core::Shadow;
+use icetron_themes::ThemeInterface;
 use smithay::backend::renderer::gles::element::PixelShaderElement;
 use smithay::reexports::wayland_server::protocol::wl_surface;
 
@@ -10,7 +11,9 @@ use crate::{
         animations::motion::Motion,
         element::AsGlowRenderer,
         shadow::ShadowShader,
-        wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
+        wayland::{
+            SurfaceRenderElement, blur_effect::BlurDefaults, push_render_elements_from_surface_tree,
+        },
     },
     comp_theme::CompTheme,
     shell::focus::target::PointerFocusTarget,
@@ -268,17 +271,53 @@ fn backdrop_corners(radii: [u8; 4]) -> [f32; 4] {
     [radii[3], radii[1], radii[0], radii[2]].map(f32::from)
 }
 
-/// How to draw the shadow behind a popup that asked for one.
+/// How app-window popups look, resolved from the theme once per output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PopupStyle {
+    /// Layers to draw, in the order the theme lists them — furthest from the
+    /// surface first, so later ones land on top.
+    pub shadow: Vec<Shadow>,
+    /// Backdrop defaults under the popup's own requests; `None` keeps the window's.
+    pub blur: Option<BlurDefaults>,
+}
+
+impl PopupStyle {
+    /// The design's menu glass when the theme opts in; otherwise the dropdown
+    /// shadow over the window's own blur.
+    pub fn from_theme(theme: &dyn ThemeInterface) -> Self {
+        if theme.popup_menu_glass() {
+            Self {
+                shadow: theme.shadow_elevated(),
+                blur: Some(BlurDefaults::glass(
+                    theme.backdrop_blur_popover(),
+                    theme.backdrop_saturate_popover(),
+                )),
+            }
+        } else {
+            Self {
+                shadow: theme.dropdown_shadow(),
+                blur: None,
+            }
+        }
+    }
+}
+
+/// Backdrop defaults for the popups of a window blurring at `strength`.
+fn popup_blur(style: Option<&PopupStyle>, strength: usize) -> BlurDefaults {
+    style
+        .and_then(|style| style.blur)
+        .unwrap_or_else(|| strength.into())
+}
+
+/// The look a layout draws its popups with, and where their shadows go.
 ///
 /// The element is built where the popup's geometry is worked out, but handed
 /// back rather than pushed: `SurfaceRenderElement` cannot carry a shader
 /// element, and the callers that can are the ones whose render element type
 /// already accepts one.
 pub struct PopupShadow<'a> {
-    /// Layers to draw, in the order the theme lists them — furthest from the
-    /// surface first, so later ones land on top.
-    pub layers: &'a [Shadow],
-    /// Where each element built goes.
+    pub style: &'a PopupStyle,
+    /// Where each shadow element built goes.
     pub push: &'a mut dyn FnMut(PixelShaderElement),
 }
 
@@ -1222,6 +1261,7 @@ impl CosmicSurface {
         R: Renderer + ImportAll + AsGlowRenderer,
         R::TextureId: Clone + 'static,
     {
+        let blur = popup_blur(shadow.as_ref().map(|shadow| shadow.style), blur_strength);
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
@@ -1332,7 +1372,7 @@ impl CosmicSurface {
                         false,
                         radii,
                         None,
-                        blur_strength,
+                        blur,
                         scanout_kind_eval(None, scanout_node, alpha),
                         push,
                         None,
@@ -1366,7 +1406,12 @@ impl CosmicSurface {
         // the caller has resolved by this point.
         let geo = geometry.to_i32_round().as_local();
 
-        for (index, layer) in shadow.layers.iter().enumerate() {
+        for (index, layer) in shadow.style.shadow.iter().enumerate() {
+            // An inset layer belongs inside the client's own content, and a
+            // clear one draws nothing.
+            if layer.inset || layer.color.a <= 0.0 {
+                continue;
+            }
             let element = ShadowShader::layer_element(
                 renderer,
                 surface,
@@ -1384,6 +1429,7 @@ impl CosmicSurface {
                 [layer.color.r, layer.color.g, layer.color.b, layer.color.a],
                 [layer.offset.x, layer.offset.y],
                 layer.blur_radius,
+                layer.spread_radius,
             );
             (shadow.push)(element);
         }
@@ -1628,5 +1674,105 @@ mod screenshot_flash_tests {
         // The outline shader packs `radius` as [r[3], r[1], r[0], r[2]] for
         // (top-left, top-right, bottom-right, bottom-left).
         assert_eq!(backdrop_corners([1, 2, 3, 4]), [4.0, 2.0, 1.0, 3.0]);
+    }
+}
+
+#[cfg(test)]
+mod popup_style_tests {
+    use super::*;
+    use crate::shell::element::window::WINDOW_BLUR_STRENGTH;
+    use iced_core::{Color, Vector};
+    use icetron_themes::dynamic::{DEFAULT_THEME_PAIR, DynamicTheme};
+    use std::sync::Arc;
+
+    const GLASS: BlurDefaults = BlurDefaults {
+        strength: 6,
+        saturation: 1.3,
+        tint: 0.0,
+        border: 0.0,
+    };
+
+    /// The embedded default theme, so an installed one cannot leak in.
+    fn default_tokens() -> DynamicTheme {
+        DynamicTheme::from_ron_str(DEFAULT_THEME_PAIR.dark_fallback).expect("embedded theme parses")
+    }
+
+    /// Design popover values over two different shadows, so picking the wrong
+    /// one cannot pass by coincidence.
+    fn tokens(glass: bool) -> DynamicTheme {
+        let mut tokens = default_tokens();
+        tokens.popup_menu_glass = glass;
+        tokens.backdrop_blur_popover = 40.0;
+        tokens.backdrop_saturate_popover = 1.3;
+        tokens.shadow_elevated = vec![Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.2),
+            offset: Vector::new(0.0, 12.0),
+            blur_radius: 32.0,
+            spread_radius: -8.0,
+            inset: false,
+        }];
+        tokens.dropdown_shadow = Some(vec![Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+            offset: Vector::new(0.0, 2.0),
+            blur_radius: 4.0,
+            ..Shadow::default()
+        }]);
+        tokens
+    }
+
+    #[test]
+    fn glass_popups_take_the_elevated_shadow_and_popover_backdrop() {
+        let tokens = tokens(true);
+        let style = PopupStyle::from_theme(&tokens);
+        assert_eq!(style.shadow, tokens.shadow_elevated());
+        assert_eq!(style.blur, Some(GLASS));
+    }
+
+    #[test]
+    fn without_glass_popups_keep_the_dropdown_shadow_and_window_blur() {
+        let tokens = tokens(false);
+        let style = PopupStyle::from_theme(&tokens);
+        assert_eq!(style.shadow, tokens.dropdown_shadow());
+        assert_eq!(style.blur, None);
+    }
+
+    /// Glass replaces the window's backdrop defaults. Without it, or with no
+    /// style at all (fullscreen, game mode, embedded, a move grab), the
+    /// caller's strength stands.
+    #[test]
+    fn popup_blur_takes_the_glass_or_keeps_the_callers_strength() {
+        let glass = PopupStyle::from_theme(&tokens(true));
+        let plain = PopupStyle::from_theme(&tokens(false));
+        assert_eq!(popup_blur(Some(&glass), 0), GLASS);
+        assert_eq!(
+            popup_blur(Some(&plain), WINDOW_BLUR_STRENGTH),
+            BlurDefaults::from(WINDOW_BLUR_STRENGTH)
+        );
+        assert_eq!(popup_blur(Some(&plain), 0), BlurDefaults::from(0));
+        assert_eq!(popup_blur(None, 0), BlurDefaults::from(0));
+    }
+
+    /// The shipped default leaves the switch off, so popups draw exactly as before.
+    #[test]
+    fn the_default_theme_keeps_todays_popups() {
+        let theme = CompTheme::new(Arc::new(default_tokens()), true);
+        assert!(!theme.popup_menu_glass());
+        let style = PopupStyle::from_theme(theme.theme());
+        assert_eq!(
+            style,
+            PopupStyle {
+                shadow: theme.dropdown_shadow(),
+                blur: None,
+            }
+        );
+        assert_eq!(
+            popup_blur(Some(&style), WINDOW_BLUR_STRENGTH),
+            BlurDefaults {
+                strength: 2,
+                saturation: 1.0,
+                tint: 0.15,
+                border: 0.2,
+            }
+        );
     }
 }

@@ -192,6 +192,44 @@ const DEFAULT_TINT: f32 = 0.15;
 /// stack's `BLUR_BORDER_STRENGTH`.
 const DEFAULT_BORDER: f32 = 0.2;
 
+/// The backdrop a surface gets for whatever it does not ask for itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlurDefaults {
+    pub strength: usize,
+    pub saturation: f32,
+    pub tint: f32,
+    pub border: f32,
+}
+
+impl From<usize> for BlurDefaults {
+    /// The frosted defaults at `strength`, which every surface had before a theme could set them.
+    fn from(strength: usize) -> Self {
+        Self {
+            strength,
+            saturation: DEFAULT_SATURATION,
+            tint: DEFAULT_TINT,
+            border: DEFAULT_BORDER,
+        }
+    }
+}
+
+impl BlurDefaults {
+    /// Design glass: a `radius_px` blur at `saturation`, with no frost tint or border.
+    pub fn glass(radius_px: f32, saturation: f32) -> Self {
+        Self {
+            strength: strength_for_radius(radius_px),
+            saturation,
+            tint: 0.0,
+            border: 0.0,
+        }
+    }
+
+    /// A radius the client asked for wins over the default strength.
+    fn strength_for(&self, requested_radius: Option<u32>) -> usize {
+        requested_radius.map_or(self.strength, |r| strength_for_radius(r as f32))
+    }
+}
+
 /// How the backdrop looks, once the client's requests and the compositor
 /// defaults have been reconciled. Resolved once per surface rather than per
 /// rect, since every rect of one surface shares it.
@@ -215,14 +253,14 @@ impl Default for BlurAppearance {
 }
 
 impl BlurAppearance {
-    /// Fall back to the compositor default for anything the client left unset.
+    /// Fall back to `defaults` for anything the client left unset.
     /// `0` cannot serve as the sentinel here -- it is a real value for all three
     /// (greyscale, no tint, no border) -- so absence is carried as `None`.
-    fn resolve(state: &ComputedBlurRegionCachedState) -> Self {
+    fn resolve(state: &ComputedBlurRegionCachedState, defaults: BlurDefaults) -> Self {
         Self {
-            saturation: state.saturation.unwrap_or(DEFAULT_SATURATION),
-            tint: state.tint.unwrap_or(DEFAULT_TINT),
-            border: state.border.unwrap_or(DEFAULT_BORDER),
+            saturation: state.saturation.unwrap_or(defaults.saturation),
+            tint: state.tint.unwrap_or(defaults.tint),
+            border: state.border.unwrap_or(defaults.border),
         }
     }
 }
@@ -574,7 +612,7 @@ impl BlurElement {
         geometry: Rectangle<f64, Logical>,
         output_scale: f64,
         radii: [u8; 4],
-        strength: usize,
+        defaults: BlurDefaults,
         alpha: f32,
     ) -> Result<Vec<Self>, R::Error> {
         // Blur disabled in config means no blur element at all, rather than a
@@ -621,10 +659,8 @@ impl BlurElement {
 
         // The client may ask for a strength. A hint: clamped to what the blur
         // can actually render.
-        let strength = blur
-            .blur_radius
-            .map(|r| strength_for_radius(r as f32))
-            .unwrap_or(strength);
+        let strength = defaults.strength_for(blur.blur_radius);
+        let appearance = BlurAppearance::resolve(&blur, defaults);
 
         tracing::trace!(
             geo_w = geometry.size.w,
@@ -634,6 +670,9 @@ impl BlurElement {
             requested_radius = ?blur.blur_radius,
             radii_entries = blur.region_radii.len(),
             strength,
+            saturation = appearance.saturation,
+            tint = appearance.tint,
+            border = appearance.border,
             "blur_region: building blur elements for surface"
         );
 
@@ -650,8 +689,7 @@ impl BlurElement {
         // screen corners and nothing else. A client that rounds each card to its
         // own radius needs an element per card. It also blits only each rect
         // rather than the whole surface.
-        let appearance = BlurAppearance::resolve(&blur);
-
+        //
         // Per-rect fade bookkeeping. `seen` is taken rather than borrowed, so
         // the loop below can hand `state` to `internal` mutably.
         let previously_seen = std::mem::take(&mut state.seen);
@@ -1696,5 +1734,65 @@ mod tests {
 
         assert!(snapped.size.w >= 0.);
         assert!(snapped.size.h >= 0.);
+    }
+}
+
+#[cfg(test)]
+mod blur_defaults_tests {
+    use super::*;
+
+    /// The design's 40px popover radius lands on step 6.
+    #[test]
+    fn popover_radius_maps_to_step_six() {
+        assert_eq!(strength_for_radius(40.0), 6);
+    }
+
+    /// A bare strength keeps the frosting every existing caller had.
+    #[test]
+    fn a_bare_strength_keeps_the_frosted_defaults() {
+        assert_eq!(
+            BlurDefaults::from(2),
+            BlurDefaults {
+                strength: 2,
+                saturation: 1.0,
+                tint: 0.15,
+                border: 0.2,
+            }
+        );
+    }
+
+    /// What the client sent wins; only what it left unset takes the defaults.
+    #[test]
+    fn client_values_win_over_the_defaults() {
+        let glass = BlurDefaults::glass(40.0, 1.3);
+
+        let unset = ComputedBlurRegionCachedState::default();
+        let resolved = BlurAppearance::resolve(&unset, glass);
+        assert_eq!(
+            (resolved.saturation, resolved.tint, resolved.border),
+            (1.3, 0.0, 0.0)
+        );
+        assert_eq!(glass.strength_for(unset.blur_radius), 6);
+
+        let client = ComputedBlurRegionCachedState {
+            blur_radius: Some(100),
+            saturation: Some(0.5),
+            tint: Some(0.3),
+            border: Some(0.4),
+            ..Default::default()
+        };
+        let resolved = BlurAppearance::resolve(&client, glass);
+        assert_eq!(
+            (resolved.saturation, resolved.tint, resolved.border),
+            (0.5, 0.3, 0.4)
+        );
+        assert_eq!(glass.strength_for(client.blur_radius), MAX_STEPS - 1);
+
+        // Zero is a request, not an absence.
+        let greyscale = ComputedBlurRegionCachedState {
+            saturation: Some(0.0),
+            ..Default::default()
+        };
+        assert_eq!(BlurAppearance::resolve(&greyscale, glass).saturation, 0.0);
     }
 }

@@ -1504,6 +1504,8 @@ where
                             shadow_color,
                             shadow_offset,
                             shadow_softness,
+                            // Layer-shell shadows keep an unspread box.
+                            0.0,
                         );
 
                         let shadow: WorkspaceRenderElement<R> =
@@ -1827,6 +1829,8 @@ where
                             shadow_color,
                             shadow_offset,
                             shadow_softness,
+                            // Layer-shell shadows keep an unspread box.
+                            0.0,
                         );
 
                         let shadow: WorkspaceRenderElement<R> =
