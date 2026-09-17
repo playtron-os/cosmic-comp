@@ -388,6 +388,39 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
+    /// Natural widths of the pill's two control groups, before anything is
+    /// dropped: the tray (divider, capture pair, chevron, new window) and the
+    /// window controls. The identity keeps room for them so it gives way
+    /// first, and the tray keeps room for the controls for the same reason.
+    fn halo_control_widths(&self, theme: &CompTheme) -> (f32, f32) {
+        let metrics = theme.halo_style();
+        let mut tray = metrics.border_width + 2.0 * metrics.control_size + theme.spacing_0_5();
+        let mut tray_items = 2_u32;
+        for present in [self.on_right_click.is_some(), self.on_new_window.is_some()] {
+            if present {
+                tray += metrics.control_size;
+                tray_items += 1;
+            }
+        }
+        let mut actions = 0.0_f32;
+        let mut action_items = 0_u32;
+        for present in [
+            self.on_minimize.is_some(),
+            self.on_maximize.is_some(),
+            self.on_fullscreen.is_some(),
+            self.on_close.is_some(),
+        ] {
+            if present {
+                actions += metrics.control_size;
+                action_items += 1;
+            }
+        }
+        (
+            rigid_width(tray, tray_items, metrics.gap),
+            rigid_width(actions, action_items, metrics.gap),
+        )
+    }
+
     /// Convert to an iced Element using icetron's app_header.
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
@@ -515,7 +548,23 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             // size, and the two labels ellipsize by max-min fairness.
             let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 if halo {
-                    let mut identity = crate::utils::iced::ElasticRow::new().spacing(title_gap);
+                    let metrics = theme.halo_style();
+                    let (tray_natural, actions_natural) = self.halo_control_widths(theme);
+                    // Only the siblings iced does not already account for: the
+                    // divider is Fixed and every gap is taken off the limit
+                    // before this row is measured, so reserving them again
+                    // would shrink the pill while it still fits.
+                    let after = tray_natural + actions_natural;
+                    let mut identity = crate::utils::iced::ElasticRow::new()
+                        .spacing(title_gap)
+                        .reserve(after)
+                        // Close never leaves, so its room outranks the floor.
+                        .reserve_min(
+                            metrics.control_size + metrics.border_width + 2.0 * metrics.gap,
+                        )
+                        // Room for a couple of characters and the ellipsis;
+                        // below that the app name leaves instead.
+                        .floor(title_style.font_size * 3.0);
                     if let Some(icon) = icon_element {
                         identity = identity.push_rigid(icon);
                     }
@@ -527,7 +576,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         let micro = theme.text_styles().micro();
                         style.font_size = micro.font_size;
                         style.line_height = micro.line_height;
-                        identity = identity.push_elastic(
+                        // First to go: it ellipsizes while that still helps,
+                        // then leaves rather than sit there as an ellipsis.
+                        identity = identity.push_elastic_droppable(
+                            1,
                             styled_text(name, style, theme.text_quaternary())
                                 .wrapping(iced_widget::text::Wrapping::None)
                                 .ellipsis(iced_widget::text::Ellipsis::End),
@@ -592,53 +644,55 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     background: Some(iced_core::Background::Color(theme.stroke_subtle())),
                     ..Default::default()
                 });
-            let mut tray = row![divider, capture]
+            // The divider only separates the title from the tray, so it goes
+            // with the capture pair rather than lingering as a stray hairline.
+            let capture_group = row![divider, capture]
                 .spacing(metrics.gap)
                 .align_y(Alignment::Center);
-            // Every control is `metrics.control_size` wide; the divider is a
-            // hairline and the two capture buttons sit `spacing_0_5` apart.
-            let mut tray_width =
-                metrics.border_width + 2.0 * metrics.control_size + theme.spacing_0_5();
-            let mut tray_items = 2_u32;
+            let (_, actions_natural) = self.halo_control_widths(theme);
+            let mut tray = crate::utils::iced::ElasticRow::new()
+                .spacing(metrics.gap)
+                // Keep room for the window controls so the tray gives way first.
+                .reserve(actions_natural)
+                .reserve_min(metrics.control_size + metrics.border_width + 2.0 * metrics.gap)
+                .push_droppable(4, capture_group);
             if let Some(message) = self.on_right_click.clone() {
-                tray = tray.push(halo_button(
-                    icons::CHEVRON_DOWN,
-                    Some(message),
-                    fl!("halo-window-menu"),
-                    HaloButtonRole::Menu,
-                    self.menu_open,
-                    theme,
-                ));
-                tray_width += metrics.control_size;
-                tray_items += 1;
+                tray = tray.push_droppable(
+                    2,
+                    halo_button(
+                        icons::CHEVRON_DOWN,
+                        Some(message),
+                        fl!("halo-window-menu"),
+                        HaloButtonRole::Menu,
+                        self.menu_open,
+                        theme,
+                    ),
+                );
             }
             if let Some(message) = self.on_new_window.clone() {
-                tray = tray.push(halo_button(
-                    icons::PLUS,
-                    Some(message),
-                    fl!("window-menu-new-window"),
-                    HaloButtonRole::Window,
-                    self.menu_open,
-                    theme,
-                ));
-                tray_width += metrics.control_size;
-                tray_items += 1;
+                tray = tray.push_droppable(
+                    3,
+                    halo_button(
+                        icons::PLUS,
+                        Some(message),
+                        fl!("window-menu-new-window"),
+                        HaloButtonRole::Window,
+                        self.menu_open,
+                        theme,
+                    ),
+                );
             }
-            let tray = tray.width(Length::Fixed(rigid_width(
-                tray_width,
-                tray_items,
-                metrics.gap,
-            )));
-            let mut actions = row![].spacing(metrics.gap);
-            let mut actions_width = 0.0f32;
-            let mut action_items = 0_u32;
+            // Close is the one control that never leaves; the rest go in this
+            // order as the pill runs out of room.
+            let mut actions = crate::utils::iced::ElasticRow::new().spacing(metrics.gap);
             let restore = self.maximized || self.fullscreen;
-            for (icon, message, label, destructive) in [
+            for (icon, message, label, destructive, rank) in [
                 (
                     icons::MINUS,
                     self.on_minimize.clone(),
                     fl!("window-menu-minimize"),
                     false,
+                    Some(1),
                 ),
                 (
                     if restore {
@@ -653,6 +707,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         fl!("window-menu-maximize")
                     },
                     false,
+                    Some(3),
                 ),
                 (
                     if self.fullscreen {
@@ -667,16 +722,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         fl!("window-menu-fullscreen")
                     },
                     false,
+                    Some(2),
                 ),
                 (
                     icons::X,
                     self.on_close.clone(),
                     fl!("window-menu-close"),
                     true,
+                    None,
                 ),
             ] {
                 if let Some(message) = message {
-                    actions = actions.push(halo_button(
+                    let button = halo_button(
                         icon,
                         Some(message),
                         label,
@@ -687,20 +744,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         },
                         self.menu_open,
                         theme,
-                    ));
-                    actions_width += metrics.control_size;
-                    action_items += 1;
+                    );
+                    actions = match rank {
+                        Some(rank) => actions.push_droppable(rank, button),
+                        None => actions.push_rigid(button),
+                    };
                 }
             }
-            // Iced's flex pass reserves `Length::Fixed` children before it hands
-            // the rest to a `Shrink` one, so pinning the control groups to the
-            // width they already take is what keeps a long title from swallowing
-            // them. It is their natural width, so nothing moves when it fits.
-            let actions = actions.width(Length::Fixed(rigid_width(
-                actions_width,
-                action_items,
-                metrics.gap,
-            )));
             header = header
                 .trailing(tray)
                 .action_buttons(actions)

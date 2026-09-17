@@ -23,7 +23,17 @@ pub struct ElasticRow<'a, Message, Theme, Renderer> {
     children: Vec<Element<'a, Message, Theme, Renderer>>,
     /// Parallel to `children`: whether the child may be squeezed.
     elastic: Vec<bool>,
+    /// Parallel to `children`: `Some(rank)` if the child may be dropped once
+    /// squeezing is not enough, lowest rank first. `None` never leaves.
+    priority: Vec<Option<u8>>,
     spacing: f32,
+    /// Width to leave for siblings laid out after this row.
+    reserve: f32,
+    /// Width the siblings get even if this row has to go below its floor.
+    reserve_min: f32,
+    /// Width below which squeezing an elastic child is pointless, so a
+    /// droppable sibling leaves instead.
+    floor: f32,
 }
 
 impl<Message, Theme, Renderer> Default for ElasticRow<'_, Message, Theme, Renderer> {
@@ -37,7 +47,11 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         Self {
             children: Vec::new(),
             elastic: Vec::new(),
+            priority: Vec::new(),
             spacing: 0.0,
+            reserve: 0.0,
+            reserve_min: 0.0,
+            floor: 0.0,
         }
     }
 
@@ -46,6 +60,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     pub fn push_rigid(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         self.children.push(child.into());
         self.elastic.push(false);
+        self.priority.push(None);
         self
     }
 
@@ -54,12 +69,67 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     pub fn push_elastic(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         self.children.push(child.into());
         self.elastic.push(true);
+        self.priority.push(None);
+        self
+    }
+
+    /// Add a child that leaves the row entirely once squeezing no longer frees
+    /// enough width. Lower ranks go first.
+    #[must_use]
+    pub fn push_droppable(
+        mut self,
+        rank: u8,
+        child: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.children.push(child.into());
+        self.elastic.push(false);
+        self.priority.push(Some(rank));
+        self
+    }
+
+    /// Add a child that gives way first and then leaves altogether: it shares
+    /// the shortfall like an elastic child, but once squeezing stops helping
+    /// it goes rather than sit there as an ellipsis.
+    #[must_use]
+    pub fn push_elastic_droppable(
+        mut self,
+        rank: u8,
+        child: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        self.children.push(child.into());
+        self.elastic.push(true);
+        self.priority.push(Some(rank));
         self
     }
 
     #[must_use]
     pub fn spacing(mut self, spacing: f32) -> Self {
         self.spacing = spacing;
+        self
+    }
+
+    /// Keep `reserve` px for whatever is laid out after this row, so this row
+    /// gives way before its siblings do.
+    #[must_use]
+    pub fn reserve(mut self, reserve: f32) -> Self {
+        self.reserve = reserve.max(0.0);
+        self
+    }
+
+    /// Width the siblings after this row keep whatever happens — the floor
+    /// gives way to it, so the one control that must never leave still fits
+    /// even when that costs the last of the text.
+    #[must_use]
+    pub fn reserve_min(mut self, reserve: f32) -> Self {
+        self.reserve_min = reserve.max(0.0);
+        self
+    }
+
+    /// Squeeze an elastic child no smaller than `floor`; past that a droppable
+    /// child leaves instead, so the text that remains stays readable.
+    #[must_use]
+    pub fn floor(mut self, floor: f32) -> Self {
+        self.floor = floor.max(0.0);
         self
     }
 
@@ -105,6 +175,56 @@ fn shares(natural: &[f32], elastic: &[bool], budget: f32) -> Option<Vec<f32>> {
     Some(shares)
 }
 
+/// Which children must leave for the rest to fit `budget`.
+///
+/// Squeezing comes first: an elastic child is counted at `floor` (or at its
+/// natural width, if that is already smaller). Only when even that does not
+/// fit does the lowest-ranked droppable child leave, and the question is
+/// asked again. A child with no rank never leaves, so the row always keeps
+/// its essentials however narrow it gets.
+fn drops(
+    natural: &[f32],
+    elastic: &[bool],
+    priority: &[Option<u8>],
+    spacing: f32,
+    budget: f32,
+    floor: f32,
+) -> Vec<bool> {
+    let mut dropped = vec![false; natural.len()];
+    loop {
+        let alive: Vec<usize> = (0..natural.len())
+            .filter(|index| !dropped[*index])
+            .collect();
+        if alive.is_empty() {
+            break;
+        }
+        let needed: f32 = alive
+            .iter()
+            .map(|&index| {
+                if elastic[index] {
+                    natural[index].min(floor)
+                } else {
+                    natural[index]
+                }
+            })
+            .sum::<f32>()
+            + spacing * (alive.len() - 1) as f32;
+        if needed <= budget {
+            break;
+        }
+        let Some(victim) = alive
+            .iter()
+            .copied()
+            .filter(|&index| priority[index].is_some())
+            .min_by_key(|&index| priority[index])
+        else {
+            break;
+        };
+        dropped[victim] = true;
+    }
+    dropped
+}
+
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
     for ElasticRow<'_, Message, Theme, Renderer>
 where
@@ -138,8 +258,20 @@ where
             return layout::Node::new(limits.resolve(Length::Shrink, Length::Shrink, Size::ZERO));
         }
 
+        // Whatever this row leaves unused stays with the siblings after it —
+        // but never below its own floor, or the row would squeeze itself away
+        // while those siblings still sat at their full width. Past that point
+        // the shortfall belongs to them, and they give way in their turn.
+        // A row can be handed a negative width by a parent that has already
+        // overflowed, so clamp against a floor of zero rather than against a
+        // bound that may sit below it.
+        let room = max.width.max(0.0);
+        let outer = (room - self.reserve)
+            .max(self.floor)
+            .min(room - self.reserve_min)
+            .clamp(0.0, room);
         let total_spacing = self.spacing * (count - 1) as f32;
-        let budget = (max.width - total_spacing).max(0.0);
+        let budget = (outer - total_spacing).max(0.0);
 
         // What every child would take if it were alone with the whole budget.
         let loose = layout::Limits::new(Size::ZERO, Size::new(budget, max.height));
@@ -154,13 +286,29 @@ where
             .collect();
         let natural: Vec<f32> = nodes.iter().map(|node| node.size().width).collect();
 
-        if let Some(shares) = shares(&natural, &self.elastic, budget) {
-            for index in 0..count {
-                if shares[index] >= natural[index] {
+        let dropped = drops(
+            &natural,
+            &self.elastic,
+            &self.priority,
+            self.spacing,
+            outer,
+            self.floor,
+        );
+        let alive = dropped.iter().filter(|gone| !**gone).count();
+        // A dropped child takes no width and no spacing with it.
+        let kept_spacing = self.spacing * (alive.saturating_sub(1)) as f32;
+        let budget = (outer - kept_spacing).max(0.0);
+
+        let kept: Vec<usize> = (0..count).filter(|index| !dropped[*index]).collect();
+        let kept_natural: Vec<f32> = kept.iter().map(|&index| natural[index]).collect();
+        let kept_elastic: Vec<bool> = kept.iter().map(|&index| self.elastic[index]).collect();
+        if let Some(shares) = shares(&kept_natural, &kept_elastic, budget) {
+            for (slot, &index) in kept.iter().enumerate() {
+                if shares[slot] >= natural[index] {
                     continue;
                 }
                 let limits =
-                    layout::Limits::new(Size::ZERO, Size::new(shares[index].max(0.0), max.height));
+                    layout::Limits::new(Size::ZERO, Size::new(shares[slot].max(0.0), max.height));
                 nodes[index] = self.children[index].as_widget_mut().layout(
                     &mut tree.children[index],
                     renderer,
@@ -168,13 +316,28 @@ where
                 );
             }
         }
+        let zero = layout::Limits::new(Size::ZERO, Size::ZERO);
+        for index in (0..count).filter(|index| dropped[*index]) {
+            nodes[index] = self.children[index].as_widget_mut().layout(
+                &mut tree.children[index],
+                renderer,
+                &zero,
+            );
+        }
 
         let height = nodes
             .iter()
-            .map(|node| node.size().height)
+            .enumerate()
+            .filter(|(index, _)| !dropped[*index])
+            .map(|(_, node)| node.size().height)
             .fold(0.0_f32, f32::max);
         let mut x = 0.0_f32;
-        for node in &mut nodes {
+        for (index, node) in nodes.iter_mut().enumerate() {
+            if dropped[index] {
+                // Park it where the row ends; it has no size to show.
+                node.move_to_mut(Point::new(x, height / 2.0));
+                continue;
+            }
             let size = node.size();
             node.move_to_mut(Point::new(x, (height - size.height) / 2.0));
             x += size.width + self.spacing;

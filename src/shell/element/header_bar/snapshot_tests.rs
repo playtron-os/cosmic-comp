@@ -771,6 +771,91 @@ fn cap(theme: &CompTheme, width: f32, square_top: bool) -> (f32, f32) {
     ((width - 2.0 * margin).max(0.0), margin)
 }
 
+/// Everything the pill can give up, widest first, with what survives it.
+fn shed(theme: &CompTheme, width: f32) -> (usize, bool, usize) {
+    let (mut renderer, _, _cache) = render(theme, width, 1.0, |header| {
+        header
+            .title(LONG)
+            .app_name("Files")
+            .focused(true)
+            .on_close(())
+            .on_minimize(())
+            .on_maximize(())
+            .on_right_click(())
+            .on_screenshot(())
+            .on_record(())
+            .on_fullscreen((), false)
+            .on_new_window(())
+    });
+    let glyphs = control_icons(&mut renderer).len();
+    let (title, app_name) = identity(&mut renderer, theme);
+    let title_drawn = title.is_some_and(|text| !text.drawn().is_empty());
+    (glyphs, title_drawn, app_name.is_some())
+        .pipe(|(glyphs, title, app)| (glyphs, title, usize::from(app)))
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+impl<T> Pipe for T {}
+
+/// A pill too narrow for everything gives its parts up in order rather than
+/// dropping the controls on the floor: the app name goes first, the tray
+/// next, then the window controls, and the title and close button remain.
+#[test]
+fn a_narrow_pill_sheds_its_parts_in_order() {
+    let theme = theme();
+    let widths = [
+        2400.0_f32, 1200.0, 900.0, 700.0, 600.0, 520.0, 460.0, 400.0, 360.0, 320.0, 300.0, 280.0,
+        260.0, 240.0, 220.0, 200.0, 180.0, 160.0, 140.0, 120.0, 100.0,
+    ];
+    let mut seen: Vec<(f32, usize, bool, usize)> = Vec::new();
+    for width in widths {
+        let (glyphs, title, app) = shed(&theme, width);
+        seen.push((width, glyphs, title, app));
+    }
+    let widest = seen[0].1;
+    assert_eq!(widest, 8, "a roomy pill draws every control: {seen:?}");
+    for pair in seen.windows(2) {
+        let (wide, wide_glyphs, _, wide_app) = pair[0];
+        let (narrow, narrow_glyphs, _, narrow_app) = pair[1];
+        assert!(
+            narrow_glyphs <= wide_glyphs,
+            "{narrow}px drew more controls than {wide}px: {seen:?}"
+        );
+        assert!(
+            narrow_app <= wide_app,
+            "{narrow}px kept an app name {wide}px had dropped: {seen:?}"
+        );
+    }
+    // The app name is the first thing to go, before any control does.
+    let first_control_loss = seen.iter().find(|(_, glyphs, _, _)| *glyphs < widest);
+    if let Some((width, _, _, app)) = first_control_loss {
+        assert_eq!(
+            *app, 0,
+            "a control left at {width}px while the app name was still there: {seen:?}"
+        );
+    }
+    // Close never leaves, and the title outlives every other control: while
+    // anything besides close is still drawn there is room for text too. Below
+    // that the window is narrower than a close button and a word together.
+    for (width, glyphs, title, _) in &seen {
+        assert!(*glyphs >= 1, "the close button left at {width}px: {seen:?}");
+        assert!(
+            *title || *glyphs == 1,
+            "the title went before the controls did at {width}px: {seen:?}"
+        );
+    }
+    // And it really does shed: the narrowest here keeps far less than the widest.
+    let narrowest = seen.last().expect("a sweep").1;
+    assert!(
+        narrowest < widest,
+        "nothing was ever shed across {widths:?}: {seen:?}"
+    );
+}
+
 #[test]
 fn halo_pill_keeps_the_window_corner_radius_clear_on_both_sides() {
     let theme = theme();
