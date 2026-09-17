@@ -527,7 +527,12 @@ fn raise_with_children(floating_layer: &mut FloatingLayout, focused: &CosmicMapp
     }
 
     if floating_layer.mapped().any(|m| m == focused) {
-        floating_layer.space.raise_element(focused, true);
+        // Raise without smithay's activation side effect: it clears the
+        // activated state from every other window, and `update_active` sets
+        // the correct state for all of them immediately afterwards. Letting
+        // the raise do it too deactivates and reactivates the same window
+        // within a couple of milliseconds, which blinks its decorations.
+        floating_layer.space.raise_element(focused, false);
         // Get the focused window's X11 window ID for transient_for matching
         let focused_x11_window_id = focused.active_window().x11_surface().map(|x| x.window_id());
         for element in floating_layer
