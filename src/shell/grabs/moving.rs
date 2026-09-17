@@ -323,7 +323,9 @@ impl MoveGrabState {
                 .to_f64()
                 .upscale(scale)
                 .to_i32_round();
-            let backdrop_geometry = Rectangle::new(render_location, scaled_size).as_local();
+            let backdrop_geometry = self
+                .window
+                .backdrop_geometry(Rectangle::new(render_location, scaled_size).as_local());
 
             push(
                 BackdropShader::element(

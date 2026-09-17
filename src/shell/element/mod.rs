@@ -1107,6 +1107,14 @@ impl CosmicMapped {
         }
     }
 
+    pub fn backdrop_geometry(&self, outer: Rectangle<i32, Local>) -> Rectangle<i32, Local> {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => w.backdrop_geometry(outer),
+            CosmicMappedInternal::Stack(_) => outer,
+            _ => unreachable!(),
+        }
+    }
+
     // MERGE: dropped `blur_corner_radius`, `has_blur` and the `HasBlur` impl — our
     // KDE-blur pipeline is replaced by upstream's frosted-glass (blur_effect) work.
 

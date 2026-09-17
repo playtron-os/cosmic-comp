@@ -1649,6 +1649,31 @@ impl CosmicWindow {
     pub fn has_ssd(&self) -> bool {
         self.0.with_program(|p| p.has_ssd(false))
     }
+
+    /// Where a client's backdrop colour goes within the outer rect.
+    pub fn backdrop_geometry(&self, outer: Rectangle<i32, Local>) -> Rectangle<i32, Local> {
+        self.0.with_program(|p| {
+            // Only the pill paints a joined Halo's band; a bar paints its own.
+            let band = if p.has_ssd(false) && p.uses_halo_header() {
+                p.ssd_height()
+            } else {
+                0
+            };
+            below_band(outer, band, SpaceElement::geometry(&p.window).size.h + band)
+        })
+    }
+}
+
+/// `outer` less the top `band` of a `height`-tall window, scaled as `outer` is.
+fn below_band(outer: Rectangle<i32, Local>, band: i32, height: i32) -> Rectangle<i32, Local> {
+    if band <= 0 || height <= 0 {
+        return outer;
+    }
+    let band = (f64::from(band) * f64::from(outer.size.h) / f64::from(height)).round() as i32;
+    Rectangle::new(
+        (outer.loc.x, outer.loc.y + band).into(),
+        (outer.size.w, (outer.size.h - band).max(0)).into(),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2727,6 +2752,34 @@ mod tests {
         assert_eq!(hit(-1.0, 40.0), Some(Focus::ResizeLeft));
         assert_eq!(hit(100.0, 630.9), None);
         assert_eq!(hit(100.0, 631.0), Some(Focus::ResizeBottom));
+    }
+
+    /// A backdrop colour over the whole outer rect painted the band beside the pill.
+    #[test]
+    fn backdrop_leaves_the_joined_halo_band_see_through() {
+        use icetron_themes::{WindowHeaderStyle, dynamic::DEFAULT_THEME_PAIR};
+        let mut tokens = DEFAULT_THEME_PAIR.load(false);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        let theme = crate::comp_theme::CompTheme::new(Arc::new(tokens), false);
+        let joined = crate::shell::element::header_bar::ssd_header_height_for(&theme, true) as i32;
+        let overlay =
+            crate::shell::element::header_bar::ssd_header_height_for(&theme, false) as i32;
+        let outer = Rectangle::new((7, 9).into(), (800, 600 + joined).into());
+
+        assert_eq!(
+            below_band(outer, joined, outer.size.h),
+            Rectangle::new((7, 9 + joined).into(), (800, 600).into())
+        );
+        // Animations scale the outer rect, so the band scales with it.
+        assert_eq!(
+            below_band(
+                Rectangle::new((7, 9).into(), (400, 315).into()),
+                joined,
+                outer.size.h
+            ),
+            Rectangle::new((7, 24).into(), (400, 300).into())
+        );
+        assert_eq!(below_band(outer, overlay, outer.size.h), outer);
     }
 
     #[test]

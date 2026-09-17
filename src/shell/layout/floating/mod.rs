@@ -3551,7 +3551,7 @@ impl FloatingLayout {
             if let Some(wl_surface) = elem.active_window().wl_surface()
                 && let Some(color) = get_surface_backdrop_color(&wl_surface)
             {
-                let backdrop_geo = tiled_anim_geometry.unwrap_or(geometry);
+                let backdrop_geo = elem.backdrop_geometry(tiled_anim_geometry.unwrap_or(geometry));
                 let corner_radius = elem
                     .corner_radius(backdrop_geo.size.as_logical(), indicator_thickness)
                     .map(|r| r as f32);
