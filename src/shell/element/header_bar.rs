@@ -55,6 +55,20 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
     }
 }
 
+/// Visibility of a window's Halo, joined to the window or overlapping it.
+pub(crate) fn window_halo_visibility(
+    theme: &CompTheme,
+    visible: bool,
+    joined: bool,
+) -> crate::utils::iced::Visibility {
+    let mut visibility = halo_visibility(theme, visible);
+    if joined {
+        // An attached Halo fades in place.
+        visibility.hidden_offset = iced_core::Vector::ZERO;
+    }
+    visibility
+}
+
 /// WindowFrame's focus draw uses Kora's --duration-slow (420ms) and
 /// --ease-standard, shared with the Halo fill. Icetron's similarly named
 /// tokens currently mean 500ms and a different ease-out curve; do not
@@ -840,5 +854,29 @@ mod tests {
         assert_eq!(ssd_header_input_height(&theme) as i32 - overhang, reserved);
         assert!(reserved < ssd_header_render_height(&theme) as i32);
         assert_eq!(halo_header_offset(&theme, false), 0);
+    }
+
+    /// A joined Halo slid 3px as it hid; only overlay and fullscreen chrome move.
+    #[test]
+    fn joined_halo_fades_without_sliding() {
+        let mut tokens = DEFAULT_THEME_PAIR.load(false);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        let theme = CompTheme::new(Arc::new(tokens), false);
+        for visible in [false, true] {
+            let joined = window_halo_visibility(&theme, visible, true);
+            assert_eq!(joined.hidden_offset, iced_core::Vector::ZERO);
+            assert_eq!(
+                joined.hidden_scale, 1.0,
+                "scale would move it around its centre"
+            );
+            assert_eq!(
+                window_halo_visibility(&theme, visible, false),
+                halo_visibility(&theme, visible)
+            );
+        }
+        assert_eq!(
+            halo_visibility(&theme, false).hidden_offset,
+            iced_core::Vector::new(0.0, 3.0)
+        );
     }
 }

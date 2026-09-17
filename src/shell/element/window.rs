@@ -1871,7 +1871,7 @@ impl Program for CosmicWindowInternal {
         theme: &crate::comp_theme::CompTheme,
     ) -> Option<crate::utils::iced::Visibility> {
         super::header_bar::uses_halo_header(theme).then(|| {
-            let mut visibility = super::header_bar::halo_visibility(
+            super::header_bar::window_halo_visibility(
                 theme,
                 super::header_bar::halo_is_visible(
                     self.fullscreen_output.is_some(),
@@ -1879,12 +1879,8 @@ impl Program for CosmicWindowInternal {
                     self.activated.load(Ordering::SeqCst),
                     self.menu_open.load(Ordering::SeqCst),
                 ),
-            );
-            if self.joined_halo() {
-                // Approach the join from above, never through client content.
-                visibility.hidden_offset.y = -visibility.hidden_offset.y.abs();
-            }
-            visibility
+                self.joined_halo(),
+            )
         })
     }
 
