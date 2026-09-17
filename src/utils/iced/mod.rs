@@ -20,10 +20,12 @@ use std::{
 
 use super::iced_profiler::{ICED_PROFILER, UpdateRecord, UpdateSource, iced_perf_logging_enabled};
 
+mod elastic_row;
 mod focus;
 pub mod pulse;
 mod tooltip;
 mod visibility;
+pub use elastic_row::ElasticRow;
 use focus::FocusAnimation;
 pub use focus::{FocusOutline, FocusOutlineFrame};
 pub use visibility::Visibility;

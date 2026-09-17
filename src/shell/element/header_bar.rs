@@ -134,6 +134,26 @@ fn halo_shadow_padding(theme: &CompTheme) -> iced_core::Padding {
     padding
 }
 
+/// Width of a row of controls that must never be squeezed: the widths they
+/// already occupy, plus the gap between them.
+fn rigid_width(content: f32, items: u32, gap: f32) -> f32 {
+    content + gap * items.saturating_sub(1) as f32
+}
+
+/// Side margin the Halo pill keeps clear so it never reaches the curve of the
+/// window's own top corners, where the two roundings would leave a notch.
+///
+/// A window that squares its top corners has no curve to clear, so the pill is
+/// free to use the full width — the margin follows the radius actually in
+/// effect rather than a constant.
+fn halo_corner_margin(theme: &CompTheme, square_top: bool) -> f32 {
+    if square_top || !uses_halo_header(theme) {
+        return 0.0;
+    }
+    let radii = theme.radius_window();
+    radii[0].max(radii[1]).max(0.0)
+}
+
 /// Offset of the raster buffer, including shadow padding, above the client.
 pub fn ssd_header_render_overhang(theme: &CompTheme) -> u32 {
     ssd_header_overhang(theme) + halo_shadow_padding(theme).top as u32
@@ -372,6 +392,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
         let window_header_style = theme.window_header_style();
+        let halo = uses_halo_header(theme);
 
         let chrome_theme = if self.compositor_outline && uses_halo_header(theme) {
             theme.halo_chrome_theme()
@@ -389,35 +410,42 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .backdrop_blur(uses_halo_header(theme))
             .opaque(true)
             .show_border(true);
-        if let Some(name) = self.app_name {
-            header = header.app_name(name);
+        // A Halo pill lays its own identity out — see `title_row` below — so
+        // the app name is rendered here, not handed to icetron, which would
+        // otherwise append it in a plain row that starves it of width. Icetron
+        // hides a name that adds nothing; mirror that rule rather than move it.
+        let subtitle = self
+            .app_name
+            .as_deref()
+            .filter(|name| halo && !name.is_empty() && *name != self.title);
+        if !halo && let Some(name) = self.app_name.as_deref() {
+            header = header.app_name(name.to_owned());
         }
 
         // Pass application icon with native SVG colors via title_content.
         // We wrap in animated_opacity to replicate app_header's title fade behavior
         // (0.8 when unfocused, animates to 1.0 on hover/focus).
         {
-            let (title_style, title_color, title_gap, icon_size, glyph_size) =
-                if uses_halo_header(theme) {
-                    let mut style = theme.text_styles().caption();
-                    let halo = theme.halo_style();
-                    style.font_weight = halo.title_font_weight;
-                    (
-                        style,
-                        theme.text_primary(),
-                        halo.gap,
-                        halo.control_size,
-                        halo.glyph_icon_size,
-                    )
-                } else {
-                    (
-                        theme.header_title_text_style(),
-                        theme.header_title_color(),
-                        theme.header_title_gap(),
-                        theme.ui_size_icon_sm(),
-                        theme.ui_size_icon_sm(),
-                    )
-                };
+            let (title_style, title_color, title_gap, icon_size, glyph_size) = if halo {
+                let mut style = theme.text_styles().caption();
+                let metrics = theme.halo_style();
+                style.font_weight = metrics.title_font_weight;
+                (
+                    style,
+                    theme.text_primary(),
+                    metrics.gap,
+                    metrics.control_size,
+                    metrics.glyph_icon_size,
+                )
+            } else {
+                (
+                    theme.header_title_text_style(),
+                    theme.header_title_color(),
+                    theme.header_title_gap(),
+                    theme.ui_size_icon_sm(),
+                    theme.ui_size_icon_sm(),
+                )
+            };
 
             let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 styled_text(&self.title, title_style, title_color)
@@ -425,14 +453,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     .ellipsis(iced_widget::text::Ellipsis::End)
                     .into();
 
-            let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                if let Some(ref icon) = self.app_icon {
-                    let icon_element: Element<
-                        'a,
-                        Message,
-                        iced_core::Theme,
-                        iced_tiny_skia::Renderer,
-                    > = match icon {
+            let icon_element: Option<
+                Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
+            > = self.app_icon.as_ref().map(|icon| {
+                let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                    match icon {
                         AppIcon::Svg { bytes, symbolic } => {
                             let handle = iced_core::svg::Handle::from_memory(*bytes);
                             // A fully transparent tint is this iced fork's
@@ -463,12 +488,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                             .height(glyph_size)
                             .into(),
                     };
-                    let icon_element: Element<
-                        'a,
-                        Message,
-                        iced_core::Theme,
-                        iced_tiny_skia::Renderer,
-                    > = if uses_halo_header(theme) {
+                let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                    if halo {
                         let bg = theme.halo_accent_background();
                         let radius = theme.radii_max();
                         container(icon_element)
@@ -485,7 +506,36 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     } else {
                         icon_element
                     };
-                    row![icon_element, text_element]
+                icon_element
+            });
+
+            // The Halo pill shrinks to its identity, so a long title otherwise
+            // takes every pixel iced offers it and leaves the app name none.
+            // `ElasticRow` shares the shortfall instead: the icon keeps its
+            // size, and the two labels ellipsize by max-min fairness.
+            let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+                if halo {
+                    let mut identity = crate::utils::iced::ElasticRow::new().spacing(title_gap);
+                    if let Some(icon) = icon_element {
+                        identity = identity.push_rigid(icon);
+                    }
+                    identity = identity.push_elastic(text_element);
+                    if let Some(name) = subtitle {
+                        // Icetron's Halo subtitle: the regular body face, with
+                        // only the size and line height of the micro role.
+                        let mut style = theme.text_styles().body();
+                        let micro = theme.text_styles().micro();
+                        style.font_size = micro.font_size;
+                        style.line_height = micro.line_height;
+                        identity = identity.push_elastic(
+                            styled_text(name, style, theme.text_quaternary())
+                                .wrapping(iced_widget::text::Wrapping::None)
+                                .ellipsis(iced_widget::text::Ellipsis::End),
+                        );
+                    }
+                    identity.into_single().unwrap_or_else(Into::into)
+                } else if let Some(icon) = icon_element {
+                    row![icon, text_element]
                         .spacing(title_gap)
                         .align_y(Alignment::Center)
                         .into()
@@ -495,7 +545,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 };
 
             // The Halo animates as one pill; bar headers animate just the title.
-            let target_opacity = if uses_halo_header(theme) || self.hovered || self.focused {
+            let target_opacity = if halo || self.hovered || self.focused {
                 1.0
             } else {
                 0.8
@@ -510,7 +560,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.title_content(title_content);
         }
 
-        let halo = uses_halo_header(theme);
         if halo {
             let metrics = theme.halo_style();
             let capture = row![
@@ -546,6 +595,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             let mut tray = row![divider, capture]
                 .spacing(metrics.gap)
                 .align_y(Alignment::Center);
+            // Every control is `metrics.control_size` wide; the divider is a
+            // hairline and the two capture buttons sit `spacing_0_5` apart.
+            let mut tray_width =
+                metrics.border_width + 2.0 * metrics.control_size + theme.spacing_0_5();
+            let mut tray_items = 2_u32;
             if let Some(message) = self.on_right_click.clone() {
                 tray = tray.push(halo_button(
                     icons::CHEVRON_DOWN,
@@ -555,6 +609,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     self.menu_open,
                     theme,
                 ));
+                tray_width += metrics.control_size;
+                tray_items += 1;
             }
             if let Some(message) = self.on_new_window.clone() {
                 tray = tray.push(halo_button(
@@ -565,8 +621,17 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     self.menu_open,
                     theme,
                 ));
+                tray_width += metrics.control_size;
+                tray_items += 1;
             }
+            let tray = tray.width(Length::Fixed(rigid_width(
+                tray_width,
+                tray_items,
+                metrics.gap,
+            )));
             let mut actions = row![].spacing(metrics.gap);
+            let mut actions_width = 0.0f32;
+            let mut action_items = 0_u32;
             let restore = self.maximized || self.fullscreen;
             for (icon, message, label, destructive) in [
                 (
@@ -623,8 +688,19 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         self.menu_open,
                         theme,
                     ));
+                    actions_width += metrics.control_size;
+                    action_items += 1;
                 }
             }
+            // Iced's flex pass reserves `Length::Fixed` children before it hands
+            // the rest to a `Shrink` one, so pinning the control groups to the
+            // width they already take is what keeps a long title from swallowing
+            // them. It is their natural width, so nothing moves when it fits.
+            let actions = actions.width(Length::Fixed(rigid_width(
+                actions_width,
+                action_items,
+                metrics.gap,
+            )));
             header = header
                 .trailing(tray)
                 .action_buttons(actions)
@@ -673,10 +749,17 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
             let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 gestures.into();
+            // Hold the pill inside the window's rounded top corners. Capping the
+            // space it is offered, rather than its own width, keeps it a Shrink
+            // pill that still hugs a short title — and needs no window width.
+            let mut padding = halo_shadow_padding(theme);
+            let margin = halo_corner_margin(theme, self.square_top);
+            padding.left = padding.left.max(margin);
+            padding.right = padding.right.max(margin);
             return container(header_elem)
                 .width(Length::Fill)
                 .height(Length::Fixed(ssd_header_render_height(theme) as f32))
-                .padding(halo_shadow_padding(theme))
+                .padding(padding)
                 .into();
         }
         container(header_elem)

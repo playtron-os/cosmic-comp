@@ -307,6 +307,30 @@ fn layout_with(
     scale: f32,
     configure: impl for<'a> FnOnce(HeaderBar<'a, ()>) -> HeaderBar<'a, ()>,
 ) -> (Renderer, Viewport, user_interface::Cache) {
+    render(theme, width, scale, |header| {
+        configure(
+            header
+                .title(title)
+                .app_name("Files")
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_fullscreen((), false)
+                .on_new_window(()),
+        )
+    })
+}
+
+/// Build, update and draw an arbitrary header in a `width`-wide window.
+fn render(
+    theme: &CompTheme,
+    width: f32,
+    scale: f32,
+    build: impl for<'a> FnOnce(HeaderBar<'a, ()>) -> HeaderBar<'a, ()>,
+) -> (Renderer, Viewport, user_interface::Cache) {
     static FONTS: std::sync::Once = std::sync::Once::new();
     FONTS.call_once(|| {
         let mut fonts = iced_graphics::text::font_system().write().unwrap();
@@ -315,19 +339,7 @@ fn layout_with(
         }
     });
     let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
-    let element = header_bar()
-        .theme(theme)
-        .title(title)
-        .app_name("Files")
-        .focused(true)
-        .on_close(())
-        .on_minimize(())
-        .on_maximize(())
-        .on_right_click(())
-        .on_screenshot(())
-        .on_fullscreen((), false)
-        .on_new_window(());
-    let element = configure(element).into_element();
+    let element = build(header_bar().theme(theme)).into_element();
     let size = Size::new(width, ssd_header_render_height(theme) as f32);
     let mut ui = UserInterface::build(
         element,
@@ -620,6 +632,710 @@ fn attached_halo_is_flush_with_square_bottom_corners() {
                 reserved, 0,
                 "protocol opt-in keeps the original overlay geometry"
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Halo pill is capped clear of the window's rounded top corners, and the
+// identity gives way for the controls rather than the other way round.
+// ---------------------------------------------------------------------------
+
+/// A 16x16 square, enough to stand in for a symbolic app mark.
+const TEST_ICON: &[u8] =
+    br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="currentColor"/></svg>"#;
+
+const LONG: &str = "A really extremely long window title that will not fit anywhere at all";
+const LONG_WORD: &str =
+    "Supercalifragilisticexpialidociousandthensomemoreofitwithoutasinglespaceanywhere";
+/// Han, an emoji with a variation selector and a ZWJ family, and a combining acute.
+const CLUSTERS: &str = "文書編集ファイル管理 \u{2764}\u{FE0F} \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} e\u{301}dite\u{301}ur de documents tre\u{300}s long";
+
+/// What a paragraph actually put on screen.
+#[derive(Debug, Clone)]
+struct DrawnText {
+    /// The string the widget was given.
+    source: String,
+    /// The part of it the glyphs cover — `None` if a cut landed inside a
+    /// character, which would mean a split glyph cluster.
+    drawn: Option<String>,
+    /// An ellipsis glyph stood in for the rest.
+    ellipsized: bool,
+    color: Color,
+}
+
+impl DrawnText {
+    fn drawn(&self) -> &str {
+        self.drawn
+            .as_deref()
+            .expect("text cut on a character boundary")
+    }
+}
+
+/// Every paragraph the header drew, in draw order.
+fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
+    renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.text)
+        .flat_map(|item| item.as_slice())
+        .filter_map(|text| {
+            let iced_graphics::text::Text::Paragraph {
+                paragraph, color, ..
+            } = text
+            else {
+                return None;
+            };
+            let paragraph = paragraph.upgrade()?;
+            let buffer = paragraph.buffer();
+            let source: String = buffer
+                .lines
+                .iter()
+                .map(|line| line.text())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut ellipsized = false;
+            let mut covered = 0_usize;
+            for run in buffer.layout_runs() {
+                for glyph in run.glyphs {
+                    // The ellipsis glyph carries no source range of its own.
+                    if glyph.start == glyph.end {
+                        ellipsized = true;
+                    } else {
+                        covered = covered.max(glyph.end);
+                    }
+                }
+            }
+            let drawn = source.get(..covered).map(str::to_owned);
+            Some(DrawnText {
+                source,
+                drawn,
+                ellipsized,
+                color: *color,
+            })
+        })
+        .collect()
+}
+
+/// The title and, when it is shown, the app name beside it.
+fn identity(renderer: &mut Renderer, theme: &CompTheme) -> (Option<DrawnText>, Option<DrawnText>) {
+    let drawn = drawn_text(renderer);
+    let by_color = |wanted: Color| drawn.iter().find(|text| text.color == wanted).cloned();
+    (
+        by_color(theme.text_primary()),
+        by_color(theme.text_quaternary()),
+    )
+}
+
+/// The bounds of every glyph the header drew, in draw order.
+fn control_icons(renderer: &mut Renderer) -> Vec<Rectangle> {
+    renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.images)
+        .filter_map(|image| match image {
+            iced_graphics::Image::Vector { bounds, .. } => Some(*bounds),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The hairline dividers between the tray, the menu and the window controls.
+fn dividers(renderer: &mut Renderer, theme: &CompTheme) -> Vec<Rectangle> {
+    let metrics = theme.halo_style();
+    renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.quads)
+        .filter(|(quad, _)| {
+            quad.bounds.width == metrics.border_width
+                && quad.bounds.height == metrics.divider_height
+        })
+        .map(|(quad, _)| quad.bounds)
+        .collect()
+}
+
+fn pill(renderer: &mut Renderer, theme: &CompTheme, width: f32) -> Rectangle {
+    super::super::window::halo_backdrop_blur(
+        renderer.layers(),
+        theme.halo_style().pill_height(),
+        width,
+    )
+    .expect("the drawn Halo pill")
+    .0
+}
+
+/// Widest the pill may be in a `width`-wide window, and how far in it starts.
+fn cap(theme: &CompTheme, width: f32, square_top: bool) -> (f32, f32) {
+    let margin = halo_corner_margin(theme, square_top);
+    ((width - 2.0 * margin).max(0.0), margin)
+}
+
+#[test]
+fn halo_pill_keeps_the_window_corner_radius_clear_on_both_sides() {
+    let theme = theme();
+    // Anything below this and the controls alone outgrow the capped pill; the
+    // identity is gone by then and there is nothing left to give up.
+    for width in [2400.0_f32, 1024.0, 900.0, 600.0, 460.0, 400.0, 320.0] {
+        for (title, app_name) in [
+            ("Files", "Files"),
+            ("Documents", "Files"),
+            (LONG, "Files"),
+            (LONG, LONG),
+            ("Doc", LONG),
+            ("", "Files"),
+            (LONG_WORD, "Files"),
+            (CLUSTERS, "Files"),
+        ] {
+            for square_top in [false, true] {
+                for joined in [false, true] {
+                    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+                        header
+                            .title(title)
+                            .app_name(app_name)
+                            .focused(true)
+                            .square_top(square_top)
+                            .joined_to_window(joined)
+                            .on_close(())
+                            .on_minimize(())
+                            .on_maximize(())
+                            .on_right_click(())
+                            .on_screenshot(())
+                            .on_fullscreen((), false)
+                            .on_new_window(())
+                    });
+                    let bounds = pill(&mut renderer, &theme, width);
+                    let (widest, margin) = cap(&theme, width, square_top);
+                    let case = format!(
+                        "{width}px, {title:?}/{app_name:?}, square_top={square_top}, joined={joined}"
+                    );
+                    assert!(
+                        bounds.width <= widest + 0.5,
+                        "pill {} wide in a {width}px window may not pass {widest} ({case})",
+                        bounds.width
+                    );
+                    assert!(
+                        bounds.x >= margin - 0.5 && bounds.x + bounds.width <= width - margin + 0.5,
+                        "pill {bounds:?} reaches into the {margin}px corner margin ({case})"
+                    );
+                    assert!(
+                        (bounds.x - (width - bounds.width) / 2.0).abs() <= 0.5,
+                        "pill {bounds:?} is not centred ({case})"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The regression itself: before the cap, a title long enough to fill the
+/// window made the pill exactly as wide as the window, so its rounded bottom
+/// corners met the window's rounded top corners and left a notch.
+#[test]
+fn a_long_title_no_longer_stretches_the_pill_across_the_whole_window() {
+    let theme = theme();
+    let width = 400.0;
+    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
+    let bounds = pill(&mut renderer, &theme, width);
+    let margin = halo_corner_margin(&theme, false);
+    assert!(margin > 0.0, "a floating window has rounded top corners");
+    assert!(
+        bounds.width < width,
+        "the pill still fills the window: {bounds:?}"
+    );
+    assert!(
+        bounds.width <= width - 2.0 * margin + 0.5,
+        "the pill must stop {margin}px short of each edge: {bounds:?}"
+    );
+}
+
+#[test]
+fn a_squared_top_needs_no_margin_and_keeps_the_full_width() {
+    let theme = theme();
+    assert_eq!(halo_corner_margin(&theme, true), 0.0);
+    assert_eq!(
+        halo_corner_margin(&theme, false),
+        theme.radius_window()[0],
+        "the margin is the radius actually in effect, not a constant"
+    );
+    let mut bar = DEFAULT_THEME_PAIR.load(true);
+    bar.window_header_style = WindowHeaderStyle::Bar;
+    let bar = CompTheme::new(Arc::new(bar), true);
+    assert_eq!(
+        halo_corner_margin(&bar, false),
+        0.0,
+        "a bar header is flush with the frame and owns its own corners"
+    );
+
+    // A maximized window squares its top corners, so the pill may use the lot.
+    let width = 400.0;
+    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+        header
+            .title(LONG)
+            .app_name("Files")
+            .focused(true)
+            .square_top(true)
+            .maximized(true)
+            .on_close(())
+            .on_minimize(())
+            .on_maximize(())
+            .on_right_click(())
+            .on_screenshot(())
+            .on_fullscreen((), false)
+            .on_new_window(())
+    });
+    let bounds = pill(&mut renderer, &theme, width);
+    let capped = width - 2.0 * halo_corner_margin(&theme, false);
+    assert!(
+        bounds.width > capped && bounds.width <= width,
+        "a squared top lifts the {capped}px cap: {bounds:?}"
+    );
+}
+
+#[test]
+fn the_cap_only_bites_once_the_pill_would_reach_the_corners() {
+    let theme = theme();
+    let margin = halo_corner_margin(&theme, false);
+    // What the pill wants, measured where nothing constrains it.
+    let (mut renderer, _, _cache) = layout(&theme, 4000.0, LONG, 1.0);
+    let natural = pill(&mut renderer, &theme, 4000.0).width;
+
+    for (width, expected) in [
+        (4000.0_f32, natural),
+        (natural + 2.0 * margin + 40.0, natural),
+        // Exactly at the threshold the pill still gets everything it asked for.
+        (natural + 2.0 * margin, natural),
+    ] {
+        let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
+        let bounds = pill(&mut renderer, &theme, width);
+        assert!(
+            (bounds.width - expected).abs() <= 0.5,
+            "a {width}px window must leave the pill at {expected}, not {}",
+            bounds.width
+        );
+    }
+
+    // One pixel narrower and the title starts to give way.
+    let width = natural + 2.0 * margin - 1.0;
+    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
+    let bounds = pill(&mut renderer, &theme, width);
+    assert!(bounds.width < natural, "the cap must bite at {width}px");
+    assert!(bounds.width <= width - 2.0 * margin + 0.5);
+    let (title, _) = identity(&mut renderer, &theme);
+    assert!(title.expect("the title").ellipsized);
+}
+
+#[test]
+fn the_capped_title_ellipsizes_and_the_app_name_survives() {
+    let theme = theme();
+    let wide = 2400.0;
+    let narrow = 460.0;
+
+    // Wide: both labels are drawn whole, so the cap changed nothing.
+    let (mut renderer, _, _cache) = layout(&theme, wide, LONG, 1.0);
+    let (title, app_name) = identity(&mut renderer, &theme);
+    let title = title.expect("the title");
+    let app_name = app_name.expect("the app name");
+    assert!(!title.ellipsized && title.drawn() == LONG);
+    assert!(!app_name.ellipsized && app_name.drawn() == "Files");
+
+    // Narrow: the title gives way, the app name keeps every letter.
+    let (mut renderer, _, _cache) = layout(&theme, narrow, LONG, 1.0);
+    let (title, app_name) = identity(&mut renderer, &theme);
+    let title = title.expect("the title");
+    let app_name = app_name.expect("the app name");
+    assert!(title.ellipsized, "the title must be cut: {title:?}");
+    assert!(
+        !title.drawn().is_empty() && LONG.starts_with(title.drawn()) && title.drawn() != LONG,
+        "the title must be a shorter head of itself, ending in an ellipsis: {title:?}"
+    );
+    assert_eq!(title.source, LONG);
+    assert!(
+        !app_name.ellipsized && app_name.drawn() == "Files",
+        "the short app name is cheap to draw in full: {app_name:?}"
+    );
+}
+
+#[test]
+fn a_long_app_name_ellipsizes_instead_of_eating_the_title() {
+    let theme = theme();
+    let width = 460.0;
+
+    // Short title, long app name: the title is cheap, so only the name is cut.
+    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+        header
+            .title("Doc")
+            .app_name(LONG)
+            .focused(true)
+            .on_close(())
+            .on_minimize(())
+            .on_maximize(())
+            .on_right_click(())
+            .on_screenshot(())
+            .on_fullscreen((), false)
+            .on_new_window(())
+    });
+    let (title, app_name) = identity(&mut renderer, &theme);
+    let title = title.expect("the title");
+    let app_name = app_name.expect("the app name");
+    assert!(!title.ellipsized && title.drawn() == "Doc");
+    assert!(
+        app_name.ellipsized,
+        "the app name must be cut: {app_name:?}"
+    );
+    assert!(!app_name.drawn().is_empty() && LONG.starts_with(app_name.drawn()));
+
+    // Both long: neither may be squeezed out of existence.
+    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+        header
+            .title(LONG)
+            .app_name(LONG_WORD)
+            .focused(true)
+            .on_close(())
+            .on_minimize(())
+            .on_maximize(())
+            .on_right_click(())
+            .on_screenshot(())
+            .on_fullscreen((), false)
+            .on_new_window(())
+    });
+    let (title, app_name) = identity(&mut renderer, &theme);
+    let title = title.expect("the title");
+    let app_name = app_name.expect("the app name");
+    for text in [&title, &app_name] {
+        assert!(text.ellipsized, "both labels must be cut: {text:?}");
+        assert!(
+            !text.drawn().is_empty(),
+            "neither label may be replaced by nothing: {text:?}"
+        );
+        assert!(text.source.starts_with(text.drawn()));
+    }
+}
+
+#[test]
+fn an_unbroken_word_and_a_cluster_are_cut_on_a_character_boundary() {
+    let theme = theme();
+    for source in [LONG_WORD, CLUSTERS] {
+        for width in [520.0_f32, 460.0, 420.0, 400.0, 380.0] {
+            let (mut renderer, _, _cache) = layout(&theme, width, source, 1.0);
+            let (title, _) = identity(&mut renderer, &theme);
+            let title = title.expect("the title");
+            // `drawn` is `None` when the glyph coverage ends mid-character.
+            let drawn = title
+                .drawn
+                .as_deref()
+                .unwrap_or_else(|| panic!("{source:?} cut inside a character at {width}px"));
+            assert!(source.starts_with(drawn), "{title:?} at {width}px");
+            assert!(!drawn.is_empty(), "{title:?} at {width}px");
+            // A cut immediately before a mark that joins the character before
+            // it would have split the cluster it belongs to.
+            if let Some(next) = source[drawn.len()..].chars().next() {
+                assert!(
+                    !matches!(next, '\u{0300}'..='\u{036F}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}'),
+                    "{source:?} was cut before {next:?}, inside a glyph cluster, at {width}px"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
+    let theme = theme();
+    let wide = 2400.0;
+    let (mut renderer, _, _cache) = layout(&theme, wide, "Files", 1.0);
+    let roomy = pill(&mut renderer, &theme, wide);
+    let expected: Vec<Rectangle> = control_icons(&mut renderer);
+    assert_eq!(
+        expected.len(),
+        8,
+        "screenshot, record, menu, new, minimize, maximize, fullscreen, close"
+    );
+    let expected_dividers = dividers(&mut renderer, &theme);
+    assert_eq!(
+        expected_dividers.len(),
+        2,
+        "before the tray and the controls"
+    );
+    let divider = theme.halo_style().border_width;
+
+    // 320px is the narrowest window that still fits the whole control block.
+    for width in [2400.0_f32, 900.0, 600.0, 460.0, 400.0, 360.0, 320.0] {
+        for title in [LONG, LONG_WORD, CLUSTERS] {
+            let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
+            let bounds = pill(&mut renderer, &theme, width);
+            let icons = control_icons(&mut renderer);
+            let case = format!("{width}px, {title:?}");
+            assert_eq!(icons.len(), expected.len(), "a control vanished ({case})");
+            for (icon, want) in icons.iter().zip(&expected) {
+                assert_eq!(
+                    (icon.width, icon.height),
+                    (want.width, want.height),
+                    "a control was shrunk ({case})"
+                );
+                // Same distance from the pill's trailing edge: neither
+                // squeezed together nor pushed out of the pill.
+                let offset = bounds.x + bounds.width - icon.x;
+                let wanted = roomy.x + roomy.width - want.x;
+                assert!(
+                    (offset - wanted).abs() <= 0.01,
+                    "control moved by {} ({case})",
+                    offset - wanted
+                );
+            }
+            let last = icons.last().expect("the close button");
+            assert!(
+                last.x + last.width <= bounds.x + bounds.width - divider,
+                "the controls hang out of the pill ({case})"
+            );
+            let drawn = dividers(&mut renderer, &theme);
+            assert_eq!(drawn.len(), expected_dividers.len(), "({case})");
+            for (rule, want) in drawn.iter().zip(&expected_dividers) {
+                assert_eq!(
+                    (rule.width, rule.height),
+                    (want.width, want.height),
+                    "a divider was resized ({case})"
+                );
+                let offset = bounds.x + bounds.width - rule.x;
+                let wanted = roomy.x + roomy.width - want.x;
+                assert!(
+                    (offset - wanted).abs() <= 0.01,
+                    "divider moved by {} ({case})",
+                    offset - wanted
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
+    let theme = theme();
+    let width = 420.0;
+    for (chevron, new_window, expected) in [
+        (false, false, 6),
+        (true, false, 7),
+        (false, true, 7),
+        (true, true, 8),
+    ] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            let header = header
+                .title(LONG)
+                .app_name("Files")
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_screenshot(())
+                .on_fullscreen((), false);
+            let header = if chevron {
+                header.on_right_click(())
+            } else {
+                header
+            };
+            if new_window {
+                header.on_new_window(())
+            } else {
+                header
+            }
+        });
+        let bounds = pill(&mut renderer, &theme, width);
+        let icons = control_icons(&mut renderer);
+        let case = format!("chevron={chevron}, new_window={new_window}");
+        assert_eq!(icons.len(), expected, "{case}");
+        let (widest, _) = cap(&theme, width, false);
+        assert!(bounds.width <= widest + 0.5, "{case}");
+        let last = icons.last().expect("the close button");
+        assert!(
+            last.x + last.width <= bounds.x + bounds.width,
+            "the controls hang out of the pill ({case})"
+        );
+        // Fewer controls is more room for the title, never less.
+        let (title, _) = identity(&mut renderer, &theme);
+        assert!(title.expect("the title").ellipsized, "{case}");
+    }
+}
+
+#[test]
+fn an_app_icon_is_never_shrunk_to_make_room_for_the_title() {
+    let theme = theme();
+    let icon = || AppIcon::Svg {
+        bytes: TEST_ICON,
+        symbolic: true,
+    };
+    let (mut renderer, _, _cache) = layout_with(&theme, 2400.0, "Files", 1.0, |header| {
+        header.app_icon(icon())
+    });
+    let roomy = control_icons(&mut renderer);
+    assert_eq!(roomy.len(), 9, "the app mark joins the eight controls");
+    let mark = roomy[0];
+
+    for width in [2400.0_f32, 900.0, 460.0, 400.0, 360.0] {
+        let (mut renderer, _, _cache) =
+            layout_with(&theme, width, LONG, 1.0, |header| header.app_icon(icon()));
+        let icons = control_icons(&mut renderer);
+        assert_eq!(icons.len(), 9, "{width}px");
+        assert_eq!(
+            (icons[0].width, icons[0].height),
+            (mark.width, mark.height),
+            "the app mark was squeezed at {width}px"
+        );
+        let (title, app_name) = identity(&mut renderer, &theme);
+        assert!(!title.expect("the title").drawn().is_empty(), "{width}px");
+        assert!(
+            !app_name.expect("the app name").drawn().is_empty(),
+            "{width}px"
+        );
+    }
+}
+
+#[test]
+fn an_absent_or_repeated_app_name_leaves_the_title_the_whole_pill() {
+    let theme = theme();
+    let width = 460.0;
+    let mut alone = None;
+    for name in [None, Some(""), Some(LONG)] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            let header = header
+                .title(LONG)
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_fullscreen((), false)
+                .on_new_window(());
+            match name {
+                Some(name) => header.app_name(name),
+                None => header,
+            }
+        });
+        let (title, app_name) = identity(&mut renderer, &theme);
+        assert!(
+            app_name.is_none(),
+            "{name:?} adds nothing beside the title and must stay hidden"
+        );
+        let drawn = title.expect("the title").drawn().to_owned();
+        if let Some(expected) = &alone {
+            assert_eq!(&drawn, expected, "{name:?}");
+        } else {
+            alone = Some(drawn);
+        }
+    }
+    // With a name to fit beside it, the title has to give some of that back.
+    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
+    let (title, app_name) = identity(&mut renderer, &theme);
+    assert!(app_name.is_some());
+    assert!(
+        title.expect("the title").drawn().len() < alone.expect("the title alone").len(),
+        "a visible app name must cost the title some of its width"
+    );
+}
+
+#[test]
+fn an_empty_header_still_draws_its_controls() {
+    let theme = theme();
+    for width in [900.0_f32, 400.0] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            header
+                .title("")
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_fullscreen((), false)
+                .on_new_window(())
+        });
+        assert_eq!(control_icons(&mut renderer).len(), 8, "{width}px");
+        assert!(drawn_text(&mut renderer).is_empty(), "{width}px");
+        let bounds = pill(&mut renderer, &theme, width);
+        let (widest, _) = cap(&theme, width, false);
+        assert!(bounds.width <= widest + 0.5, "{width}px");
+    }
+}
+
+#[test]
+fn a_window_too_narrow_for_its_own_chrome_degrades_without_panicking() {
+    let theme = theme();
+    let margin = halo_corner_margin(&theme, false);
+    for width in [
+        300.0_f32,
+        200.0,
+        120.0,
+        60.0,
+        2.0 * margin,
+        2.0 * margin - 1.0,
+        4.0,
+        1.0,
+    ] {
+        for title in ["Files", LONG] {
+            let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
+            let case = format!("{width}px, {title:?}");
+            let (widest, _) = cap(&theme, width, false);
+            assert!(widest >= 0.0, "{case}");
+            for bounds in control_icons(&mut renderer) {
+                assert!(bounds.width >= 0.0 && bounds.height >= 0.0, "{case}");
+            }
+            for text in drawn_text(&mut renderer) {
+                assert!(text.drawn.is_some(), "{case}: {text:?}");
+            }
+            let found = super::super::window::halo_backdrop_blur(
+                renderer.layers(),
+                theme.halo_style().pill_height(),
+                width,
+            );
+            if let Some((bounds, _)) = found {
+                assert!(
+                    bounds.width >= 0.0 && bounds.width <= widest + 0.5,
+                    "{case}"
+                );
+            }
+        }
+    }
+    // Wide enough for the controls, too narrow for a single letter of title:
+    // the controls are what must survive.
+    let (mut renderer, _, _cache) = layout(&theme, 300.0, LONG, 1.0);
+    assert_eq!(control_icons(&mut renderer).len(), 8);
+}
+
+#[test]
+fn a_bar_header_is_left_alone() {
+    let mut tokens = DEFAULT_THEME_PAIR.load(true);
+    tokens.window_header_style = WindowHeaderStyle::Bar;
+    let theme = CompTheme::new(Arc::new(tokens), true);
+    let width = 400.0;
+    let mut previous = None;
+    for square_top in [false, true] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            header
+                .title(LONG)
+                .app_name("Files")
+                .focused(true)
+                .square_top(square_top)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+        });
+        // The bar's own background spans the window; no side margin appears.
+        let spans_the_window = renderer
+            .layers()
+            .iter()
+            .flat_map(|layer| &layer.quads)
+            .any(|(quad, _)| quad.bounds.x == 0.0 && quad.bounds.width == width);
+        assert!(spans_the_window, "square_top={square_top}");
+        let title = drawn_text(&mut renderer)
+            .into_iter()
+            .find(|text| text.source == LONG)
+            .expect("the bar title");
+        let drawn = title.drawn().to_owned();
+        assert!(LONG.starts_with(&drawn) && !drawn.is_empty());
+        if let Some(expected) = &previous {
+            assert_eq!(&drawn, expected, "the margin must not reach bar headers");
+        } else {
+            previous = Some(drawn);
         }
     }
 }
