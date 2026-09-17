@@ -296,6 +296,21 @@ impl Shell {
             })
             .collect::<Vec<_>>();
 
+        // An app's own tool window taking focus must not make its parent look
+        // inactive. Server-side decorations hide when a window deactivates, so
+        // a client that moves focus between its own toplevels — Qt apps with a
+        // transient utility window do this — would blink its header on and off.
+        // A window whose transient child holds focus stays activated, as other
+        // window managers draw it.
+        let focused_transient_parents = focused_windows
+            .iter()
+            .filter_map(|window| window.active_window().transient_for())
+            .filter_map(|parent| self.element_for_x11_window_id(parent).cloned())
+            .collect::<Vec<_>>();
+        let looks_active = |window: &CosmicMapped| {
+            focused_windows.contains(window) || focused_transient_parents.contains(window)
+        };
+
         // In game mode the game must stay "activated" even when an exclusive
         // layer surface (e.g. the Super start-menu) takes keyboard focus —
         // otherwise a client like a GTK/Flutter toplevel drops to its default
@@ -316,7 +331,7 @@ impl Shell {
                 raise_with_children(&mut set.sticky_layer, focused);
             }
             for window in set.sticky_layer.mapped() {
-                window.set_activated(focused_windows.contains(window));
+                window.set_activated(looks_active(window));
                 window.configure();
             }
             for window in set
@@ -347,7 +362,7 @@ impl Shell {
                 raise_with_children(&mut workspace.floating_layer, focused);
             }
             for window in workspace.mapped() {
-                window.set_activated(focused_windows.contains(window));
+                window.set_activated(looks_active(window));
                 window.configure();
             }
             for m in workspace.minimized_windows.iter() {
