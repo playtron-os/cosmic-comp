@@ -7312,7 +7312,12 @@ impl Shell {
                 .unwrap()
         };
 
-        toplevel_info.new_toplevel(&window, workspace_state);
+        // A window's own utility panel is part of it, not a second task: it
+        // stays mapped and focusable, but never appears in a switcher or a
+        // taskbar beside the window it belongs to.
+        if !window.is_window_helper() {
+            toplevel_info.new_toplevel(&window, workspace_state);
+        }
         toplevel_enter_output(&window, &output);
         toplevel_enter_workspace(&window, &workspace.handle);
 

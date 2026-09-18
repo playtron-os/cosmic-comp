@@ -437,6 +437,28 @@ impl CosmicSurface {
         size.w <= 1 || size.h <= 1
     }
 
+    /// Whether this window is another window's helper rather than a task of
+    /// its own: an X11 utility or toolbar window that names a transient
+    /// parent. Every desktop keeps these out of its window list — they are a
+    /// part of the window they belong to, not a second entry beside it. The
+    /// Android emulator's side toolbar is one, and it otherwise shows up
+    /// twice: once as the emulator, once as a nameless window.
+    ///
+    /// Only the listing is affected; the window is mapped, focusable and
+    /// rendered exactly as before.
+    pub fn is_window_helper(&self) -> bool {
+        let WindowSurface::X11(surface) = self.0.underlying_surface() else {
+            // A Wayland helper is an xdg_popup or a subsurface, neither of
+            // which is a toplevel to begin with.
+            return false;
+        };
+        surface.is_transient_for().is_some()
+            && matches!(
+                surface.window_type(),
+                Some(WmWindowType::Utility | WmWindowType::Toolbar)
+            )
+    }
+
     /// Whether this window looks like a menu/dropdown/transient artifact rather
     /// than a real toplevel.
     /// Override-redirect and the popup-ish `_NET_WM_WINDOW_TYPE`s count; so does
