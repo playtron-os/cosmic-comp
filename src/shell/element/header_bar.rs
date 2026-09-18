@@ -562,9 +562,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         .reserve_min(
                             metrics.control_size + metrics.border_width + 2.0 * metrics.gap,
                         )
-                        // Room for a couple of characters and the ellipsis;
-                        // below that the app name leaves instead.
-                        .floor(title_style.font_size * 3.0);
+                        // Keep the name readable before anything else goes: a
+                        // title cut to two letters is no use, so controls give
+                        // way first and the title only shrinks past this once
+                        // they have. Roughly ten characters at this size.
+                        .floor(title_style.font_size * 6.0);
                     if let Some(icon) = icon_element {
                         identity = identity.push_rigid(icon);
                     }
@@ -652,9 +654,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             let (_, actions_natural) = self.halo_control_widths(theme);
             let mut tray = crate::utils::iced::ElasticRow::new()
                 .spacing(metrics.gap)
-                // Keep room for the window controls so the tray gives way first.
+                // The tray's own buttons rank below every window control, so it
+                // keeps the whole control row's width — not just the close
+                // button's — and sheds completely before one of them goes.
+                // Anything less and the tray starves the controls at one width
+                // and hands them back at a narrower one.
                 .reserve(actions_natural)
-                .reserve_min(metrics.control_size + metrics.border_width + 2.0 * metrics.gap)
+                .reserve_min(actions_natural)
                 .push_droppable(4, capture_group);
             if let Some(message) = self.on_right_click.clone() {
                 tray = tray.push_droppable(

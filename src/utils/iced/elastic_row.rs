@@ -135,9 +135,12 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
 
     /// Unwrap a row of exactly one child: with nothing to share it against,
     /// the row would only add a layer that lays out identically. Any other
-    /// row is handed back unchanged.
+    /// row is handed back unchanged — including one whose single child still
+    /// has to give way, since the room this row keeps for its siblings and the
+    /// floor it squeezes to are the row's own doing and would be lost with it.
     pub fn into_single(mut self) -> Result<Element<'a, Message, Theme, Renderer>, Self> {
-        if self.children.len() == 1 {
+        let constrained = self.reserve > 0.0 || self.reserve_min > 0.0 || self.floor > 0.0;
+        if self.children.len() == 1 && !constrained {
             Ok(self.children.remove(0))
         } else {
             Err(self)

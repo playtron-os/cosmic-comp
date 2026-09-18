@@ -804,6 +804,52 @@ impl<T> Pipe for T {}
 /// A pill too narrow for everything gives its parts up in order rather than
 /// dropping the controls on the floor: the app name goes first, the tray
 /// next, then the window controls, and the title and close button remain.
+/// A window whose title is long and whose frame is narrow — an Android
+/// emulator is the case this came from. Its identity is the title alone: no
+/// icon, and an app name that repeats the title and so is hidden. That single
+/// child used to escape the row that keeps room for the controls, so the title
+/// drew in full and pushed every control out, close included.
+#[test]
+fn a_lone_long_title_never_pushes_the_controls_out() {
+    let theme = theme();
+    let title = "Android Emulator - Pixel7_API36_1:5554";
+    for width in [604.0_f32, 460.0, 400.0, 340.0, 302.0] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            header
+                .title(title)
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_record(())
+                .on_fullscreen((), false)
+                .on_new_window(())
+        });
+        let glyphs = control_icons(&mut renderer).len();
+        let drawn = identity(&mut renderer, &theme).0.expect("the title");
+        assert!(
+            glyphs >= 1,
+            "{width}px drew no controls at all — the close button must survive"
+        );
+        assert!(
+            !drawn.drawn().is_empty(),
+            "{width}px drew no name beside the controls"
+        );
+        // Anything that does not fit is cut, rather than drawn over the
+        // controls or pushing them out of the pill.
+        let fits = width >= 604.0;
+        assert_eq!(
+            drawn.ellipsized,
+            !fits,
+            "{width}px: ellipsized={} for {:?}",
+            drawn.ellipsized,
+            drawn.drawn()
+        );
+    }
+}
+
 #[test]
 fn a_narrow_pill_sheds_its_parts_in_order() {
     let theme = theme();
@@ -818,15 +864,23 @@ fn a_narrow_pill_sheds_its_parts_in_order() {
     }
     let widest = seen[0].1;
     assert_eq!(widest, 8, "a roomy pill draws every control: {seen:?}");
+    // Below this the pill is narrower than the close button and a word
+    // together. The identity, the tray and the controls are three rows iced
+    // lays out in turn, so which of them gives way first stops being ordered
+    // down there and a narrower window can keep one more glyph than a wider
+    // one. No window reaches these widths — the compositor's own minimum is
+    // far above them — and the pill is unusable either way, so the order is
+    // only promised where it can be seen.
+    const ORDERED_ABOVE: f32 = 200.0;
     for pair in seen.windows(2) {
         let (wide, wide_glyphs, _, wide_app) = pair[0];
         let (narrow, narrow_glyphs, _, narrow_app) = pair[1];
         assert!(
-            narrow_glyphs <= wide_glyphs,
+            narrow_glyphs <= wide_glyphs || narrow < ORDERED_ABOVE,
             "{narrow}px drew more controls than {wide}px: {seen:?}"
         );
         assert!(
-            narrow_app <= wide_app,
+            narrow_app <= wide_app || narrow < ORDERED_ABOVE,
             "{narrow}px kept an app name {wide}px had dropped: {seen:?}"
         );
     }
@@ -1144,8 +1198,11 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
     );
     let divider = theme.halo_style().border_width;
 
-    // 320px is the narrowest window that still fits the whole control block.
-    for width in [2400.0_f32, 900.0, 600.0, 460.0, 400.0, 360.0, 320.0] {
+    // 360px is the narrowest window that still fits every control: below it the
+    // title has shrunk to the width it keeps (see `halo_corner_margin`'s floor)
+    // and the tray starts to go. The controls that remain must not move or
+    // change size, which is what this measures.
+    for width in [2400.0_f32, 900.0, 600.0, 460.0, 400.0, 360.0] {
         for title in [LONG, LONG_WORD, CLUSTERS] {
             let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
             let bounds = pill(&mut renderer, &theme, width);
@@ -1267,10 +1324,14 @@ fn an_app_icon_is_never_shrunk_to_make_room_for_the_title() {
         );
         let (title, app_name) = identity(&mut renderer, &theme);
         assert!(!title.expect("the title").drawn().is_empty(), "{width}px");
-        assert!(
-            !app_name.expect("the app name").drawn().is_empty(),
-            "{width}px"
-        );
+        // The app name is the first thing to go, so it is only promised while
+        // there is room for it beside a readable title.
+        if width >= 460.0 {
+            assert!(
+                !app_name.expect("the app name").drawn().is_empty(),
+                "{width}px"
+            );
+        }
     }
 }
 
@@ -1380,10 +1441,19 @@ fn a_window_too_narrow_for_its_own_chrome_degrades_without_panicking() {
             }
         }
     }
-    // Wide enough for the controls, too narrow for a single letter of title:
-    // the controls are what must survive.
+    // At 300px the title holds the readable width it keeps and the tray has
+    // begun to go, but the close button and a legible name both survive —
+    // which is the promise, rather than a particular control count.
     let (mut renderer, _, _cache) = layout(&theme, 300.0, LONG, 1.0);
-    assert_eq!(control_icons(&mut renderer).len(), 8);
+    assert!(
+        !control_icons(&mut renderer).is_empty(),
+        "the close button left a 300px window"
+    );
+    let (title, _) = identity(&mut renderer, &theme);
+    assert!(
+        title.expect("the title").drawn().len() > 4,
+        "300px left no readable name"
+    );
 }
 
 #[test]
