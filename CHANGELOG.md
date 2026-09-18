@@ -1,3 +1,10 @@
+## [1.49.1](https://github.com/playtron-os/cosmic-comp/compare/v1.49.0...v1.49.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **halo:** give the band beside the pill back to the window behind ([1e8b438](https://github.com/playtron-os/cosmic-comp/commit/1e8b438e0ac07c3fe933f583ebe193d2b3972d09))
+
 # [1.49.0](https://github.com/playtron-os/cosmic-comp/compare/v1.48.0...v1.49.0) (2026-09-18)
 
 
