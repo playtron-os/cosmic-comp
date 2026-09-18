@@ -1,3 +1,10 @@
+## [1.49.3](https://github.com/playtron-os/cosmic-comp/compare/v1.49.2...v1.49.3) (2026-09-18)
+
+
+### Bug Fixes
+
+* **halo:** keep an overlay Halo's whole strip draggable ([7a4e76f](https://github.com/playtron-os/cosmic-comp/commit/7a4e76faa8392634dd73ddd7c1438e45b96ac2de))
+
 ## [1.49.2](https://github.com/playtron-os/cosmic-comp/compare/v1.49.1...v1.49.2) (2026-09-18)
 
 
