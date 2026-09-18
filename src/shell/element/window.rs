@@ -211,6 +211,7 @@ impl Focus {
         header_height: i32,
         header_input_height: i32,
         header_offset: i32,
+        pill: Option<(i32, i32)>,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
         Self::under_geometry(
@@ -218,42 +219,58 @@ impl Focus {
             header_height,
             header_input_height,
             header_offset,
+            pill,
             location,
         )
     }
 
-    fn under_geometry(
+    /// `pill` is the Halo body's window-relative x range. A floating Halo only
+    /// takes input where it is painted: the rest of its band is see-through and
+    /// belongs to whatever is behind the window, so the resize borders hug the
+    /// client's own edges instead of the band's.
+    pub(super) fn under_geometry(
         geo: Rectangle<i32, Logical>,
         header_height: i32,
         header_input_height: i32,
         header_offset: i32,
+        pill: Option<(i32, i32)>,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
         let loc = location.to_i32_floor::<i32>() - geo.loc;
-        if loc.x >= 0
-            && loc.x < geo.size.w
-            && loc.y >= header_offset
-            && loc.y < header_offset + header_input_height
+        let on_header = match pill {
+            Some((left, right)) => loc.x >= left && loc.x < right,
+            None => loc.x >= 0 && loc.x < geo.size.w,
+        };
+        if on_header && loc.y >= header_offset && loc.y < header_offset + header_input_height {
+            return Some(Focus::Header);
+        }
+
+        let floating = pill.is_some();
+        let top = if floating { header_height } else { 0 };
+        let bottom = header_height + geo.size.h;
+        if floating
+            && !(loc.x >= -RESIZE_BORDER
+                && loc.x < geo.size.w + RESIZE_BORDER
+                && loc.y >= top - RESIZE_BORDER
+                && loc.y < bottom + RESIZE_BORDER)
         {
-            Some(Focus::Header)
-        } else if loc.y < 0 && loc.x < 0 {
-            Some(Focus::ResizeTopLeft)
-        } else if loc.y < 0 && loc.x >= geo.size.w {
-            Some(Focus::ResizeTopRight)
-        } else if loc.y < 0 {
-            Some(Focus::ResizeTop)
-        } else if loc.y >= header_height + geo.size.h && loc.x < 0 {
-            Some(Focus::ResizeBottomLeft)
-        } else if loc.y >= header_height + geo.size.h && loc.x >= geo.size.w {
-            Some(Focus::ResizeBottomRight)
-        } else if loc.y >= header_height + geo.size.h {
-            Some(Focus::ResizeBottom)
-        } else if loc.x < 0 {
-            Some(Focus::ResizeLeft)
-        } else if loc.x >= geo.size.w {
-            Some(Focus::ResizeRight)
-        } else {
-            None
+            return None;
+        }
+
+        let above = loc.y < top;
+        let below = loc.y >= bottom;
+        let left = loc.x < 0;
+        let right = loc.x >= geo.size.w;
+        match (above, below, left, right) {
+            (true, _, true, _) => Some(Focus::ResizeTopLeft),
+            (true, _, _, true) => Some(Focus::ResizeTopRight),
+            (true, ..) => Some(Focus::ResizeTop),
+            (_, true, true, _) => Some(Focus::ResizeBottomLeft),
+            (_, true, _, true) => Some(Focus::ResizeBottomRight),
+            (_, true, ..) => Some(Focus::ResizeBottom),
+            (.., true, _) => Some(Focus::ResizeLeft),
+            (.., true) => Some(Focus::ResizeRight),
+            _ => None,
         }
     }
 
@@ -939,6 +956,22 @@ impl CosmicWindow {
         self.0.with_program(|p| p.window.clone())
     }
 
+    /// The Halo body's window-relative x range, or `None` when this window has
+    /// no floating chrome. Reads the painted pill, so it must be called outside
+    /// `with_program`.
+    fn halo_pill(&self) -> Option<(i32, i32)> {
+        self.0
+            .with_program(|p| {
+                p.fullscreen_output.is_none()
+                    && p.uses_halo_header()
+                    && p.has_ssd(false)
+                    && !is_surface_embedded(&p.window)
+            })
+            .then(|| self.0.backdrop_input_bounds())
+            .flatten()
+            .map(|rect| halo_pill_span(rect.loc.x, rect.size.w))
+    }
+
     pub fn focus_under(
         &self,
         mut relative_pos: Point<f64, Logical>,
@@ -961,6 +994,7 @@ impl CosmicWindow {
             .with_program(|p| p.fullscreen_output.is_some())
             .then(|| self.0.backdrop_bounds())
             .flatten();
+        let pill = self.halo_pill();
         let result = self.0.with_program(|p| {
             if let Some(output) = &p.fullscreen_output {
                 let output = output.lock().unwrap();
@@ -1000,12 +1034,23 @@ impl CosmicWindow {
                 let point_i32 = relative_pos.to_i32_floor::<i32>();
                 let ssd_height = if has_ssd { p.ssd_height() } else { 0 };
 
-                if (point_i32.x - geo.loc.x >= -RESIZE_BORDER && point_i32.x - geo.loc.x < 0)
-                    || (point_i32.y - geo.loc.y >= -RESIZE_BORDER && point_i32.y - geo.loc.y < 0)
-                    || (point_i32.x - geo.loc.x >= geo.size.w
-                        && point_i32.x - geo.loc.x < geo.size.w + RESIZE_BORDER)
-                    || (point_i32.y - geo.loc.y >= geo.size.h + ssd_height
-                        && point_i32.y - geo.loc.y < geo.size.h + ssd_height + RESIZE_BORDER)
+                let x = point_i32.x - geo.loc.x;
+                let y = point_i32.y - geo.loc.y;
+                // A floating Halo's band is empty above the client, so its
+                // resize borders follow the client's own top edge and the band
+                // is left to whatever is painted behind the window.
+                let top = if pill.is_some() { ssd_height } else { 0 };
+                let bottom = geo.size.h + ssd_height;
+                let within_reach = pill.is_none()
+                    || (x >= -RESIZE_BORDER
+                        && x < geo.size.w + RESIZE_BORDER
+                        && y >= top - RESIZE_BORDER
+                        && y < bottom + RESIZE_BORDER);
+                if within_reach
+                    && ((-RESIZE_BORDER..0).contains(&x)
+                        || (top - RESIZE_BORDER..top).contains(&y)
+                        || (geo.size.w..geo.size.w + RESIZE_BORDER).contains(&x)
+                        || (bottom..bottom + RESIZE_BORDER).contains(&y))
                 {
                     window_ui = Some((
                         PointerFocusTarget::WindowUI(self.clone()),
@@ -1013,12 +1058,13 @@ impl CosmicWindow {
                     ));
                 }
 
-                let header_y = point_i32.y - geo.loc.y;
                 let in_header = if p.uses_halo_header() {
-                    let top = -p.ssd_overhang();
-                    header_y >= top && header_y < top + p.ssd_input_height()
+                    let band = -p.ssd_overhang();
+                    y >= band
+                        && y < band + p.ssd_input_height()
+                        && pill.is_some_and(|(left, right)| x >= left && x < right)
                 } else {
-                    header_y < p.ssd_input_height()
+                    y < p.ssd_input_height()
                 };
                 if has_ssd && in_header {
                     window_ui = Some((
@@ -1689,6 +1735,13 @@ pub enum Message {
     NewWindow,
 }
 
+/// Window-relative x range a painted Halo body takes input in. Rounded out so
+/// no drawn pixel of the pill is left to the window behind it.
+pub(super) fn halo_pill_span(x: f64, width: f64) -> (i32, i32) {
+    let left = x.floor() as i32;
+    (left, left + width.ceil() as i32)
+}
+
 pub(crate) fn halo_backdrop_blur(
     layers: &[iced_tiny_skia::Layer],
     pill_height: f32,
@@ -2204,6 +2257,7 @@ impl KeyboardTarget<State> for CosmicWindow {
 impl PointerTarget<State> for CosmicWindow {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
+        let pill = self.halo_pill();
         let is_header = self.0.with_program(|p| {
             if p.fullscreen_output.is_some() {
                 p.swap_focus(Some(Focus::Header));
@@ -2221,6 +2275,7 @@ impl PointerTarget<State> for CosmicWindow {
                     if has_ssd { p.ssd_height() } else { 0 },
                     if has_ssd { p.ssd_input_height() } else { 0 },
                     if has_ssd { -p.ssd_overhang() } else { 0 },
+                    pill,
                     event.location,
                 ) else {
                     return false;
@@ -2259,6 +2314,7 @@ impl PointerTarget<State> for CosmicWindow {
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
+        let pill = self.halo_pill();
         let is_header = self.0.with_program(|p| {
             if p.fullscreen_output.is_some() {
                 p.swap_focus(Some(Focus::Header));
@@ -2276,6 +2332,7 @@ impl PointerTarget<State> for CosmicWindow {
                     if has_ssd { p.ssd_height() } else { 0 },
                     if has_ssd { p.ssd_input_height() } else { 0 },
                     if has_ssd { -p.ssd_overhang() } else { 0 },
+                    pill,
                     event.location,
                 ) else {
                     return false;
@@ -2737,10 +2794,21 @@ where
 mod tests {
     use super::*;
 
+    /// Joined Halo geometry: 31px reserved above the client, a 34px band
+    /// starting 3px above the window, and a pill capped away from the corners.
+    const JOINED: (i32, i32, i32) = (31, 34, -3);
+
+    fn joined_hit(pill: Option<(i32, i32)>) -> impl Fn(f64, f64) -> Option<Focus> {
+        let geo = Rectangle::new((7, 9).into(), (800, 600).into());
+        let (height, input, offset) = JOINED;
+        move |x, y| {
+            Focus::under_geometry(geo, height, input, offset, pill, (x + 7.0, y + 9.0).into())
+        }
+    }
+
     #[test]
     fn joined_halo_routes_input_above_its_reserved_client_origin() {
-        let geo = Rectangle::new((7, 9).into(), (800, 600).into());
-        let hit = |x, y| Focus::under_geometry(geo, 31, 34, -3, Point::from((x + 7.0, y + 9.0)));
+        let hit = joined_hit(Some((20, 780)));
         assert_eq!(hit(100.0, 0.0), Some(Focus::Header));
         assert_eq!(hit(100.0, 30.9), Some(Focus::Header));
         assert_eq!(hit(100.0, 31.0), None);
@@ -2748,6 +2816,67 @@ mod tests {
         assert_eq!(hit(-1.0, 40.0), Some(Focus::ResizeLeft));
         assert_eq!(hit(100.0, 630.9), None);
         assert_eq!(hit(100.0, 631.0), Some(Focus::ResizeBottom));
+    }
+
+    /// The band beside the pill is see-through, so it must not take the click
+    /// that belongs to the window painted behind it.
+    #[test]
+    fn halo_band_beside_the_pill_falls_through() {
+        let hit = joined_hit(Some((20, 780)));
+        for x in [-9.0, 0.0, 10.0, 19.9, 780.0, 799.0, 808.0] {
+            for y in [-3.0, 0.0, 15.0, 20.9] {
+                assert_eq!(hit(x, y), None, "band at ({x}, {y}) swallowed the pointer");
+            }
+        }
+        assert_eq!(hit(20.0, -3.0), Some(Focus::Header));
+        assert_eq!(hit(779.9, 20.9), Some(Focus::Header));
+        // Without the pill the whole band is chrome, as it is for a title bar.
+        let full = joined_hit(None);
+        assert_eq!(full(10.0, 0.0), Some(Focus::Header));
+        assert_eq!(full(790.0, 15.0), Some(Focus::Header));
+    }
+
+    /// Resizing a floating Halo starts at the window's own edge, not at the
+    /// top of the empty band the pill hangs in.
+    #[test]
+    fn halo_resize_borders_hug_the_client_edges() {
+        let hit = joined_hit(Some((20, 780)));
+        assert_eq!(hit(10.0, 21.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(10.0, 30.9), Some(Focus::ResizeTop));
+        assert_eq!(hit(790.0, 25.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(10.0, 20.9), None);
+        // The pill keeps its own span; the border runs either side of it.
+        assert_eq!(hit(400.0, 25.0), Some(Focus::Header));
+        assert_eq!(hit(-1.0, 21.0), Some(Focus::ResizeTopLeft));
+        assert_eq!(hit(-10.0, 30.9), Some(Focus::ResizeTopLeft));
+        assert_eq!(hit(800.0, 21.0), Some(Focus::ResizeTopRight));
+        assert_eq!(hit(809.9, 25.0), Some(Focus::ResizeTopRight));
+        assert_eq!(hit(-1.0, 20.9), None);
+        assert_eq!(hit(800.0, 20.9), None);
+        assert_eq!(hit(-1.0, 630.9), Some(Focus::ResizeLeft));
+        assert_eq!(hit(-1.0, 631.0), Some(Focus::ResizeBottomLeft));
+        assert_eq!(hit(-11.0, 400.0), None);
+        assert_eq!(hit(400.0, 641.0), None);
+        // A title bar keeps its unbounded borders above the outer rect.
+        let full = joined_hit(None);
+        assert_eq!(full(400.0, -4.0), Some(Focus::ResizeTop));
+        assert_eq!(full(-1.0, -50.0), Some(Focus::ResizeTopLeft));
+    }
+
+    /// An overlay Halo reserves nothing: the band overlaps the client, so the
+    /// part of it beside the pill belongs to the client surface.
+    #[test]
+    fn overlay_halo_band_beside_the_pill_belongs_to_the_client() {
+        let geo = Rectangle::new((0, 0).into(), (800, 600).into());
+        let hit =
+            |x, y| Focus::under_geometry(geo, 0, 34, -10, Some((20, 780)), Point::from((x, y)));
+        assert_eq!(hit(100.0, -10.0), Some(Focus::Header));
+        assert_eq!(hit(100.0, 23.9), Some(Focus::Header));
+        assert_eq!(hit(100.0, 24.0), None);
+        assert_eq!(hit(10.0, 10.0), None);
+        assert_eq!(hit(10.0, -5.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(-1.0, -5.0), Some(Focus::ResizeTopLeft));
+        assert_eq!(hit(-1.0, -11.0), None);
     }
 
     /// A backdrop colour over the whole outer rect painted the band beside the pill.

@@ -1815,6 +1815,7 @@ impl PointerTarget<State> for CosmicStack {
                 p.tab_height(),
                 p.tab_height(),
                 0,
+                None,
                 event.location,
             ) else {
                 return;
@@ -1850,6 +1851,7 @@ impl PointerTarget<State> for CosmicStack {
                 p.tab_height(),
                 p.tab_height(),
                 0,
+                None,
                 event.location,
             ) else {
                 return;

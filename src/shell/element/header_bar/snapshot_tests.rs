@@ -1494,3 +1494,185 @@ fn a_bar_header_is_left_alone() {
         }
     }
 }
+
+/// The pill the compositor paints is the only part of a Halo band that takes
+/// input. Beside it the band is see-through, so it belongs to the window behind
+/// — and a joined Halo's resize borders start at the client's own top edge, not
+/// at the top of the band.
+#[test]
+fn only_the_painted_pill_takes_input_out_of_the_halo_band() {
+    use super::super::window::{Focus, RESIZE_BORDER, halo_pill_span};
+    use smithay::utils::{Point, Rectangle as Rect};
+
+    let theme = theme();
+    let input = ssd_header_input_height(&theme) as i32;
+    for width in [2400.0_f32, 1024.0, 600.0, 400.0] {
+        for joined in [false, true] {
+            let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+                header
+                    .title(LONG)
+                    .app_name("Files")
+                    .focused(true)
+                    .joined_to_window(joined)
+                    .on_close(())
+                    .on_minimize(())
+                    .on_maximize(())
+                    .on_right_click(())
+                    .on_screenshot(())
+                    .on_fullscreen((), false)
+            });
+            let bounds = pill(&mut renderer, &theme, width);
+            let span = halo_pill_span(f64::from(bounds.x), f64::from(bounds.width));
+            let top = ssd_header_height_for(&theme, joined) as i32;
+            let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, joined));
+            let geo = Rect::new(Point::from((0, 0)), (width as i32, 600).into());
+            let hit = |x: f64, y: f64| {
+                Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
+            };
+            let case = format!("{width}px, joined={joined}, pill={bounds:?}");
+
+            // The pill itself, all the way to its painted edges.
+            let band = f64::from(offset);
+            for x in [span.0, (span.0 + span.1) / 2, span.1 - 1] {
+                assert_eq!(
+                    hit(f64::from(x), band),
+                    Some(Focus::Header),
+                    "the pill is unreachable at {x} ({case})"
+                );
+            }
+
+            // Beside it: above the client for a joined Halo, over the client
+            // for an overlay one. Neither may be claimed as chrome.
+            let beside = [
+                0.0,
+                f64::from(span.0) - 1.0,
+                f64::from(span.1),
+                width as f64 - 1.0,
+            ];
+            let clear = if joined {
+                f64::from(top - RESIZE_BORDER) - 1.0
+            } else {
+                0.0
+            };
+            for x in beside {
+                assert_eq!(
+                    hit(x, clear),
+                    None,
+                    "the empty band swallowed ({x}, {clear}) ({case})"
+                );
+            }
+
+            // Resizing starts at the window's own edge either way.
+            assert_eq!(
+                hit(f64::from(span.0) - 1.0, f64::from(top - 1)),
+                Some(Focus::ResizeTop),
+                "no top border beside the pill ({case})"
+            );
+            assert_eq!(
+                hit(-1.0, f64::from(top - 1)),
+                Some(Focus::ResizeTopLeft),
+                "no top-left corner at the window's edge ({case})"
+            );
+            assert_eq!(
+                hit(f64::from(width as i32), f64::from(top - RESIZE_BORDER)),
+                Some(Focus::ResizeTopRight),
+                "no top-right corner at the window's edge ({case})"
+            );
+        }
+    }
+}
+
+/// End to end through the live element: a real `IcedElement` renders the Halo,
+/// its painted pill comes back out of `backdrop_input_bounds`, and the band
+/// beside it is left to the window behind. This is the path the compositor
+/// runs on every pointer motion, stubbing nothing but the client surface.
+#[test]
+fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
+    use super::super::window::{Focus, RESIZE_BORDER, halo_backdrop_blur, halo_pill_span};
+    use crate::utils::iced::{CompElement, IcedElement, Program};
+    use smithay::utils::{Logical, Point, Rectangle as Rect, Size as SmithaySize};
+
+    struct Halo(String);
+    impl Program for Halo {
+        type Message = ();
+        fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
+            header_bar()
+                .theme(theme)
+                .title(&self.0)
+                .app_name("Files")
+                .focused(true)
+                .joined_to_window(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_fullscreen((), false)
+                .into_element()
+        }
+        fn backdrop_blur(
+            &self,
+            theme: &CompTheme,
+            size: SmithaySize<i32, Logical>,
+            layers: &[Layer],
+            _: [u8; 4],
+        ) -> Option<(Rectangle, [u8; 4])> {
+            halo_backdrop_blur(layers, theme.halo_style().pill_height(), size.w as f32)
+        }
+    }
+
+    let theme = theme();
+    // The font system is global; prime it the way the raster tests do.
+    let _ = render(&theme, 200.0, 1.0, |header| header);
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let input = ssd_header_input_height(&theme) as i32;
+    let top = ssd_header_height_for(&theme, true) as i32;
+    let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, true));
+
+    for width in [2400, 1280, 640] {
+        let element = IcedElement::new(
+            Halo(LONG.to_owned()),
+            (width, ssd_header_render_height(&theme) as i32),
+            event_loop.handle(),
+            theme.clone(),
+        );
+        let bounds = element
+            .backdrop_input_bounds()
+            .expect("a drawn Halo reports its pill");
+        let span = halo_pill_span(bounds.loc.x, bounds.size.w);
+        assert!(
+            span.0 > 0 && span.1 < width,
+            "a {width}px window's pill {span:?} left no band to fall through"
+        );
+
+        let geo = Rect::new(Point::from((0, 0)), (width, 600).into());
+        let hit = |x: f64, y: f64| {
+            Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
+        };
+        let band = f64::from(offset);
+        assert_eq!(
+            hit(f64::from((span.0 + span.1) / 2), band),
+            Some(Focus::Header)
+        );
+        // Chrome behind a maximized window gets these back.
+        for x in [
+            0.0,
+            f64::from(span.0) - 1.0,
+            f64::from(span.1),
+            f64::from(width - 1),
+        ] {
+            assert_eq!(
+                hit(x, band),
+                None,
+                "the band at {x} still blocks the window behind ({width}px)"
+            );
+        }
+        // And its corners resize at the window, not out in the band.
+        assert_eq!(hit(-1.0, f64::from(top - 1)), Some(Focus::ResizeTopLeft));
+        assert_eq!(
+            hit(f64::from(width), f64::from(top - RESIZE_BORDER)),
+            Some(Focus::ResizeTopRight)
+        );
+        assert_eq!(hit(-1.0, band), None);
+    }
+}
