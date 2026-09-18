@@ -1506,79 +1506,76 @@ fn only_the_painted_pill_takes_input_out_of_the_halo_band() {
 
     let theme = theme();
     let input = ssd_header_input_height(&theme) as i32;
+    // A joined Halo only; an overlay one keeps its whole strip and gets no
+    // range at all (`an_overlay_halo_keeps_its_whole_strip_draggable`).
+    let joined = true;
     for width in [2400.0_f32, 1024.0, 600.0, 400.0] {
-        for joined in [false, true] {
-            let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-                header
-                    .title(LONG)
-                    .app_name("Files")
-                    .focused(true)
-                    .joined_to_window(joined)
-                    .on_close(())
-                    .on_minimize(())
-                    .on_maximize(())
-                    .on_right_click(())
-                    .on_screenshot(())
-                    .on_fullscreen((), false)
-            });
-            let bounds = pill(&mut renderer, &theme, width);
-            let span = halo_pill_span(f64::from(bounds.x), f64::from(bounds.width));
-            let top = ssd_header_height_for(&theme, joined) as i32;
-            let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, joined));
-            let geo = Rect::new(Point::from((0, 0)), (width as i32, 600).into());
-            let hit = |x: f64, y: f64| {
-                Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
-            };
-            let case = format!("{width}px, joined={joined}, pill={bounds:?}");
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            header
+                .title(LONG)
+                .app_name("Files")
+                .focused(true)
+                .joined_to_window(joined)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .on_right_click(())
+                .on_screenshot(())
+                .on_fullscreen((), false)
+        });
+        let bounds = pill(&mut renderer, &theme, width);
+        let span = halo_pill_span(f64::from(bounds.x), f64::from(bounds.width));
+        let top = ssd_header_height_for(&theme, joined) as i32;
+        let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, joined));
+        let geo = Rect::new(Point::from((0, 0)), (width as i32, 600).into());
+        let hit = |x: f64, y: f64| {
+            Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
+        };
+        let case = format!("{width}px, joined={joined}, pill={bounds:?}");
 
-            // The pill itself, all the way to its painted edges.
-            let band = f64::from(offset);
-            for x in [span.0, (span.0 + span.1) / 2, span.1 - 1] {
-                assert_eq!(
-                    hit(f64::from(x), band),
-                    Some(Focus::Header),
-                    "the pill is unreachable at {x} ({case})"
-                );
-            }
-
-            // Beside it: above the client for a joined Halo, over the client
-            // for an overlay one. Neither may be claimed as chrome.
-            let beside = [
-                0.0,
-                f64::from(span.0) - 1.0,
-                f64::from(span.1),
-                width as f64 - 1.0,
-            ];
-            let clear = if joined {
-                f64::from(top - RESIZE_BORDER) - 1.0
-            } else {
-                0.0
-            };
-            for x in beside {
-                assert_eq!(
-                    hit(x, clear),
-                    None,
-                    "the empty band swallowed ({x}, {clear}) ({case})"
-                );
-            }
-
-            // Resizing starts at the window's own edge either way.
+        // The pill itself, all the way to its painted edges.
+        let band = f64::from(offset);
+        for x in [span.0, (span.0 + span.1) / 2, span.1 - 1] {
             assert_eq!(
-                hit(f64::from(span.0) - 1.0, f64::from(top - 1)),
-                Some(Focus::ResizeTop),
-                "no top border beside the pill ({case})"
-            );
-            assert_eq!(
-                hit(-1.0, f64::from(top - 1)),
-                Some(Focus::ResizeTopLeft),
-                "no top-left corner at the window's edge ({case})"
-            );
-            assert_eq!(
-                hit(f64::from(width as i32), f64::from(top - RESIZE_BORDER)),
-                Some(Focus::ResizeTopRight),
-                "no top-right corner at the window's edge ({case})"
+                hit(f64::from(x), band),
+                Some(Focus::Header),
+                "the pill is unreachable at {x} ({case})"
             );
         }
+
+        // Beside it the band is see-through onto whatever is behind the
+        // window, clear of the resize border, and may not be claimed as chrome.
+        let beside = [
+            0.0,
+            f64::from(span.0) - 1.0,
+            f64::from(span.1),
+            width as f64 - 1.0,
+        ];
+        let clear = f64::from(top - RESIZE_BORDER) - 1.0;
+        for x in beside {
+            assert_eq!(
+                hit(x, clear),
+                None,
+                "the empty band swallowed ({x}, {clear}) ({case})"
+            );
+        }
+
+        // Resizing starts at the window's own edge either way.
+        assert_eq!(
+            hit(f64::from(span.0) - 1.0, f64::from(top - 1)),
+            Some(Focus::ResizeTop),
+            "no top border beside the pill ({case})"
+        );
+        assert_eq!(
+            hit(-1.0, f64::from(top - 1)),
+            Some(Focus::ResizeTopLeft),
+            "no top-left corner at the window's edge ({case})"
+        );
+        assert_eq!(
+            hit(f64::from(width as i32), f64::from(top - RESIZE_BORDER)),
+            Some(Focus::ResizeTopRight),
+            "no top-right corner at the window's edge ({case})"
+        );
     }
 }
 

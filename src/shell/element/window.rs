@@ -956,17 +956,18 @@ impl CosmicWindow {
         self.0.with_program(|p| p.window.clone())
     }
 
-    /// The Halo body's window-relative x range, or `None` when this window has
-    /// no floating chrome. Reads the painted pill, so it must be called outside
-    /// `with_program`.
+    /// The Halo body's window-relative x range, or `None` when the whole band
+    /// is this window's to take input in. Reads the painted pill, so it must
+    /// be called outside `with_program`.
+    ///
+    /// Only a *joined* Halo needs the range. Its band is reserved above the
+    /// client, so beside the pill it is see-through onto whatever is behind
+    /// the window. An overlay Halo's band lies over the client's own top
+    /// strip, which the client leaves empty for exactly this: the compositor
+    /// drags and maximizes from all of it, as a title bar does.
     fn halo_pill(&self) -> Option<(i32, i32)> {
         self.0
-            .with_program(|p| {
-                p.fullscreen_output.is_none()
-                    && p.uses_halo_header()
-                    && p.has_ssd(false)
-                    && !is_surface_embedded(&p.window)
-            })
+            .with_program(|p| p.uses_halo_header() && p.has_ssd(false) && p.joined_halo())
             .then(|| self.0.backdrop_input_bounds())
             .flatten()
             .map(|rect| halo_pill_span(rect.loc.x, rect.size.w))
@@ -1058,11 +1059,13 @@ impl CosmicWindow {
                     ));
                 }
 
+                let on_header = match pill {
+                    Some((left, right)) => x >= left && x < right,
+                    None => x >= 0 && x < geo.size.w,
+                };
                 let in_header = if p.uses_halo_header() {
                     let band = -p.ssd_overhang();
-                    y >= band
-                        && y < band + p.ssd_input_height()
-                        && pill.is_some_and(|(left, right)| x >= left && x < right)
+                    on_header && y >= band && y < band + p.ssd_input_height()
                 } else {
                     y < p.ssd_input_height()
                 };
@@ -2863,20 +2866,34 @@ mod tests {
         assert_eq!(full(-1.0, -50.0), Some(Focus::ResizeTopLeft));
     }
 
-    /// An overlay Halo reserves nothing: the band overlaps the client, so the
-    /// part of it beside the pill belongs to the client surface.
+    /// An overlay Halo reserves nothing: its band lies over the client's own
+    /// top strip, which the client leaves empty for it. The compositor takes
+    /// all of that strip — dragging and double-click-to-maximize work across
+    /// the whole width, as on a title bar — so these windows get no pill range
+    /// at all (`halo_pill` returns `None` for them).
     #[test]
-    fn overlay_halo_band_beside_the_pill_belongs_to_the_client() {
+    fn an_overlay_halo_keeps_its_whole_strip_draggable() {
         let geo = Rectangle::new((0, 0).into(), (800, 600).into());
-        let hit =
-            |x, y| Focus::under_geometry(geo, 0, 34, -10, Some((20, 780)), Point::from((x, y)));
-        assert_eq!(hit(100.0, -10.0), Some(Focus::Header));
-        assert_eq!(hit(100.0, 23.9), Some(Focus::Header));
+        let hit = |x, y| Focus::under_geometry(geo, 0, 34, -10, None, Point::from((x, y)));
+        // Every column of the strip drags the window, not just the pill's.
+        for x in [0.0, 10.0, 399.0, 700.0, 799.0] {
+            for y in [-10.0, -5.0, 0.0, 23.9] {
+                assert_eq!(
+                    hit(x, y),
+                    Some(Focus::Header),
+                    "the spacer at ({x}, {y}) must drag the window"
+                );
+            }
+        }
+        // Below the strip is the client's own content again.
         assert_eq!(hit(100.0, 24.0), None);
-        assert_eq!(hit(10.0, 10.0), None);
-        assert_eq!(hit(10.0, -5.0), Some(Focus::ResizeTop));
-        assert_eq!(hit(-1.0, -5.0), Some(Focus::ResizeTopLeft));
-        assert_eq!(hit(-1.0, -11.0), None);
+        assert_eq!(hit(10.0, 100.0), None);
+        // And the window still resizes from its edges.
+        assert_eq!(hit(-1.0, 100.0), Some(Focus::ResizeLeft));
+        assert_eq!(hit(800.0, 100.0), Some(Focus::ResizeRight));
+        assert_eq!(hit(-1.0, -11.0), Some(Focus::ResizeTopLeft));
+        assert_eq!(hit(400.0, -11.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(400.0, 600.0), Some(Focus::ResizeBottom));
     }
 
     /// A backdrop colour over the whole outer rect painted the band beside the pill.
