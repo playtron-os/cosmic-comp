@@ -99,6 +99,67 @@ impl AutoHideMode {
     }
 }
 
+/// What holds keyboard focus, as far as one output's fullscreen window cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullscreenFocus {
+    /// This output's fullscreen window holds it.
+    Held,
+    /// Something else does — another window, a layer surface, a popup.
+    Elsewhere,
+    /// Nothing holds it; the focus stack decides.
+    Unfocused,
+}
+
+/// What one output looks like when deciding whether a fullscreen window still
+/// owns its screen — the same inputs `has_focused_fullscreen` in
+/// `focus::order` uses to gate the Top layer. The two must agree: whatever is
+/// drawn over the panel is what may hide it.
+#[derive(Debug, Clone, Copy)]
+pub struct ScreenOwnership {
+    /// Game mode holds this output exclusively for a settled fullscreen game.
+    pub game_mode_exclusive: bool,
+    /// What holds keyboard focus.
+    pub focus: FullscreenFocus,
+    /// Whether this output's workspace is the one holding the keyboard.
+    pub on_focused_workspace: bool,
+    /// Whether the workspace's focus stack is topped by its fullscreen window.
+    pub focus_stack_top_is_fullscreen: bool,
+    /// Whether the workspace overview is open over this output.
+    pub overview_is_open: bool,
+}
+
+impl ScreenOwnership {
+    /// Whether a fullscreen window still owns the screen, and so still hides
+    /// an `OnFullscreen` panel.
+    ///
+    /// Presence alone never answers this. A fullscreen window that has lost
+    /// focus to another window on its output is no longer covering the shell —
+    /// the render path puts the Top layer back at that point, so the panel has
+    /// to come back with it.
+    ///
+    /// Live focus only speaks for the workspace that holds it. On any other
+    /// output the keyboard is elsewhere by definition, and saying so would pop
+    /// that screen's panel over its own fullscreen window; there the focus
+    /// stack decides. The overview draws over everything and the render path
+    /// puts the Top layer back for it, so it releases the screen too — but a
+    /// game holding the output exclusively outranks all of it.
+    pub fn fullscreen_holds_screen(self) -> bool {
+        if self.game_mode_exclusive {
+            return true;
+        }
+        if !self.on_focused_workspace {
+            return self.focus_stack_top_is_fullscreen && !self.overview_is_open;
+        }
+        match self.focus {
+            FullscreenFocus::Held => true,
+            FullscreenFocus::Elsewhere => false,
+            FullscreenFocus::Unfocused => {
+                self.focus_stack_top_is_fullscreen && !self.overview_is_open
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Visibility state machine
 // ---------------------------------------------------------------------------
@@ -375,6 +436,166 @@ mod tests {
                 as u32,
             2
         );
+    }
+
+    fn owns(
+        focus: FullscreenFocus,
+        on_focused_workspace: bool,
+        stack_top: bool,
+        overview: bool,
+        game: bool,
+    ) -> bool {
+        ScreenOwnership {
+            game_mode_exclusive: game,
+            focus,
+            on_focused_workspace,
+            focus_stack_top_is_fullscreen: stack_top,
+            overview_is_open: overview,
+        }
+        .fullscreen_holds_screen()
+    }
+
+    const EVERY_FOCUS: [FullscreenFocus; 3] = [
+        FullscreenFocus::Held,
+        FullscreenFocus::Elsewhere,
+        FullscreenFocus::Unfocused,
+    ];
+
+    /// Focusing another window on the output the fullscreen window is on gives
+    /// the screen back to the shell, so an `OnFullscreen` panel must reappear.
+    #[test]
+    fn a_fullscreen_window_that_lost_focus_no_longer_hides_the_panel() {
+        // Whatever the focus stack says, live focus wins while there is some.
+        for stack_top in [false, true] {
+            assert!(
+                owns(FullscreenFocus::Held, true, stack_top, false, false),
+                "the focused fullscreen window still owns the screen"
+            );
+            assert!(
+                !owns(FullscreenFocus::Elsewhere, true, stack_top, false, false),
+                "another window has focus, so the panel must come back"
+            );
+        }
+        // With nothing focused the stack decides, matching the render path.
+        assert!(owns(FullscreenFocus::Unfocused, true, true, false, false));
+        assert!(!owns(FullscreenFocus::Unfocused, true, false, false, false));
+
+        // And that decision is what reaches the panel: only OnFullscreen mode
+        // reads it. Maximized is a different preference and is unaffected.
+        for (focus, expected) in [
+            (FullscreenFocus::Held, true),
+            (FullscreenFocus::Elsewhere, false),
+        ] {
+            let holds = owns(focus, true, true, false, false);
+            assert_eq!(holds, expected);
+            assert_eq!(
+                AutoHideMode::OnFullscreen.should_hide(true, true, holds),
+                expected
+            );
+            assert!(
+                AutoHideMode::OnMaximize.should_hide(true, true, holds),
+                "a maximized window still hides an OnMaximize panel ({focus:?})"
+            );
+        }
+    }
+
+    /// The keyboard is on one screen at a time. Another output's fullscreen
+    /// window is still covering its own screen, so its panel must stay hidden
+    /// however far away focus has gone.
+    #[test]
+    fn another_outputs_fullscreen_keeps_its_own_panel_hidden() {
+        for focus in EVERY_FOCUS {
+            assert!(
+                owns(focus, false, true, false, false),
+                "{focus:?}: an unfocused output's fullscreen still owns its screen"
+            );
+            assert!(
+                !owns(focus, false, false, false, false),
+                "{focus:?}: nothing fullscreen on top there, so show the panel"
+            );
+        }
+        // Only the screen holding the keyboard reads live focus at all.
+        assert!(!owns(FullscreenFocus::Elsewhere, true, true, false, false));
+        assert!(owns(FullscreenFocus::Elsewhere, false, true, false, false));
+    }
+
+    /// A settled fullscreen game holds its output whatever else happens, and
+    /// the overview releases the screen the same way the render path does.
+    #[test]
+    fn game_mode_outranks_focus_and_the_overview_releases_the_screen() {
+        for focus in EVERY_FOCUS {
+            for on_focused in [false, true] {
+                for stack_top in [false, true] {
+                    for overview in [false, true] {
+                        assert!(
+                            owns(focus, on_focused, stack_top, overview, true),
+                            "game mode must keep the panel off the game ({focus:?})"
+                        );
+                    }
+                }
+            }
+        }
+        // The overview draws over everything, so it gives the screen back —
+        // except to a fullscreen window that still holds live focus.
+        assert!(!owns(FullscreenFocus::Unfocused, true, true, true, false));
+        assert!(!owns(FullscreenFocus::Elsewhere, false, true, true, false));
+        assert!(owns(FullscreenFocus::Held, true, true, true, false));
+    }
+
+    /// The bug was auto-hide and the renderer disagreeing about who owns the
+    /// screen. Pin them together: this is `has_focused_fullscreen` from
+    /// `focus::order`, and the two must answer identically.
+    #[test]
+    fn the_rule_matches_what_the_renderer_gates_the_top_layer_on() {
+        fn renderer(
+            game_mode_exclusive: bool,
+            is_active_workspace: bool,
+            focus_is_fullscreen: bool,
+            focus_is_none: bool,
+            focus_stack_is_valid_fullscreen: bool,
+            overview_is_open: bool,
+        ) -> bool {
+            game_mode_exclusive
+                || if is_active_workspace {
+                    focus_is_fullscreen
+                        || (focus_is_none && focus_stack_is_valid_fullscreen && !overview_is_open)
+                } else {
+                    focus_stack_is_valid_fullscreen && !overview_is_open
+                }
+        }
+        let mut checked = 0;
+        for focus in EVERY_FOCUS {
+            for on_focused in [false, true] {
+                for stack_top in [false, true] {
+                    for overview in [false, true] {
+                        for game in [false, true] {
+                            // A focused fullscreen surface belongs to the
+                            // workspace holding the keyboard, so `Held` off
+                            // the focused workspace is unreachable.
+                            if matches!(focus, FullscreenFocus::Held) && !on_focused {
+                                continue;
+                            }
+                            assert_eq!(
+                                owns(focus, on_focused, stack_top, overview, game),
+                                renderer(
+                                    game,
+                                    on_focused,
+                                    matches!(focus, FullscreenFocus::Held),
+                                    matches!(focus, FullscreenFocus::Unfocused),
+                                    stack_top,
+                                    overview,
+                                ),
+                                "auto-hide and the renderer disagree: {focus:?} \
+                                 on_focused={on_focused} stack_top={stack_top} \
+                                 overview={overview} game={game}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 40, "the whole reachable table");
     }
 
     #[test]

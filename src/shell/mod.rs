@@ -4140,7 +4140,7 @@ impl Shell {
             Some(output) => mode.should_hide(
                 self.output_has_visible_windows(&output),
                 self.output_has_maximized_or_fullscreen(&output),
-                self.output_has_fullscreen(&output),
+                self.output_has_focused_fullscreen(&output),
             ),
             None => true,
         };
@@ -4191,6 +4191,66 @@ impl Shell {
                 .iter()
                 .any(|fullscreen| fullscreen.alive() && fullscreen.ended_at.is_none())
         })
+    }
+
+    /// Whether a fullscreen window currently holds the screen on `output`.
+    ///
+    /// Merely existing is not enough. Focusing another window on the same
+    /// output puts the shell back on top, and the render path stops
+    /// suppressing the Top layer at that moment (`has_focused_fullscreen` in
+    /// `focus::order`). Auto-hide has to agree with it, or the panel stays
+    /// hidden behind a window that is no longer covering it.
+    pub fn output_has_focused_fullscreen(&self, output: &Output) -> bool {
+        let Some(workspace) = self.active_space(output) else {
+            return false;
+        };
+        // Reachable from a client's auto-hide registration, which can arrive
+        // before the seat exists; `last_active` would panic there.
+        let Some(seat) = self.seats.last_active_checked() else {
+            return false;
+        };
+        // Already filtered to a live, un-ended fullscreen on this workspace.
+        let Some(fullscreen) = workspace.get_fullscreen(seat) else {
+            return false;
+        };
+        // Live focus speaks only for the workspace that holds it.
+        let on_focused_workspace = seat.focused_output().is_some_and(|focused| {
+            self.active_space(&focused)
+                .is_some_and(|active| active.handle == workspace.handle)
+        });
+        let focus = match seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+        {
+            // A fullscreen surface holds focus — but it must be this output's.
+            Some(KeyboardFocusTarget::Fullscreen(surface)) => {
+                if surface == fullscreen.surface {
+                    auto_hide::FullscreenFocus::Held
+                } else {
+                    auto_hide::FullscreenFocus::Elsewhere
+                }
+            }
+            // Another window, a layer surface or a popup has it.
+            Some(_) => auto_hide::FullscreenFocus::Elsewhere,
+            None => auto_hide::FullscreenFocus::Unfocused,
+        };
+        auto_hide::ScreenOwnership {
+            // A settled fullscreen game holds the output whatever has focus.
+            game_mode_exclusive: self.game_mode.active
+                && workspace
+                    .fullscreen_surfaces
+                    .iter()
+                    .any(|f| !f.is_animating()),
+            focus,
+            on_focused_workspace,
+            focus_stack_top_is_fullscreen: workspace
+                .focus_stack
+                .get(seat)
+                .last()
+                .is_some_and(|target| target == &fullscreen.surface),
+            overview_is_open: crate::utils::quirks::workspace_overview_is_open(output),
+        }
+        .fullscreen_holds_screen()
     }
 
     /// Check whether any toplevel on an output is maximized or fullscreen.
@@ -4318,7 +4378,7 @@ impl Shell {
     /// update all auto-hide surfaces on the affected output.
     pub fn update_auto_hide_for_output(&mut self, output: &Output) {
         let has_max = self.output_has_maximized_or_fullscreen(output);
-        let has_fullscreen = self.output_has_fullscreen(output);
+        let has_fullscreen = self.output_has_focused_fullscreen(output);
         let has_windows = self.output_has_visible_windows(output);
         let output_id = output.name();
 
@@ -4415,7 +4475,7 @@ impl Shell {
             .workspaces()
             .sets
             .keys()
-            .map(|output| (output.clone(), self.output_has_fullscreen(output)))
+            .map(|output| (output.clone(), self.output_has_focused_fullscreen(output)))
             .collect();
         let outputs_maximized: Vec<(Output, bool)> = self
             .workspaces()

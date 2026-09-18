@@ -387,6 +387,12 @@ impl Shell {
                 }
             }
         }
+
+        // Focus decides whether a fullscreen window still holds the screen, so
+        // a panel hidden for one has to be re-evaluated here as well as on the
+        // map/unmap/move paths. Cheap: it returns at once with no auto-hide
+        // surfaces registered.
+        self.refresh_auto_hide();
     }
 }
 

@@ -78,6 +78,13 @@ impl Seats {
         self.last_active.as_ref().expect("No seat?")
     }
 
+    /// The last active seat, for callers that can run before one exists —
+    /// a client registering at startup reaches the shell before
+    /// `create_seat` does.
+    pub fn last_active_checked(&self) -> Option<&Seat<State>> {
+        self.last_active.as_ref()
+    }
+
     pub fn update_last_active(&mut self, seat: &Seat<State>) {
         self.last_active = Some(seat.clone());
     }
