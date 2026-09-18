@@ -1,3 +1,10 @@
+## [1.49.2](https://github.com/playtron-os/cosmic-comp/compare/v1.49.1...v1.49.2) (2026-09-18)
+
+
+### Bug Fixes
+
+* **auto-hide:** bring the panel back when fullscreen loses focus ([129f83b](https://github.com/playtron-os/cosmic-comp/commit/129f83bd059843c1ace9d9fd827bbf15afce52d0))
+
 ## [1.49.1](https://github.com/playtron-os/cosmic-comp/compare/v1.49.0...v1.49.1) (2026-09-18)
 
 
