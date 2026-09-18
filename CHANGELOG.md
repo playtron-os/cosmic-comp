@@ -1,3 +1,21 @@
+# [1.49.0](https://github.com/playtron-os/cosmic-comp/compare/v1.48.0...v1.49.0) (2026-09-18)
+
+
+### Bug Fixes
+
+* **focus:** keep a window activated while its transient child has focus ([c8fe166](https://github.com/playtron-os/cosmic-comp/commit/c8fe166e098cd2fa07b7050c0c90d9c27500dbab))
+* **focus:** stop the raise from blinking a window's decorations ([1458b4a](https://github.com/playtron-os/cosmic-comp/commit/1458b4a08f82974c1fc5079be2c8a84b88f27ce0))
+* **halo:** fade a joined halo in place ([78d1ccc](https://github.com/playtron-os/cosmic-comp/commit/78d1ccc0e86a085bfb213087d54ac3e00af9e0c7))
+* **halo:** keep backdrop colour off the joined halo band ([7acf51f](https://github.com/playtron-os/cosmic-comp/commit/7acf51f3f6e13e49f9d88e537400202afac9339a))
+* **halo:** keep the controls when the title is the whole identity ([b24259d](https://github.com/playtron-os/cosmic-comp/commit/b24259d0cb2df40879a75a1ed0f671f230f0b544))
+* **halo:** keep the pill clear of the window's rounded corners ([b8a3255](https://github.com/playtron-os/cosmic-comp/commit/b8a32556d87a753461aba6a214cc3ea4507213e2))
+* **shell:** keep a window's own utility panel out of the window list ([5c44f7a](https://github.com/playtron-os/cosmic-comp/commit/5c44f7a33e08c2329eb39d4a748d39a5d569c149))
+
+
+### Features
+
+* **halo:** shed the pill's parts in order when the window is narrow ([2717175](https://github.com/playtron-os/cosmic-comp/commit/2717175bb7b844080ff52782f20711a55362a7bc))
+
 # [1.48.0](https://github.com/playtron-os/cosmic-comp/compare/v1.47.4...v1.48.0) (2026-09-15)
 
 
