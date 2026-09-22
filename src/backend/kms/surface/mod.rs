@@ -157,6 +157,20 @@ enum HwNightShift {
 /// Outputs currently covered by an adopted handoff frame, for [`handoff_active`].
 static HANDOFF_OVERLAYS: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether a held handoff frame may start fading out, short of the hold cap.
+///
+/// `resumed` answers it outright: the rest asks whether a session still starting
+/// is ready to be seen, which a session coming back to its VT always is.
+fn handoff_revealable(
+    resumed: bool,
+    hold: bool,
+    background_ready: bool,
+    has_content: bool,
+    still_fading_in: bool,
+) -> bool {
+    resumed || (!hold && (background_ready || (has_content && !still_fading_in)))
+}
+
 /// Whether a handoff frame is still covering any output.
 ///
 /// The overlay is opaque until the cross-fade ends, so the desktop beneath it is
@@ -206,6 +220,10 @@ pub struct SurfaceThreadState {
     frame_flags: FrameFlags,
     compositor: Option<GbmDrmOutput>,
     adopt: Option<AdoptFrame>,
+    /// This output has shown the session: a frame adopted from here on is another
+    /// VT's, left on the CRTC by a switch back, not one covering a session still
+    /// starting up.
+    revealed: bool,
     /// 1x1 black texture stretched over the output for the pre-shutdown fade. Cached so
     /// the fade does not re-upload it every frame; its `Id` must be stable for damage.
     shutdown_plate: Option<(GlesTexture, smithay::backend::renderer::element::Id)>,
@@ -747,6 +765,7 @@ fn surface_thread(
         active,
         compositor: None,
         adopt: None,
+        revealed: false,
         shutdown_plate: None,
         shutdown_frames: 0,
         frame_flags: FrameFlags::DEFAULT,
@@ -1636,6 +1655,10 @@ impl SurfaceThreadState {
         const ADOPT_FADE: std::time::Duration = std::time::Duration::from_millis(400);
 
         if let Some(adopt) = self.adopt.as_mut() {
+            // Every signal below says whether a session still starting is ready to be
+            // seen. Back from another VT, ours has been on screen all along; waiting on
+            // them held the other VT's frame for the full cap.
+            let resumed = self.revealed;
             // Content must be VISIBLE, not merely present: layer surfaces sit in the render
             // list at alpha 0 while pending their first buffer, then fade in over
             // `motion.layer_fade_in`. Fading the held frame out over those dissolves to
@@ -1666,7 +1689,13 @@ impl SurfaceThreadState {
             // `background_ready ||` short-circuits, so a session with a wallpaper
             // would otherwise reveal the moment cosmic-bg goes opaque no matter
             // who is holding.
-            let content_visible = !hold && (background_ready || (has_content && !still_fading_in));
+            let content_visible = handoff_revealable(
+                resumed,
+                hold,
+                background_ready,
+                has_content,
+                still_fading_in,
+            );
             let timed_out = adopt.started.elapsed() > crate::handoff_hold_cap();
             if adopt.fade_start.is_none() && (content_visible || timed_out) {
                 let (pending_fade, pending_open, fading, opening) =
@@ -1682,7 +1711,9 @@ impl SurfaceThreadState {
                     background_ready,
                     hold,
                     grace_expired,
+                    resumed,
                     reason = match (content_visible, background_ready, timed_out) {
+                        _ if resumed => "resumed",
                         (true, true, _) => "wallpaper ready",
                         (true, false, _) => "all surfaces settled",
                         (false, _, true) => "hold cap",
@@ -1692,6 +1723,7 @@ impl SurfaceThreadState {
                 );
                 adopt.fade_start = Some(std::time::Instant::now());
                 crate::utils::timing::mark(match (content_visible, background_ready, timed_out) {
+                    _ if resumed => "fade-start (resumed)",
                     (true, true, _) => "fade-start (wallpaper ready)",
                     (true, false, _) => "fade-start (all surfaces settled)",
                     (false, _, true) => "fade-start (hold cap)",
@@ -1750,6 +1782,16 @@ impl SurfaceThreadState {
                 // fading it out progressively uncovers the real content, not the reverse.
                 elements.insert(0, CosmicElement::Adopt(elem));
             }
+        }
+
+        // Ours is on screen, or fading in over another frame: any frame adopted from now
+        // on was left by a switch back to this VT.
+        if self
+            .adopt
+            .as_ref()
+            .is_none_or(|adopt| adopt.fade_start.is_some())
+        {
+            self.revealed = true;
         }
 
         // Pre-shutdown fade: a black plate over everything, ramping to fully opaque. The
@@ -3013,4 +3055,28 @@ fn postprocess_elements<'a>(
     )
     .map(CosmicElement::<GlMultiRenderer>::Postprocess)
     .collect::<Vec<_>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::handoff_revealable;
+
+    /// Back on its VT, a session reveals at once: a hold a client never released,
+    /// or a layer surface still pending, used to keep the other VT's frame up for
+    /// the whole cap.
+    #[test]
+    fn a_resumed_session_reveals_whatever_is_still_pending() {
+        assert!(handoff_revealable(true, true, false, false, true));
+        assert!(handoff_revealable(true, false, false, true, true));
+    }
+
+    /// A session still starting keeps waiting for a hold or for its content.
+    #[test]
+    fn a_starting_session_waits_for_its_content_and_any_hold() {
+        assert!(!handoff_revealable(false, true, true, true, false));
+        assert!(!handoff_revealable(false, false, false, true, true));
+        assert!(!handoff_revealable(false, false, false, false, false));
+        assert!(handoff_revealable(false, false, true, false, true));
+        assert!(handoff_revealable(false, false, false, true, false));
+    }
 }
