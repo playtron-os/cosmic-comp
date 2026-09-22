@@ -143,6 +143,7 @@ fn request_redraw_at(output: &Output, at: Instant) {
     }
     *slot = Some(at);
     drop(slot);
+    crate::frametrace::booking(crate::frametrace::Booking::Booked);
     // Only the main loop arms the timer, and a render thread's booking would
     // otherwise wait for whatever wakes that loop next.
     if !on_main_thread()
@@ -163,6 +164,7 @@ pub(crate) fn take_redraw_request(output: &Output) -> bool {
     let due = slot.is_some_and(|at| at <= Instant::now());
     if due {
         *slot = None;
+        crate::frametrace::booking(crate::frametrace::Booking::Due);
     }
     next_frame || due
 }
@@ -227,9 +229,13 @@ pub(crate) fn arm_redraw_timer<'a>(
         if armed.is_some_and(|(armed_at, _)| armed_at == at) {
             *armed = None;
         }
+        crate::frametrace::booking(crate::frametrace::Booking::Fired);
         calloop::timer::TimeoutAction::Drop
     }) {
-        Ok(token) => *armed = Some((at, token)),
+        Ok(token) => {
+            crate::frametrace::booking(crate::frametrace::Booking::Armed);
+            *armed = Some((at, token));
+        }
         Err(err) => tracing::warn!(?err, "failed to arm the iced redraw timer"),
     }
 }
@@ -738,14 +744,26 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         IcedElement(Arc::new(Mutex::new(internal)))
     }
 
+    /// The element's lock, its wait timed when frame tracing is on: a render
+    /// thread rasterises under it while input on the main thread waits for it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, IcedElementInternal<P>> {
+        if !crate::frametrace::enabled() {
+            return self.0.lock().unwrap();
+        }
+        let start = Instant::now();
+        let guard = self.0.lock().unwrap();
+        crate::frametrace::lock_wait(P::program_name(), on_main_thread(), start.elapsed());
+        guard
+    }
+
     pub fn with_program<R>(&self, func: impl FnOnce(&P) -> R) -> R {
-        let internal = self.0.lock().unwrap();
+        let internal = self.lock();
         func(&internal.program)
     }
 
     /// The painted backdrop body, excluding render-only shadow padding.
     pub(crate) fn backdrop_bounds(&self) -> Option<iced_core::Rectangle> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.lock();
         let IcedElementInternal {
             program,
             theme,
@@ -762,7 +780,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     /// Hit-test the painted body (not its shadow gutter), including surface
     /// animation and application/zoom scale, in element-relative logical units.
     pub(crate) fn backdrop_input_bounds(&self) -> Option<Rectangle<f64, Logical>> {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.lock();
         let IcedElementInternal {
             program,
             theme,
@@ -785,7 +803,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     }
 
     pub fn minimum_size(&self) -> Size<i32, Logical> {
-        let internal = self.0.lock().unwrap();
+        let internal = self.lock();
         let mut element = internal.program.view(&internal.theme);
         let tree = &mut Tree::new(element.as_widget());
         let node = element
@@ -813,11 +831,11 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             on_main_thread(),
             "IcedElement::loop_handle() off the event-loop thread races calloop's Rc"
         );
-        self.0.lock().unwrap().handle.raw().clone()
+        self.lock().handle.raw().clone()
     }
 
     pub fn resize(&self, size: Size<i32, Logical>) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let internal_ref = &mut *internal;
         if internal_ref.size == size {
             return;
@@ -830,7 +848,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
     pub fn set_additional_scale(&self, scale: f64) {
         {
-            let mut internal = self.0.lock().unwrap();
+            let mut internal = self.lock();
             let internal_ref = &mut *internal;
             if internal_ref.additional_scale == scale {
                 return;
@@ -842,14 +860,14 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     }
 
     pub fn force_update(&self) {
-        self.0.lock().unwrap().update(UpdateSource::Forced);
+        self.lock().update(UpdateSource::Forced);
     }
 
     /// The program must already request hidden visibility. Release queued
     /// input and retain its last paint, like a hidden layer-shell surface:
     /// only the compositor transform/alpha and live backdrop keep updating.
     pub(crate) fn animate_exit(&self) {
-        self.0.lock().unwrap().animate_exit(IcedInstant::now());
+        self.lock().animate_exit(IcedInstant::now());
     }
 
     /// A dismissed compositor surface may be retained until its exit ends.
@@ -871,12 +889,12 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     /// Read the element's theme. Ported from upstream (which hands out a `cosmic::Theme`)
     /// onto the fork's [`CompTheme`].
     pub fn with_theme<R: 'static>(&self, f: impl FnOnce(&CompTheme) -> R) -> R {
-        let guard = self.0.lock().unwrap();
+        let guard = self.lock();
         f(&guard.theme)
     }
 
     pub fn set_theme(&self, theme: CompTheme) {
-        let mut guard = self.0.lock().unwrap();
+        let mut guard = self.lock();
         guard.iced_theme = theme.to_iced_theme();
         guard.theme = theme;
         guard.tooltip.invalidate();
@@ -884,14 +902,14 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     }
 
     pub fn force_redraw(&self) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         for (_buffer, old_primitives) in internal.buffers.values_mut() {
             *old_primitives = None;
         }
     }
 
     pub fn current_size(&self) -> Size<i32, Logical> {
-        let internal = self.0.lock().unwrap();
+        let internal = self.lock();
         internal
             .size
             .to_f64()
@@ -902,7 +920,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     pub fn queue_message(&self, msg: P::Message) {
         // In iced 0.15, we process messages immediately by calling program.update
         // and scheduling any resulting tasks. We need to trigger a UI rebuild.
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let internal = &mut *internal; // Allow split-borrowing of fields
         let task = internal.program.update(
             msg,
@@ -925,13 +943,13 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
     /// Returns the current mouse interaction state from the last UI update.
     pub fn mouse_interaction(&self) -> MouseInteraction {
-        self.0.lock().unwrap().mouse_interaction
+        self.lock().mouse_interaction
     }
 }
 
 impl<P: Program + Send + 'static + Clone> IcedElement<P> {
     pub fn deep_clone(&self) -> Self {
-        let internal = self.0.lock().unwrap();
+        let internal = self.lock();
         IcedElement(Arc::new(Mutex::new(internal.clone())))
     }
 }
@@ -1285,6 +1303,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         }
 
         let total_duration = update_start.elapsed();
+        crate::frametrace::iced_update(P::program_name(), source.label(), total_duration);
 
         // Record to profiler
         if iced_perf_logging_enabled()
@@ -1316,7 +1335,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         _data: &mut crate::state::State,
         event: &MotionEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         internal
             .event_queue
             .push(Event::Mouse(MouseEvent::CursorEntered));
@@ -1336,7 +1355,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         _data: &mut crate::state::State,
         event: &MotionEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let event_location = event.location.downscale(internal.additional_scale);
         let position = IcedPoint::new(event_location.x as f32, event_location.y as f32);
         internal
@@ -1361,7 +1380,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         _data: &mut crate::state::State,
         event: &ButtonEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let button = match event.button {
             0x110 => MouseButton::Left,
             0x111 => MouseButton::Right,
@@ -1382,7 +1401,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         _data: &mut crate::state::State,
         frame: AxisFrame,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         internal
             .event_queue
             .push(Event::Mouse(MouseEvent::WheelScrolled {
@@ -1410,7 +1429,7 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         _serial: Serial,
         _time: u32,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         internal.cursor_pos = None;
         internal
             .event_queue
@@ -1483,7 +1502,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _data: &mut crate::state::State,
         event: &DownEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let id = Finger(i32::from(event.slot) as u64);
         let event_location = event.location.downscale(internal.additional_scale);
         let position = IcedPoint::new(event_location.x as f32, event_location.y as f32);
@@ -1503,7 +1522,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _data: &mut crate::state::State,
         event: &UpEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let id = Finger(i32::from(event.slot) as u64);
         if let Some(position) = internal.touch_map.remove(&id) {
             *internal.last_seat.lock().unwrap() =
@@ -1521,7 +1540,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _data: &mut crate::state::State,
         event: &TouchMotionEvent,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let id = Finger(i32::from(event.slot) as u64);
         let event_location = event.location.downscale(internal.additional_scale);
         let position = IcedPoint::new(event_location.x as f32, event_location.y as f32);
@@ -1541,7 +1560,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _data: &mut crate::state::State,
         frame: FrameMarker,
     ) {
-        self.0.lock().unwrap().last_touch_frame = Some(frame);
+        self.lock().last_touch_frame = Some(frame);
     }
 
     fn cancel(
@@ -1550,7 +1569,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _data: &mut crate::state::State,
         frame: FrameMarker,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         internal.last_touch_frame = Some(frame);
         for (id, position) in std::mem::take(&mut internal.touch_map) {
             internal
@@ -1581,7 +1600,7 @@ impl<P: Program + Send + 'static> TouchTarget<crate::state::State> for IcedEleme
         _seat: &Seat<crate::state::State>,
         _data: &mut crate::state::State,
     ) -> Option<FrameMarker> {
-        self.0.lock().unwrap().last_touch_frame
+        self.lock().last_touch_frame
     }
 }
 
@@ -1593,7 +1612,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
         keys: Vec<KeysymHandle<'_>>,
         _serial: Serial,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         for key in &keys {
             let keysym = key.modified_sym();
             let iced_key = iced_keymap::keysym_to_iced_key(keysym);
@@ -1636,7 +1655,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
         serial: Serial,
         _time: u32,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let keysym = key.modified_sym();
         let iced_key = iced_keymap::keysym_to_iced_key(keysym);
         let modified_key = iced_key.clone();
@@ -1677,7 +1696,7 @@ impl<P: Program + Send + 'static> KeyboardTarget<crate::state::State> for IcedEl
         modifiers: ModifiersState,
         _serial: Serial,
     ) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let mut mods = IcedModifiers::empty();
         if modifiers.shift {
             mods.insert(IcedModifiers::SHIFT);
@@ -1706,7 +1725,7 @@ impl<P: Program + Send + 'static> IsAlive for IcedElement<P> {
 
 impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
     fn bbox(&self) -> Rectangle<i32, Logical> {
-        let internal = self.0.lock().unwrap();
+        let internal = self.lock();
         Rectangle::from_size(
             internal
                 .size
@@ -1721,7 +1740,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
     }
 
     fn set_activate(&self, activated: bool) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         internal.event_queue.push(Event::Window(if activated {
             WindowEvent::Focused
         } else {
@@ -1731,7 +1750,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
     }
 
     fn output_enter(&self, output: &Output, _overlap: Rectangle<i32, Logical>) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let scale = output.current_scale().fractional_scale() * internal.additional_scale;
 
         let internal_size = internal.size;
@@ -1753,7 +1772,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
     }
 
     fn output_leave(&self, output: &Output) {
-        self.0.lock().unwrap().outputs.remove(output);
+        self.lock().outputs.remove(output);
         self.refresh();
     }
 
@@ -1763,7 +1782,7 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
 
     #[profiling::function]
     fn refresh(&self) {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let internal_ref = &mut *internal;
         internal_ref.buffers.retain(|scale, _| {
             internal_ref.outputs.iter().any(|o| {
@@ -1833,6 +1852,30 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         &self,
         renderer: &mut R,
         location: Point<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        radii: [u8; 4],
+        push_above: &mut dyn FnMut(IcedRenderElement<R>),
+        push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
+    ) -> Option<FocusOutlineFrame>
+    where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        let start = crate::frametrace::enabled().then(Instant::now);
+        let frame = self.push_render_elements_untraced(
+            renderer, location, scale, alpha, radii, push_above, push_below,
+        );
+        if let Some(start) = start {
+            crate::frametrace::iced_push(P::program_name(), start.elapsed());
+        }
+        frame
+    }
+
+    fn push_render_elements_untraced<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
         mut scale: Scale<f64>,
         alpha: f32,
         radii: [u8; 4],
@@ -1843,7 +1886,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        let mut internal = self.0.lock().unwrap();
+        let mut internal = self.lock();
         let internal_ref = &mut *internal;
 
         // Drive animation frames: if a previous update requested a redraw,
@@ -1980,6 +2023,11 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 .to_f64()
                 .to_buffer(scale.x, Transform::Normal)
                 .to_i32_round();
+            let trace = crate::frametrace::enabled();
+            let mut raster = crate::frametrace::Raster {
+                buffer_px: (size.w.max(0) as u64) * (size.h.max(0) as u64),
+                ..Default::default()
+            };
             if size.w > 0 && size.h > 0 {
                 let mut clip_mask = tiny_skia::Mask::new(size.w as u32, size.h as u32).unwrap();
                 let theme = &internal_ref.theme;
@@ -1996,6 +2044,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
 
                     // Get current layers from the renderer (populated by last draw() call)
                     let current_layers = internal_ref.renderer.layers();
+                    let diff_start = trace.then(Instant::now);
 
                     let mut damage_rects: Vec<_> = old_layers
                         .as_ref()
@@ -2024,6 +2073,14 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                         damage_rects,
                         iced_core::Rectangle::with_size(viewport.logical_size()),
                     );
+                    if let Some(start) = diff_start {
+                        raster.diff = start.elapsed();
+                        raster.damaged_px = damage_rects
+                            .iter()
+                            .map(|d| (d.width * scale_x * d.height * scale_x) as u64)
+                            .sum();
+                    }
+                    let draw_start = trace.then(Instant::now);
 
                     if !damage_rects.is_empty() {
                         *old_layers = Some((current_layers.to_vec(), background_color));
@@ -2056,6 +2113,9 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                         scale.x as f32,
                         theme,
                     );
+                    if let Some(start) = draw_start {
+                        raster.draw = start.elapsed();
+                    }
 
                     Result::<_, ()>::Ok(damage_output)
                 });
@@ -2067,6 +2127,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 }
             }
 
+            let upload_start = trace.then(Instant::now);
             match MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 location,
@@ -2098,6 +2159,10 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     }
                 }
                 Err(err) => tracing::warn!("What? {:?}", err),
+            }
+            if let Some(start) = upload_start {
+                raster.upload = start.elapsed();
+                crate::frametrace::iced_raster(P::program_name(), raster);
             }
 
             // MERGE: upstream gates this on `cosmic::Theme::transparent`; the

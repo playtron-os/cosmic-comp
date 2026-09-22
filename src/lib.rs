@@ -59,6 +59,7 @@ pub mod config;
 pub mod dbus;
 #[cfg(feature = "debug")]
 pub mod debug;
+pub mod frametrace;
 pub mod hooks;
 pub mod input;
 mod logger;
@@ -281,6 +282,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
         // Only track main-loop health during an active capture window (a single
         // relaxed atomic load otherwise — no steady-state cost).
         let loop_work_start = crate::perf::is_capturing().then(|| state.common.loop_health.begin());
+        let callback_start = crate::frametrace::enabled().then(std::time::Instant::now);
         // shall we shut down?
         if state.common.should_stop {
             // Let a pending fade finish so the freeze latches the black plate, not the
@@ -339,11 +341,13 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
             let mut active = false;
             for output in shell.animating_outputs() {
                 active = true;
+                crate::frametrace::loop_scheduled(&output, false, true);
                 state.backend.schedule_render(&output);
             }
             for output in shell.outputs() {
                 if utils::iced::take_redraw_request(output) {
                     active = true;
+                    crate::frametrace::loop_scheduled(output, true, false);
                     state.backend.schedule_render(output);
                 }
             }
@@ -383,6 +387,9 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
         if let Some(work_start) = loop_work_start {
             state.common.loop_health.end(work_start, loop_active);
+        }
+        if let Some(start) = callback_start {
+            crate::frametrace::loop_callback(start.elapsed());
         }
     })?;
 

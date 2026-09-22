@@ -480,6 +480,7 @@ fn open_surface(
             .unwrap_or_else(|| surface.app_id());
         let palette = Palette::new(surface.app_id(), scope, list.clone());
         open.store(true, Ordering::SeqCst);
+        crate::frametrace::mark(format_args!("palette opened ({})", surface.app_id()));
         ui.force_update();
         MenuGrab::new_palette(
             start,
@@ -494,6 +495,7 @@ fn open_surface(
         let app_actions = app_action_items(surface, seat, app.as_ref());
         let items = menu_items(surface, seat, action, app_actions, close_all);
         open.store(true, Ordering::SeqCst);
+        crate::frametrace::mark(format_args!("menu opened ({})", surface.app_id()));
         ui.force_update();
         MenuGrab::new_halo(
             start,
@@ -505,6 +507,11 @@ fn open_surface(
         )
     };
     let grab = grab.on_close(move || {
+        crate::frametrace::mark(if palette {
+            "palette closed"
+        } else {
+            "menu closed"
+        });
         open.store(false, Ordering::SeqCst);
         ui.force_update();
     });

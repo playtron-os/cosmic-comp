@@ -119,12 +119,14 @@ pub fn init_logger() -> Result<()> {
             .with(file_layer)
             .with(fmt_layer)
             .with(journald_layer)
+            .with(crate::frametrace::LogCounter)
             .with(filter)
             .init(),
         Err(err) => {
             tracing_subscriber::registry()
                 .with(file_layer)
                 .with(fmt_layer)
+                .with(crate::frametrace::LogCounter)
                 .with(filter)
                 .init();
             warn!(?err, "Failed to init journald logging.");

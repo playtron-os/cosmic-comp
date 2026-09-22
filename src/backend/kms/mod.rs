@@ -198,6 +198,22 @@ pub fn init_backend(
 /// Export a DRM GEM handle as a PRIME dmabuf fd (`DRM_IOCTL_PRIME_HANDLE_TO_FD`). No
 /// binding in drm-ffi 0.9, so issue the ioctl directly. Opcode verified against the
 /// kernel `<drm/drm.h>` (0xC00C642D; the arg struct is 12 bytes, not 8).
+/// An input event's kind and libinput timestamp (CLOCK_MONOTONIC µs), for the frame trace.
+fn traced_input(event: &InputEvent<LibinputInputBackend>) -> (&'static str, Option<u64>) {
+    use smithay::backend::input::Event;
+    match event {
+        InputEvent::PointerMotion { event } => ("pointer-motion", Some(event.time())),
+        InputEvent::PointerMotionAbsolute { event } => ("pointer-motion", Some(event.time())),
+        InputEvent::PointerButton { event } => ("pointer-button", Some(event.time())),
+        InputEvent::PointerAxis { event } => ("pointer-axis", Some(event.time())),
+        InputEvent::Keyboard { event } => ("key", Some(event.time())),
+        InputEvent::TouchDown { event } => ("touch", Some(event.time())),
+        InputEvent::TouchMotion { event } => ("touch", Some(event.time())),
+        InputEvent::TouchUp { event } => ("touch", Some(event.time())),
+        _ => ("other", None),
+    }
+}
+
 fn prime_handle_to_fd(
     card_fd: std::os::unix::io::RawFd,
     handle: u32,
@@ -369,10 +385,21 @@ fn init_libinput(
             state.backend.kms().input_devices.remove(&*device.name());
         }
 
+        let traced = crate::frametrace::enabled().then(|| {
+            let (kind, hw_us) = traced_input(&event);
+            let now = Duration::from(state.common.clock.now());
+            let age = hw_us.map(|hw_us| now.saturating_sub(Duration::from_micros(hw_us)));
+            (kind, age, std::time::Instant::now())
+        });
+
         state.process_input_event(event);
 
         for output in state.common.shell.read().outputs() {
             state.backend.kms().schedule_render(output);
+        }
+
+        if let Some((kind, age, start)) = traced {
+            crate::frametrace::input(kind, start.elapsed(), age);
         }
     })
     .map_err(|err| err.error)

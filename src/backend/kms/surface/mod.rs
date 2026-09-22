@@ -522,6 +522,7 @@ impl Surface {
         crate::spin::bump(crate::spin::SCHEDULE_RENDER);
         crate::spin::note_site(std::panic::Location::caller());
         if self.dpms {
+            crate::frametrace::schedule(&self.output);
             let _ = self.thread_command.send(ThreadCommand::ScheduleRender);
         }
     }
@@ -1036,6 +1037,7 @@ impl SurfaceThreadState {
             _ => None,
         };
         let sequence = metadata.as_ref().map(|data| data.sequence).unwrap_or(0);
+        crate::frametrace::presented(&self.output, presentation_time);
 
         // finish tracy frame
         let _ = self.vblank_frame.take();
@@ -1183,6 +1185,13 @@ impl SurfaceThreadState {
             why_animations,
             why_adopt,
         );
+        crate::frametrace::requeue(
+            &self.output,
+            why_iced,
+            redraw_needed,
+            why_animations,
+            why_stress || why_adopt,
+        );
         if why_iced || redraw_needed || why_stress || why_animations || why_adopt {
             let vblank_frame = tracy_client::Client::running()
                 .unwrap()
@@ -1216,6 +1225,13 @@ impl SurfaceThreadState {
         let why_animations = self.shell.read().animations_going();
         let why_adopt = self.adopt.is_some();
         crate::spin::why(why_iced, force, why_stress, why_animations, why_adopt);
+        crate::frametrace::requeue(
+            &self.output,
+            why_iced,
+            force,
+            why_animations,
+            why_stress || why_adopt,
+        );
         if why_iced || force || why_stress || why_animations || why_adopt {
             self.queue_redraw(false);
         }
@@ -1274,6 +1290,7 @@ impl SurfaceThreadState {
                 crate::spin::bump(crate::spin::RENDER_TIMER_FIRED);
                 if let Err(err) = state.redraw(estimated_presentation) {
                     crate::spin::bump(crate::spin::REDRAW_ERR);
+                    crate::frametrace::frame_error(&state.output);
                     // Recognize a GPU context reset anywhere in the error's source chain —
                     // render_frame and the offscreen/postprocess passes both preserve the
                     // typed chain down to GlesError::ContextReset — and ask the main thread
@@ -2404,6 +2421,14 @@ impl SurfaceThreadState {
         // Record frame profile for performance analysis
         profile.submit_duration = submit_phase_start.elapsed();
         profile.total_duration = frame_start.elapsed();
+        crate::frametrace::frame(
+            &self.output,
+            profile.total_duration,
+            profile.elements_duration,
+            profile.draw_duration,
+            profile.submit_duration,
+            profile.element_count,
+        );
         if crate::backend::render::gpu_profiler::perf_logging_enabled() {
             self.frame_profiler.record(profile);
             self.frame_profiler.maybe_report();
