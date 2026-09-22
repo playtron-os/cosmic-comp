@@ -161,13 +161,48 @@ profile-with-tracy = ["profiling/profile-with-tracy", "tracy-client/default"]
 profile-with-tracy-gpu = ["profile-with-tracy", "smithay/tracy_gpu_profiling"]
 
 [profile.dev.package.tiny-skia]
-opt-level = 2
+opt-level = 3
 
 [profile.dev.package.rustybuzz]
 opt-level = 2
 
 [profile.dev.package.ttf-parser]
 opt-level = 2
+
+# The compositor's own UI is rasterised on the CPU every frame it changes; left
+# unoptimised, these made one menu redraw cost tens of milliseconds in dev builds.
+[profile.dev.package.iced_tiny_skia]
+opt-level = 3
+
+[profile.dev.package.iced_graphics]
+opt-level = 3
+
+[profile.dev.package.tiny-skia-path]
+opt-level = 3
+
+[profile.dev.package.cosmic-text]
+opt-level = 3
+
+[profile.dev.package.swash]
+opt-level = 3
+
+[profile.dev.package.zeno]
+opt-level = 3
+
+[profile.dev.package.harfrust]
+opt-level = 3
+
+[profile.dev.package.skrifa]
+opt-level = 3
+
+[profile.dev.package.read-fonts]
+opt-level = 3
+
+[profile.dev.package.resvg]
+opt-level = 3
+
+[profile.dev.package.usvg]
+opt-level = 3
 
 [profile.fastdebug]
 debug = true
