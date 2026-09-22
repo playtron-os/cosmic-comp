@@ -75,6 +75,9 @@ mod item;
 mod tests;
 pub use self::default::*;
 
+/// Cheap to clone: a render thread takes a copy rather than rasterising under
+/// the seat's lock, which input on the main thread waits on.
+#[derive(Clone)]
 pub struct MenuGrabState {
     elements: Arc<Mutex<Vec<Element>>>,
     screen_space_relative: Option<Output>,
@@ -156,17 +159,32 @@ impl MenuGrabState {
         R::TextureId: Send + Clone + 'static,
     {
         let scale = output.current_scale().fractional_scale();
-        for elem in self.elements.lock().unwrap().iter() {
-            elem.iced.push_render_elements(
+        // Rasterising can take milliseconds, and pointer motion over the menu
+        // locks `elements` first; render from handles taken out of it instead.
+        let elements: Vec<_> = self
+            .elements
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|elem| (elem.iced.clone(), elem.position))
+            .collect();
+        for (iced, position) in elements {
+            // Another output's frame has nothing of this menu to draw.
+            if self.screen_space_relative.is_none()
+                && !Rectangle::new(position, iced.current_size().as_global())
+                    .overlaps(output.geometry())
+            {
+                continue;
+            }
+            iced.push_render_elements(
                 renderer,
-                elem.position
+                position
                     .to_local(output)
                     .as_logical()
                     .to_physical_precise_round(scale),
                 scale.into(),
                 1.0,
-                elem.iced
-                    .with_theme(|theme| theme.radius_s())
+                iced.with_theme(|theme| theme.radius_s())
                     .map(|x| x.round() as u8),
                 push,
                 None,

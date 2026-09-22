@@ -916,14 +916,15 @@ pub fn cursor_elements<'a, 'frame, R>(
             )
         }
 
-        if let Some(grab_state) = seat
+        // A copy, so the seat's lock is not held while the menu rasterises.
+        let menu = seat
             .user_data()
             .get::<SeatMenuGrabState>()
             .unwrap()
             .lock()
             .unwrap()
-            .as_ref()
-        {
+            .clone();
+        if let Some(grab_state) = menu.as_ref() {
             let should_scale = !grab_state.is_in_screen_space();
             grab_state.render(renderer, output, &mut |elem| {
                 push(CosmicElement::MoveGrab(RescaleRenderElement::from_element(
