@@ -1,3 +1,23 @@
+# [1.50.0](https://github.com/playtron-os/cosmic-comp/compare/v1.49.3...v1.50.0) (2026-09-22)
+
+
+### Bug Fixes
+
+* **iced:** wait for a caret's next blink instead of drawing every frame ([411ff09](https://github.com/playtron-os/cosmic-comp/commit/411ff093d5b4cc60318a308f5bba91c5950ab878))
+* **kms:** show a session at once when switching back to its VT ([0b71748](https://github.com/playtron-os/cosmic-comp/commit/0b7174802f35f2b8713a5547a5b02d187407a353))
+
+
+### Features
+
+* **halo:** a command palette on the window's glyph ([0d15950](https://github.com/playtron-os/cosmic-comp/commit/0d159509a0b6ba5678fb2e609710b92008f54678))
+* trace where frames, input and redraws spend their time ([dc6f100](https://github.com/playtron-os/cosmic-comp/commit/dc6f100ee411068d2c6169ae6af712271dd354c7))
+
+
+### Performance Improvements
+
+* **menu:** rasterise a menu outside the locks input waits on ([895ca69](https://github.com/playtron-os/cosmic-comp/commit/895ca69726b89eda32fac000890d15a64ef9e504))
+* redraw only the damaged part of the compositor's own surfaces ([7a36fa6](https://github.com/playtron-os/cosmic-comp/commit/7a36fa6635e37b4f11b314bc51ed70b5f61fe812))
+
 ## [1.49.3](https://github.com/playtron-os/cosmic-comp/compare/v1.49.2...v1.49.3) (2026-09-18)
 
 
