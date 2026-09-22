@@ -2,7 +2,9 @@
   description = "Compositor for the COSMIC desktop environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    # Pinned to the running system's nixpkgs: a GL app must use the same mesa as
+    # /run/opengl-driver, which is impure system state outside the flake closure.
+    nixpkgs.url = "github:NixOS/nixpkgs/34ab99075ac4f7e40cf037eef32cb1c360bb85e9";
 
     # For `devShells.deploy` only: the revision the devices run, so a build
     # links against their glibc rather than whatever unstable moved to.
@@ -74,11 +76,11 @@
               seatd # For libseat
               libxkbcommon
               libinput
-              mesa # For libgbm
+              libgbm
               fontconfig
               stdenv.cc.cc.lib
               pixman
-              libdisplay-info
+              libdisplay-info_0_3 # the -sys crate requires < 0.4
             ];
 
             runtimeDependencies = with pkgs; [
