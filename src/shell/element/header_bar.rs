@@ -194,6 +194,22 @@ pub(crate) fn halo_header_offset(theme: &CompTheme, joined: bool) -> i32 {
     }
 }
 
+/// The pill's bottom edge, relative to the top of the window it decorates.
+pub(crate) fn halo_pill_bottom(theme: &CompTheme, joined: bool) -> i32 {
+    let metrics = theme.halo_style();
+    (metrics.top_inset + metrics.pill_height()).ceil() as i32
+        - ssd_header_overhang(theme) as i32
+        - halo_header_offset(theme, joined)
+}
+
+/// A fullscreen window's pill hangs from the output's top edge instead.
+pub(crate) fn fullscreen_pill_bottom(theme: &CompTheme) -> i32 {
+    let metrics = theme.halo_style();
+    let pill_top = fullscreen_header_offset(theme)
+        + f64::from(halo_shadow_padding(theme).top + metrics.top_inset);
+    (pill_top + f64::from(metrics.pill_height())).ceil() as i32
+}
+
 /// Application icon for the SSD header — leaked static SVG bytes or a raster image handle.
 ///
 /// SVG bytes are leaked once per window to obtain `&'static [u8]` for icetron's
@@ -214,6 +230,19 @@ pub enum AppIcon {
     Image(iced_core::image::Handle),
 }
 
+/// One pinned command in the Halo's tray.
+///
+/// Resolved by the window rather than the header: what is pinned is a property
+/// of the app, and only the window knows which of its verbs an id names.
+#[derive(Clone, Debug)]
+pub struct TrayEntry<Message> {
+    pub icon: icetron_themes::Icon,
+    pub message: Message,
+    pub label: String,
+    /// A stateful command that is currently running.
+    pub on: bool,
+}
+
 /// Builder for the compositor SSD header bar.
 pub struct HeaderBar<'a, Message> {
     title: String,
@@ -223,13 +252,14 @@ pub struct HeaderBar<'a, Message> {
     on_minimize: Option<Message>,
     on_maximize: Option<Message>,
     on_right_click: Option<Message>,
-    on_screenshot: Option<Message>,
-    on_record: Option<Message>,
-    recording: bool,
+    /// The app glyph's own press — the window's commands.
+    on_commands: Option<Message>,
+    tray: Vec<TrayEntry<Message>>,
     on_new_window: Option<Message>,
     on_fullscreen: Option<Message>,
     fullscreen: bool,
     menu_open: bool,
+    commands_open: bool,
     focused: bool,
     hovered: bool,
     maximized: bool,
@@ -260,13 +290,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             on_minimize: None,
             on_maximize: None,
             on_right_click: None,
-            on_screenshot: None,
-            on_record: None,
-            recording: false,
+            on_commands: None,
+            tray: Vec::new(),
             on_new_window: None,
             on_fullscreen: None,
             fullscreen: false,
             menu_open: false,
+            commands_open: false,
             focused: false,
             hovered: false,
             maximized: false,
@@ -313,20 +343,15 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    pub fn on_screenshot(mut self, msg: Message) -> Self {
-        self.on_screenshot = Some(msg);
+    /// Pressing the app glyph. Without it the glyph is a plain mark.
+    pub fn on_commands(mut self, msg: Message) -> Self {
+        self.on_commands = Some(msg);
         self
     }
 
-    pub fn on_record(mut self, msg: Message) -> Self {
-        self.on_record = Some(msg);
-        self
-    }
-
-    /// Whether the window is being recorded: the Record glyph turns
-    /// destructive and carries a dot, and its tooltip offers to stop.
-    pub fn recording(mut self, recording: bool) -> Self {
-        self.recording = recording;
+    /// The commands pinned to this window's header, in pin order.
+    pub fn tray(mut self, tray: Vec<TrayEntry<Message>>) -> Self {
+        self.tray = tray;
         self
     }
 
@@ -343,6 +368,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn menu_open(mut self, open: bool) -> Self {
         self.menu_open = open;
+        self
+    }
+
+    /// Hold the app glyph in its pressed state while its palette is open.
+    pub fn commands_open(mut self, open: bool) -> Self {
+        self.commands_open = open;
         self
     }
 
@@ -394,8 +425,19 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     /// first, and the tray keeps room for the controls for the same reason.
     fn halo_control_widths(&self, theme: &CompTheme) -> (f32, f32) {
         let metrics = theme.halo_style();
-        let mut tray = metrics.border_width + 2.0 * metrics.control_size + theme.spacing_0_5();
-        let mut tray_items = 2_u32;
+        let pinned = self.tray.len() as f32;
+        // The divider only exists to separate the identity from the pins, so a
+        // header with nothing pinned pays for neither.
+        let mut tray = if self.tray.is_empty() {
+            0.0
+        } else {
+            metrics.border_width
+                + pinned * metrics.control_size
+                + (pinned - 1.0) * theme.spacing_0_5()
+        };
+        // Two, not one: the divider and the run of pins are separate items in
+        // the tray row, so they are separated by a gap of their own.
+        let mut tray_items = if self.tray.is_empty() { 0 } else { 2 };
         for present in [self.on_right_click.is_some(), self.on_new_window.is_some()] {
             if present {
                 tray += metrics.control_size;
@@ -443,6 +485,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .backdrop_blur(uses_halo_header(theme))
             .opaque(true)
             .show_border(true);
+        if self.compositor_outline && halo {
+            // The outline shader draws the pill's edge. Icetron mixes its own from
+            // the border AND the accent, so blanking the border alone leaves a
+            // hairline, and at 2x that hairline streaks straight past the corner.
+            header = header.accent(iced_core::Color::TRANSPARENT);
+        }
         // A Halo pill lays its own identity out — see `title_row` below — so
         // the app name is rendered here, not handed to icetron, which would
         // otherwise append it in a plain row that starves it of width. Icetron
@@ -486,9 +534,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     .ellipsis(iced_widget::text::Ellipsis::End)
                     .into();
 
+            // A window whose mark never resolved still needs the button: the
+            // glyph is the route to its commands, so it falls back to a generic
+            // one rather than leaving the pill with nothing to press.
+            let app_icon = self.app_icon.clone().or_else(|| {
+                halo.then_some(AppIcon::Svg {
+                    bytes: icons::APP_WINDOW.bytes,
+                    symbolic: true,
+                })
+            });
             let icon_element: Option<
                 Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
-            > = self.app_icon.as_ref().map(|icon| {
+            > = app_icon.as_ref().map(|icon| {
                 let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                     match icon {
                         AppIcon::Svg { bytes, symbolic } => {
@@ -523,19 +580,14 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     };
                 let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                     if halo {
-                        let bg = theme.halo_accent_background();
-                        let radius = theme.radii_max();
-                        container(icon_element)
-                            .width(Length::Fixed(icon_size))
-                            .height(Length::Fixed(icon_size))
-                            .align_x(Alignment::Center)
-                            .align_y(Alignment::Center)
-                            .style(move |_theme| container::Style {
-                                background: Some(iced_core::Background::Color(bg)),
-                                border: iced_core::Border::default().rounded(radius),
-                                ..Default::default()
-                            })
-                            .into()
+                        halo_glyph_disc(
+                            icon_element,
+                            icon_size,
+                            self.on_commands.clone(),
+                            self.commands_open,
+                            self.menu_open || self.commands_open,
+                            theme,
+                        )
                     } else {
                         icon_element
                     };
@@ -616,41 +668,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
         if halo {
             let metrics = theme.halo_style();
-            let capture = row![
-                halo_button(
-                    icons::CAMERA,
-                    self.on_screenshot.clone(),
-                    fl!("halo-screenshot-window"),
-                    HaloButtonRole::Tray { on: false },
-                    self.menu_open,
-                    theme
-                ),
-                halo_button(
-                    icons::CIRCLE,
-                    self.on_record.clone(),
-                    if self.recording {
-                        fl!("window-menu-stop-recording")
-                    } else {
-                        fl!("window-menu-record")
-                    },
-                    HaloButtonRole::Tray { on: self.recording },
-                    self.menu_open,
-                    theme
-                ),
-            ]
-            .spacing(theme.spacing_0_5());
-            let divider = container(iced_widget::Space::new())
-                .width(metrics.border_width)
-                .height(metrics.divider_height)
-                .style(move |_| container::Style {
-                    background: Some(iced_core::Background::Color(theme.stroke_subtle())),
-                    ..Default::default()
-                });
-            // The divider only separates the title from the tray, so it goes
-            // with the capture pair rather than lingering as a stray hairline.
-            let capture_group = row![divider, capture]
-                .spacing(metrics.gap)
-                .align_y(Alignment::Center);
             let (_, actions_natural) = self.halo_control_widths(theme);
             let mut tray = crate::utils::iced::ElasticRow::new()
                 .spacing(metrics.gap)
@@ -660,8 +677,35 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 // Anything less and the tray starves the controls at one width
                 // and hands them back at a narrower one.
                 .reserve(actions_natural)
-                .reserve_min(actions_natural)
-                .push_droppable(4, capture_group);
+                .reserve_min(actions_natural);
+            if !self.tray.is_empty() {
+                let pinned = row(self.tray.iter().map(|entry| {
+                    halo_button(
+                        entry.icon,
+                        Some(entry.message.clone()),
+                        entry.label.clone(),
+                        HaloButtonRole::Tray { on: entry.on },
+                        self.menu_open,
+                        theme,
+                    )
+                }))
+                .spacing(theme.spacing_0_5());
+                let divider = container(iced_widget::Space::new())
+                    .width(metrics.border_width)
+                    .height(metrics.divider_height)
+                    .style(move |_| container::Style {
+                        background: Some(iced_core::Background::Color(theme.stroke_subtle())),
+                        ..Default::default()
+                    });
+                // The divider only separates the title from the tray, so it
+                // goes with the pins rather than lingering as a stray hairline.
+                tray = tray.push_droppable(
+                    4,
+                    row![divider, pinned]
+                        .spacing(metrics.gap)
+                        .align_y(Alignment::Center),
+                );
+            }
             if let Some(message) = self.on_right_click.clone() {
                 tray = tray.push_droppable(
                     2,
@@ -844,6 +888,74 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 const RECORD_DOT_PX: f32 = 5.0;
 const RECORD_DOT_INSET_PX: f32 = 1.0;
 
+/// The app glyph's accent disc, and the button around it when the window has
+/// commands to offer.
+fn halo_glyph_disc<'a, Message: Clone + 'static>(
+    mark: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
+    size: f32,
+    on_press: Option<Message>,
+    active: bool,
+    surface_open: bool,
+    theme: &'a CompTheme,
+) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let bg = theme.halo_accent_background();
+    let radius = theme.radii_max();
+    let content = container(mark)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    let Some(message) = on_press else {
+        return content
+            .width(Length::Fixed(size))
+            .height(Length::Fixed(size))
+            .style(move |_theme| container::Style {
+                background: Some(iced_core::Background::Color(bg)),
+                border: iced_core::Border::default().rounded(radius),
+                ..Default::default()
+            })
+            .into();
+    };
+    // The design's `0 0 0 1.5px color-mix(--ws-accent 50%, transparent)` hover
+    // ring, drawn as a border because the disc's mark is far smaller than it.
+    let ring = {
+        let mut ring = theme.halo_accent();
+        ring.a *= HALO_GLYPH_RING_ACCENT;
+        ring
+    };
+    let button = button(content)
+        .on_press(message)
+        .padding(0)
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+        .standard_transition(&**theme)
+        .style(move |_, status| {
+            let lit = active || matches!(status, button::Status::Hovered | button::Status::Pressed);
+            button::Style {
+                background: Some(iced_core::Background::Color(bg)),
+                border: iced_core::Border {
+                    color: if lit {
+                        ring
+                    } else {
+                        iced_core::Color::TRANSPARENT
+                    },
+                    width: if lit { HALO_GLYPH_RING_WIDTH } else { 0.0 },
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        });
+    animated_tooltip(button, fl!("halo-commands-hint"), &**theme)
+        .position(tooltip::Position::Bottom)
+        .enabled(!surface_open)
+        .animation_duration(std::time::Duration::ZERO)
+        .compositor_managed(true)
+        .into()
+}
+
+/// The glyph's hover ring, from the design's `1.5px` at 50% accent.
+const HALO_GLYPH_RING_WIDTH: f32 = 1.5;
+const HALO_GLYPH_RING_ACCENT: f32 = 0.5;
+
 enum HaloButtonRole {
     /// A pinned command; `on` is a stateful one currently active.
     Tray {
@@ -952,6 +1064,29 @@ pub fn header_bar<'a, Message: Clone + 'static>() -> HeaderBar<'a, Message> {
     HeaderBar::new()
 }
 
+/// The default tray — the capture pair, as every window starts out pinned.
+#[cfg(test)]
+pub(crate) fn capture_tray(recording: bool) -> Vec<TrayEntry<()>> {
+    vec![
+        TrayEntry {
+            icon: icons::CAMERA,
+            message: (),
+            label: fl!("halo-screenshot-window"),
+            on: false,
+        },
+        TrayEntry {
+            icon: icons::CIRCLE,
+            message: (),
+            label: if recording {
+                fl!("window-menu-stop-recording")
+            } else {
+                fl!("window-menu-record")
+            },
+            on: recording,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod snapshot_tests;
 
@@ -993,6 +1128,18 @@ mod tests {
         assert_eq!(ssd_header_input_height(&theme) as i32 - overhang, reserved);
         assert!(reserved < ssd_header_render_height(&theme) as i32);
         assert_eq!(halo_header_offset(&theme, false), 0);
+    }
+
+    /// The palette hangs from the pill: 16px into a floating window, at the
+    /// foot of a joined one's reserved band, and under a fullscreen inset.
+    #[test]
+    fn the_pill_bottom_follows_where_the_halo_sits() {
+        let mut theme = DEFAULT_THEME_PAIR.load(false);
+        theme.window_header_style = WindowHeaderStyle::Halo;
+        let theme = CompTheme::new(Arc::new(theme), false);
+        assert_eq!(halo_pill_bottom(&theme, false), 16);
+        assert_eq!(halo_pill_bottom(&theme, true), 31);
+        assert_eq!(fullscreen_pill_bottom(&theme), 41);
     }
 
     /// A joined Halo slid 3px as it hid; only overlay and fullscreen chrome move.

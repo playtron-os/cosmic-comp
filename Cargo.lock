@@ -3007,7 +3007,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#3bfed50def64ef4d986313ea7ef0392f9bb34c70"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#f2398e9c9e40f7cd7f5f0524edbf69b9f87dd6fe"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -3021,6 +3021,7 @@ dependencies = [
  "image",
  "jxl-oxide",
  "once_cell",
+ "palette",
  "parking_lot",
  "rayon",
  "reqwest",
@@ -3038,7 +3039,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#8925692a95da68aa153a870ae9c6b20e59c2980c"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#212500c52f02dfd529d72a7cd8075d6758b42f9e"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",

@@ -317,7 +317,7 @@ fn layout_with(
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .on_new_window(()),
         )
@@ -445,18 +445,20 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
         .collect();
     assert_eq!(
         glyphs.len(),
-        8,
-        "screenshot, record, menu, new, minimize, maximize, fullscreen, close"
+        9,
+        "app mark, screenshot, record, menu, new, minimize, maximize, fullscreen, close"
     );
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
             color,
-            if index == 1 {
-                theme.text_quaternary()
+            if index == 0 {
+                // The app mark is the one glyph that belongs to the workspace
+                // rather than to the window's chrome, so it takes the accent.
+                theme.halo_accent()
             } else {
                 theme.text_tertiary()
             },
-            "ordinary icons, including the chevron, use neutral text tokens; record is disabled"
+            "every icon but the app mark, the chevron included, is a neutral text token"
         );
     }
     if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
@@ -484,7 +486,7 @@ fn halo_record_glyph_turns_destructive_while_recording() {
     let theme = theme();
     let (mut renderer, _viewport, _cache) =
         layout_with(&theme, 1024.0, "Explorer", 1.0, |header| {
-            header.on_record(()).recording(true)
+            header.tray(capture_tray(true))
         });
     let glyphs: Vec<_> = renderer
         .layers()
@@ -495,14 +497,14 @@ fn halo_record_glyph_turns_destructive_while_recording() {
             _ => None,
         })
         .collect();
-    assert_eq!(glyphs.len(), 8, "the dot is a quad, not a ninth glyph");
+    assert_eq!(glyphs.len(), 9, "the dot is a quad, not a tenth glyph");
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
             color,
-            if index == 1 {
-                theme.feedback_error_primary()
-            } else {
-                theme.text_tertiary()
+            match index {
+                0 => theme.halo_accent(),
+                2 => theme.feedback_error_primary(),
+                _ => theme.text_tertiary(),
             },
             "only the active Record glyph wears the destructive colour"
         );
@@ -782,8 +784,7 @@ fn shed(theme: &CompTheme, width: f32) -> (usize, bool, usize) {
             .on_minimize(())
             .on_maximize(())
             .on_right_click(())
-            .on_screenshot(())
-            .on_record(())
+            .tray(capture_tray(false))
             .on_fullscreen((), false)
             .on_new_window(())
     });
@@ -822,8 +823,7 @@ fn a_lone_long_title_never_pushes_the_controls_out() {
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
-                .on_record(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .on_new_window(())
         });
@@ -863,7 +863,10 @@ fn a_narrow_pill_sheds_its_parts_in_order() {
         seen.push((width, glyphs, title, app));
     }
     let widest = seen[0].1;
-    assert_eq!(widest, 8, "a roomy pill draws every control: {seen:?}");
+    assert_eq!(
+        widest, 9,
+        "a roomy pill draws the app mark and every control: {seen:?}"
+    );
     // Below this the pill is narrower than the close button and a word
     // together. The identity, the tray and the controls are three rows iced
     // lays out in turn, so which of them gives way first stops being ordered
@@ -895,10 +898,13 @@ fn a_narrow_pill_sheds_its_parts_in_order() {
     // Close never leaves, and the title outlives every other control: while
     // anything besides close is still drawn there is room for text too. Below
     // that the window is narrower than a close button and a word together.
+    // The app mark is drawn whenever the title is, and both are in the
+    // identity row, so a pill down to its last controls carries the mark and
+    // close and nothing else.
     for (width, glyphs, title, _) in &seen {
         assert!(*glyphs >= 1, "the close button left at {width}px: {seen:?}");
         assert!(
-            *title || *glyphs == 1,
+            *title || *glyphs <= 3,
             "the title went before the controls did at {width}px: {seen:?}"
         );
     }
@@ -939,7 +945,7 @@ fn halo_pill_keeps_the_window_corner_radius_clear_on_both_sides() {
                             .on_minimize(())
                             .on_maximize(())
                             .on_right_click(())
-                            .on_screenshot(())
+                            .tray(capture_tray(false))
                             .on_fullscreen((), false)
                             .on_new_window(())
                     });
@@ -1019,7 +1025,7 @@ fn a_squared_top_needs_no_margin_and_keeps_the_full_width() {
             .on_minimize(())
             .on_maximize(())
             .on_right_click(())
-            .on_screenshot(())
+            .tray(capture_tray(false))
             .on_fullscreen((), false)
             .on_new_window(())
     });
@@ -1110,7 +1116,7 @@ fn a_long_app_name_ellipsizes_instead_of_eating_the_title() {
             .on_minimize(())
             .on_maximize(())
             .on_right_click(())
-            .on_screenshot(())
+            .tray(capture_tray(false))
             .on_fullscreen((), false)
             .on_new_window(())
     });
@@ -1134,7 +1140,7 @@ fn a_long_app_name_ellipsizes_instead_of_eating_the_title() {
             .on_minimize(())
             .on_maximize(())
             .on_right_click(())
-            .on_screenshot(())
+            .tray(capture_tray(false))
             .on_fullscreen((), false)
             .on_new_window(())
     });
@@ -1184,7 +1190,9 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
     let wide = 2400.0;
     let (mut renderer, _, _cache) = layout(&theme, wide, "Files", 1.0);
     let roomy = pill(&mut renderer, &theme, wide);
-    let expected: Vec<Rectangle> = control_icons(&mut renderer);
+    // The app mark rides with the title rather than with the controls, so it
+    // is not one of the glyphs whose spacing this test pins down.
+    let expected: Vec<Rectangle> = control_icons(&mut renderer).split_off(1);
     assert_eq!(
         expected.len(),
         8,
@@ -1206,7 +1214,7 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
         for title in [LONG, LONG_WORD, CLUSTERS] {
             let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
             let bounds = pill(&mut renderer, &theme, width);
-            let icons = control_icons(&mut renderer);
+            let icons = control_icons(&mut renderer).split_off(1);
             let case = format!("{width}px, {title:?}");
             assert_eq!(icons.len(), expected.len(), "a control vanished ({case})");
             for (icon, want) in icons.iter().zip(&expected) {
@@ -1255,10 +1263,10 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
     let theme = theme();
     let width = 420.0;
     for (chevron, new_window, expected) in [
-        (false, false, 6),
-        (true, false, 7),
-        (false, true, 7),
-        (true, true, 8),
+        (false, false, 7),
+        (true, false, 8),
+        (false, true, 8),
+        (true, true, 9),
     ] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
             let header = header
@@ -1268,7 +1276,7 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
                 .on_close(())
                 .on_minimize(())
                 .on_maximize(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false);
             let header = if chevron {
                 header.on_right_click(())
@@ -1349,7 +1357,7 @@ fn an_absent_or_repeated_app_name_leaves_the_title_the_whole_pill() {
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .on_new_window(());
             match name {
@@ -1391,11 +1399,13 @@ fn an_empty_header_still_draws_its_controls() {
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .on_new_window(())
         });
-        assert_eq!(control_icons(&mut renderer).len(), 8, "{width}px");
+        // The mark is drawn even with no title: it is the route to the
+        // window's commands, so it cannot depend on there being text.
+        assert_eq!(control_icons(&mut renderer).len(), 9, "{width}px");
         assert!(drawn_text(&mut renderer).is_empty(), "{width}px");
         let bounds = pill(&mut renderer, &theme, width);
         let (widest, _) = cap(&theme, width, false);
@@ -1520,7 +1530,7 @@ fn only_the_painted_pill_takes_input_out_of_the_halo_band() {
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
         });
         let bounds = pill(&mut renderer, &theme, width);
@@ -1603,7 +1613,7 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
-                .on_screenshot(())
+                .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .into_element()
         }
@@ -1671,5 +1681,150 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
             Some(Focus::ResizeTopRight)
         );
         assert_eq!(hit(-1.0, band), None);
+    }
+}
+
+/// The app glyph is the route to a window's commands, so it must answer a click
+/// whether or not the window's own mark ever resolved.
+#[test]
+fn the_app_glyph_answers_a_click_with_or_without_a_resolved_mark() {
+    use iced_core::{Event, Point, mouse::Cursor};
+
+    let theme = theme();
+    for icon in [
+        None,
+        Some(AppIcon::Svg {
+            bytes: TEST_ICON,
+            symbolic: true,
+        }),
+    ] {
+        let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
+        let mut header = header_bar()
+            .theme(&theme)
+            .title("Commands target")
+            .focused(true)
+            .on_close(())
+            .on_commands(());
+        if let Some(icon) = icon.clone() {
+            header = header.app_icon(icon);
+        }
+        let size = Size::new(900.0, ssd_header_render_height(&theme) as f32);
+        let mut ui = UserInterface::build(
+            header.into_element(),
+            size,
+            user_interface::Cache::default(),
+            &mut renderer,
+        );
+        ui.draw(
+            &mut renderer,
+            &theme.to_iced_theme(),
+            &Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        // The mark is the pill's leading glyph, whatever else it carries.
+        let mark = control_icons(&mut renderer)
+            .into_iter()
+            .next()
+            .expect("the app mark is always drawn");
+        let point = Point::new(mark.center_x(), mark.center_y());
+        let mut messages = Vec::new();
+        for event in [
+            Event::Mouse(mouse::Event::CursorMoved { position: point }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ] {
+            ui.update(
+                &[event],
+                Cursor::Available(point),
+                &mut renderer,
+                &mut messages,
+            );
+        }
+        assert_eq!(messages, vec![()], "resolved mark: {}", icon.is_some());
+    }
+}
+
+/// The tray is whatever is pinned, in pin order — not a fixed pair.
+#[test]
+fn the_tray_draws_the_pins_it_is_given_in_order() {
+    use crate::shell::element::header_bar::TrayEntry;
+
+    let theme = theme();
+    let entry = |icon| TrayEntry {
+        icon,
+        message: (),
+        label: String::new(),
+        on: false,
+    };
+    for pins in [
+        vec![],
+        vec![entry(icons::MINUS)],
+        vec![
+            entry(icons::MINUS),
+            entry(icons::PLUS),
+            entry(icons::CAMERA),
+        ],
+    ] {
+        let count = pins.len();
+        let (mut renderer, _, _cache) = render(&theme, 1200.0, 1.0, |header| {
+            header
+                .title("Files")
+                .focused(true)
+                .on_close(())
+                .tray(pins.clone())
+        });
+        // The app mark, the pins, and close.
+        assert_eq!(
+            control_icons(&mut renderer).len(),
+            count + 2,
+            "{count} pins"
+        );
+        // The divider only exists to separate the identity from the pins.
+        assert_eq!(
+            dividers(&mut renderer, &theme).len(),
+            usize::from(count > 0) + 1,
+            "{count} pins"
+        );
+    }
+}
+
+/// The outline shader draws the pill's edge, so the texture must not: icetron
+/// mixes its own edge from the border and the accent, and the hairline that
+/// left behind streaked straight past the corner at 2x.
+#[test]
+fn a_compositor_outlined_pill_has_no_edge_of_its_own() {
+    let theme = theme();
+    for joined in [false, true] {
+        let (mut renderer, viewport, _cache) =
+            layout_with(&theme, 423.0, "Explorer", 2.0, |header| {
+                header.joined_to_window(joined).compositor_outline(true)
+            });
+        let (pill, _) = super::super::window::halo_backdrop_blur(
+            renderer.layers(),
+            theme.halo_style().pill_height(),
+            423.0,
+        )
+        .expect("the drawn Halo pill");
+        let mut pixels =
+            tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+        draw(
+            &mut renderer,
+            &viewport,
+            &mut pixels,
+            &[Rectangle::with_size(viewport.logical_size())],
+        );
+        let top = (pill.y * 2.0).round() as u32;
+        let left = ((pill.x + 20.0) * 2.0) as u32;
+        let right = ((pill.x + pill.width - 20.0) * 2.0) as u32;
+        for row in top.saturating_sub(1)..=top + 2 {
+            for x in left..right {
+                let px = pixels.pixel(x, row).unwrap();
+                assert_eq!(
+                    (px.red(), px.green(), px.blue()),
+                    (0, 0, 0),
+                    "joined={joined}: the texture draws an edge at ({x}, {row})"
+                );
+            }
+        }
     }
 }

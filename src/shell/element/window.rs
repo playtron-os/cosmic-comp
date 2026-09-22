@@ -70,6 +70,7 @@ use wayland_backend::server::ObjectId;
 use super::CosmicSurface;
 use crate::utils::desktop_action::{DesktopApp, NewWindowAction, glob_match};
 
+pub(crate) mod commands;
 mod halo;
 
 pub const RESIZE_BORDER: i32 = 10;
@@ -178,6 +179,9 @@ pub struct CosmicWindowInternal {
     desktop_override: Mutex<(String, Option<DesktopOverride>)>,
     desktop_app: Mutex<Option<DesktopApp>>,
     menu_open: Arc<AtomicBool>,
+    /// The command palette, which the app glyph opens. Separate from
+    /// `menu_open` so the glyph lights up and the chevron does not.
+    commands_open: Arc<AtomicBool>,
     tiled: AtomicBool,
     /// Whether the window fills the output zone (position 0,0 and size >= zone).
     /// Used to give square corners to non-maximized windows that visually fill the screen.
@@ -866,6 +870,7 @@ impl CosmicWindow {
                 desktop_override: Mutex::new((app_id.clone(), desktop_ovr)),
                 desktop_app: Mutex::new(desktop_app),
                 menu_open: Arc::new(AtomicBool::new(false)),
+                commands_open: Arc::new(AtomicBool::new(false)),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
                 output_edges: AtomicU8::new(super::OutputEdges::ALL.bits()),
@@ -1010,7 +1015,8 @@ impl CosmicWindow {
                         output.current_scale().fractional_scale(),
                         pill,
                         p.pointer_over_window.load(Ordering::SeqCst)
-                            || p.menu_open.load(Ordering::SeqCst),
+                            || p.menu_open.load(Ordering::SeqCst)
+                            || p.commands_open.load(Ordering::SeqCst),
                     )
                     && surface_type.contains(WindowSurfaceType::TOPLEVEL))
                 .then(|| {
@@ -1201,6 +1207,27 @@ impl CosmicWindow {
             .spaces()
             .flat_map(|workspace| &workspace.fullscreen_surfaces)
             .find(|fullscreen| &fullscreen.surface == surface)
+        {
+            fullscreen.halo.0.force_update();
+        }
+    }
+
+    /// Rebuild every halo of `app_id`. Pins are per app, and a header only
+    /// re-reads them when rebuilt, which the palette's grab otherwise holds off.
+    pub(crate) fn refresh_app_halos(shell: &crate::shell::Shell, app_id: &str) {
+        for mapped in shell.mapped() {
+            if mapped
+                .windows()
+                .any(|(window, _)| window.app_id() == app_id)
+            {
+                mapped.force_update();
+            }
+        }
+        for fullscreen in shell
+            .workspaces()
+            .spaces()
+            .flat_map(|workspace| &workspace.fullscreen_surfaces)
+            .filter(|fullscreen| fullscreen.surface.app_id() == app_id)
         {
             fullscreen.halo.0.force_update();
         }
@@ -1725,13 +1752,18 @@ fn below_band(outer: Rectangle<i32, Local>, band: i32, height: i32) -> Rectangle
     )
 }
 
-#[derive(Debug, Clone, Copy)]
+// Not `Copy`: a desktop-entry action carries its group id.
+#[derive(Debug, Clone)]
 pub enum Message {
     DragStart,
     Minimize,
     Maximize,
     Close,
     Menu,
+    /// The app glyph — every verb this window answers, each pinnable.
+    Commands,
+    /// One of the actions the window's desktop entry declares, by its group id.
+    Action(String),
     Screenshot,
     Record,
     Fullscreen,
@@ -1847,16 +1879,39 @@ impl Program for CosmicWindowInternal {
                 }
             }
             Message::Close => self.window.close(),
+            Message::Action(ref id) => {
+                let surface = self.window.clone();
+                let app = self.desktop_app.lock().unwrap().clone();
+                let seat = last_seat.map(|(seat, _)| seat.clone());
+                let id = format!("{}{id}", commands::ACTION_PREFIX);
+                loop_handle.insert_idle(move |state| {
+                    halo::perform_command(state, &surface, seat.as_ref(), &id, app.as_ref());
+                });
+            }
+            Message::Commands => {
+                if let Some((seat, serial)) = last_seat.cloned() {
+                    let query_input = halo::menu_input_query(seat.clone(), serial);
+                    let surface = self.window.clone();
+                    let app = self.desktop_app.lock().unwrap().clone();
+                    loop_handle.insert_idle(move |state| {
+                        if let Some((start, position)) = query_input() {
+                            halo::open_commands(
+                                state, &surface, &seat, serial, start, position, app,
+                            );
+                        }
+                    });
+                }
+            }
             Message::Menu => {
                 if self.uses_halo_header() {
                     if let Some((seat, serial)) = last_seat.cloned() {
                         let query_input = halo::menu_input_query(seat.clone(), serial);
                         let surface = self.window.clone();
-                        let action = self.new_window_action();
+                        let app = self.desktop_app.lock().unwrap().clone();
                         loop_handle.insert_idle(move |state| {
                             if let Some((start, position)) = query_input() {
                                 halo::open_menu(
-                                    state, &surface, &seat, serial, start, position, action,
+                                    state, &surface, &seat, serial, start, position, app,
                                 );
                             }
                         });
@@ -1933,7 +1988,8 @@ impl Program for CosmicWindowInternal {
                     self.fullscreen_output.is_some(),
                     self.pointer_over_window.load(Ordering::SeqCst),
                     self.activated.load(Ordering::SeqCst),
-                    self.menu_open.load(Ordering::SeqCst),
+                    self.menu_open.load(Ordering::SeqCst)
+                        || self.commands_open.load(Ordering::SeqCst),
                 ),
                 self.joined_halo(),
             )
@@ -2028,14 +2084,13 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .on_minimize(Message::Minimize)
             .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
-            .on_screenshot(Message::Screenshot)
-            .on_record(Message::Record)
-            .recording(win.window.is_recording())
+            .on_commands(Message::Commands)
             .on_fullscreen(
                 Message::Fullscreen,
                 win.fullscreen_output.is_some() || win.window.is_fullscreen(false),
             )
             .menu_open(win.menu_open.load(Ordering::SeqCst))
+            .commands_open(win.commands_open.load(Ordering::SeqCst))
             .focused(focused)
             .hovered(hovered)
             .maximized(
@@ -2046,7 +2101,8 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             // margin those differ, and only the second decides the radius.
             .square_top(win.squares_top_corners())
             .theme(theme);
-        if let Some(app) = win.desktop_app.lock().unwrap().as_ref() {
+        let app = win.desktop_app.lock().unwrap().clone();
+        if let Some(app) = app.as_ref() {
             if let Some(name) = &app.name {
                 header = header.app_name(name.clone());
             }
@@ -2054,6 +2110,43 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
                 header = header.on_new_window(Message::NewWindow);
             }
         }
+
+        // The pins, resolved against the verbs this window actually answers —
+        // a pin outlives the window that made it, and an app that stops
+        // offering a verb must not leave a glyph that fires into nothing.
+        let min = win.window.min_size_without_ssd();
+        let facts = commands::WindowFacts {
+            recording: win.window.is_recording(),
+            maximized: win.window.is_maximized(false)
+                || win.fills_output_zone.load(Ordering::Acquire),
+            fullscreen: win.fullscreen_output.is_some() || win.window.is_fullscreen(false),
+            resizable: !(min.is_some() && min == win.window.max_size_without_ssd()),
+            // Only the shell knows, and it is not pinnable anyway.
+            close_all: false,
+            app: app.as_ref(),
+        };
+        let available = commands::commands(&facts);
+        let pins = commands::pins(&win.window.app_id());
+        header = header.tray(
+            icetron_p::prelude::pinned_commands(&available, &pins)
+                .into_iter()
+                .filter(|command| command.enabled)
+                .map(|command| super::header_bar::TrayEntry {
+                    icon: command.tray_icon(),
+                    message: commands::message_for(&command.id).unwrap_or_else(|| {
+                        Message::Action(
+                            command
+                                .id
+                                .strip_prefix(commands::ACTION_PREFIX)
+                                .unwrap_or(&command.id)
+                                .to_owned(),
+                        )
+                    }),
+                    label: command.label.clone(),
+                    on: command.stateful && command.on,
+                })
+                .collect(),
+        );
 
         // Pass the application icon if resolved. A client-set toplevel icon
         // (xdg-toplevel-icon) takes priority over the app_id-based icon —

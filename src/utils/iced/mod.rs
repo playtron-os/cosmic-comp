@@ -32,6 +32,7 @@ pub use visibility::Visibility;
 use visibility::{VisibilityAnimation, VisibilityFrame};
 
 // iced 0.15 direct imports (no libcosmic re-exports)
+use iced_core::widget::Operation as WidgetOperation;
 use iced_core::{
     Color, Element, Font, Length, Pixels, Point as IcedPoint, Size as IcedSize,
     event::Event,
@@ -233,6 +234,18 @@ impl ProgramLoop {
         }
     }
 
+    /// A handle over a throwaway event loop, for driving a `Program::update`
+    /// directly in a test. Idle callbacks parked on it are never run.
+    #[cfg(test)]
+    pub(crate) fn test_handle() -> Self {
+        // Leaked so the handle outlives the loop it came from, which is all a
+        // test needs: nothing dispatches it.
+        let event_loop = Box::leak(Box::new(
+            calloop::EventLoop::<crate::state::State>::try_new().expect("test event loop"),
+        ));
+        Self::new(event_loop.handle())
+    }
+
     /// The raw loop handle. Only sound on the event-loop thread — internal use
     /// only (element construction and cloning, both main-thread operations).
     pub(crate) fn raw(&self) -> &LoopHandle<'static, crate::state::State> {
@@ -380,6 +393,10 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     scheduler: ManuallyDrop<Scheduler<Option<<P as Program>::Message>>>,
     executor_token: Option<RegistrationToken>,
     rx: Receiver<Option<<P as Program>::Message>>,
+    /// Widget operations queued since the last build (a focus request, say),
+    /// applied to the next tree ahead of its events. The task executor keeps
+    /// only a Task's messages, so this is how a host reaches into the widgets.
+    pending_operations: Vec<Box<dyn WidgetOperation<()>>>,
 }
 
 impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
@@ -426,6 +443,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
             executor_token,
+            pending_operations: Vec::new(),
             rx,
         }
     }
@@ -611,6 +629,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             handle: ManuallyDrop::new(ProgramLoop::new(handle)),
             scheduler: ManuallyDrop::new(scheduler),
             executor_token,
+            pending_operations: Vec::new(),
             rx,
         };
         internal.update(UpdateSource::Forced);
@@ -790,6 +809,17 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             internal.last_seat.lock().unwrap().as_ref(),
         );
         internal.schedule_task(task);
+    }
+
+    /// Queue a widget operation (a focus request, say) for the next build,
+    /// and rebuild now so it lands before the next input arrives.
+    pub fn queue_operation(&self, operation: impl WidgetOperation<()> + 'static) {
+        self.0
+            .lock()
+            .unwrap()
+            .pending_operations
+            .push(Box::new(operation));
+        self.force_update();
     }
 
     /// Returns the current mouse interaction state from the last UI update.
@@ -1017,6 +1047,11 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         let cache = std::mem::take(&mut self.cache);
         let mut interface = UserInterface::build(element, bounds, cache, &mut self.renderer);
         let build_duration = build_start.elapsed();
+        // Operations a host queued act on the fresh tree, ahead of the events
+        // that assume they already have.
+        for mut operation in self.pending_operations.drain(..) {
+            interface.operate(&self.renderer, operation.as_mut());
+        }
 
         // Phase 3: ui_update — process queued events, collecting messages
         let ui_update_start = Instant::now();

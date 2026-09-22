@@ -7,6 +7,7 @@ use std::{
 };
 
 use calloop::LoopHandle;
+use xkbcommon::xkb::Keysym;
 // MERGE: upstream's import churn here is all libcosmic (`cosmic::widget::…`, `theme::…`,
 // `menu::menu_column::MenuColumn`). This fork does not depend on the libcosmic widget crate —
 // the menu is built from raw iced widgets styled with icetron design tokens — so the icetron
@@ -21,15 +22,19 @@ const ARROW_RIGHT_S_LINE: &[u8] = icetron_themes::icons::CHEVRON_RIGHT.bytes;
 const CHECK_LINE: &[u8] = icetron_themes::icons::CHECK.bytes;
 
 use icetron_p::prelude::styled_text;
-use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown};
+use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown, halo_ask_footer, matching};
 use smithay::{
     backend::{
-        input::{ButtonState, TouchSlot},
+        input::{ButtonState, KeyState, Keycode, TouchSlot},
         renderer::ImportMem,
     },
     desktop::space::SpaceElement,
     input::{
-        Seat,
+        Seat, SeatHandler,
+        keyboard::{
+            GrabStartData as KeyboardGrabStartData, KeyboardGrab, KeyboardInnerHandle,
+            KeyboardTarget, ModifiersState,
+        },
         pointer::{
             AxisFrame, ButtonEvent, CursorImageStatus, GestureHoldBeginEvent, GestureHoldEndEvent,
             GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
@@ -281,6 +286,49 @@ impl Item {
     }
 }
 
+/// The palette look: the same items, drawn as the window's command list with a
+/// pin beside every verb that may live in the header.
+///
+/// `commands` is index-aligned with [`ContextMenu::items`], so a row press is
+/// the ordinary [`Message::ItemPressed`] and nothing has to map ids back to
+/// callbacks twice.
+pub struct Palette {
+    /// Whose pins these are. Per app, never per window.
+    pub app_id: String,
+    /// The app's name, for the palette's own heading.
+    pub scope: String,
+    pub commands: Vec<icetron_p::prelude::HaloCommand>,
+    /// What the last pin attempt had to say, if anything.
+    notice: Mutex<Option<String>>,
+    /// What has been typed into the search field.
+    query: Mutex<String>,
+}
+
+impl fmt::Debug for Palette {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Palette")
+            .field("app_id", &self.app_id)
+            .field("commands", &self.commands.len())
+            .finish()
+    }
+}
+
+impl Palette {
+    pub fn new(
+        app_id: impl Into<String>,
+        scope: impl Into<String>,
+        commands: Vec<icetron_p::prelude::HaloCommand>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            scope: scope.into(),
+            commands,
+            notice: Mutex::new(None),
+            query: Mutex::new(String::new()),
+        }
+    }
+}
+
 /// Menu that comes up when right-clicking an application header bar
 #[derive(Debug)]
 pub struct ContextMenu {
@@ -288,6 +336,11 @@ pub struct ContextMenu {
     selected: AtomicBool,
     row_width: Mutex<Option<f32>>,
     halo: bool,
+    palette: Option<Palette>,
+    /// Set by a press that must not dismiss the grab. Read and cleared by
+    /// [`MenuGrab::button`] right after it hands the press to the widget, which
+    /// dispatches messages synchronously.
+    keep_open: AtomicBool,
     closing: AtomicBool,
 }
 
@@ -298,6 +351,8 @@ impl ContextMenu {
             selected: AtomicBool::new(false),
             row_width: Mutex::new(None),
             halo: false,
+            palette: None,
+            keep_open: AtomicBool::new(false),
             closing: AtomicBool::new(false),
         }
     }
@@ -312,6 +367,16 @@ pub enum Message {
     ItemEntered(usize, IcedRectangle<f32>),
     ItemPressed(usize),
     ItemLeft(usize, IcedRectangle<f32>),
+    /// Pin or unpin a command. Deliberately NOT a selection: pinning is a
+    /// statement about the header, so the palette stays up to show the result.
+    TogglePin(String),
+    /// The search field changed.
+    Query(String),
+    /// Enter in the search field: run the first row the query leaves, or hand
+    /// the query to chat when it leaves none.
+    Submit,
+    /// The Ask row: open chat with the query.
+    AskChat,
 }
 
 impl item::CursorEvents for Message {
@@ -360,6 +425,54 @@ impl Program for ContextMenu {
                 }
                 // TODO: If Submenu, then also expand on "Pressed" for touch events.
                 // But right now we don't have any touch responsive menus with submenus
+            }
+            Message::TogglePin(id) => {
+                // A pin is a statement about the header, not a choice of verb, so
+                // the palette stays up and shows what it did.
+                self.keep_open.store(true, Ordering::SeqCst);
+                if let Some(palette) = self.palette.as_ref() {
+                    let full =
+                        crate::shell::element::window::commands::toggle_pin(&palette.app_id, &id)
+                            == icetron_p::prelude::PinOutcome::Full;
+                    // A pin or unpin needs no saying: the header shows it, and a
+                    // notice here would crowd the Ask row.
+                    let notice = full
+                        .then(|| crate::fl!("halo-pin-full", cap = icetron_p::prelude::TRAY_CAP));
+                    if !full {
+                        let app_id = palette.app_id.clone();
+                        loop_handle.insert_idle(move |state| {
+                            crate::shell::element::window::CosmicWindow::refresh_app_halos(
+                                &state.common.shell.read(),
+                                &app_id,
+                            );
+                        });
+                    }
+                    *palette.notice.lock().unwrap() = notice;
+                }
+            }
+            Message::Query(query) => {
+                if let Some(palette) = self.palette.as_ref() {
+                    *palette.query.lock().unwrap() = query;
+                }
+            }
+            Message::Submit => {
+                if let Some(palette) = self.palette.as_ref() {
+                    let query = palette.query.lock().unwrap().clone();
+                    let first = matching(&palette.commands, &query)
+                        .first()
+                        .and_then(|hit| palette.commands.iter().position(|c| c.id == hit.id));
+                    let next = first.map_or(Message::AskChat, Message::ItemPressed);
+                    return self.update(next, loop_handle, last_seat);
+                }
+            }
+            Message::AskChat => {
+                if let Some(palette) = self.palette.as_ref() {
+                    let query = palette.query.lock().unwrap().clone();
+                    loop_handle.insert_idle(move |state| {
+                        crate::shell::element::window::commands::open_chat(state, &query);
+                    });
+                    self.selected.store(true, Ordering::SeqCst);
+                }
             }
             Message::ItemEntered(idx, bounds) => {
                 if let Some(Item::Submenu { items, .. }) = self.items.get_mut(idx)
@@ -483,6 +596,55 @@ impl Program for ContextMenu {
     }
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        if let Some(palette) = &self.palette {
+            let commands = &palette.commands;
+            let mut card = icetron_p::prelude::halo_palette(&palette.scope, &**theme)
+                .commands(commands.clone())
+                .pins(crate::shell::element::window::commands::pins(
+                    &palette.app_id,
+                ))
+                .query(palette.query.lock().unwrap().clone())
+                .on_query(Message::Query)
+                .on_submit(Message::Submit)
+                .search_id(search_field_id())
+                .on_run(move |id| {
+                    Message::ItemPressed(
+                        commands
+                            .iter()
+                            .position(|command| command.id == id)
+                            .unwrap_or(usize::MAX),
+                    )
+                })
+                .on_pin(Message::TogglePin)
+                // The compositor blurs the surface behind this one already.
+                .backdrop(false)
+                // A menu grab does not route a scroll to its surface, so the
+                // card grows to its rows instead of hiding some below a
+                // cut-off nothing can move.
+                .rows_height(None);
+            // The footer is always the Ask row; the tray's own refusal, when
+            // there is one, sits above it rather than in its place.
+            let mut footer = Column::new();
+            if let Some(notice) = palette.notice.lock().unwrap().clone() {
+                footer = footer.push(
+                    container(styled_text(
+                        notice,
+                        theme.text_styles().caption(),
+                        theme.text_tertiary(),
+                    ))
+                    .padding(theme.spacing_3()),
+                );
+            }
+            footer = footer.push(halo_ask_footer(
+                crate::fl!("halo-ask-chat"),
+                crate::fl!("halo-ask-chat-hint"),
+                Message::AskChat,
+                &**theme,
+            ));
+            card = card.footer(footer);
+            let card: CompElement<'a, Self::Message> = card.into();
+            return container(card).padding(palette_padding(theme)).into();
+        }
         if self.halo {
             let sections = self
                 .items
@@ -715,7 +877,13 @@ impl Program for ContextMenu {
         radii: [u8; 4],
     ) -> Option<(IcedRectangle, [u8; 4])> {
         if self.halo {
-            let padding = halo_menu_padding(theme);
+            // The palette's card is rounded to `radii_xl` under the popover
+            // shadow; the dropdown to its own radius under the menu shadow.
+            let (padding, radius) = if self.palette.is_some() {
+                (palette_padding(theme), theme.radii_xl())
+            } else {
+                (halo_menu_padding(theme), theme.dropdown_radius())
+            };
             Some((
                 IcedRectangle {
                     x: padding.left,
@@ -723,7 +891,7 @@ impl Program for ContextMenu {
                     width: (size.w as f32 - padding.left - padding.right).max(0.0),
                     height: (size.h as f32 - padding.top - padding.bottom).max(0.0),
                 },
-                [theme.dropdown_radius().round().clamp(0.0, 255.0) as u8; 4],
+                [radius.round().clamp(0.0, 255.0) as u8; 4],
             ))
         } else {
             theme.header_backdrop_blur().then_some((
@@ -735,12 +903,18 @@ impl Program for ContextMenu {
 }
 
 fn halo_menu_padding(theme: &CompTheme) -> iced_core::Padding {
+    shadow_padding(&theme.dropdown_shadow())
+}
+
+/// The palette's card wears the popover shadow, not the dropdown's.
+fn palette_padding(theme: &CompTheme) -> iced_core::Padding {
+    shadow_padding(&theme.shadow_popover())
+}
+
+/// Room a surface leaves around its body for the shadow it draws.
+fn shadow_padding(shadows: &[iced_core::Shadow]) -> iced_core::Padding {
     let mut padding = iced_core::Padding::ZERO;
-    for shadow in theme
-        .dropdown_shadow()
-        .iter()
-        .filter(|s| !s.inset && s.color.a > 0.0)
-    {
+    for shadow in shadows.iter().filter(|s| !s.inset && s.color.a > 0.0) {
         let reach = shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
         padding.top = padding.top.max((reach - shadow.offset.y).ceil());
         padding.bottom = padding.bottom.max((reach + shadow.offset.y).ceil());
@@ -758,6 +932,25 @@ pub struct Element {
 }
 
 impl Element {
+    /// Re-measure a palette whose rows just changed, so the surface — and with
+    /// it the blur and the click-through region — fits the card rather than
+    /// the tallest list it ever showed.
+    fn refit(&self) {
+        if self.iced.with_program(|p| p.palette.is_some()) {
+            self.iced.resize(self.iced.minimum_size());
+        }
+    }
+
+    /// Give the palette's search field the caret back.
+    fn refocus_search(&self) {
+        if self.iced.with_program(|p| p.palette.is_some()) {
+            self.iced
+                .queue_operation(iced_core::widget::operation::focusable::focus(
+                    search_field_id(),
+                ));
+        }
+    }
+
     fn input_bbox(&self) -> Rectangle<f64, Logical> {
         if self.iced.with_program(|p| p.halo)
             && let Some(mut bounds) = self.iced.backdrop_input_bounds()
@@ -898,16 +1091,29 @@ impl PointerGrab<State> for MenuGrab {
                 handle.unset_grab(self, state, event.serial, event.time, true);
             }
         } else {
-            let selected = {
+            let (selected, keep_open) = {
                 let elements = self.elements.lock().unwrap();
                 let mut selected = false;
+                let mut keep_open = false;
                 for element in elements.iter().filter(|elem| elem.pointer_entered) {
                     PointerTarget::button(&element.iced, &self.seat, state, event);
+                    element.refit();
+                    // Dispatched synchronously above, so the flag is already set
+                    // if the press was one the surface wants to survive.
+                    let kept = element
+                        .iced
+                        .with_program(|p| p.keep_open.swap(false, Ordering::SeqCst));
+                    if kept {
+                        // The press took the caret with it, and a palette that
+                        // stays up is one the search field should still own.
+                        element.refocus_search();
+                    }
+                    keep_open |= kept;
                     selected = true;
                 }
-                selected
+                (selected, keep_open)
             };
-            if selected && event.state == ButtonState::Released {
+            if selected && !keep_open && event.state == ButtonState::Released {
                 handle.unset_grab(self, state, event.serial, event.time, true);
             } else {
                 handle.button(state, event);
@@ -1007,8 +1213,9 @@ impl PointerGrab<State> for MenuGrab {
         }
     }
 
-    fn unset(&mut self, _data: &mut State) {
+    fn unset(&mut self, data: &mut State) {
         set_menu_cursor(&self.seat, None);
+        release_palette_keyboard(&self.seat, data);
     }
 }
 
@@ -1133,7 +1340,9 @@ impl TouchGrab<State> for MenuGrab {
         }
     }
 
-    fn unset(&mut self, _data: &mut State) {}
+    fn unset(&mut self, data: &mut State) {
+        release_palette_keyboard(&self.seat, data);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1309,6 +1518,8 @@ impl MenuGrab {
             handle,
             theme,
             false,
+            None,
+            None,
         )
     }
 
@@ -1330,6 +1541,36 @@ impl MenuGrab {
             handle,
             theme,
             true,
+            None,
+            None,
+        )
+    }
+
+    /// The window's commands, as the palette rather than a menu.
+    ///
+    /// `items` must be index-aligned with `palette.commands`, so pressing a row
+    /// runs the same callback the menu would have.
+    pub fn new_palette(
+        start_data: GrabStartData,
+        seat: &Seat<State>,
+        items: impl Iterator<Item = Item>,
+        place: impl FnOnce(Size<i32, Logical>) -> Point<i32, Global> + 'static,
+        handle: LoopHandle<'static, State>,
+        theme: CompTheme,
+        palette: Palette,
+    ) -> MenuGrab {
+        Self::new_styled(
+            start_data,
+            seat,
+            items,
+            Point::default(),
+            MenuAlignment::CORNER,
+            None,
+            handle,
+            theme,
+            true,
+            Some(palette),
+            Some(Box::new(place)),
         )
     }
 
@@ -1344,17 +1585,32 @@ impl MenuGrab {
         handle: LoopHandle<'static, State>,
         theme: CompTheme,
         halo: bool,
+        palette: Option<Palette>,
+        // The card's top-left for a measured card size: a palette is placed
+        // once its height is known, so it can go above the pill when it would
+        // not fit below.
+        place: Option<Box<dyn FnOnce(Size<i32, Logical>) -> Point<i32, Global>>>,
     ) -> MenuGrab {
         let items = items.collect::<Vec<_>>();
         let mut menu = ContextMenu::new(items);
         menu.halo = halo;
-        let position = if halo {
-            let padding = halo_menu_padding(&theme);
-            position - Point::from((padding.left as i32, padding.top as i32))
+        let is_palette = palette.is_some();
+        menu.palette = palette;
+        let padding = if !halo {
+            iced_core::Padding::ZERO
+        } else if is_palette {
+            palette_padding(&theme)
         } else {
-            position
+            halo_menu_padding(&theme)
         };
+        let position = position - Point::from((padding.left as i32, padding.top as i32));
         let element = IcedElement::new(menu, Size::default(), handle, theme);
+        if is_palette {
+            // The search field takes the keyboard the moment the palette is up.
+            element.queue_operation(iced_core::widget::operation::focusable::focus(
+                search_field_id(),
+            ));
+        }
         // Two-pass sizing: first pass measures natural width, second pass measures
         // final height with that width locked (mode switches from Shrink to Fill).
         let natural_size = element.minimum_size();
@@ -1366,25 +1622,33 @@ impl MenuGrab {
 
         let output = seat.active_output();
         // TODO: This feels a lot like cheap xdg-positioner. Refactor and unify
-        let position = alignment
-            .rectangles(
-                position,
-                min_size
-                    .to_f64()
-                    .upscale(screen_space_relative.unwrap_or(1.))
-                    .to_i32_round()
-                    .as_global(),
-            )
-            .iter()
-            .rev() // preference of max_by_key is backwards
-            .max_by_key(|rect| {
-                output
-                    .geometry()
-                    .intersection(**rect)
-                    .map(|rect| rect.size.w * rect.size.h)
-            })
-            .unwrap()
-            .loc;
+        let position = if let Some(place) = place {
+            let card = Size::from((
+                min_size.w - (padding.left + padding.right) as i32,
+                min_size.h - (padding.top + padding.bottom) as i32,
+            ));
+            place(card) - Point::from((padding.left as i32, padding.top as i32))
+        } else {
+            alignment
+                .rectangles(
+                    position,
+                    min_size
+                        .to_f64()
+                        .upscale(screen_space_relative.unwrap_or(1.))
+                        .to_i32_round()
+                        .as_global(),
+                )
+                .iter()
+                .rev() // preference of max_by_key is backwards
+                .max_by_key(|rect| {
+                    output
+                        .geometry()
+                        .intersection(**rect)
+                        .map(|rect| rect.size.w * rect.size.h)
+                })
+                .unwrap()
+                .loc
+        };
 
         element.output_enter(&output, element.bbox());
         if let Some(scale) = screen_space_relative {
@@ -1484,5 +1748,153 @@ impl Drop for MenuGrab {
         if let Some(on_close) = self.on_close.take() {
             on_close();
         }
+    }
+}
+
+/// The palette's search field, named so the grab can focus it on open.
+fn search_field_id() -> iced_core::widget::Id {
+    iced_core::widget::Id::new("halo-palette-search")
+}
+
+/// While the palette is up, its search field has the keyboard: every key goes
+/// to the palette's own widget tree, Escape ends the grab the way a press
+/// outside it would, and nothing reaches the window underneath.
+pub struct PaletteKeyboardGrab {
+    seat: Seat<State>,
+    start_data: KeyboardGrabStartData<State>,
+}
+
+/// What forwarding a key to the palette asked of the grab.
+enum Forwarded {
+    /// The palette took it and stays up.
+    Kept,
+    /// The palette is done (a row ran, or chat was asked) or is already gone.
+    Close,
+}
+
+impl PaletteKeyboardGrab {
+    pub fn new(seat: Seat<State>) -> Self {
+        let focus = seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+        Self {
+            seat,
+            start_data: KeyboardGrabStartData { focus },
+        }
+    }
+
+    /// Hand a key to the palette's widget tree.
+    fn forward(
+        &self,
+        data: &mut State,
+        handle: &KeyboardInnerHandle<'_, State>,
+        keycode: Keycode,
+        state: KeyState,
+        modifiers: Option<ModifiersState>,
+        serial: Serial,
+        time: u32,
+    ) -> Forwarded {
+        let Some(grab_state) = self.seat.user_data().get::<SeatMenuGrabState>() else {
+            return Forwarded::Close;
+        };
+        let guard = grab_state.lock().unwrap();
+        let Some(menu_state) = guard.as_ref() else {
+            return Forwarded::Close;
+        };
+        let elements = menu_state.elements.lock().unwrap();
+        let Some(element) = elements.first() else {
+            return Forwarded::Close;
+        };
+        if let Some(modifiers) = modifiers {
+            element.iced.modifiers(&self.seat, data, modifiers, serial);
+        }
+        element.iced.key(
+            &self.seat,
+            data,
+            handle.keysym_handle(keycode),
+            state,
+            serial,
+            time,
+        );
+        element.refit();
+        // Enter ran a row, or asked chat: the palette is done.
+        if element
+            .iced
+            .with_program(|menu| menu.selected.load(Ordering::SeqCst))
+        {
+            Forwarded::Close
+        } else {
+            Forwarded::Kept
+        }
+    }
+
+    /// End the palette. This grab goes now; the pointer grab that owns the
+    /// palette is released once the keyboard is no longer mid-dispatch, since
+    /// unsetting it reaches back into the keyboard to release this grab.
+    fn close(
+        &mut self,
+        data: &mut State,
+        handle: &mut KeyboardInnerHandle<'_, State>,
+        serial: Serial,
+        time: u32,
+    ) {
+        handle.unset_grab(self, data, serial, false);
+        let pointer = self.seat.get_pointer();
+        data.common.event_loop_handle.insert_idle(move |state| {
+            if let Some(pointer) = pointer
+                && pointer.is_grabbed()
+            {
+                pointer.unset_grab(state, serial, time);
+            }
+        });
+    }
+}
+
+impl KeyboardGrab<State> for PaletteKeyboardGrab {
+    fn input(
+        &mut self,
+        data: &mut State,
+        handle: &mut KeyboardInnerHandle<'_, State>,
+        keycode: Keycode,
+        state: KeyState,
+        modifiers: Option<ModifiersState>,
+        serial: Serial,
+        time: u32,
+    ) {
+        let escape = handle.keysym_handle(keycode).modified_sym() == Keysym::Escape;
+        if escape && state == KeyState::Pressed {
+            self.close(data, handle, serial, time);
+            return;
+        }
+        if let Forwarded::Close =
+            self.forward(data, handle, keycode, state, modifiers, serial, time)
+        {
+            self.close(data, handle, serial, time);
+        }
+    }
+
+    fn set_focus(
+        &mut self,
+        _data: &mut State,
+        _handle: &mut KeyboardInnerHandle<'_, State>,
+        _focus: Option<<State as SeatHandler>::KeyboardFocus>,
+        _serial: Serial,
+    ) {
+        // The palette keeps the keyboard until it closes.
+    }
+
+    fn start_data(&self) -> &KeyboardGrabStartData<State> {
+        &self.start_data
+    }
+
+    fn unset(&mut self, _data: &mut State) {}
+}
+
+/// The palette's keyboard grab lives and dies with its pointer grab.
+fn release_palette_keyboard(seat: &Seat<State>, data: &mut State) {
+    if let Some(keyboard) = seat.get_keyboard()
+        && keyboard.with_grab(|_, grab| grab.is::<PaletteKeyboardGrab>()) == Some(true)
+    {
+        keyboard.unset_grab(data);
     }
 }

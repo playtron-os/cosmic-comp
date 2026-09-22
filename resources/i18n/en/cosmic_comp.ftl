@@ -44,3 +44,10 @@ recording-window-not-capturable = This window cannot be captured
 
 halo-screenshot-window = Screenshot window
 halo-window-menu = Window menu
+halo-commands = { $app } commands
+halo-commands-hint = Window commands
+halo-app-actions = { $app } — from its desktop entry
+halo-app-actions-fallback = This application
+halo-pin-full = Header is full ({ $cap }) — it is a pill, not a toolbar
+halo-ask-chat = Ask Kora
+halo-ask-chat-hint = opens a new conversation

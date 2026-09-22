@@ -1,5 +1,7 @@
 use super::*;
-use crate::shell::element::header_bar::{halo_visibility, header_bar, ssd_header_render_height};
+use crate::shell::element::header_bar::{
+    capture_tray, halo_visibility, header_bar, ssd_header_render_height,
+};
 use icetron_themes::{WindowHeaderStyle, dynamic::DEFAULT_THEME_PAIR};
 
 struct Header {
@@ -24,7 +26,7 @@ impl Program for Header {
             .on_close(())
             .on_right_click(())
             .on_new_window(())
-            .on_screenshot(())
+            .tray(capture_tray(false))
             .on_fullscreen((), false)
             .into_element()
     }

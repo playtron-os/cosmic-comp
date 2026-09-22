@@ -36,10 +36,33 @@ pub struct NewWindowAction {
     argv: Vec<String>,
 }
 
+/// How many of an entry's own actions the window surfaces.
+///
+/// The header's menu is not a menu bar: the four rows it already owns plus this
+/// many is still one glance, and at fifteen it is a File/Edit/View bar wearing a
+/// dropdown. An entry declaring more keeps the first few, in its own order.
+pub const APP_ACTION_CAP: usize = 6;
+
+/// One `[Desktop Action …]` group — the freedesktop way an application declares
+/// a verb the desktop may offer outside the app itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesktopAction {
+    /// The group id, as `Actions=` names it. Stable across restarts, so a
+    /// header pin may reference it.
+    pub id: String,
+    /// The action's localised `Name`.
+    pub name: String,
+    argv: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopApp {
     pub name: Option<String>,
     pub new_window: Option<NewWindowAction>,
+    /// Every action the entry declares, in declaration order, capped at
+    /// [`APP_ACTION_CAP`]. Includes the one `new_window` was derived from: the
+    /// `+` is a shortcut to it, not a reason to hide the row.
+    pub actions: Vec<DesktopAction>,
 }
 
 impl DesktopApp {
@@ -59,7 +82,63 @@ impl DesktopApp {
                 .filter(|name| !name.is_empty())
                 .map(|name| name.to_string()),
             new_window: NewWindowAction::from_entry(entry),
+            actions: DesktopAction::all(entry, &locales),
         })
+    }
+}
+
+impl DesktopAction {
+    fn all(entry: &DesktopEntry, locales: &[String]) -> Vec<Self> {
+        let Some(actions) = entry.actions() else {
+            return Vec::new();
+        };
+        actions
+            .into_iter()
+            .filter_map(|action| {
+                // An action with no runnable Exec is not offered at all: a row
+                // that cannot fire is worse than an absent one, because the
+                // entry is claiming a capability the desktop cannot deliver.
+                let argv = action_argv(entry, action)?;
+                let name = entry
+                    .action_name(action, locales)
+                    .map(|name| name.to_string())
+                    .filter(|name| !name.is_empty())?;
+                Some(Self {
+                    id: action.to_owned(),
+                    name,
+                    argv,
+                })
+            })
+            .take(APP_ACTION_CAP)
+            .collect()
+    }
+
+    pub fn launch(&self) {
+        launch_argv(&self.argv, "desktop entry action");
+    }
+}
+
+/// An action's command line, with the entry's working directory and terminal
+/// wrapper applied — the same expansion a launcher would do.
+fn action_argv(entry: &DesktopEntry, action: &str) -> Option<Vec<String>> {
+    let mut argv = expand_exec(entry.action_exec(action)?, entry)?;
+    if let Some(path) = entry.path().filter(|p| !p.is_empty()) {
+        argv.splice(
+            0..0,
+            ["env".into(), "--chdir".into(), path.into(), "--".into()],
+        );
+    }
+    if entry.terminal() {
+        argv.splice(0..0, ["xdg-terminal-exec".into(), "--".into()]);
+    }
+    Some(argv)
+}
+
+fn launch_argv(argv: &[String], what: &str) {
+    if let Some((program, args)) = argv.split_first()
+        && let Err(error) = super::process::spawn_app_in_workspace(program, args)
+    {
+        tracing::warn!(?error, "Failed to launch {what}");
     }
 }
 
@@ -81,27 +160,15 @@ impl NewWindowAction {
             {
                 continue;
             }
-            let mut argv = expand_exec(entry.action_exec(action)?, entry)?;
-            if let Some(path) = entry.path().filter(|p| !p.is_empty()) {
-                argv.splice(
-                    0..0,
-                    ["env".into(), "--chdir".into(), path.into(), "--".into()],
-                );
-            }
-            if entry.terminal() {
-                argv.splice(0..0, ["xdg-terminal-exec".into(), "--".into()]);
-            }
-            return Some(Self { argv });
+            return Some(Self {
+                argv: action_argv(entry, action)?,
+            });
         }
         None
     }
 
     pub fn launch(&self) {
-        if let Some((program, args)) = self.argv.split_first()
-            && let Err(error) = super::process::spawn_app_in_workspace(program, args)
-        {
-            tracing::warn!(?error, "Failed to launch desktop New Window action");
-        }
+        launch_argv(&self.argv, "desktop New Window action");
     }
 }
 
@@ -242,6 +309,92 @@ mod tests {
                 "--new-window"
             ]
         );
+    }
+
+    /// The entry is the app's own declaration of what it can do; the header
+    /// offers those verbs rather than inventing a parallel set.
+    #[test]
+    fn every_declared_action_is_offered_in_order_and_capped() {
+        let mut groups = String::new();
+        let mut ids = String::new();
+        for index in 0..8 {
+            ids.push_str(&format!("act{index};"));
+            groups.push_str(&format!(
+                "[Desktop Action act{index}]\nName=Action {index}\nExec=example --do {index}\n"
+            ));
+        }
+        let app = DesktopApp::from_content(
+            Path::new("/apps/example.desktop"),
+            &format!("[Desktop Entry]\nType=Application\nName=Example\nActions={ids}\n{groups}"),
+        )
+        .unwrap();
+        assert_eq!(app.actions.len(), APP_ACTION_CAP);
+        assert_eq!(app.actions[0].id, "act0");
+        assert_eq!(app.actions[0].name, "Action 0");
+        assert_eq!(app.actions[0].argv, ["example", "--do", "0"]);
+        assert_eq!(app.actions[APP_ACTION_CAP - 1].id, "act5");
+    }
+
+    /// An action the desktop cannot run is not a row: the entry is claiming a
+    /// capability nothing can deliver.
+    #[test]
+    fn an_action_with_no_name_or_no_runnable_exec_is_dropped() {
+        let app = DesktopApp::from_content(
+            Path::new("/apps/example.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Example\nActions=good;noexec;noname;bad;\n\
+             [Desktop Action good]\nName=Good\nExec=example --good\n\
+             [Desktop Action noexec]\nName=No exec\n\
+             [Desktop Action noname]\nExec=example --noname\n\
+             [Desktop Action bad]\nName=Bad\nExec=example \"unterminated\n",
+        )
+        .unwrap();
+        assert_eq!(app.actions.len(), 1);
+        assert_eq!(app.actions[0].id, "good");
+    }
+
+    /// The `+` is a shortcut to an action that is still its own row.
+    #[test]
+    fn the_new_window_action_is_also_an_ordinary_action() {
+        let app = DesktopApp::from_content(
+            Path::new("/apps/example.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Example\nActions=new-window;\n\
+             [Desktop Action new-window]\nName=New Window\nExec=example --new-window\n",
+        )
+        .unwrap();
+        assert!(app.new_window.is_some());
+        assert_eq!(app.actions.len(), 1);
+        assert_eq!(app.actions[0].id, "new-window");
+    }
+
+    /// Sanity check against a real installed entry: the compositor must read
+    /// what applications actually ship, not only what the tests invent.
+    #[test]
+    fn a_real_installed_entry_yields_its_actions() {
+        let Some(path) = std::fs::read_dir("/usr/share/applications")
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "desktop"))
+            .find(|path| {
+                std::fs::read_to_string(path)
+                    .is_ok_and(|content| content.lines().any(|line| line.starts_with("Actions=")))
+            })
+        else {
+            // No entry on this machine declares actions; nothing to check.
+            return;
+        };
+        let content = std::fs::read_to_string(&path).unwrap();
+        let app = DesktopApp::from_content(&path, &content).expect("a real application entry");
+        assert!(
+            !app.actions.is_empty(),
+            "{path:?} declares actions but none were read"
+        );
+        for action in &app.actions {
+            assert!(!action.id.is_empty());
+            assert!(!action.name.is_empty());
+        }
     }
 
     #[test]
