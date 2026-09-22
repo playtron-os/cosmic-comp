@@ -252,6 +252,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
 
     // init event loop
     let mut event_loop = EventLoop::try_new().with_context(|| "Failed to initialize event loop")?;
+    utils::iced::set_loop_signal(event_loop.get_signal());
     // init wayland
     let (display, socket) = init_wayland_display(&mut event_loop)?;
     // init state
@@ -346,6 +347,7 @@ pub fn run(hooks: crate::hooks::Hooks) -> Result<(), Box<dyn Error>> {
                     state.backend.schedule_render(output);
                 }
             }
+            utils::iced::arm_redraw_timer(&state.common.event_loop_handle, shell.outputs());
             active
         };
 

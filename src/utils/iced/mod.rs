@@ -115,26 +115,123 @@ pub type CompElement<'a, Message> =
     Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>;
 
 #[derive(Default)]
-struct PendingRedraw(AtomicBool);
+struct PendingRedraw {
+    next_frame: AtomicBool,
+    /// The earliest later frame a widget booked, such as a caret blink.
+    at: Mutex<Option<Instant>>,
+}
 
-fn request_redraw(output: &Output) {
+fn pending_redraw(output: &Output) -> &PendingRedraw {
     output
         .user_data()
         .insert_if_missing_threadsafe(PendingRedraw::default);
-    output
-        .user_data()
-        .get::<PendingRedraw>()
-        .unwrap()
-        .0
+    output.user_data().get::<PendingRedraw>().unwrap()
+}
+
+fn request_redraw(output: &Output) {
+    pending_redraw(output)
+        .next_frame
         .store(true, Ordering::Release);
 }
 
-/// Consume a frame requested by compositor Iced widgets on this output.
+/// Book a frame for `at` rather than the next vblank. Treating a caret blink
+/// as "next frame" kept an output rendering at full rate while it was focused.
+fn request_redraw_at(output: &Output, at: Instant) {
+    let mut slot = pending_redraw(output).at.lock().unwrap();
+    if slot.is_some_and(|booked| booked <= at) {
+        return;
+    }
+    *slot = Some(at);
+    drop(slot);
+    // Only the main loop arms the timer, and a render thread's booking would
+    // otherwise wait for whatever wakes that loop next.
+    if !on_main_thread()
+        && let Some(signal) = LOOP_SIGNAL.get()
+    {
+        signal.wakeup();
+    }
+}
+
+/// Consume a frame requested by compositor Iced widgets on this output,
+/// including a booked one whose time has come.
 pub(crate) fn take_redraw_request(output: &Output) -> bool {
-    output
-        .user_data()
-        .get::<PendingRedraw>()
-        .is_some_and(|pending| pending.0.swap(false, Ordering::AcqRel))
+    let Some(pending) = output.user_data().get::<PendingRedraw>() else {
+        return false;
+    };
+    let next_frame = pending.next_frame.swap(false, Ordering::AcqRel);
+    let mut slot = pending.at.lock().unwrap();
+    let due = slot.is_some_and(|at| at <= Instant::now());
+    if due {
+        *slot = None;
+    }
+    next_frame || due
+}
+
+/// Fold a widget's redraw request into an element's: a frame now, or a later
+/// one booked for when it is due.
+fn note_redraw_request(
+    needs_redraw: &mut bool,
+    redraw_at: &mut Option<Instant>,
+    request: window::RedrawRequest,
+) {
+    match request {
+        window::RedrawRequest::NextFrame => *needs_redraw = true,
+        window::RedrawRequest::At(at) if at <= Instant::now() => *needs_redraw = true,
+        window::RedrawRequest::At(at) => {
+            *redraw_at = Some(redraw_at.map_or(at, |booked| booked.min(at)));
+        }
+        window::RedrawRequest::Wait => {}
+    }
+}
+
+static LOOP_SIGNAL: OnceLock<calloop::LoopSignal> = OnceLock::new();
+
+/// Lets a render thread wake the event loop when it books a frame.
+pub fn set_loop_signal(signal: calloop::LoopSignal) {
+    let _ = LOOP_SIGNAL.set(signal);
+}
+
+/// The main-loop timer waking for the earliest booked frame, and its deadline.
+static REDRAW_TIMER: Mutex<Option<(Instant, RegistrationToken)>> = Mutex::new(None);
+
+/// Keep one main-loop timer on the earliest frame booked on any of `outputs`.
+/// Called post-dispatch, after due bookings were taken.
+pub(crate) fn arm_redraw_timer<'a>(
+    handle: &LoopHandle<'static, crate::state::State>,
+    outputs: impl Iterator<Item = &'a Output>,
+) {
+    let next = outputs
+        .filter_map(|output| {
+            *output
+                .user_data()
+                .get::<PendingRedraw>()?
+                .at
+                .lock()
+                .unwrap()
+        })
+        .min();
+    let mut armed = REDRAW_TIMER.lock().unwrap();
+    if armed.map(|(at, _)| at) == next {
+        return;
+    }
+    if let Some((_, token)) = armed.take() {
+        handle.remove(token);
+    }
+    let Some(at) = next else {
+        return;
+    };
+    // Firing is the whole job: the post-dispatch pass that follows takes the
+    // now-due booking and schedules the output.
+    match handle.insert_source(calloop::timer::Timer::from_deadline(at), move |_, _, _| {
+        let mut armed = REDRAW_TIMER.lock().unwrap();
+        if armed.is_some_and(|(armed_at, _)| armed_at == at) {
+            *armed = None;
+        }
+        calloop::timer::TimeoutAction::Drop
+    }) {
+        Ok(token) => *armed = Some((at, token)),
+        Err(err) => tracing::warn!(?err, "failed to arm the iced redraw timer"),
+    }
 }
 
 // --- Public API (unchanged interface) ---
@@ -373,6 +470,8 @@ pub(crate) struct IcedElementInternal<P: Program + Send + 'static> {
     event_queue: Vec<Event>,
     mouse_interaction: MouseInteraction,
     needs_redraw: bool,
+    /// A later frame widgets asked for, such as a caret blink.
+    redraw_at: Option<Instant>,
     /// A dismissed surface keeps its last widget paint for the compositor exit.
     render_only: bool,
     visibility: Option<VisibilityAnimation>,
@@ -434,6 +533,7 @@ impl<P: Program + Send + Clone + 'static> Clone for IcedElementInternal<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            redraw_at: None,
             render_only: self.render_only,
             visibility: self.visibility.clone(),
             visibility_frame: self.visibility_frame,
@@ -620,6 +720,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             event_queue: Vec::new(),
             mouse_interaction: MouseInteraction::default(),
             needs_redraw: false,
+            redraw_at: None,
             render_only: false,
             visibility: None,
             visibility_frame: VisibilityFrame::VISIBLE,
@@ -853,6 +954,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             }
         }
         self.needs_redraw = false;
+        self.redraw_at = None;
     }
 
     fn animate_exit(&mut self, now: IcedInstant) {
@@ -861,6 +963,7 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         self.cursor_pos = None;
         self.touch_map.clear();
         self.needs_redraw = false;
+        self.redraw_at = None;
         self.sync_visibility(now);
         self.tooltip.report = None;
         self.tooltip.sync(&self.theme, now);
@@ -931,6 +1034,15 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
     /// Reproject them every frame, including frames with no pointer motion.
     fn local_position(&self, position: IcedPoint) -> IcedPoint {
         self.visibility_frame.unproject(position)
+    }
+
+    /// Book the later frame on every output showing this element.
+    fn book_redraw(&self) {
+        if let Some(at) = self.redraw_at {
+            for output in &self.outputs {
+                request_redraw_at(output, at);
+            }
+        }
     }
 
     /// Schedule a Task returned by program.update() onto the calloop executor.
@@ -1069,10 +1181,11 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
                 ..
             } => {
                 self.mouse_interaction = mouse_interaction;
-                // If widgets requested a redraw (e.g. animations in progress),
-                // flag this element so the next compositor frame drives another update.
-                let wants_redraw = redraw_request != window::RedrawRequest::Wait;
-                self.needs_redraw = wants_redraw;
+                // Every update ends on RedrawRequested, so widgets restate what
+                // they want next and an older request is replaced, not kept.
+                self.needs_redraw = false;
+                self.redraw_at = None;
+                note_redraw_request(&mut self.needs_redraw, &mut self.redraw_at, redraw_request);
             }
             iced_runtime::user_interface::State::Outdated { .. } => {
                 self.needs_redraw = true;
@@ -1122,7 +1235,11 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
                     mouse_interaction,
                     ..
                 } => {
-                    self.needs_redraw |= redraw_request != window::RedrawRequest::Wait;
+                    note_redraw_request(
+                        &mut self.needs_redraw,
+                        &mut self.redraw_at,
+                        redraw_request,
+                    );
                     self.mouse_interaction = mouse_interaction;
                 }
                 user_interface::State::Outdated { .. } => self.needs_redraw = true,
@@ -1163,6 +1280,8 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
             for output in &self.outputs {
                 request_redraw(output);
             }
+        } else {
+            self.book_redraw();
         }
 
         let total_duration = update_start.elapsed();
@@ -1731,7 +1850,10 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         // inject a RedrawRequested event so animation widgets can advance.
         let element_id = Arc::as_ptr(&self.0) as usize;
         internal_ref.advance_exit(IcedInstant::now());
-        if internal_ref.needs_redraw {
+        let booked_due = internal_ref
+            .redraw_at
+            .is_some_and(|at| at <= IcedInstant::now());
+        if internal_ref.needs_redraw || booked_due {
             internal_ref.needs_redraw = false;
             internal_ref
                 .event_queue
@@ -1760,6 +1882,9 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             {
                 profiler.animation_burst_end(element_id);
             }
+            // An output keeps only its earliest booking, so one another
+            // element's frame consumed must be restated to survive.
+            internal_ref.book_redraw();
         }
 
         // Track animation burst starts (needs_redraw was set by update above)

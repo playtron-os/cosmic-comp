@@ -1130,3 +1130,42 @@ fn halo_buttons_follow_the_slide_under_a_stationary_pointer() {
     assert!(!has_close_fill(&mut internal));
     assert_eq!(internal.local_position(close), close);
 }
+
+/// A focused field's caret blink is a later frame, not the next one. Taken as
+/// "next frame", an open palette kept its output rendering at full rate.
+#[test]
+fn a_caret_blink_books_a_later_frame_instead_of_the_next_one() {
+    struct Field;
+    impl Program for Field {
+        type Message = ();
+        fn view<'a>(&'a self, _: &'a CompTheme) -> CompElement<'a, ()> {
+            iced_widget::text_input("", "")
+                .id(iced_core::widget::Id::new("caret"))
+                .on_input(|_| ())
+                .into()
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let element = IcedElement::new(Field, (200, 40), event_loop.handle(), theme());
+    let active = output("caret");
+    element.0.lock().unwrap().outputs.insert(active.clone());
+    element.queue_operation(iced_core::widget::operation::focusable::focus(
+        iced_core::widget::Id::new("caret"),
+    ));
+
+    let internal = element.0.lock().unwrap();
+    assert!(!internal.needs_redraw, "a steady caret wants no frame now");
+    let blink = internal.redraw_at.expect("the caret books its next blink");
+    assert!(blink > Instant::now());
+    drop(internal);
+    assert!(
+        !take_redraw_request(&active),
+        "nothing is due before the blink"
+    );
+    assert_eq!(*pending_redraw(&active).at.lock().unwrap(), Some(blink));
+
+    // Once the blink is due, its frame is taken exactly once.
+    *pending_redraw(&active).at.lock().unwrap() = Some(Instant::now());
+    assert!(take_redraw_request(&active));
+    assert!(!take_redraw_request(&active));
+}
