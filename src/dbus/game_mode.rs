@@ -14,22 +14,31 @@
 //   * The compositor pushes state changes + signals back out through
 //     `GameModeBridge`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use calloop::{LoopHandle, channel::Sender};
 use futures_executor::ThreadPool;
 use smithay::backend::drm::VrrSupport;
+use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::desktop::space::SpaceElement as _;
+use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::output::Output;
+use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{IsAlive, Rectangle, Size};
+use smithay::wayland::alpha_modifier::AlphaModifierSurfaceCachedState;
+use smithay::wayland::compositor::{
+    SurfaceAttributes, TraversalAction, with_states, with_surface_tree_downward,
+};
+use smithay::wayland::seat::WaylandFocus;
 use smithay::xwayland::X11Surface;
 use tracing::{debug, info, trace, warn};
 use zbus::{interface, object_server::SignalEmitter};
 
 use crate::logger::GAMING_TARGET;
 use crate::shell::focus::target::KeyboardFocusTarget;
-use crate::shell::{CosmicSurface, GameMode, Shell, WorkspaceDelta};
+use crate::shell::{CosmicSurface, GameMode, SeatExt, Shell, WorkspaceDelta};
 use crate::state::State;
 use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::workspace::WorkspaceHandle;
@@ -38,6 +47,32 @@ use crate::wayland::protocols::workspace::WorkspaceHandle;
 const BUS_NAME: &str = "one.playtron.GameMode";
 /// The single object path; one object, one interface (no ObjectManager needed).
 const OBJECT_PATH: &str = "/one/playtron/GameMode";
+
+struct ClientFullscreen(AtomicBool);
+
+pub fn note_client_fullscreen(window: &X11Surface, fullscreen: bool) {
+    window
+        .user_data()
+        .get_or_insert(|| ClientFullscreen(AtomicBool::new(fullscreen)))
+        .0
+        .store(fullscreen, Ordering::Relaxed);
+}
+
+fn client_fullscreen(window: &X11Surface) -> bool {
+    window
+        .user_data()
+        .get_or_insert(|| ClientFullscreen(AtomicBool::new(window.is_fullscreen())))
+        .0
+        .load(Ordering::Relaxed)
+}
+
+#[derive(Debug)]
+pub struct RenderSizeRequest {
+    pub surface: CosmicSurface,
+    pub size: (i32, i32),
+    pub sent_at: Instant,
+    pub reconciled: bool,
+}
 
 /// App id the launcher shell presents as. `FocusedAppId == LAUNCHER_APP_ID`
 /// means the launcher is in focus (i.e. not in a game).
@@ -1023,45 +1058,29 @@ impl State {
             bridge.notify_capabilities_changed();
         }
 
-        // The fullscreened game's window died (e.g. closed via Alt+F4) and nothing
-        // else exits game mode, leaving it stranded on a dead surface. Return to
-        // the launcher — it is still fullscreen on its own workspace, so switching
-        // there shows it full-size (and the dead game's now-empty workspace reaps).
-        let dead_app = {
+        // Window replacement is not an app exit; keep the requested app until
+        // the controller switches back to the launcher or explicitly exits.
+        let missing_app = {
             let shell = self.common.shell.read();
             let gm = &shell.game_mode;
-            (gm.active && gm.game_surface.as_ref().is_some_and(|s| !s.alive()))
-                .then_some((gm.app_id, gm.pending_app_id))
+            (gm.active
+                && gm
+                    .game_surface
+                    .as_ref()
+                    .is_some_and(|surface| !surface.alive() || !shell.is_surface_mapped(surface)))
+            .then_some((gm.app_id, gm.pending_app_id))
         };
-        if let Some((app_id, pending)) = dead_app {
-            if app_id == Some(LAUNCHER_APP_ID) {
-                // The launcher itself died — leave game mode entirely, sliding back
-                // to the desktop instead of an instant jump when its now-empty
-                // workspace reaps.
+        if let Some((Some(app_id), pending)) = missing_app {
+            if app_id == LAUNCHER_APP_ID && pending.is_none() {
                 info!(target: GAMING_TARGET, "launcher window gone; leaving game mode");
                 self.exit_game_mode();
-            } else if pending != Some(LAUNCHER_APP_ID) {
-                // The game surface died. A launching game churns through many
-                // transient splash/helper windows before its real window settles;
-                // if another LIVE window still carries this app id, re-adopt it
-                // (find_game_surface picks the largest) instead of bouncing to the
-                // launcher — otherwise the launch flaps game<->launcher on every
-                // transient window death and the real game window (which maps late)
-                // never gets adopted. Only when NO live window with this app id
-                // remains do we return to the launcher; playserve also drives the
-                // return when the game process actually exits.
-                let re_adopt = app_id
-                    .filter(|&id| id != LAUNCHER_APP_ID)
-                    .filter(|&id| find_game_surface(&self.common.shell.read(), id).is_some());
-                if let Some(id) = re_adopt {
-                    info!(target: GAMING_TARGET, app_id = id, "game surface died; re-adopting another live window of the same game");
-                    self.enter_game_mode(id);
-                } else {
-                    info!(target: GAMING_TARGET, "game window gone; returning to the launcher");
-                    self.enter_game_mode(LAUNCHER_APP_ID);
-                }
+            } else if pending.is_none() {
+                info!(target: GAMING_TARGET, app_id, "waiting for the app's replacement window");
+                self.common.shell.write().game_mode.pending_app_id = Some(app_id);
             }
         }
+        self.try_resolve_pending_game_mode();
+        self.refresh_active_game_surface();
 
         // The game-mode window must stay fullscreen while active. Something else
         // (e.g. an exclusive layer-shell surface like the start menu taking focus
@@ -1074,7 +1093,7 @@ impl State {
             let alive_surface = gm
                 .game_surface
                 .as_ref()
-                .filter(|s| gm.active && s.alive())
+                .filter(|s| gm.active && s.alive() && shell.is_surface_mapped(*s))
                 .cloned();
             alive_surface.and_then(|game| {
                 let still_fullscreen = shell
@@ -1089,11 +1108,10 @@ impl State {
         if let Some((game, output)) = restore_fullscreen {
             warn!(target: GAMING_TARGET, "game surface lost fullscreen; restoring");
             let loop_handle = self.common.event_loop_handle.clone();
-            let _ = self
-                .common
-                .shell
-                .write()
-                .fullscreen_request(&game, output, &loop_handle);
+            let mut shell = self.common.shell.write();
+            let _ = shell.fullscreen_request(&game, output, &loop_handle);
+            // Fullscreening configures the output's size, so the spoof has to be sent again.
+            shell.game_mode.spoof_requested = None;
         }
 
         // Upscale: request a fill for the active game surface so a
@@ -1129,16 +1147,41 @@ impl State {
                 let (spoof_w, spoof_h, mode) = shell.game_mode_scaling;
                 let sharpness = shell.game_mode_sharpness;
 
-                // Resolution spoof: tell the game to render at the requested size
-                // instead of the output's, and let the presentation rect scale the
-                // result up. Re-asserted here rather than at map time so it also
-                // applies to an already-running game and self-heals if something
-                // reconfigures the surface — but only when the size actually
-                // differs, since this runs every refresh tick and a configure storm
-                // would wedge the client.
-                if spoof_w > 0 && spoof_h > 0 && want_scale {
-                    let wanted = Size::from((spoof_w as i32, spoof_h as i32));
-                    if game.geometry().size != wanted {
+                // Render at the requested size and let the presentation rect scale it up. Sent
+                // once per surface and size, or a client keeping its own size never settles.
+                if spoof_w > 0
+                    && spoof_h > 0
+                    && want_scale
+                    && game.x11_surface().is_none_or(client_fullscreen)
+                {
+                    // The request is in pixels and the geometry is logical, so divide by the
+                    // scale the game renders at.
+                    let render_scale = if game.x11_surface().is_some() {
+                        self.common.xwayland_scale.unwrap_or(1.)
+                    } else {
+                        shell
+                            .game_mode
+                            .output
+                            .as_ref()
+                            .map(|o| o.current_scale().fractional_scale())
+                            .unwrap_or(1.)
+                    };
+                    let wanted = (
+                        (spoof_w as f64 / render_scale).round() as i32,
+                        (spoof_h as f64 / render_scale).round() as i32,
+                    );
+                    let already_requested = shell
+                        .game_mode
+                        .spoof_requested
+                        .as_ref()
+                        .is_some_and(|request| request.surface == game && request.size == wanted);
+                    if !already_requested {
+                        shell.game_mode.spoof_requested = Some(RenderSizeRequest {
+                            surface: game.clone(),
+                            size: wanted,
+                            sent_at: Instant::now(),
+                            reconciled: false,
+                        });
                         let loc = shell
                             .game_mode
                             .output
@@ -1152,11 +1195,35 @@ impl State {
                             mode = mode.as_str(),
                             "configuring the game to render at the requested resolution"
                         );
-                        game.set_geometry(
-                            Rectangle::new(loc, Size::from((spoof_w as i32, spoof_h as i32))),
-                            0,
-                        );
+                        game.set_geometry(Rectangle::new(loc, Size::from(wanted)), 0);
                         game.send_configure();
+                    }
+                }
+                // Some fullscreen clients keep their own swapchain size. Match the X11
+                // parent to that buffer so redirection cannot clip live updates to a corner.
+                if let Some(request) = shell.game_mode.spoof_requested.as_mut()
+                    && request.surface == game
+                    && !request.reconciled
+                    && request.sent_at.elapsed() >= Duration::from_millis(500)
+                    && game.pending_configure_count() == 0
+                    && let Some(window) = game.x11_surface()
+                    && let Some(size) = game.wl_surface().and_then(|surface| {
+                        with_renderer_surface_state(&surface, |state| state.surface_size())
+                            .flatten()
+                    })
+                    && size.w > 1
+                    && size.h > 1
+                    && window.last_configure().size != size
+                {
+                    let geometry = Rectangle::new(window.last_configure().loc, size);
+                    match window.configure(geometry) {
+                        Ok(()) => {
+                            request.reconciled = true;
+                            info!(target: GAMING_TARGET, ?size, "matched game window to the client's committed buffer");
+                        }
+                        Err(error) => {
+                            warn!(target: GAMING_TARGET, ?error, "could not reconcile game window size")
+                        }
                     }
                 }
                 let matched_ws = if let Some(ws) = shell
@@ -1260,24 +1327,120 @@ impl State {
         self.refresh_overlay_visible();
         let stale_grab = {
             let shell = self.common.shell.read();
-            shell.game_mode.input_grab.as_ref().is_some_and(|w| {
-                !shell
-                    .workspaces()
-                    .spaces()
-                    .flat_map(|ws| ws.mapped())
-                    .any(|m| m.windows().any(|(s, _)| s == *w))
-            })
+            shell
+                .game_mode
+                .input_grab
+                .as_ref()
+                .is_some_and(|w| !w.alive() || !shell.is_surface_mapped(w))
         };
         if stale_grab {
             self.release_game_mode_input_grab();
         }
+        self.trace_game_mode_surface();
     }
 
-    /// Enter exclusive gaming mode for `app_id`: fullscreen the window tagged
-    /// with that `STEAM_GAME` app id (which engages the VRR/direct-scanout/
-    /// tearing fast path) and minimize everything else on its workspace. If no
-    /// mapped window carries the app id yet, the request is deferred and resolved
-    /// once one appears (see `try_resolve_pending_game_mode`).
+    fn trace_game_mode_surface(&self) {
+        // A full snapshot every second: only with COSMIC_GAME_TRACE=trace.
+        if !tracing::enabled!(target: GAMING_TARGET, tracing::Level::TRACE) {
+            return;
+        }
+        let mut shell = self.common.shell.write();
+        if !shell.game_mode.active
+            || shell
+                .game_mode
+                .diagnostic_at
+                .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+        {
+            return;
+        }
+        shell.game_mode.diagnostic_at = Some(Instant::now());
+        let gm = &shell.game_mode;
+        let Some(game) = gm.game_surface.as_ref() else {
+            return;
+        };
+        let mapped_workspace = shell.workspaces().spaces().find(|ws| {
+            ws.get_fullscreen_surfaces().any(|f| f.surface == *game)
+                || ws.mapped().any(|mapped| mapped.active_window() == *game)
+        });
+        let active_workspace = gm
+            .output
+            .as_ref()
+            .and_then(|output| shell.active_space(output));
+        let seat = shell.seats.last_active();
+        let pointer = seat.get_pointer();
+        let pointer_focus = pointer.as_ref().and_then(|p| p.current_focus());
+        let pointer_constraint = pointer.as_ref().and_then(|p| {
+            let surface = pointer_focus.as_ref()?.wl_surface()?;
+            smithay::wayland::pointer_constraints::with_pointer_constraint(
+                &surface,
+                p,
+                |constraint| constraint.map(|constraint| constraint.is_active()),
+            )
+        });
+        let mut surfaces = Vec::new();
+        if let Some(root) = game.wl_surface() {
+            with_surface_tree_downward(
+                &root,
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, _, _| surfaces.push(surface.clone()),
+                |_, _, _| true,
+            );
+        }
+        let surfaces: Vec<_> = surfaces.into_iter().map(|surface| {
+            let buffer = with_renderer_surface_state(&surface, |state| serde_json::json!({
+                "attached": state.buffer().is_some(),
+                "commit": format!("{:?}", state.current_commit()),
+                "buffer_size": format!("{:?}", state.buffer_size()),
+                "surface_size": format!("{:?}", state.surface_size()),
+                "scale": state.buffer_scale(),
+                "view": format!("{:?}", state.view()),
+                "opaque_regions": format!("{:?}", state.opaque_regions()),
+            }));
+            with_states(&surface, |data| serde_json::json!({
+                "id": surface.id().protocol_id(),
+                "buffer": buffer,
+                "primary_output": surface_primary_scanout_output(&surface, data).map(|o| o.name()),
+                "frame_callbacks": data.cached_state.get::<SurfaceAttributes>().current().frame_callbacks.len(),
+                "alpha": data.cached_state.get::<AlphaModifierSurfaceCachedState>().current().multiplier_f32().unwrap_or(1.0),
+            }))
+        }).collect();
+        let snapshot = serde_json::json!({
+            "app_id": gm.app_id,
+            "pending_app_id": gm.pending_app_id,
+            "class": game.app_id(),
+            "pid": game.pid(),
+            "x11_window": game.x11_window_id(),
+            "alive": game.alive(),
+            "mapped": shell.is_surface_mapped(game),
+            "fullscreen": game.is_fullscreen(false),
+            "pending_configures": game.pending_configure_count(),
+            "input_grab": gm.input_grab.as_ref().map(|s| s.app_id()),
+            "pointer_focus": pointer_focus.and_then(|f| f.toplevel(&shell)).map(|s| s.app_id()),
+            "pointer_constraint_active": pointer_constraint,
+            "cursor": format!("{:?}", seat.cursor_image_status()),
+            "geometry": format!("{:?}", game.geometry()),
+            "bbox": format!("{:?}", game.bbox()),
+            "presentation": mapped_workspace.and_then(|ws| ws.get_fullscreen_surfaces().find(|f| f.surface == *game).map(|f| serde_json::json!({
+                "geometry": format!("{:?}", ws.fullscreen_geometry_for(f)),
+                "scale_to": format!("{:?}", f.scale_to),
+                "mode": f.scale_mode.as_str(),
+                "animating": f.is_animating(),
+                "output_scale": ws.output().current_scale().fractional_scale(),
+            }))),
+            "overlay": gm.overlay_surface.as_ref().map(|s| serde_json::json!({
+                "geometry": format!("{:?}", s.geometry()),
+                "bbox": format!("{:?}", s.bbox()),
+            })),
+            "controlled_workspace": format!("{:?}", gm.workspace),
+            "surface_workspace": mapped_workspace.map(|ws| format!("{:?}", ws.handle)),
+            "active_workspace": active_workspace.map(|ws| format!("{:?}", ws.handle)),
+            "surfaces": surfaces,
+        });
+        trace!(target: GAMING_TARGET, %snapshot, "game-mode surface diagnostic");
+    }
+
+    /// Fullscreen the app on an exclusive workspace, deferring until it maps.
     pub fn enter_game_mode(&mut self, app_id: u32) {
         let loop_handle = self.common.event_loop_handle.clone();
         // Preserve any client overlay assertion across a cross-app rebuild (the
@@ -1307,7 +1470,7 @@ impl State {
                 .game_mode
                 .game_surface
                 .as_ref()
-                .filter(|s| s.alive() && app_id_of(s) == app_id);
+                .filter(|s| s.alive() && shell.is_surface_mapped(*s) && app_id_of(s) == app_id);
             if shell.game_mode.active
                 && shell.game_mode.app_id == Some(app_id)
                 && let Some(current) = current
@@ -1340,6 +1503,10 @@ impl State {
             info!(target: GAMING_TARGET, app_id, "game mode deferred: no window with this app id yet");
             return;
         };
+        // Remember client intent before compositor-owned fullscreen changes the X11 state.
+        if let Some(window) = game.x11_surface() {
+            client_fullscreen(window);
+        }
 
         // Game mode owns a display, so a game must appear THERE regardless of where
         // its window happened to map. A window with no placement of its own lands on
@@ -1396,10 +1563,7 @@ impl State {
                 }
                 Some(KeyboardFocusTarget::Fullscreen(game.clone()))
             } else {
-                // Normal desktop window: move it onto the trailing empty (clean)
-                // workspace — background/shell are suppressed there by
-                // `game_mode_exclusive` — sliding to it, then fullscreen it.
-                // Nothing is minimized; the desktop it came from is left intact.
+                // A separate workspace keeps the desktop intact on exit.
                 let target = shell
                     .workspaces()
                     .spaces_for_output(&output)
@@ -1420,16 +1584,49 @@ impl State {
                         &game,
                         &source_ws,
                         &target,
-                        true, // follow: slide to the new workspace
+                        false,
                         None,
                         &mut self.common.workspace_state.update(),
                         &loop_handle,
                     );
+                    if let Some(idx) = shell.workspaces().idx_for_handle(&output, &target) {
+                        let delta = if first_entry {
+                            WorkspaceDelta::new_shortcut()
+                        } else {
+                            WorkspaceDelta::new_crossfade()
+                        };
+                        let _ = shell.activate(
+                            &output,
+                            idx,
+                            delta,
+                            &mut self.common.workspace_state.update(),
+                        );
+                    }
                 }
                 shell.fullscreen_request(&game, output.clone(), &loop_handle)
             };
 
+            let workspace = shell.active_space(&output).map(|ws| ws.handle);
+            if !first_entry {
+                let crossfade = shell
+                    .workspaces()
+                    .active(&output)
+                    .is_some_and(|(previous, _)| {
+                        previous
+                            .is_some_and(|(_, delta)| matches!(delta, WorkspaceDelta::Crossfade(_)))
+                    });
+                if let Some(ws) = shell.active_space_mut(&output) {
+                    for fullscreen in &mut ws.fullscreen_surfaces {
+                        if fullscreen.surface == game {
+                            fullscreen.animate_game_mode_entry(crossfade);
+                        }
+                    }
+                }
+            }
             shell.game_mode = GameMode {
+                controller_pid: shell.game_mode.controller_pid,
+                baselayer_appids: std::mem::take(&mut shell.game_mode.baselayer_appids),
+                workspace,
                 active: true,
                 app_id: Some(app_id),
                 game_surface: Some(game),
@@ -1483,55 +1680,23 @@ impl State {
         }
     }
 
-    /// Re-resolve the fullscreened game surface after a `STEAM_GAME` tag change.
-    ///
-    /// `enter_game_mode` treats a re-enter for the *same* app id as a no-op, so
-    /// moving an app id from one window to another (e.g. a client switching
-    /// between overlay windows that share an app id) would otherwise leave the
-    /// old window fullscreened. This detects that the active game surface has lost
-    /// its app-id tag and switches to whichever mapped window still carries it.
-    /// It runs synchronously in the property/refresh hooks (no render in between),
-    /// so the swap is seamless. A no-op for a normal game, whose window keeps its
-    /// tag for the whole session.
+    /// Follow replacement windows without dropping exclusive workspace ownership.
     pub fn refresh_active_game_surface(&mut self) {
-        let (app_id, overlay_asserted) = {
+        let replacement = {
             let shell = self.common.shell.read();
             let gm = &shell.game_mode;
-            // Only when actively fullscreening a concrete surface.
-            let (true, Some(app_id), Some(surface)) =
-                (gm.active, gm.app_id, gm.game_surface.as_ref())
-            else {
-                return;
-            };
-            // Current surface still resolves to the active app id — nothing to do.
-            // Uses `app_id_of` (not the raw atom) so the launcher, matched by its
-            // Wayland `app_id`, isn't seen as "untagged" and re-resolved every tick.
-            if app_id_of(surface) == app_id {
+            if !gm.active || gm.pending_app_id.is_some() {
                 return;
             }
-            (app_id, gm.overlay_asserted)
+            gm.app_id.and_then(|app_id| {
+                find_game_surface(&shell, app_id).and_then(|(best, ..)| {
+                    (gm.game_surface.as_ref() != Some(&best)).then_some(app_id)
+                })
+            })
         };
-
-        // The fullscreened surface lost its tag. Switch to another window still
-        // carrying the active app id, if one exists (`find_game_surface` now also
-        // sees fullscreen windows). If nothing carries it, leave the current
-        // surface up: this may be a transient untag mid-retag, or the window is
-        // closing (the refresh tick's destroy handling covers a vanished surface).
-        // We never exit game mode from here on our own.
-        let has_replacement = {
-            let shell = self.common.shell.read();
-            find_game_surface(&shell, app_id).is_some()
-        };
-        if has_replacement {
-            info!(target: GAMING_TARGET, app_id, "re-resolving game surface after a tag change");
-            // exit returns to the desktop (reaping the stale workspace); enter then
-            // fullscreens the newly-tagged window on a fresh workspace.
-            self.exit_game_mode();
+        if let Some(app_id) = replacement {
+            info!(target: GAMING_TARGET, app_id, "adopting the app's replacement window");
             self.enter_game_mode(app_id);
-            // exit_game_mode's mem::take cleared any client overlay assertion, and
-            // enter_game_mode re-read it as false — restore it so a QAM overlay and
-            // its fast-path gate survive the swap.
-            self.common.shell.write().game_mode.overlay_asserted = overlay_asserted;
             self.refresh_overlay_visible();
         }
     }
@@ -1650,6 +1815,9 @@ impl State {
                 })
                 .flatten();
             let surface_app_id = surface.as_ref().map(app_id_of);
+            if surface != shell.game_mode.overlay_surface {
+                shell.game_mode.overlay_shown_at_commit = surface.as_ref().and_then(surface_commit);
+            }
             shell.game_mode.overlay_surface = surface;
             (active, asserted, window_present, surface_app_id)
         };
@@ -1720,14 +1888,17 @@ impl State {
         }
         let target = {
             let shell = self.common.shell.read();
-            shell
-                .workspaces()
-                .spaces()
-                .flat_map(|ws| ws.mapped())
-                .flat_map(|m| m.windows().map(|(s, _)| s))
-                .find(|w| {
-                    w.is_overlay() || LAUNCHER_APP_IDS.contains(&w.app_id().to_lowercase().as_str())
-                })
+            shell.game_mode.overlay_surface.clone().or_else(|| {
+                shell
+                    .workspaces()
+                    .spaces()
+                    .flat_map(|ws| ws.mapped())
+                    .flat_map(|m| m.windows().map(|(s, _)| s))
+                    .find(|w| {
+                        w.is_overlay()
+                            || LAUNCHER_APP_IDS.contains(&w.app_id().to_lowercase().as_str())
+                    })
+            })
         };
         if let Some(window) = target {
             self.set_game_mode_input_grab(Some(window));
@@ -1820,13 +1991,13 @@ fn find_game_surface(
     let mut candidates: Vec<(CosmicSurface, WorkspaceHandle, Output, bool)> = Vec::new();
     for ws in shell.workspaces().spaces() {
         for f in ws.get_fullscreen_surfaces() {
-            if f.surface.alive() && app_id_of(&f.surface) == app_id {
+            if f.surface.alive() && !f.surface.is_useless() && app_id_of(&f.surface) == app_id {
                 candidates.push((f.surface.clone(), ws.handle, ws.output().clone(), true));
             }
         }
         for mapped in ws.mapped() {
             let surface = mapped.active_window();
-            if surface.alive() && app_id_of(&surface) == app_id {
+            if surface.alive() && !surface.is_useless() && app_id_of(&surface) == app_id {
                 candidates.push((surface, ws.handle, ws.output().clone(), false));
             }
         }
@@ -1938,10 +2109,27 @@ fn overlay_window_present(shell: &Shell) -> bool {
         })
 }
 
+/// The commit `surface`'s current buffer came from, if it has one.
+pub(crate) fn surface_commit(
+    surface: &CosmicSurface,
+) -> Option<smithay::backend::renderer::utils::CommitCounter> {
+    let surface = surface.wl_surface()?;
+    with_renderer_surface_state(&surface, |state| state.current_commit())
+}
+
 /// The keyboard-focus target for `window` if it is a mapped element. Returns
 /// `None` for override-redirect windows (which grab input themselves and can't
 /// be element-focused).
-fn focus_target_for(shell: &Shell, window: &CosmicSurface) -> Option<KeyboardFocusTarget> {
+pub(crate) fn focus_target_for(
+    shell: &Shell,
+    window: &CosmicSurface,
+) -> Option<KeyboardFocusTarget> {
+    if shell.workspaces().spaces().any(|ws| {
+        ws.get_fullscreen_surfaces()
+            .any(|fullscreen| &fullscreen.surface == window)
+    }) {
+        return Some(KeyboardFocusTarget::Fullscreen(window.clone()));
+    }
     shell
         .workspaces()
         .spaces()
@@ -2026,10 +2214,7 @@ mod tests {
         }
     }
 
-    /// End-to-end over a live session bus: own the well-known name, then from a
-    /// separate client connection introspect the member surface, read a
-    /// property, and drive a control method. Uses only client→server calls (a
-    /// self-introspect deadlocks under `zbus::block_on`). Skips if no bus.
+    /// Address the test server directly so it cannot replace a live compositor's bus name.
     #[test]
     fn interface_over_bus() {
         zbus::block_on(async {
@@ -2047,30 +2232,27 @@ mod tests {
                 cmd: Mutex::new(tx),
                 frametime_ns: Arc::new(AtomicU64::new(0)),
             });
-            let conn = match zbus::Connection::session().await {
+            let conn = match zbus::connection::Builder::session()
+                .unwrap()
+                .serve_at(OBJECT_PATH, GameModeInterface { io })
+                .unwrap()
+                .build()
+                .await
+            {
                 Ok(c) => c,
                 Err(_) => {
                     eprintln!("no session bus; skipping");
                     return;
                 }
             };
-            if conn
-                .object_server()
-                .at(OBJECT_PATH, GameModeInterface { io })
-                .await
-                .is_err()
-                || conn.request_name(BUS_NAME).await.is_err()
-            {
-                eprintln!("skipping: could not own {BUS_NAME}");
-                return;
-            }
+            let destination = conn.unique_name().unwrap().as_str();
 
             let client = zbus::Connection::session().await.unwrap();
 
             // Introspect the member surface.
             let xml: String = client
                 .call_method(
-                    Some(BUS_NAME),
+                    Some(destination),
                     OBJECT_PATH,
                     Some("org.freedesktop.DBus.Introspectable"),
                     "Introspect",
@@ -2110,7 +2292,7 @@ mod tests {
             // Read a property.
             let reply = client
                 .call_method(
-                    Some(BUS_NAME),
+                    Some(destination),
                     OBJECT_PATH,
                     Some("org.freedesktop.DBus.Properties"),
                     "Get",
@@ -2124,7 +2306,7 @@ mod tests {
             // Drive a control method.
             client
                 .call_method(
-                    Some(BUS_NAME),
+                    Some(destination),
                     OBJECT_PATH,
                     Some("one.playtron.GameMode"),
                     "SetFpsLimit",

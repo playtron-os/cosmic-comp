@@ -37,13 +37,15 @@ use smithay::output::WeakOutput;
 use smithay::utils::user_data::UserDataMap;
 use smithay::{
     backend::renderer::{
-        Renderer,
+        Renderer, Texture,
         element::{
             Element, Id, RenderElement, texture::TextureRenderElement, utils::RescaleRenderElement,
         },
         gles::GlesTexture,
         glow::GlowRenderer,
-        utils::{DamageBag, DamageSet, OpaqueRegions, RendererSurfaceStateUserData},
+        utils::{
+            DamageBag, DamageSet, OpaqueRegions, RendererSurfaceStateUserData, import_surface_tree,
+        },
     },
     desktop::{WindowSurfaceType, layer_map_for_output, space::SpaceElement},
     input::Seat,
@@ -259,6 +261,7 @@ pub struct FullscreenSurface {
     pub previous_state: Option<FullscreenRestoreState>,
     pub previous_geometry: Option<Rectangle<i32, Local>>,
     start_at: Option<Instant>,
+    fade_in_only: bool,
     pub ended_at: Option<Instant>,
     /// When `Some`, the surface is upscaled to this rect (a fill of
     /// a smaller game buffer). The wrapping `RescaleRenderElement` is scanout-
@@ -304,6 +307,7 @@ struct NisUpscale {
     mode: crate::dbus::game_mode::ScalingMode,
     /// Always the full rect: the pass rewrites every texel.
     damage: DamageBag<i32, BufferCoords>,
+    last_trace: Option<(Size<i32, BufferCoords>, bool)>,
 }
 
 impl PartialEq for FullscreenSurface {
@@ -313,6 +317,11 @@ impl PartialEq for FullscreenSurface {
 }
 
 impl FullscreenSurface {
+    pub fn animate_game_mode_entry(&mut self, crossfade: bool) {
+        self.fade_in_only = true;
+        self.start_at = (!crossfade).then(Instant::now);
+    }
+
     pub fn is_animating(&self) -> bool {
         self.start_at.is_some() || self.ended_at.is_some()
     }
@@ -489,6 +498,8 @@ where
     }
 
     let surface = fullscreen.surface.wl_surface()?;
+    // The filtered path bypasses the surface elements that normally import each commit.
+    import_surface_tree(renderer, &surface).ok()?;
     let glow_context = renderer.glow_renderer().context_id();
     let context = renderer.context_id();
 
@@ -523,11 +534,13 @@ where
         *slot = Some(NisUpscale {
             target,
             intermediate,
-            id: Id::new(),
+            // Surface identity keeps frame callbacks and presentation feedback attached.
+            id: Id::from_wayland_resource(surface.as_ref()),
             context_id: glow_context.clone(),
             size: dst_size,
             mode,
             damage: DamageBag::default(),
+            last_trace: None,
         });
     }
     let state = slot.as_mut()?;
@@ -538,7 +551,7 @@ where
         intermediate,
         ..
     } = state;
-    match mode {
+    let filtered = match mode {
         // The compute pass samples the texture itself, so it has to undo a
         // bottom-up buffer; FSR goes through smithay's texture draw, which
         // already accounts for one.
@@ -549,7 +562,7 @@ where
             target,
             nis::NisConfig::new(sharpness),
         )
-        .ok()?,
+        .is_ok(),
         _ => fsr::upscale(
             renderer,
             &source,
@@ -558,7 +571,24 @@ where
             dst_size,
             sharpness,
         )
-        .ok()?,
+        .is_ok(),
+    };
+    let status = (source.size(), filtered);
+    if state.last_trace != Some(status) {
+        tracing::info!(
+            target: crate::logger::GAMING_TARGET,
+            source_size = ?status.0,
+            destination_size = ?dst_size,
+            ?target_geo,
+            output_scale,
+            mode = mode.as_str(),
+            filtered,
+            "game upscale result"
+        );
+        state.last_trace = Some(status);
+    }
+    if !filtered {
+        return None;
     }
 
     let buffer_size = Size::<i32, BufferCoords>::from((dst_size.w, dst_size.h));
@@ -1494,6 +1524,17 @@ impl Workspace {
         )
     }
 
+    pub fn controlled_surface_scale(&self, surface: &CosmicSurface) -> Option<(f64, f64)> {
+        let fullscreen = self
+            .fullscreen_surfaces
+            .iter()
+            .find(|f| &f.surface == surface)?;
+        Some(
+            self.controlled_surface_transform(fullscreen, Point::default())
+                .1,
+        )
+    }
+
     /// Pointer hit-test restricted to the game-mode controlled surface — the
     /// pointer counterpart of [`Workspace::controlled_element_under`].
     pub fn controlled_surface_under(
@@ -1530,7 +1571,6 @@ impl Workspace {
         if fullscreen.is_animating() {
             return None;
         }
-        let geometry = self.fullscreen_geometry_for(fullscreen);
         let (surface_point, scale) = self.controlled_surface_transform(fullscreen, location);
         if let Some((target, offset)) = fullscreen.halo.focus_under(
             location.as_logical(),
@@ -1546,14 +1586,10 @@ impl Workspace {
                 WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
             )
             .map(|(target, surface_offset)| {
-                // Re-apply the presentation transform so the reported position is
-                // where the surface actually appears on screen.
-                let offset = surface_offset.as_local();
-                let presented = Point::<f64, Local>::from((
-                    geometry.loc.x as f64 + offset.x * scale.0,
-                    geometry.loc.y as f64 + offset.y * scale.1,
-                ));
-                (target, presented.to_global(&self.output))
+                // Keep focus geometry fixed; event delivery undoes the presentation scale.
+                let origin = self.fullscreen_geometry_for(fullscreen).loc.to_f64()
+                    + Point::from((surface_offset.x * scale.0, surface_offset.y * scale.1));
+                (target, origin.to_global(&self.output))
             })
     }
 
@@ -1765,6 +1801,7 @@ impl Workspace {
                     previous_state: previous.clone().map(|p| p.previous_state),
                     previous_geometry: previous.map(|p| p.previous_geometry),
                     start_at: None,
+                    fade_in_only: false,
                     ended_at: None,
                     scale_to: None,
                     retained: Arc::default(),
@@ -1889,6 +1926,7 @@ impl Workspace {
             previous_state: restore,
             previous_geometry,
             start_at: Some(Instant::now()),
+            fade_in_only: false,
             ended_at: None,
             scale_to: None,
             retained: Arc::default(),
@@ -2054,6 +2092,7 @@ impl Workspace {
         if surface.ended_at.is_some() {
             return None;
         }
+        surface.fade_in_only = false;
 
         if surface.surface.alive() {
             surface.surface.output_leave(&self.output);
@@ -2413,6 +2452,7 @@ impl Workspace {
                     let previous_geo = fullscreen
                         .previous_geometry
                         .as_ref()
+                        .filter(|_| !fullscreen.fade_in_only)
                         .unwrap_or(&fullscreen_geo);
 
                     let (target_geo, fullscreen_alpha) =
@@ -2437,7 +2477,9 @@ impl Workspace {
                                     // geometry to grow from -- a surface that maps straight
                                     // into fullscreen has nothing on screen to become, and
                                     // would otherwise snap in at full opacity.
-                                    if fullscreen.previous_geometry.is_some() {
+                                    if fullscreen.previous_geometry.is_some()
+                                        && !fullscreen.fade_in_only
+                                    {
                                         window_alpha
                                     } else {
                                         ease(EaseInOutCubic, 0.0, 1.0, duration) * window_alpha
@@ -2802,6 +2844,7 @@ impl Workspace {
             let previous_geo = fullscreen
                 .previous_geometry
                 .as_ref()
+                .filter(|_| !fullscreen.fade_in_only)
                 .unwrap_or(&fullscreen_geo);
 
             let (target_geo, alpha) = match (fullscreen.start_at, fullscreen.ended_at) {

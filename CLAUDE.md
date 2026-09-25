@@ -28,9 +28,9 @@ does.
 
 ## Logging
 
-Release builds compile out `debug!` and `trace!` (`release_max_level_info`). Use
-`info!` for anything that must be visible in a release binary. Runtime log:
-`$XDG_RUNTIME_DIR/cosmic-comp.log`.
+Release builds include all tracing levels. `COSMIC_GAME_TRACE=1` enables gaming
+debug logs; `COSMIC_GAME_TRACE=trace` adds per-frame logs. Runtime log:
+`$XDG_RUNTIME_DIR/cosmic-comp.log`. Rate-limit recurring diagnostics.
 
 ## Build & verify
 
@@ -48,3 +48,18 @@ cargo test
 - Never commit local cargo `[patch]` entries — those are dev-local.
 - Don't reference external projects by name in committed code or commit
   messages; this is a public repo.
+
+## Gaming handoffs
+
+- A game can destroy or unmap its launcher before mapping the next window. Keep
+  its app request pending until the controller selects another app or exits.
+- Desktop-layer suppression belongs to the gaming workspace, including window
+  gaps and fullscreen animations. Other workspaces remain ordinary desktops.
+- Preserve the controller pid and base-layer priority when adopting a new surface.
+  A surface can still be alive after X11 unmaps it; check workspace membership too.
+- Client unfullscreen requests cannot release the controller's surface. Repairing
+  fullscreen afterward can repeatedly resize clients that reject a render size.
+- Keep the original outgoing workspace through rapid gaming-window replacements;
+  pruning empty workspaces must preserve and reindex both sides of the fade.
+- Filtered fullscreen rendering must import the current buffer and preserve its
+  surface identity for frame callbacks. Pointer origins stay fixed; scale event coordinates.

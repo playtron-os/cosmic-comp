@@ -302,6 +302,10 @@ impl XdgShellHandler for State {
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         let mut shell = self.common.shell.write();
+        if shell.game_mode_controls(&surface) {
+            surface.send_configure();
+            return;
+        }
         let seat = shell.seats.last_active().clone();
         let should_focus = seat
             .get_keyboard()
