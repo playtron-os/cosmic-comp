@@ -906,8 +906,8 @@ impl State {
                         let pointer_location = ptr.current_location().as_global();
                         let output = seat.active_output();
 
-                        // Get the surface under the pointer, plus whether it is a
-                        // layer-shell surface (panel / dock / popover chrome).
+                        // Get the surface under the pointer, plus whether it is
+                        // layer-shell chrome (panel / dock / popover, not the wallpaper).
                         let (clicked_surface_id, clicked_is_layer) = {
                             let shell = self.common.shell.read();
                             match State::surface_under(pointer_location, &output, &shell) {
@@ -915,12 +915,7 @@ impl State {
                                     let surface = WaylandFocus::wl_surface(&target);
                                     let id = surface.as_ref().map(|s| s.id());
                                     let is_layer = surface.as_ref().is_some_and(|s| {
-                                        smithay::desktop::layer_map_for_output(&output)
-                                            .layer_for_surface(
-                                                s,
-                                                smithay::desktop::WindowSurfaceType::ALL,
-                                            )
-                                            .is_some()
+                                        crate::wayland::protocols::layer_surface_dismiss::is_layer_chrome(&output, s)
                                     });
                                     (id, is_layer)
                                 }

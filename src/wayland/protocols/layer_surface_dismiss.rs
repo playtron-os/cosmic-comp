@@ -22,12 +22,14 @@ mod generated {
     wayland_scanner::generate_server_code!("resources/protocols/layer_surface_dismiss.xml");
 }
 
+use smithay::desktop::{WindowSurfaceType, layer_map_for_output};
+use smithay::output::Output;
 use smithay::reexports::wayland_server::{
     Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, Weak,
     backend::{GlobalId, ObjectId},
     protocol::wl_surface::WlSurface,
 };
-use smithay::wayland::compositor::with_states;
+use smithay::wayland::{compositor::with_states, shell::wlr_layer::Layer};
 use std::collections::HashSet;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -300,6 +302,14 @@ where
             }
         }
     }
+}
+
+/// Whether `surface` is layer-shell chrome, which `set_ignore_layer_clicks` skips.
+/// A background-layer surface is the wallpaper, i.e. the desktop, so it still dismisses.
+pub fn is_layer_chrome(output: &Output, surface: &WlSurface) -> bool {
+    layer_map_for_output(output)
+        .layer_for_surface(surface, WindowSurfaceType::ALL)
+        .is_some_and(|layer| layer.layer() != Layer::Background)
 }
 
 /// Check if a click should trigger dismiss for any armed controllers.
