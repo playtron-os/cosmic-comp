@@ -3279,6 +3279,16 @@ impl Shell {
         false
     }
 
+    /// Whether `output` shows game mode, rather than a desktop workspace the user
+    /// switched to while the game-mode app keeps running.
+    pub fn game_mode_on_screen(&self, output: &Output) -> bool {
+        self.game_mode.active
+            && self.game_mode.output.as_ref() == Some(output)
+            && self
+                .active_space(output)
+                .is_some_and(|ws| self.game_mode.workspace == Some(ws.handle))
+    }
+
     /// Only the gaming controller can release its current fullscreen surface.
     pub fn game_mode_controls<S>(&self, surface: &S) -> bool
     where

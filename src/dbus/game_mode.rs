@@ -89,6 +89,35 @@ pub const LAUNCHER_APP_ID: u32 = 769;
 /// Add the launcher's `app_id` here if it ships under a different one.
 const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
 
+/// Super in game mode. The launcher acts on release, so a tap is forwarded only once
+/// Super comes back up without having started a chord.
+#[derive(Debug, Default)]
+pub struct LauncherKey {
+    held: bool,
+    chorded: bool,
+}
+
+impl LauncherKey {
+    /// Super went down or up. True when the release completes a tap.
+    pub fn update(&mut self, pressed: bool) -> bool {
+        let tap = !pressed && self.held && !self.chorded;
+        *self = Self {
+            held: pressed,
+            chorded: false,
+        };
+        tap
+    }
+
+    /// Another key went down while Super was held.
+    pub fn chord(&mut self) {
+        self.chorded = true;
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.held
+    }
+}
+
 /// Variable-refresh-rate policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum VrrMode {
@@ -510,15 +539,29 @@ impl GameModeBridge {
         });
     }
 
-    /// `LauncherKeyPressed` — the launcher key (bare Super) changed state while
-    /// game mode is active (`pressed` = key-down). Pure event, no state to mirror.
-    pub fn notify_launcher_key(&self, pressed: bool) {
+    /// Signals a bare Super tap in game mode: the press, then the release, from one task
+    /// so they cannot be reordered.
+    pub fn notify_launcher_tap(&self) {
         let Some(conn) = self.conn.get().cloned() else {
             return;
         };
         self.spawn(async move {
             if let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) {
-                let _ = GameModeInterface::launcher_key_pressed(&emitter, pressed).await;
+                for pressed in [true, false] {
+                    let _ = GameModeInterface::launcher_key_pressed(&emitter, pressed).await;
+                }
+            }
+        });
+    }
+
+    /// `AppForceQuit` — see the signal.
+    pub fn notify_app_force_quit(&self, app_id: u32) {
+        let Some(conn) = self.conn.get().cloned() else {
+            return;
+        };
+        self.spawn(async move {
+            if let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) {
+                let _ = GameModeInterface::app_force_quit(&emitter, app_id).await;
             }
         });
     }
@@ -784,12 +827,15 @@ impl GameModeInterface {
     #[zbus(signal)]
     async fn capabilities_changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 
-    /// The launcher key (bare Super) changed state while game mode is active —
-    /// `pressed` is true on key-down, false on key-up. Emitted on BOTH edges so
-    /// the launcher (matching `LAUNCHER_APP_IDS`) can distinguish tap vs hold or
-    /// change behavior later. The compositor takes no action itself.
+    /// Bare Super was tapped in game mode; `pressed` gives the edge, and both are sent on
+    /// release. For the launcher (`LAUNCHER_APP_IDS`); the compositor does nothing else.
     #[zbus(signal)]
     async fn launcher_key_pressed(emitter: &SignalEmitter<'_>, pressed: bool) -> zbus::Result<()>;
+
+    /// Super+Esc killed the process behind `app_id`'s window. Its launcher ends the rest of
+    /// the session, such as helpers or a crash reporter.
+    #[zbus(signal)]
+    async fn app_force_quit(emitter: &SignalEmitter<'_>, app_id: u32) -> zbus::Result<()>;
 }
 
 // ──────────────────────────── lifecycle / wiring ───────────────────────────
@@ -1071,8 +1117,14 @@ impl State {
             .then_some((gm.app_id, gm.pending_app_id))
         };
         if let Some((Some(app_id), pending)) = missing_app {
+            let no_launcher =
+                || find_game_surface(&self.common.shell.read(), LAUNCHER_APP_ID).is_none();
             if app_id == LAUNCHER_APP_ID && pending.is_none() {
                 info!(target: GAMING_TARGET, "launcher window gone; leaving game mode");
+                self.exit_game_mode();
+            } else if pending == Some(LAUNCHER_APP_ID) && no_launcher() {
+                // A game started from the desktop, without the launcher, has ended.
+                info!(target: GAMING_TARGET, app_id, "app gone and no launcher to return to; leaving game mode");
                 self.exit_game_mode();
             } else if pending.is_none() {
                 info!(target: GAMING_TARGET, app_id, "waiting for the app's replacement window");
@@ -1479,6 +1531,8 @@ impl State {
                 drop(shell);
                 debug!(target: GAMING_TARGET, app_id, "enter no-op: already active on the best-ranked surface for this app id");
                 self.common.shell.write().game_mode.pending_app_id = None;
+                // Entering the active app again brings it back from the desktop.
+                self.show_game_mode_workspace();
                 return;
             }
         }
@@ -1773,6 +1827,135 @@ impl State {
                 "exited game mode: NO target workspace resolved (stranded on game-mode workspace)"
             );
         }
+    }
+
+    /// Super+Tab: switch between game mode and the desktop without leaving game mode. The
+    /// app stays fullscreen on its own workspace.
+    pub fn toggle_game_mode_desktop(&mut self) {
+        let mut shell = self.common.shell.write();
+        let (Some(output), Some(game_ws)) =
+            (shell.game_mode.output.clone(), shell.game_mode.workspace)
+        else {
+            return;
+        };
+        if !shell.game_mode_on_screen(&output) {
+            drop(shell);
+            self.show_game_mode_workspace();
+            return;
+        }
+
+        // The workspace game mode was entered from, else any that no game-mode app
+        // holds fullscreen.
+        let desktop = shell
+            .game_mode
+            .home_workspace
+            .filter(|home| *home != game_ws)
+            .and_then(|home| shell.workspaces().idx_for_handle(&output, &home))
+            .or_else(|| {
+                shell
+                    .workspaces()
+                    .spaces_for_output(&output)
+                    .position(|ws| {
+                        ws.handle != game_ws
+                            && ws
+                                .get_fullscreen_surfaces()
+                                .all(|f| app_id_of(&f.surface) == 0)
+                    })
+            });
+        let Some(idx) = desktop else {
+            warn!(target: GAMING_TARGET, "no desktop workspace to switch to from game mode");
+            return;
+        };
+        let _ = shell.activate(
+            &output,
+            idx,
+            WorkspaceDelta::new_shortcut(),
+            &mut self.common.workspace_state.update(),
+        );
+        info!(target: GAMING_TARGET, "switched from game mode to the desktop");
+    }
+
+    /// Brings the game-mode workspace back on screen and focuses its app, if the
+    /// user had switched to the desktop.
+    fn show_game_mode_workspace(&mut self) {
+        let (seat, game) = {
+            let mut shell = self.common.shell.write();
+            let gm = &shell.game_mode;
+            let (Some(output), Some(ws), Some(game)) =
+                (gm.output.clone(), gm.workspace, gm.game_surface.clone())
+            else {
+                return;
+            };
+            if !gm.active || shell.game_mode_on_screen(&output) {
+                return;
+            }
+            let Some(idx) = shell.workspaces().idx_for_handle(&output, &ws) else {
+                return;
+            };
+            let _ = shell.activate(
+                &output,
+                idx,
+                WorkspaceDelta::new_shortcut(),
+                &mut self.common.workspace_state.update(),
+            );
+            (shell.seats.last_active().clone(), game)
+        };
+        Shell::set_focus(
+            self,
+            Some(&KeyboardFocusTarget::Fullscreen(game)),
+            &seat,
+            None,
+            true,
+        );
+        info!(target: GAMING_TARGET, "switched from the desktop back to game mode");
+    }
+
+    /// Super+Esc: kill the running game, even behind the launcher, or the launcher when no
+    /// game runs. Game mode then moves on as it does when any app exits.
+    pub fn force_quit_game_mode_app(&mut self) {
+        let surface = {
+            let shell = self.common.shell.read();
+            let Some(output) = shell.game_mode.output.clone() else {
+                return;
+            };
+            if !shell.game_mode_on_screen(&output) {
+                return;
+            }
+            let game = shell
+                .workspaces()
+                .spaces_for_output(&output)
+                .flat_map(|ws| ws.get_fullscreen_surfaces())
+                .map(|f| f.surface.clone())
+                .find(|s| !matches!(app_id_of(s), 0 | LAUNCHER_APP_ID));
+            let Some(surface) = game.or_else(|| shell.game_mode.game_surface.clone()) else {
+                return;
+            };
+            surface
+        };
+
+        // An X11 window's client is Xwayland, so its pid comes from `_NET_WM_PID`.
+        let pid = match surface.x11_surface() {
+            Some(window) => window.pid(),
+            None => surface
+                .wl_surface()
+                .and_then(|wl| self.common.display_handle.get_client(wl.id()).ok())
+                .and_then(|client| client.get_credentials(&self.common.display_handle).ok())
+                .and_then(|creds| u32::try_from(creds.pid).ok()),
+        };
+        let app_id = app_id_of(&surface);
+        match pid.filter(|&pid| pid > 1 && pid != std::process::id()) {
+            Some(pid) => {
+                info!(target: GAMING_TARGET, pid, app_id, "force quitting the game-mode app");
+                // SAFETY: kill(2) takes no pointers.
+                if unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) } != 0 {
+                    warn!(target: GAMING_TARGET, pid, error = %std::io::Error::last_os_error(), "force quit failed");
+                }
+            }
+            None => {
+                warn!(target: GAMING_TARGET, app_id, "force quit: no pid for the game-mode app")
+            }
+        }
+        self.common.game_mode_bridge.notify_app_force_quit(app_id);
     }
 
     /// Recompute whether a gaming overlay is up over the game — a real
@@ -2212,6 +2395,24 @@ mod tests {
                 mode.as_str()
             );
         }
+    }
+
+    #[test]
+    fn launcher_key_taps_only_without_a_chord() {
+        let mut key = LauncherKey::default();
+        assert!(!key.update(true));
+        assert!(key.update(false));
+
+        assert!(!key.update(true));
+        key.chord();
+        assert!(!key.update(false));
+
+        // A release whose press went elsewhere, e.g. to the desktop.
+        assert!(!key.update(false));
+        // A chord key with Super up does not taint the next tap.
+        key.chord();
+        assert!(!key.update(true));
+        assert!(key.update(false));
     }
 
     /// Address the test server directly so it cannot replace a live compositor's bus name.

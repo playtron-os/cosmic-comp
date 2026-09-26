@@ -2068,20 +2068,27 @@ impl State {
         let voice_config = &self.common.config.voice_config;
         let keysym = handle.modified_sym();
 
-        // In game mode, on the game's own output, the Super key is the LAUNCHER
-        // key: forward its raw press AND release to the launcher over the
-        // one.playtron.GameMode D-Bus interface (both edges, so the launcher can
-        // distinguish tap vs hold or change behavior later) and consume it, so it
-        // neither opens the start menu nor reaches the game. The controller GUIDE
-        // button reaches Grid directly via InputPlumber; only Super comes here.
-        if shell.game_mode.active
-            && shell.game_mode.output.as_ref() == Some(&focused_output)
-            && matches!(keysym, Keysym::Super_L | Keysym::Super_R)
+        // In game mode Super is the launcher key: consumed, and forwarded over D-Bus on
+        // release since it also starts the chords below.
+        let key_pressed = event.state() == KeyState::Pressed;
+        let is_super = matches!(keysym, Keysym::Super_L | Keysym::Super_R);
+        if is_super
+            && (shell.game_mode_on_screen(&focused_output)
+                || (!key_pressed && self.common.launcher_key.is_held()))
         {
-            let pressed = event.state() == KeyState::Pressed;
             drop(shell);
-            self.common.game_mode_bridge.notify_launcher_key(pressed);
+            if !key_pressed && let Some(tokens) = seat.supressed_keys().filter(&handle) {
+                for token in tokens {
+                    self.common.event_loop_handle.remove(token);
+                }
+            }
+            if self.common.launcher_key.update(key_pressed) {
+                self.common.game_mode_bridge.notify_launcher_tap();
+            }
             return FilterResult::Intercept(None);
+        }
+        if key_pressed && !is_super {
+            self.common.launcher_key.chord();
         }
 
         // Only the bare key is the gesture. Once another key joins it the press
@@ -2090,6 +2097,29 @@ impl State {
         let is_special_key = voice_config.matches_key_only(keysym);
         if !is_special_key && event.state() == KeyState::Pressed {
             self.common.special_action_state.cancel();
+        }
+
+        // Super+Tab and Super+Esc, only with workspaces disabled; otherwise both keep their
+        // desktop bindings.
+        let game_mode_chord = key_pressed
+            && modifiers.logo
+            && !(modifiers.ctrl || modifiers.alt || modifiers.shift)
+            && shell.game_mode.active
+            && !workspaces_enabled();
+        let toggle_desktop = game_mode_chord && key_matches(Keysym::Tab);
+        let force_quit = game_mode_chord
+            && key_matches(Keysym::Escape)
+            && shell.game_mode_on_screen(&focused_output);
+        if toggle_desktop || force_quit {
+            seat.modifiers_shortcut_queue().clear();
+            seat.supressed_keys().add(&handle, None);
+            drop(shell);
+            if toggle_desktop {
+                self.toggle_game_mode_desktop();
+            } else {
+                self.force_quit_game_mode_app();
+            }
+            return FilterResult::Intercept(None);
         }
 
         // A release ALWAYS closes an in-flight gesture, whatever the gates below
