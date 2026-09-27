@@ -234,6 +234,10 @@ impl XdgShellHandler for State {
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
         let mut shell = self.common.shell.write();
+        // Like X11 games, a game in game mode must not hide itself when an overlay takes focus.
+        if shell.game_mode_controls(surface.wl_surface()) {
+            return;
+        }
         shell.minimize_request(surface.wl_surface())
     }
 
