@@ -1362,6 +1362,11 @@ impl XwmHandler for State {
 
     fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         let mut shell = self.common.shell.write();
+        // An exclusive-fullscreen game minimizes itself when an overlay takes its focus. Game mode
+        // would restore it at once, and the two fight until the overlay closes, leaving it black.
+        if shell.game_mode_controls(&window) {
+            return;
+        }
         shell.minimize_request(&window);
     }
 
