@@ -2005,6 +2005,28 @@ impl State {
             shell.game_mode.overlay_surface = surface;
             (active, asserted, window_present, surface_app_id)
         };
+        // The overlay takes X input focus, but the game must stay the active X window, or an
+        // exclusive-fullscreen game takes itself as deactivated and minimizes.
+        let game = overlay_active
+            .then(|| {
+                let shell = self.common.shell.read();
+                shell
+                    .game_mode
+                    .game_surface
+                    .as_ref()?
+                    .x11_surface()
+                    .cloned()
+            })
+            .flatten();
+        if let Some(xwm) = self
+            .common
+            .xwayland_state
+            .as_mut()
+            .and_then(|x| x.xwm.as_mut())
+            && let Err(err) = xwm.set_active_window_override(game.as_ref())
+        {
+            warn!(target: GAMING_TARGET, ?err, "failed to keep the game the active X window");
+        }
         let changed = {
             let mut s = bridge.shared().lock().unwrap();
             let changed = s.overlay_visible != overlay_active;
