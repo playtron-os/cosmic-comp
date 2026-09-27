@@ -1926,7 +1926,8 @@ impl State {
                 .spaces_for_output(&output)
                 .flat_map(|ws| ws.get_fullscreen_surfaces())
                 .map(|f| f.surface.clone())
-                .find(|s| !matches!(app_id_of(s), 0 | LAUNCHER_APP_ID));
+                .find(is_game_surface)
+                .or_else(|| any_game_surface(&shell));
             let Some(surface) = game.or_else(|| shell.game_mode.game_surface.clone()) else {
                 return;
             };
@@ -2145,6 +2146,21 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
         return LAUNCHER_APP_ID;
     }
     0
+}
+
+fn is_game_surface(surface: &CosmicSurface) -> bool {
+    surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// A live game window anywhere, including one minimized or left behind the launcher.
+fn any_game_surface(shell: &Shell) -> Option<CosmicSurface> {
+    shell.workspaces().spaces().find_map(|ws| {
+        ws.get_fullscreen_surfaces()
+            .map(|f| f.surface.clone())
+            .chain(ws.mapped().map(|m| m.active_window()))
+            .chain(ws.minimized_windows.iter().flat_map(|m| m.windows()))
+            .find(is_game_surface)
+    })
 }
 
 /// Find the mapped window tagged with `app_id` (`STEAM_GAME`), searching every
