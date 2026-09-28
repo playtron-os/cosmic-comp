@@ -20,7 +20,7 @@ use smithay::{
     utils::{Physical, Size, Transform},
 };
 
-use super::{element::AsGlowRenderer, nis_coefficients};
+use super::{element::AsGlowRenderer, nis_coefficients, thread_user_data};
 
 /// Compute source for the scaler, with `//_COEFFICIENTS_` still to be replaced.
 static NIS_SCALER_SHADER: &str = include_str!("./shaders/nis_scaler.comp");
@@ -234,11 +234,11 @@ impl NisShader {
     }
 
     fn get<R: AsGlowRenderer>(renderer: &R) -> Option<GlesComputeProgram> {
-        std::borrow::Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
-            .get::<NisShader>()
-            .map(|s| s.0)
+        thread_user_data(std::borrow::Borrow::<GlesRenderer>::borrow(
+            renderer.glow_renderer(),
+        ))
+        .get::<NisShader>()
+        .map(|s| s.0)
     }
 }
 

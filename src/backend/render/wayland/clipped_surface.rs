@@ -19,7 +19,7 @@ use smithay::{
     utils::user_data::UserDataMap,
 };
 
-use crate::backend::render::element::AsGlowRenderer;
+use crate::backend::render::{element::AsGlowRenderer, thread_user_data};
 
 thread_local! {
     /// Tracks the last-known radius per element ID to detect radius changes across frames.
@@ -31,9 +31,7 @@ pub struct ClippingShader(pub GlesTexProgram);
 
 impl ClippingShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<ClippingShader>()
             .expect("Custom Shaders not initialized")
             .0

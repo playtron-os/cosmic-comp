@@ -5,7 +5,7 @@ use crate::{
         CLEAR_COLOR, CursorMode, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
         PostprocessShader, PostprocessState,
         element::{AsGlowRenderer, CosmicElement, DamageElement},
-        init_shaders, output_elements,
+        init_shaders, output_elements, release_thread_user_data, thread_user_data,
     },
     config::ScreenFilter,
     shell::Shell,
@@ -917,10 +917,26 @@ fn surface_thread(
         .map_err(|insert_error| insert_error.error)
         .context("Failed to listen for events")?;
 
-    event_loop.run(None, &mut state, |_| {}).map_err(Into::into)
+    let result = event_loop.run(None, &mut state, |_| {}).map_err(Into::into);
+    state.release_thread_shaders();
+    result
 }
 
 impl SurfaceThreadState {
+    /// This thread's shaders and caches outlive it in the share group's user data, and only this
+    /// thread can drop them. The cleanup then deletes their programs while the context is current.
+    fn release_thread_shaders(&mut self) {
+        if let Ok(devices) = self.api.devices_mut() {
+            for device in devices {
+                let renderer = device.renderer_mut();
+                release_thread_user_data(Borrow::<GlesRenderer>::borrow(&*renderer));
+                if let Err(err) = renderer.cleanup_texture_cache() {
+                    warn!(?err, "Failed to free the surface thread's shaders");
+                }
+            }
+        }
+    }
+
     fn suspend(&mut self, tx: SyncSender<()>) {
         self.active.store(false, Ordering::SeqCst);
         let _ = self.compositor.take();
@@ -2945,11 +2961,12 @@ fn postprocess_elements<'a>(
     postprocess_state: &PostprocessState,
     screen_filter: &ScreenFilter,
 ) -> Vec<CosmicElement<GlMultiRenderer<'a>>> {
-    let postprocess_texture_shader = Borrow::<GlesRenderer>::borrow(renderer.as_ref())
-        .egl_context()
-        .user_data()
-        .get::<PostprocessShader>()
-        .expect("OffscreenShader should be available through `init_shaders`");
+    let postprocess_texture_shader =
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.as_ref()))
+            .get::<PostprocessShader>()
+            .expect("OffscreenShader should be available through `init_shaders`")
+            .0
+            .clone();
 
     let mut elements: [Option<TextureShaderElement>; 2] = [None, None];
     if let Some(cursor_texture) = postprocess_state.cursor_texture.as_ref() {
@@ -2974,7 +2991,7 @@ fn postprocess_elements<'a>(
 
         elements[0] = Some(TextureShaderElement::new(
             texture_elem,
-            postprocess_texture_shader.0.clone(),
+            postprocess_texture_shader.clone(),
             vec![
                 Uniform::new("invert", if screen_filter.inverted { 1. } else { 0. }),
                 Uniform::new(
@@ -3009,7 +3026,7 @@ fn postprocess_elements<'a>(
     );
     elements[1] = Some(TextureShaderElement::new(
         texture_elem,
-        postprocess_texture_shader.0.clone(),
+        postprocess_texture_shader.clone(),
         vec![
             Uniform::new("invert", if screen_filter.inverted { 1. } else { 0. }),
             Uniform::new(
