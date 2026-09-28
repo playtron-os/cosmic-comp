@@ -1550,9 +1550,12 @@ impl Workspaces {
 
         if let Some(set) = self.sets.shift_remove(output) {
             {
-                let map = layer_map_for_output(output);
-                for surface in map.layers() {
-                    surface.layer_surface().send_close();
+                // Unmap too: by the time a client destroys its layer, this output is no longer
+                // searched for it, and the map would keep the surface and its textures.
+                let mut map = layer_map_for_output(output);
+                for layer in map.layers().cloned().collect::<Vec<_>>() {
+                    layer.layer_surface().send_close();
+                    map.unmap_layer(&layer);
                 }
             }
 
