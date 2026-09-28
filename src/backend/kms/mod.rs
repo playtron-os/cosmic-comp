@@ -86,6 +86,8 @@ pub struct KmsState {
     /// Debounce for GPU-reset recovery: one reset hits the whole GPU, so every output
     /// signals the same event; ignore repeats within a short window.
     last_gpu_reset_recovery: Option<std::time::Instant>,
+    /// Retries so far per device for a connected output that failed to initialize.
+    pub connector_retries: HashMap<DrmNode, u32>,
 }
 
 pub struct KmsGuard<'a> {
@@ -145,6 +147,7 @@ pub fn init_backend(
         syncobj_state: None,
         dmabuf_global: None,
         last_gpu_reset_recovery: None,
+        connector_retries: HashMap::new(),
     });
 
     // manually add already present gpus
