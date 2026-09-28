@@ -2232,16 +2232,13 @@ impl Common {
     }
 
     pub fn remove_output(&mut self, output: &Output) {
-        let mut shell = self.shell.write();
-        let shell_ref = &mut *shell;
-        Shell::realm_mut(&mut shell_ref.realms, &shell_ref.active_realm).remove_output(
+        // Every realm, not just the active one: an inactive realm otherwise keeps the dead
+        // output and everything attached to it for good.
+        self.shell.write().remove_output(
             output,
-            shell_ref.seats.iter(),
             &mut self.workspace_state.update(),
             &self.xdg_activation_state,
         );
-
-        std::mem::drop(shell);
 
         // MERGE: dropped the per-output blur-cache purge (clear_cached_layer_surfaces /
         // clear_blur_textures_for_output / clear_layer_blur_textures_for_output). Those
@@ -2946,6 +2943,11 @@ impl Shell {
                 workspace_state,
                 xdg_activation_state,
             );
+        }
+        // The game's workspace moved to the first remaining output with everything else.
+        if self.game_mode.output.as_ref() == Some(output) {
+            let next = self.outputs().next().cloned();
+            self.game_mode.output = next;
         }
     }
 
