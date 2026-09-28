@@ -284,13 +284,23 @@ fn capture_frozen_frame(
     let primary = current_primary_plane(dev, crtc, planes)?;
     let fb = dev.get_plane(primary.handle).ok()?.framebuffer()?;
     let p = dev.get_planar_framebuffer(fb).ok()?;
-    let handle = p.buffers()[0]?;
+    let dfd = p.buffers()[0].and_then(|handle| {
+        prime_handle_to_fd(
+            std::os::unix::io::AsRawFd::as_raw_fd(dev.device_fd()),
+            u32::from(handle),
+        )
+        .ok()
+    });
+    // GETFB2 opened new handles, which would pin these buffers for good; the dmabuf holds its own.
+    let mut closed = Vec::new();
+    for handle in p.buffers().iter().flatten() {
+        if !closed.contains(handle) {
+            let _ = dev.close_buffer(*handle);
+            closed.push(*handle);
+        }
+    }
+    let dfd = dfd?;
     let modifier = p.modifier()?;
-    let dfd = prime_handle_to_fd(
-        std::os::unix::io::AsRawFd::as_raw_fd(dev.device_fd()),
-        u32::from(handle),
-    )
-    .ok()?;
     // Import under the matching X format (same layout, alpha ignored): scanout buffers
     // commonly carry alpha=0 and would otherwise blend away to nothing.
     use smithay::backend::allocator::Fourcc;
