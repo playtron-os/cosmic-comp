@@ -328,7 +328,14 @@ impl State {
         {
             let backend = self.backend.kms();
             if let Some(device) = backend.drm_devices.get_mut(&drm_node) {
-                let changes = device.enumerate_surfaces()?;
+                let mut changes = device.enumerate_surfaces()?;
+                // A stale output is taken down in full and set up again with its current EDID.
+                let stale = changes
+                    .stale
+                    .iter()
+                    .map(|(conn, _)| *conn)
+                    .collect::<Vec<_>>();
+                changes.removed.extend(stale.iter().copied());
 
                 let mut w = self.common.shell.read().global_space().size.w as u32;
                 for conn in changes.removed {
@@ -353,7 +360,7 @@ impl State {
                         device.inner.surfaces.remove(&crtc).unwrap();
                     }
 
-                    if !changes.added.iter().any(|(c, _)| c == &conn) {
+                    if stale.contains(&conn) || !changes.added.iter().any(|(c, _)| c == &conn) {
                         outputs_removed.push(
                             device
                                 .inner
@@ -364,6 +371,7 @@ impl State {
                     }
                 }
 
+                changes.added.extend(changes.stale);
                 let retries = backend
                     .connector_retries
                     .get(&drm_node)
@@ -399,6 +407,11 @@ impl State {
                         }
                     }
                 }
+                // Keep probing while an external output lacks its EDID, so a late one replaces the
+                // fail-safe mode it came up in.
+                failed |= device.inner.outputs.iter().any(|(conn, output)| {
+                    output.edid().is_none() && !is_internal_connector(device.drm.device(), *conn)
+                });
             }
         }
 
@@ -431,7 +444,7 @@ impl State {
         if *attempt > 5 {
             warn!(
                 ?node,
-                "Output still fails to initialize after 5 retries, giving up"
+                "Outputs still not fully set up after 5 retries, giving up"
             );
             retries.remove(&node);
             return;
@@ -752,6 +765,8 @@ impl State {
 pub struct OutputChanges {
     pub added: Vec<(connector::Handle, Option<crtc::Handle>)>,
     pub removed: Vec<connector::Handle>,
+    /// Still connected, but the EDID now differs from the one its output was set up with.
+    pub stale: Vec<(connector::Handle, Option<crtc::Handle>)>,
 }
 
 impl Device {
@@ -932,7 +947,26 @@ impl Device {
             .map(|(conn, _)| *conn)
             .collect::<Vec<_>>();
 
-        Ok(OutputChanges { added, removed })
+        // An output set up before its EDID read, or whose monitor was swapped behind a dock
+        // without a disconnect, keeps its old name and modes until it is set up again.
+        let stale = config
+            .iter()
+            .filter(|(conn, _)| !added.iter().any(|(c, _)| c == *conn) && !removed.contains(conn))
+            .filter(|(conn, _)| {
+                self.inner.outputs.get(conn).is_some_and(|output| {
+                    !is_internal_connector(self.drm.device(), **conn)
+                        && edid_product(self.drm.device(), **conn)
+                            .is_some_and(|edid| output.edid() != Some(&edid))
+                })
+            })
+            .map(|(conn, crtc)| (*conn, *crtc))
+            .collect::<Vec<_>>();
+
+        Ok(OutputChanges {
+            added,
+            removed,
+            stale,
+        })
     }
 
     pub fn lock(&mut self) -> LockedDevice<'_> {
@@ -1485,6 +1519,13 @@ fn edid_pending(drm: &impl ControlDevice, conn: connector::Handle, retries: u32)
         warn!(?conn, "EDID not readable yet, retrying");
     }
     pending
+}
+
+fn edid_product(drm: &impl ControlDevice, conn: connector::Handle) -> Option<EdidProduct> {
+    drm_helpers::edid_info(drm, conn)
+        .ok()?
+        .edid()
+        .map(|edid| EdidProduct::from(edid.vendor_product()))
 }
 
 fn is_internal_connector(drm: &impl ControlDevice, conn: connector::Handle) -> bool {
