@@ -512,6 +512,7 @@ impl Config {
                     .borrow_mut() = output_config;
                 found_outputs.push((output.clone(), enabled));
             }
+            fix_overlapping_outputs(&outputs);
 
             let mut backend = backend.lock();
             if let Err(err) = backend.apply_config_for_outputs(
@@ -723,6 +724,40 @@ impl Config {
 /// of its own in the global layout.
 fn extends_desktop(output: &Output) -> bool {
     !matches!(output.config().enabled, OutputState::Mirroring(_)) && output.mirroring().is_none()
+}
+
+/// A saved layout can stack enabled outputs on each other, which strands the pointer and
+/// windows between them; lay those out side by side, internal panel first.
+fn fix_overlapping_outputs(outputs: &[Output]) {
+    let rect = |output: &Output| {
+        let config = output.config();
+        let size = Transform::from(CompTransformDef(config.transform))
+            .transform_size(Size::<i32, Physical>::from(config.mode.0))
+            .to_f64()
+            .to_logical(config.scale)
+            .to_i32_round::<i32>();
+        let loc = (config.position.0 as i32, config.position.1 as i32);
+        smithay::utils::Rectangle::<i32, Logical>::new(loc.into(), size)
+    };
+    let mut desktop = outputs
+        .iter()
+        .filter(|o| o.config().enabled == OutputState::Enabled && extends_desktop(o))
+        .collect::<Vec<_>>();
+    let overlaps = desktop
+        .iter()
+        .enumerate()
+        .any(|(i, a)| desktop[i + 1..].iter().any(|b| rect(a).overlaps(rect(b))));
+    if !overlaps {
+        return;
+    }
+    warn!("Saved output layout overlaps, laying the outputs out side by side");
+    desktop.sort_by_key(|o| (!o.is_internal(), o.name()));
+    let mut x = 0;
+    for output in desktop {
+        let width = rect(output).size.w.max(0) as u32;
+        output.config_mut().position = (x, 0);
+        x += width;
+    }
 }
 
 /// `COSMIC_MIRROR_NEW_OUTPUTS=1` opts into [`mirror_new_outputs`]. Off by
