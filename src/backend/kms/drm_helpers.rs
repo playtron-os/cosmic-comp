@@ -15,6 +15,7 @@ use smithay::{
     utils::Transform,
 };
 use std::{collections::HashMap, ops::Range};
+use tracing::warn;
 
 pub fn display_configuration(
     device: &mut DrmDevice,
@@ -28,10 +29,12 @@ pub fn display_configuration(
     // We expect the previous running drm master (likely the login mananger)
     // to leave the drm device in a sensible state.
     // That means, to reduce flickering, we try to keep an established mapping.
-    for conn in connectors
-        .iter()
-        .flat_map(|conn| device.get_connector(*conn, true).ok())
-    {
+    for conn in connectors.iter().flat_map(|conn| {
+        device
+            .get_connector(*conn, true)
+            .inspect_err(|err| warn!(?conn, ?err, "Failed to probe connector"))
+            .ok()
+    }) {
         if let Some(enc) = conn.current_encoder()
             && let Some(crtc) = device.get_encoder(enc)?.crtc()
         {
