@@ -28,7 +28,9 @@ use smithay::{
 use tracing::trace;
 
 use crate::{
-    backend::render::{element::AsGlowRenderer, wayland::clipped_surface::ClippingShader},
+    backend::render::{
+        element::AsGlowRenderer, thread_user_data, wayland::clipped_surface::ClippingShader,
+    },
     wayland::handlers::background_effect::ComputedBlurRegionCachedState,
 };
 
@@ -336,9 +338,7 @@ impl BlurShaders {
     }
 
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> Self {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<BlurShaders>()
             .expect("Custom Shaders not initialized")
             .clone()

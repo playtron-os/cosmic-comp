@@ -19,7 +19,7 @@ use smithay::{
     utils::{Buffer, Physical, Rectangle, Scale, Size, Transform, user_data::UserDataMap},
 };
 
-use super::{element::AsGlowRenderer, wayland::blur_effect::blit_from_active_fb};
+use super::{element::AsGlowRenderer, thread_user_data, wayland::blur_effect::blit_from_active_fb};
 use crate::utils::geometry::{Local, RectLocalExt, SizeExt};
 
 pub static SHADER: &str = include_str!("./shaders/workspace_shatter.frag");
@@ -28,13 +28,15 @@ pub struct ShatterShader(pub GlesTexProgram);
 
 impl ShatterShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
-        Borrow::<smithay::backend::renderer::gles::GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
-            .get::<ShatterShader>()
-            .expect("Custom Shaders not initialized")
-            .0
-            .clone()
+        thread_user_data(
+            Borrow::<smithay::backend::renderer::gles::GlesRenderer>::borrow(
+                renderer.glow_renderer(),
+            ),
+        )
+        .get::<ShatterShader>()
+        .expect("Custom Shaders not initialized")
+        .0
+        .clone()
     }
 }
 

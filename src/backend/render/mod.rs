@@ -5,7 +5,8 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     ops::ControlFlow,
-    sync::{Arc, Weak},
+    sync::{Arc, Mutex, Weak},
+    thread::{self, ThreadId},
     time::Instant,
 };
 use wayland_backend::server::ObjectId;
@@ -86,6 +87,7 @@ use smithay::{
     reexports::wayland_server::Resource,
     utils::{
         IsAlive, Logical, Monotonic, Physical, Point, Rectangle, Scale, Size, Time, Transform,
+        user_data::UserDataMap,
     },
     wayland::{
         compositor::with_states, dmabuf::get_dmabuf, seat::WaylandFocus, session_lock::LockSurface,
@@ -360,9 +362,7 @@ impl IndicatorShader {
     }
 
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<IndicatorShader>()
             .expect("Custom Shaders not initialized")
             .0
@@ -511,9 +511,7 @@ impl IndicatorShader {
             focus,
         };
 
-        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data();
+        let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
 
         user_data.insert_if_missing(|| IndicatorCache::new(HashMap::new()));
         let mut cache = user_data.get::<IndicatorCache>().unwrap().borrow_mut();
@@ -567,9 +565,7 @@ type BackdropCache = RefCell<HashMap<Key, (BackdropSettings, PixelShaderElement)
 
 impl BackdropShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<BackdropShader>()
             .expect("Custom Shaders not initialized")
             .0
@@ -590,9 +586,7 @@ impl BackdropShader {
             color,
         };
 
-        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data();
+        let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
 
         user_data.insert_if_missing(|| BackdropCache::new(HashMap::new()));
         let mut cache = user_data.get::<BackdropCache>().unwrap().borrow_mut();
@@ -647,9 +641,7 @@ pub struct FsrRcasShader(pub GlesTexProgram);
 
 impl FsrEasuShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<FsrEasuShader>()
             .expect("Custom Shaders not initialized")
             .0
@@ -659,9 +651,7 @@ impl FsrEasuShader {
 
 impl FsrRcasShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesTexProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<FsrRcasShader>()
             .expect("Custom Shaders not initialized")
             .0
@@ -669,16 +659,39 @@ impl FsrRcasShader {
     }
 }
 
+/// Per-thread shaders and caches. Shared contexts share one user data map, where a thread can
+/// neither see nor drop another thread's entries, so each surface thread used to leak a full set.
+#[derive(Default)]
+struct ThreadRenderData(Mutex<HashMap<ThreadId, Arc<UserDataMap>>>);
+
+/// This thread's user data for `renderer`'s share group.
+pub fn thread_user_data(renderer: &GlesRenderer) -> Arc<UserDataMap> {
+    renderer
+        .egl_context()
+        .user_data()
+        .get_or_insert_threadsafe(ThreadRenderData::default)
+        .0
+        .lock()
+        .unwrap()
+        .entry(thread::current().id())
+        .or_default()
+        .clone()
+}
+
+/// Drops this thread's shaders and caches; their GL objects go on the next texture cache cleanup.
+pub fn release_thread_user_data(renderer: &GlesRenderer) {
+    if let Some(data) = renderer.egl_context().user_data().get::<ThreadRenderData>() {
+        data.0.lock().unwrap().remove(&thread::current().id());
+    }
+}
+
 pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
     {
-        let egl_context = renderer.egl_context();
-        if egl_context.user_data().get::<IndicatorShader>().is_some()
-            && egl_context.user_data().get::<BackdropShader>().is_some()
-            && egl_context
-                .user_data()
-                .get::<shatter::ShatterShader>()
-                .is_some()
-            && egl_context.user_data().get::<PostprocessShader>().is_some()
+        let user_data = thread_user_data(renderer);
+        if user_data.get::<IndicatorShader>().is_some()
+            && user_data.get::<BackdropShader>().is_some()
+            && user_data.get::<shatter::ShatterShader>().is_some()
+            && user_data.get::<PostprocessShader>().is_some()
         {
             return Ok(());
         }
@@ -769,35 +782,19 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
     // failing renderer init.
     let nis_shader = nis::NisShader::compile(renderer);
 
-    let egl_context = renderer.egl_context();
+    let user_data = thread_user_data(renderer);
     if let Some(shader) = nis_shader {
-        egl_context.user_data().insert_if_missing(|| shader);
+        user_data.insert_if_missing(|| shader);
     }
-    egl_context
-        .user_data()
-        .insert_if_missing(|| IndicatorShader(outline_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| BackdropShader(rectangle_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| shatter::ShatterShader(shatter_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| PostprocessShader(postprocess_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| ClippingShader(clipping_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| ShadowShader(shadow_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| FsrEasuShader(fsr_easu_shader));
-    egl_context
-        .user_data()
-        .insert_if_missing(|| FsrRcasShader(fsr_rcas_shader));
-    egl_context.user_data().insert_if_missing(|| blur_shaders);
+    user_data.insert_if_missing(|| IndicatorShader(outline_shader));
+    user_data.insert_if_missing(|| BackdropShader(rectangle_shader));
+    user_data.insert_if_missing(|| shatter::ShatterShader(shatter_shader));
+    user_data.insert_if_missing(|| PostprocessShader(postprocess_shader));
+    user_data.insert_if_missing(|| ClippingShader(clipping_shader));
+    user_data.insert_if_missing(|| ShadowShader(shadow_shader));
+    user_data.insert_if_missing(|| FsrEasuShader(fsr_easu_shader));
+    user_data.insert_if_missing(|| FsrRcasShader(fsr_rcas_shader));
+    user_data.insert_if_missing(|| blur_shaders);
 
     Ok(())
 }
@@ -2574,18 +2571,18 @@ where
                 Kind::Unspecified,
             );
 
-            let postprocess_texture_shader = renderer
-                .glow_renderer_mut()
-                .egl_context()
-                .user_data()
-                .get::<PostprocessShader>()
-                .expect("OffscreenShader should be available through `init_shaders`");
+            let postprocess_texture_shader =
+                thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
+                    .get::<PostprocessShader>()
+                    .expect("OffscreenShader should be available through `init_shaders`")
+                    .0
+                    .clone();
             let texture_geometry =
                 texture_elem.geometry(output.current_scale().fractional_scale().into());
             let elements = {
                 let texture_elem = TextureShaderElement::new(
                     texture_elem,
-                    postprocess_texture_shader.0.clone(),
+                    postprocess_texture_shader.clone(),
                     vec![
                         Uniform::new(
                             "invert",

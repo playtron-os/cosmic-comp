@@ -85,10 +85,8 @@ fn gles_outline_has_consistent_edges_and_a_single_shared_blend() -> anyhow::Resu
     let context = EGLContext::new(&display)?;
     let mut renderer = unsafe { GlowRenderer::new(context)? };
     let program = IndicatorShader::compile(renderer.borrow_mut())?;
-    renderer
-        .egl_context()
-        .user_data()
-        .insert_if_missing(|| IndicatorShader(program));
+    let gles: &mut smithay::backend::renderer::gles::GlesRenderer = renderer.borrow_mut();
+    crate::backend::render::thread_user_data(gles).insert_if_missing(|| IndicatorShader(program));
     let key = Id::new();
     let output_size: Size<i32, Physical> = (256, 192).into();
     for (radii, bottom_border) in [([9.0; 4], true), ([0.0, 9.0, 0.0, 9.0], false)] {
@@ -234,10 +232,8 @@ fn gles_outline_focus_reveals_bidirectionally_and_lands_on_the_static_pixels() -
     let context = EGLContext::new(&display)?;
     let mut renderer = unsafe { GlowRenderer::new(context)? };
     let shader = IndicatorShader::compile(renderer.borrow_mut())?;
-    renderer
-        .egl_context()
-        .user_data()
-        .insert_if_missing(|| IndicatorShader(shader));
+    let gles: &mut smithay::backend::renderer::gles::GlesRenderer = renderer.borrow_mut();
+    crate::backend::render::thread_user_data(gles).insert_if_missing(|| IndicatorShader(shader));
     let key = Id::new();
     let neutral = Color::from_rgba(0.0, 0.0, 1.0, 0.5);
     let accent = Color::from_rgba(1.0, 0.0, 0.0, 0.5);
