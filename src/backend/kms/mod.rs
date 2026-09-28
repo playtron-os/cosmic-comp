@@ -502,6 +502,13 @@ fn init_udev(
 
     let dispatcher = Dispatcher::new(udev_backend, move |event, _, state: &mut State| {
         let dh = state.common.display_handle.clone();
+        let heads_before = matches!(event, UdevEvent::Changed { .. }).then(|| {
+            state
+                .common
+                .output_configuration_state
+                .outputs()
+                .collect::<Vec<_>>()
+        });
         match match event {
             UdevEvent::Added {
                 device_id,
@@ -519,6 +526,19 @@ fn init_udev(
         } {
             Ok(added) => {
                 debug!("Successfully handled udev event.");
+
+                // A flapping connector sends a change event every few seconds, and a full
+                // reconfiguration stalls every output; skip it when no output came or went.
+                if added.is_empty()
+                    && heads_before.is_some_and(|before| {
+                        before
+                            .into_iter()
+                            .eq(state.common.output_configuration_state.outputs())
+                    })
+                {
+                    debug!("udev event changed no outputs, keeping the configuration");
+                    return;
+                }
 
                 {
                     let backend = state.backend.kms();
