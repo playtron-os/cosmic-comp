@@ -38,7 +38,10 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::glow::{self, HasContext},
     reexports::{
-        calloop::{LoopHandle, RegistrationToken},
+        calloop::{
+            LoopHandle, RegistrationToken,
+            timer::{TimeoutAction, Timer},
+        },
         drm::control::{Device as ControlDevice, ModeTypeFlags, connector, crtc},
         gbm::BufferObjectFlags as GbmBufferFlags,
         rustix::fs::OFlags,
@@ -256,9 +259,22 @@ impl State {
         let connectors = device.enumerate_surfaces()?.added; // There are no removed outputs on newly added devices
         let mut wl_outputs = Vec::new();
         let mut w = self.common.shell.read().global_space().size.w as u32;
+        let drm_node = device.inner.dev_node;
+        let retries = self
+            .backend
+            .kms()
+            .connector_retries
+            .get(&drm_node)
+            .copied()
+            .unwrap_or(0);
+        let mut failed = false;
 
         {
             for (conn, maybe_crtc) in connectors {
+                if edid_pending(device.drm.device(), conn, retries) {
+                    failed = true;
+                    continue;
+                }
                 match device.inner.connector_added(
                     device.drm.device_mut(),
                     self.backend.kms().primary_node.clone(),
@@ -278,7 +294,8 @@ impl State {
                         device.inner.outputs.insert(conn, output);
                     }
                     Err(err) => {
-                        warn!(?err, "Failed to initialize output, skipping");
+                        warn!(?err, "Failed to initialize output, retrying");
+                        failed = true;
                     }
                 }
             }
@@ -294,6 +311,7 @@ impl State {
             .add_heads(wl_outputs.iter());
 
         self.backend.kms().refresh_used_devices()?;
+        self.schedule_connector_retry(drm_node, dev, failed);
         Ok(wl_outputs)
     }
 
@@ -305,6 +323,7 @@ impl State {
         let drm_node = DrmNode::from_dev_id(dev)?;
         let mut outputs_removed = Vec::new();
         let mut outputs_added = Vec::new();
+        let mut failed = false;
 
         {
             let backend = self.backend.kms();
@@ -345,7 +364,16 @@ impl State {
                     }
                 }
 
+                let retries = backend
+                    .connector_retries
+                    .get(&drm_node)
+                    .copied()
+                    .unwrap_or(0);
                 for (conn, maybe_crtc) in changes.added {
+                    if edid_pending(device.drm.device(), conn, retries) {
+                        failed = true;
+                        continue;
+                    }
                     match device.inner.connector_added(
                         device.drm.device_mut(),
                         backend.primary_node.clone(),
@@ -366,7 +394,8 @@ impl State {
                             device.inner.outputs.insert(conn, output);
                         }
                         Err(err) => {
-                            warn!(?err, "Failed to initialize output, skipping");
+                            warn!(?err, "Failed to initialize output, retrying");
+                            failed = true;
                         }
                     }
                 }
@@ -385,7 +414,48 @@ impl State {
         }
 
         self.backend.kms().refresh_used_devices()?;
+        self.schedule_connector_retry(drm_node, dev, failed);
         Ok(outputs_added)
+    }
+
+    /// A connector that is connected but cannot be set up yet, such as a dock still reading its
+    /// EDID, sends no further event, so without a retry it waits for a replug.
+    fn schedule_connector_retry(&mut self, node: DrmNode, dev: dev_t, failed: bool) {
+        let retries = &mut self.backend.kms().connector_retries;
+        if !failed {
+            retries.remove(&node);
+            return;
+        }
+        let attempt = retries.entry(node).or_insert(0);
+        *attempt += 1;
+        if *attempt > 5 {
+            warn!(
+                ?node,
+                "Output still fails to initialize after 5 retries, giving up"
+            );
+            retries.remove(&node);
+            return;
+        }
+        let delay = Duration::from_secs(1 << (*attempt - 1));
+        let timer = Timer::from_duration(delay);
+        if let Err(err) = self
+            .common
+            .event_loop_handle
+            .insert_source(timer, move |_, _, state| {
+                match state.device_changed(dev) {
+                    Ok(added) if !added.is_empty() => {
+                        if let Err(err) = state.refresh_output_config() {
+                            warn!("Unable to load output config: {:#}", err);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => warn!(?err, "Failed to retry output initialization"),
+                }
+                TimeoutAction::Drop
+            })
+        {
+            warn!(?err, "Failed to schedule an output retry");
+        }
     }
 
     pub fn reopen_device(
@@ -1403,4 +1473,27 @@ fn populate_modes(
     }
 
     Ok(())
+}
+
+/// A dock can report a monitor before its EDID reads, and the fallback modes and "Unknown" layout
+/// it would get are saved for every later plug.
+fn edid_pending(drm: &impl ControlDevice, conn: connector::Handle, retries: u32) -> bool {
+    let pending = retries < 3
+        && !is_internal_connector(drm, conn)
+        && drm_helpers::edid_info(drm, conn).is_err();
+    if pending {
+        warn!(?conn, "EDID not readable yet, retrying");
+    }
+    pending
+}
+
+fn is_internal_connector(drm: &impl ControlDevice, conn: connector::Handle) -> bool {
+    drm.get_connector(conn, false).is_ok_and(|info| {
+        matches!(
+            info.interface(),
+            connector::Interface::EmbeddedDisplayPort
+                | connector::Interface::LVDS
+                | connector::Interface::DSI
+        )
+    })
 }
