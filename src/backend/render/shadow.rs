@@ -14,7 +14,7 @@ use smithay::{
 use wayland_backend::server::ObjectId;
 
 use crate::{
-    backend::render::element::AsGlowRenderer,
+    backend::render::{element::AsGlowRenderer, thread_user_data},
     shell::element::CosmicMappedKey,
     utils::prelude::{Local, RectLocalExt},
 };
@@ -58,9 +58,7 @@ type LayerShadowCache = RefCell<
 
 impl ShadowShader {
     pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
-        Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data()
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
             .get::<ShadowShader>()
             .expect("Custom Shaders not initialized")
             .0
@@ -96,9 +94,7 @@ impl ShadowShader {
         geo.size.w -= fractional_pixel * 2.;
         geo.size.h -= fractional_pixel * 2.;
 
-        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data();
+        let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
 
         user_data.insert_if_missing(|| ShadowCache::new(HashMap::new()));
         let mut cache = user_data.get::<ShadowCache>().unwrap().borrow_mut();
@@ -272,9 +268,7 @@ impl ShadowShader {
         geo.size.w -= fractional_pixel * 2.;
         geo.size.h -= fractional_pixel * 2.;
 
-        let user_data = Borrow::<GlesRenderer>::borrow(renderer.glow_renderer())
-            .egl_context()
-            .user_data();
+        let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
 
         user_data.insert_if_missing(|| LayerShadowCache::new(HashMap::new()));
         let mut cache = user_data.get::<LayerShadowCache>().unwrap().borrow_mut();

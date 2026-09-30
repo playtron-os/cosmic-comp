@@ -6555,7 +6555,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/playtron-os/smithay.git#ab096a1a05188dd97e0bda2cf82830fb54ef8564"
+source = "git+https://github.com/playtron-os/smithay.git#2b05edfdadfe72f4e751f1dd835acb814c7c7e45"
 dependencies = [
  "aliasable",
  "appendlist",

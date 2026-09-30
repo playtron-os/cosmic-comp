@@ -86,6 +86,8 @@ pub struct KmsState {
     /// Debounce for GPU-reset recovery: one reset hits the whole GPU, so every output
     /// signals the same event; ignore repeats within a short window.
     last_gpu_reset_recovery: Option<std::time::Instant>,
+    /// Retries so far per device for a connected output that failed to initialize.
+    pub connector_retries: HashMap<DrmNode, u32>,
 }
 
 pub struct KmsGuard<'a> {
@@ -145,6 +147,7 @@ pub fn init_backend(
         syncobj_state: None,
         dmabuf_global: None,
         last_gpu_reset_recovery: None,
+        connector_retries: HashMap::new(),
     });
 
     // manually add already present gpus
@@ -284,13 +287,23 @@ fn capture_frozen_frame(
     let primary = current_primary_plane(dev, crtc, planes)?;
     let fb = dev.get_plane(primary.handle).ok()?.framebuffer()?;
     let p = dev.get_planar_framebuffer(fb).ok()?;
-    let handle = p.buffers()[0]?;
+    let dfd = p.buffers()[0].and_then(|handle| {
+        prime_handle_to_fd(
+            std::os::unix::io::AsRawFd::as_raw_fd(dev.device_fd()),
+            u32::from(handle),
+        )
+        .ok()
+    });
+    // GETFB2 opened new handles, which would pin these buffers for good; the dmabuf holds its own.
+    let mut closed = Vec::new();
+    for handle in p.buffers().iter().flatten() {
+        if !closed.contains(handle) {
+            let _ = dev.close_buffer(*handle);
+            closed.push(*handle);
+        }
+    }
+    let dfd = dfd?;
     let modifier = p.modifier()?;
-    let dfd = prime_handle_to_fd(
-        std::os::unix::io::AsRawFd::as_raw_fd(dev.device_fd()),
-        u32::from(handle),
-    )
-    .ok()?;
     // Import under the matching X format (same layout, alpha ignored): scanout buffers
     // commonly carry alpha=0 and would otherwise blend away to nothing.
     use smithay::backend::allocator::Fourcc;
@@ -489,6 +502,13 @@ fn init_udev(
 
     let dispatcher = Dispatcher::new(udev_backend, move |event, _, state: &mut State| {
         let dh = state.common.display_handle.clone();
+        let heads_before = matches!(event, UdevEvent::Changed { .. }).then(|| {
+            state
+                .common
+                .output_configuration_state
+                .outputs()
+                .collect::<Vec<_>>()
+        });
         match match event {
             UdevEvent::Added {
                 device_id,
@@ -506,6 +526,19 @@ fn init_udev(
         } {
             Ok(added) => {
                 debug!("Successfully handled udev event.");
+
+                // A flapping connector sends a change event every few seconds, and a full
+                // reconfiguration stalls every output; skip it when no output came or went.
+                if added.is_empty()
+                    && heads_before.is_some_and(|before| {
+                        before
+                            .into_iter()
+                            .eq(state.common.output_configuration_state.outputs())
+                    })
+                {
+                    debug!("udev event changed no outputs, keeping the configuration");
+                    return;
+                }
 
                 {
                     let backend = state.backend.kms();
