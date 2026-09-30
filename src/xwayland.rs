@@ -1362,6 +1362,11 @@ impl XwmHandler for State {
 
     fn minimize_request(&mut self, _xwm: XwmId, window: X11Surface) {
         let mut shell = self.common.shell.write();
+        // An exclusive-fullscreen game minimizes itself when an overlay takes its focus. Game mode
+        // would restore it at once, and the two fight until the overlay closes, leaving it black.
+        if shell.game_mode_controls(&window) {
+            return;
+        }
         shell.minimize_request(&window);
     }
 
@@ -1372,6 +1377,7 @@ impl XwmHandler for State {
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        crate::dbus::game_mode::note_client_fullscreen(&window, true);
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
         let output = window
@@ -1397,7 +1403,12 @@ impl XwmHandler for State {
     }
 
     fn unfullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        crate::dbus::game_mode::note_client_fullscreen(&window, false);
         let mut shell = self.common.shell.write();
+        // A client resize must not undo the controller's fullscreen placement.
+        if shell.game_mode_controls(&window) {
+            return;
+        }
         let seat = shell.seats.last_active().clone();
         let should_focus = seat
             .get_keyboard()

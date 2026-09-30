@@ -21,24 +21,25 @@ impl PointerConstraintsHandler for State {
             .find(|s| s.get_pointer().as_ref() == Some(pointer))
             .cloned();
 
-        let (is_under, is_focused, surface_location) = if let Some(seat) = seat {
+        let (is_under, is_focused, surface_point) = if let Some(seat) = seat {
             seat.set_pointer_constraint_hint(None);
             let current_output = seat.active_output();
             let position = seat.get_pointer().unwrap().current_location().as_global();
             let shell = self.common.shell.read();
             let under = State::surface_under(position, &current_output, &shell);
-            let mut surface_location = None;
+            let mut surface_point = None;
 
             let is_under = if let Some((target, target_loc)) = under
                 && let Some(under_surface) = target.wl_surface()
             {
+                let point = target.client_coordinates((position - target_loc).as_logical(), &shell);
                 if *under_surface == *surface {
-                    surface_location = Some(target_loc);
+                    surface_point = Some(point);
                     true
                 } else {
                     CosmicSurface::surface_tree_offset(surface, &under_surface).is_some_and(
                         |offset| {
-                            surface_location = Some(target_loc - offset.to_f64().as_global());
+                            surface_point = Some(point + offset.to_f64());
                             true
                         },
                     )
@@ -52,7 +53,7 @@ impl PointerConstraintsHandler for State {
                 .and_then(|k| k.current_focus())
                 .is_some_and(|f| f.has_surface(&shell, surface));
 
-            (is_under, is_focused, surface_location)
+            (is_under, is_focused, surface_point)
         } else {
             (false, false, None)
         };
@@ -61,10 +62,7 @@ impl PointerConstraintsHandler for State {
             with_pointer_constraint(surface, pointer, |constraint| {
                 if let Some(constraint) = constraint {
                     if let Some(region) = constraint.region() {
-                        if let Some(surface_location) = surface_location
-                            && let position = pointer.current_location()
-                            && let point = (position - surface_location.as_logical()).to_i32_floor()
-                            && region.contains(point)
+                        if surface_point.is_some_and(|point| region.contains(point.to_i32_floor()))
                         {
                             constraint.activate();
                         }

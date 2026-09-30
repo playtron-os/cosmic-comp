@@ -386,16 +386,8 @@ pub struct GameMode {
     pub active: bool,
     /// The Steam app id (`STEAM_GAME`) currently in game mode.
     pub app_id: Option<u32>,
-    /// Pid of the process that launches games (the session manager). A game it
-    /// spawns is a descendant of it, which lets a brand-new game window be
-    /// recognized as game mode's at MAP time — before it has been tagged — and
-    /// placed on the game-mode output rather than under the cursor.
-    ///
-    /// Currently always `None`: it cannot be resolved from the D-Bus caller,
-    /// because asking the bus mid-method deadlocks the interface. The session
-    /// manager has to supply it explicitly. Until then `game_mode_claims` matches
-    /// on the game's own process tree only, which covers a running game's dialogs
-    /// but not a game being launched fresh.
+    /// Preserve the authorized controller's pid across app switches so untagged
+    /// child windows can be placed on the gaming output before their first map.
     pub controller_pid: Option<u32>,
     /// Base-layer priority published by the session manager on the X11 root
     /// (`GAMESCOPECTRL_BASELAYER_APPID`), highest priority FIRST.
@@ -422,6 +414,8 @@ pub struct GameMode {
     /// / tearing support, external) are reported for THIS output, not just the
     /// first one, so they're correct on multi-monitor setups.
     pub output: Option<Output>,
+    /// Keep the gaming workspace exclusive while its client replaces a window.
+    pub workspace: Option<WorkspaceHandle>,
     /// The desktop workspace game mode was first entered from, restored on a full
     /// exit. Each game-mode app is fullscreened on its own (clean, auto-reaped)
     /// workspace and switching between apps is a workspace switch, so nothing is
@@ -452,6 +446,12 @@ pub struct GameMode {
     /// through. Keyboard input to a blocking overlay is handled separately by the
     /// input grab; a non-blocking overlay just renders.
     pub overlay_surface: Option<CosmicSurface>,
+    /// `overlay_surface`'s commit when it was shown. It is drawn only after it commits
+    /// past this, so its stale buffer from before it was hidden never flashes over the game.
+    pub overlay_shown_at_commit: Option<smithay::backend::renderer::utils::CommitCounter>,
+    /// Avoid repeatedly resizing clients that keep their own window size.
+    pub spoof_requested: Option<crate::dbus::game_mode::RenderSizeRequest>,
+    pub diagnostic_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -1088,7 +1088,16 @@ impl WorkspaceSet {
             state.add_workspace_state(&self.workspaces[idx].handle, WState::Active);
             let dbg_crossfade = matches!(workspace_delta, WorkspaceDelta::Crossfade(_));
             self.previously_active = if animate {
-                Some((old_active, workspace_delta))
+                match (self.previously_active, workspace_delta) {
+                    (
+                        Some((previous, delta @ WorkspaceDelta::Crossfade(start))),
+                        WorkspaceDelta::Crossfade(_),
+                    ) if previous != idx && start.elapsed() < self.theme.motion.slide_crossfade => {
+                        // Replacement windows must keep the original outgoing scene.
+                        Some((previous, delta))
+                    }
+                    _ => Some((old_active, workspace_delta)),
+                }
             } else {
                 None
             };
@@ -1109,6 +1118,12 @@ impl WorkspaceSet {
         } else {
             // snap to workspace, when in between workspaces due to swipe gesture
             if let Some((p_idx, p_delta)) = self.previously_active {
+                if matches!(
+                    (p_delta, workspace_delta),
+                    (WorkspaceDelta::Crossfade(_), WorkspaceDelta::Crossfade(_))
+                ) {
+                    return Ok(false);
+                }
                 if matches!(p_delta, WorkspaceDelta::Gesture { .. })
                     && matches!(workspace_delta, WorkspaceDelta::GestureEnd { .. })
                 {
@@ -1240,6 +1255,9 @@ impl WorkspaceSet {
                     // Keep empty workspace if it's active, or it's the last workspace,
                     // and the previous worspace is not both active and empty.
                     i == self.active
+                        || self
+                            .previously_active
+                            .is_some_and(|(previous, _)| i == previous)
                         || (i == len - 1 && !(i == self.active + 1 && previous_is_empty))
                 } else {
                     true
@@ -1251,13 +1269,7 @@ impl WorkspaceSet {
             })
             .collect();
 
-        let mut iter = kept.iter();
-        self.workspaces.retain(|_| *iter.next().unwrap());
-        self.active -= kept
-            .iter()
-            .take(self.active + 1)
-            .filter(|kept| !**kept)
-            .count();
+        self.retain_workspaces(&kept);
 
         if kept.iter().any(|val| !(*val)) {
             self.update_workspace_idxs(state);
@@ -1273,6 +1285,19 @@ impl WorkspaceSet {
                 workspace.name.as_deref(),
             );
         }
+    }
+
+    fn retain_workspaces(&mut self, kept: &[bool]) {
+        let remap = |idx| idx - kept.iter().take(idx).filter(|keep| !**keep).count();
+        self.active = remap(self.active);
+        self.previously_active = self.previously_active.and_then(|(idx, delta)| {
+            kept.get(idx)
+                .copied()
+                .unwrap_or(false)
+                .then(|| (remap(idx), delta))
+        });
+        let mut iter = kept.iter();
+        self.workspaces.retain(|_| *iter.next().unwrap());
     }
 
     fn post_remove_workspace(
@@ -1921,15 +1946,16 @@ impl Workspaces {
 
                     // remove empty workspaces in between, if they are not active
                     let len = self.sets[0].workspaces.len();
-                    let mut active = self.sets[0].active;
+                    let active = self.sets[0].active;
                     let mut keep = vec![true; len];
                     // false-positive: we iterate over multiple sets
                     #[allow(clippy::needless_range_loop)]
                     for i in 0..len {
-                        let has_windows = self
-                            .sets
-                            .values()
-                            .any(|s| !s.workspaces[i].can_auto_remove(xdg_activation_state));
+                        let has_windows = self.sets.values().any(|s| {
+                            s.previously_active
+                                .is_some_and(|(previous, _)| i == previous)
+                                || !s.workspaces[i].can_auto_remove(xdg_activation_state)
+                        });
 
                         if !has_windows && i != active && i != len - 1 {
                             for workspace in self.sets.values().map(|s| &s.workspaces[i]) {
@@ -1939,14 +1965,9 @@ impl Workspaces {
                         }
                     }
 
-                    self.sets.values_mut().for_each(|s| {
-                        let mut iter = keep.iter();
-                        s.workspaces.retain(|_| *iter.next().unwrap());
-                    });
-                    active -= keep.iter().take(active + 1).filter(|keep| !**keep).count();
-                    self.sets.values_mut().for_each(|s| {
-                        s.active = active;
-                    });
+                    self.sets
+                        .values_mut()
+                        .for_each(|s| s.retain_workspaces(&keep));
 
                     if keep.iter().any(|val| !(*val)) {
                         for set in self.sets.values_mut() {
@@ -3258,6 +3279,29 @@ impl Shell {
         false
     }
 
+    /// Whether `output` shows game mode, rather than a desktop workspace the user
+    /// switched to while the game-mode app keeps running.
+    pub fn game_mode_on_screen(&self, output: &Output) -> bool {
+        self.game_mode.active
+            && self.game_mode.output.as_ref() == Some(output)
+            && self
+                .active_space(output)
+                .is_some_and(|ws| self.game_mode.workspace == Some(ws.handle))
+    }
+
+    /// Only the gaming controller can release its current fullscreen surface.
+    pub fn game_mode_controls<S>(&self, surface: &S) -> bool
+    where
+        CosmicSurface: PartialEq<S>,
+    {
+        self.game_mode.active
+            && self
+                .game_mode
+                .game_surface
+                .as_ref()
+                .is_some_and(|controlled| controlled == surface)
+    }
+
     /// Whether a window that is being mapped belongs to game mode, and should
     /// therefore be placed on the output game mode owns rather than wherever the
     /// cursor happens to be.
@@ -3315,8 +3359,7 @@ impl Shell {
         // Only the controlled surface's own workspace is under strict control;
         // other workspaces (even on the game's output) are a normal desktop.
         self.workspaces().spaces().any(|ws| {
-            ws.get_fullscreen_surfaces()
-                .any(|f| &f.surface == controlled)
+            self.game_mode.workspace == Some(ws.handle)
                 && (ws.get_fullscreen_surfaces().any(|f| &f.surface == surface)
                     || ws.mapped().any(|m| &m.active_window() == surface))
         })
@@ -4204,6 +4247,12 @@ impl Shell {
         let Some(workspace) = self.active_space(output) else {
             return false;
         };
+        if self.game_mode.active
+            && self.game_mode.output.as_ref() == Some(output)
+            && self.game_mode.workspace == Some(workspace.handle)
+        {
+            return true;
+        }
         // Reachable from a client's auto-hide registration, which can arrive
         // before the seat exists; `last_active` would panic there.
         let Some(seat) = self.seats.last_active_checked() else {
@@ -7318,6 +7367,11 @@ impl Shell {
             .game_mode_claims(&window)
             .then(|| self.game_mode.output.clone())
             .flatten();
+        // A launch token or transient parent can still point at the desktop.
+        let workspace_handle = game_mode_output
+            .as_ref()
+            .and(self.game_mode.workspace)
+            .or(workspace_handle);
         // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
         let mut output = game_mode_output
             .or(output)
@@ -10391,6 +10445,9 @@ pub fn check_grab_preconditions(
 
     Some(start_data)
 }
+
+#[cfg(test)]
+mod transition_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {
