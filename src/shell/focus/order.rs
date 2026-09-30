@@ -266,7 +266,7 @@ fn render_input_order_internal<R: 'static>(
     // on screen — so look the handle up in its own realm, not the active one.
     let Some(set) = shell
         .realm_for_handle(&current.0)
-        .and_then(|realm| realm.sets.get(output))
+        .and_then(|realm| realm.set_for(output))
     else {
         return ControlFlow::Break(Err(OutputNoMode));
     };
@@ -309,7 +309,7 @@ fn render_input_order_internal<R: 'static>(
 
             // Across realms, not just the active one: during a realm switch the
             // screen being left belongs to the realm being left.
-            let Some(workspace) = shell.space_for_handle_any_realm(previous) else {
+            let Some(workspace) = shell.space_to_render(previous) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             let has_fullscreen = workspace.get_fullscreen(seat).is_some();
@@ -459,7 +459,7 @@ fn render_input_order_internal<R: 'static>(
         if let Some((previous_handle, _, _, offset)) = previous.as_ref()
             && previous_alpha > 0.0
         {
-            let Some(workspace) = shell.space_for_handle_any_realm(previous_handle) else {
+            let Some(workspace) = shell.space_to_render(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
 
@@ -472,7 +472,7 @@ fn render_input_order_internal<R: 'static>(
         }
 
         // current workspace popups — in whichever realm holds it, as above
-        let Some(workspace) = shell.space_for_handle_any_realm(&current.0) else {
+        let Some(workspace) = shell.space_to_render(&current.0) else {
             return ControlFlow::Break(Err(OutputNoMode));
         };
 
@@ -605,7 +605,7 @@ fn render_input_order_internal<R: 'static>(
         if let Some((previous_handle, _, _, offset)) = previous.as_ref()
             && previous_alpha > 0.0
         {
-            let Some(workspace) = shell.space_for_handle_any_realm(previous_handle) else {
+            let Some(workspace) = shell.space_to_render(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
             callback(Stage::Workspace {

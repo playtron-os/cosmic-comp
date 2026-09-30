@@ -458,6 +458,17 @@ impl Config {
         clock: &Clock<Monotonic>,
     ) -> anyhow::Result<()> {
         let outputs = output_state.outputs().collect::<Vec<_>>();
+
+        // An output left mirroring one that is gone has no workspaces and nothing to show, and
+        // as the known-good fallback below it would fail again: it goes back to extending.
+        for output in &outputs {
+            let dangling = matches!(&output.config().enabled,
+                OutputState::Mirroring(conn) if !outputs.iter().any(|o| &o.name() == conn));
+            if dangling {
+                output.config_mut().enabled = OutputState::Enabled;
+            }
+        }
+
         let mut infos = outputs
             .iter()
             .cloned()

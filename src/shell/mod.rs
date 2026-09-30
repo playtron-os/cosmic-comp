@@ -1997,6 +1997,11 @@ impl Workspaces {
             })
     }
 
+    /// The output's set, or the one kept while no output has one, as `active` falls back to.
+    pub fn set_for(&self, output: &Output) -> Option<&WorkspaceSet> {
+        self.sets.get(output).or(self.backup_set.as_ref())
+    }
+
     pub fn active_mut(&mut self, output: &Output) -> Option<&mut Workspace> {
         self.sets
             .get_mut(output)
@@ -2517,6 +2522,16 @@ impl Shell {
             .find_map(|realm| realm.space_for_handle(handle))
     }
 
+    /// As `space_for_handle_any_realm`, and the set kept while no output has one, which an
+    /// output the backend enables before the shell adds it renders.
+    pub fn space_to_render(&self, handle: &WorkspaceHandle) -> Option<&Workspace> {
+        self.space_for_handle_any_realm(handle).or_else(|| {
+            self.realms.values().find_map(|realm| {
+                (realm.backup_set.as_ref()?.workspaces.iter()).find(|w| &w.handle == handle)
+            })
+        })
+    }
+
     pub fn space_for_handle_any_realm_mut(
         &mut self,
         handle: &WorkspaceHandle,
@@ -2587,9 +2602,14 @@ impl Shell {
 
     /// The realm holding `handle`, active or not.
     pub fn realm_for_handle(&self, handle: &WorkspaceHandle) -> Option<&Workspaces> {
-        self.realms
-            .values()
-            .find(|realm| realm.space_for_handle(handle).is_some())
+        // The set kept while no output has one is still rendered, on the output that takes it.
+        self.realms.values().find(|realm| {
+            realm.space_for_handle(handle).is_some()
+                || realm
+                    .backup_set
+                    .as_ref()
+                    .is_some_and(|set| set.workspaces.iter().any(|w| &w.handle == handle))
+        })
     }
 
     /// Every workspace group with the realm it belongs to.
