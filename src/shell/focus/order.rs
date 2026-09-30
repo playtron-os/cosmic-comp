@@ -161,50 +161,31 @@ fn render_input_order_internal<R: 'static>(
         .unwrap_or_else(|| shell.active_realm());
     let layer_visibility = LayerVisibilityContext::for_realm(shell, output, realm);
 
-    // In game mode the fullscreen game is exclusive on its output: suppress all
-    // desktop layer-shell surfaces (overlay/top/bottom/background) so the game is
-    // the sole render element and can take the primary plane (direct scanout).
-    // This is independent of the keyboard-focus heuristic below, which an
-    // Xwayland game may not satisfy.
+    // Ownership survives fullscreen animations and gaps between client windows.
+    // Other desktop workspaces and outputs remain available.
     let game_mode_exclusive = shell.game_mode.active
-        && shell
-            .workspaces()
-            .sets
-            .get(output)
-            .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
-            .is_some_and(|w| w.fullscreen_surfaces.iter().any(|f| !f.is_animating()));
+        && shell.game_mode.output.as_ref() == Some(output)
+        && (shell.game_mode.workspace == Some(current.0)
+            || shell
+                .workspaces()
+                .sets
+                .get(output)
+                .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
+                .is_some_and(|w| !w.fullscreen_surfaces.is_empty()));
     if shell.game_mode.active {
-        // Bug 1: when a game workspace's fullscreen is still is_animating() (the
-        // entrance), exclusive is false, desktop layers/background still render,
-        // and a bufferless game workspace clears to grey — the grey slide.
         trace!(target: GAMING_TARGET, output = %output.name(), game_mode_exclusive, "gm: exclusivity resolved");
     }
+    let gaming_crossfade = game_mode_exclusive
+        && previous
+            .as_ref()
+            .is_some_and(|(_, _, delta)| matches!(delta, WorkspaceDelta::Crossfade(_)));
 
-    // Strict game-mode control: the game's own workspace renders ONLY the surface
-    // game mode controls (its `game_surface`). A game that raw-fullscreens itself
-    // lands in that workspace's fullscreen list and would otherwise show; gate it
-    // off until playserve tags it and game mode adopts it as the controlled surface
-    // (then it renders + fades in like any game).
-    //
-    // Scoped to the workspace actually holding the controlled surface, NOT to the
-    // whole output: the other workspaces on the game's output are an ordinary
-    // desktop, so switching to one and launching an app there must keep working.
+    // Keep unrelated windows hidden even after the controlled surface unmaps.
     let game_mode_controlled: Option<GameModeView<'_>> = (shell.game_mode.active
         && shell.game_mode.output.as_ref() == Some(output))
     .then_some(shell.game_mode.game_surface.as_ref())
     .flatten()
-    .filter(|controlled| {
-        shell
-            .workspaces()
-            .sets
-            .get(output)
-            .and_then(|set| set.workspaces.iter().find(|w| w.handle == current.0))
-            .is_some_and(|w| {
-                w.fullscreen_surfaces
-                    .iter()
-                    .any(|f| &f.surface == *controlled)
-            })
-    })
+    .filter(|_| shell.game_mode.workspace == Some(current.0))
     .map(|base| GameModeView {
         base,
         children: &shell.game_mode.children,
@@ -463,12 +444,22 @@ fn render_input_order_internal<R: 'static>(
                 return ControlFlow::Break(Err(OutputNoMode));
             };
 
-            callback(Stage::WorkspacePopups {
-                workspace,
-                offset: *offset,
-                alpha: previous_alpha,
-                game_mode_only: None,
-            })?;
+            let game_mode_only = gaming_crossfade
+                .then(|| workspace.get_fullscreen(seat))
+                .flatten()
+                .filter(|f| crate::dbus::game_mode::app_id_of(&f.surface) != 0)
+                .map(|f| GameModeView {
+                    base: &f.surface,
+                    children: &[],
+                });
+            if !gaming_crossfade || game_mode_only.is_some() {
+                callback(Stage::WorkspacePopups {
+                    workspace,
+                    offset: *offset,
+                    alpha: previous_alpha,
+                    game_mode_only,
+                })?;
+            }
         }
 
         // current workspace popups — in whichever realm holds it, as above
@@ -502,6 +493,7 @@ fn render_input_order_internal<R: 'static>(
 
     if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
+        && !gaming_crossfade
     {
         // previous bottom layer popups
         for (layer, popup, location, _alpha) in
@@ -532,6 +524,7 @@ fn render_input_order_internal<R: 'static>(
 
     if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
+        && !gaming_crossfade
     {
         // previous background layer popups
         for (layer, popup, location, _alpha) in
@@ -574,6 +567,10 @@ fn render_input_order_internal<R: 'static>(
             && shell.game_mode.overlay_active
             && shell.game_mode.output.as_ref() == Some(output)
             && let Some(surface) = shell.game_mode.overlay_surface.as_ref()
+            // Wait for a frame drawn since it was shown; see `overlay_shown_at_commit`.
+            && shell.game_mode.overlay_shown_at_commit.is_none_or(|shown| {
+                crate::dbus::game_mode::surface_commit(surface) != Some(shown)
+            })
         {
             trace!(target: GAMING_TARGET, output = %output.name(), overlay_app_id = %surface.app_id(), "overlay stage: EMITTED topmost over game");
             callback(Stage::OverlaySurface { surface })?;
@@ -608,12 +605,22 @@ fn render_input_order_internal<R: 'static>(
             let Some(workspace) = shell.space_for_handle_any_realm(previous_handle) else {
                 return ControlFlow::Break(Err(OutputNoMode));
             };
-            callback(Stage::Workspace {
-                workspace,
-                offset: *offset,
-                alpha: previous_alpha,
-                game_mode_only: None,
-            })?;
+            let game_mode_only = gaming_crossfade
+                .then(|| workspace.get_fullscreen(seat))
+                .flatten()
+                .filter(|f| crate::dbus::game_mode::app_id_of(&f.surface) != 0)
+                .map(|f| GameModeView {
+                    base: &f.surface,
+                    children: &[],
+                });
+            if !gaming_crossfade || game_mode_only.is_some() {
+                callback(Stage::Workspace {
+                    workspace,
+                    offset: *offset,
+                    alpha: previous_alpha,
+                    game_mode_only,
+                })?;
+            }
         }
     }
 
@@ -634,6 +641,7 @@ fn render_input_order_internal<R: 'static>(
 
     if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
+        && !gaming_crossfade
     {
         // previous bottom layer
         for (layer, mut location, alpha) in
@@ -666,6 +674,7 @@ fn render_input_order_internal<R: 'static>(
 
     if let Some((_, idx, has_fullscreen, offset)) = previous.as_ref()
         && !has_fullscreen
+        && !gaming_crossfade
     {
         // previous background layer
         for (layer, mut location, alpha) in

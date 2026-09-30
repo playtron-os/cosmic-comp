@@ -229,6 +229,33 @@ impl PointerFocusTarget {
         }
     }
 
+    pub fn client_coordinates(
+        &self,
+        point: Point<f64, Logical>,
+        shell: &Shell,
+    ) -> Point<f64, Logical> {
+        let surface = match self {
+            Self::WlSurface {
+                toplevel: Some(PointerFocusToplevel::Surface(surface)),
+                ..
+            }
+            | Self::X11Surface {
+                toplevel: Some(surface),
+                ..
+            } => surface,
+            _ => return point,
+        };
+        if !shell.game_mode.active || shell.game_mode.game_surface.as_ref() != Some(surface) {
+            return point;
+        }
+        let scale = shell
+            .workspaces()
+            .spaces()
+            .find_map(|ws| ws.controlled_surface_scale(surface))
+            .unwrap_or((1.0, 1.0));
+        Point::from((point.x / scale.0, point.y / scale.1))
+    }
+
     // Update image copy cursor position/hotspot for enter/motion event
     fn update_image_copy_cursor_position(
         &self,
@@ -397,12 +424,20 @@ impl IsAlive for KeyboardFocusTarget {
 
 impl PointerTarget<State> for PointerFocusTarget {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
-        self.update_image_copy_cursor_position(seat, data, event);
-        self.inner_pointer_target().enter(seat, data, event);
+        let event = PointerMotionEvent {
+            location: self.client_coordinates(event.location, &data.common.shell.read()),
+            ..*event
+        };
+        self.update_image_copy_cursor_position(seat, data, &event);
+        self.inner_pointer_target().enter(seat, data, &event);
     }
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &PointerMotionEvent) {
-        self.update_image_copy_cursor_position(seat, data, event);
-        self.inner_pointer_target().motion(seat, data, event);
+        let event = PointerMotionEvent {
+            location: self.client_coordinates(event.location, &data.common.shell.read()),
+            ..*event
+        };
+        self.update_image_copy_cursor_position(seat, data, &event);
+        self.inner_pointer_target().motion(seat, data, &event);
     }
     fn relative_motion(&self, seat: &Seat<State>, data: &mut State, event: &RelativeMotionEvent) {
         self.inner_pointer_target()
@@ -499,7 +534,11 @@ impl PointerTarget<State> for PointerFocusTarget {
 
 impl TouchTarget<State> for PointerFocusTarget {
     fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent) {
-        self.inner_touch_target().down(seat, data, event);
+        let event = DownEvent {
+            location: self.client_coordinates(event.location, &data.common.shell.read()),
+            ..*event
+        };
+        self.inner_touch_target().down(seat, data, &event);
     }
 
     fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent) {
@@ -507,7 +546,11 @@ impl TouchTarget<State> for PointerFocusTarget {
     }
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &TouchMotionEvent) {
-        self.inner_touch_target().motion(seat, data, event);
+        let event = TouchMotionEvent {
+            location: self.client_coordinates(event.location, &data.common.shell.read()),
+            ..*event
+        };
+        self.inner_touch_target().motion(seat, data, &event);
     }
 
     fn frame(&self, seat: &Seat<State>, data: &mut State, frame: FrameMarker) {

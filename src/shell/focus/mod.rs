@@ -730,6 +730,17 @@ fn focus_target_is_valid(
         };
     }
 
+    // A blocking game overlay is rendered above the game from its own workspace.
+    if shell.game_mode_on_screen(output)
+        && let Some(grab) = shell.game_mode.input_grab.as_ref()
+        && grab.alive()
+        && shell.is_surface_mapped(grab)
+        && let Some(surface) = grab.wl_surface()
+        && target.has_surface(shell, &surface)
+    {
+        return true;
+    }
+
     match target {
         KeyboardFocusTarget::Element(mapped) => {
             if seat

@@ -68,7 +68,7 @@ use smithay::{
         input::Device as InputDevice,
         wayland_server::{Resource as _, protocol::wl_surface::WlSurface},
     },
-    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial},
+    utils::{Clock, Logical, Monotonic, Point, Rectangle, SERIAL_COUNTER, Serial, Size},
     wayland::{
         compositor::CompositorHandler,
         image_copy_capture::CursorSessionRef,
@@ -383,18 +383,19 @@ impl State {
                     let mut pointer_locked = false;
                     let mut pointer_confined = false;
                     let mut confine_region = None;
-                    if let Some((surface, surface_loc)) = under
+                    if let Some((target, surface, surface_loc)) = under
                         .as_ref()
-                        .and_then(|(target, l)| Some((target.wl_surface()?, l)))
+                        .and_then(|(target, l)| Some((target, target.wl_surface()?, l)))
                     {
+                        // Outside the constraint closure: it holds the surface's state lock,
+                        // and client_coordinates reads the surface's bbox, which takes it again.
+                        let point = target
+                            .client_coordinates(ptr.current_location() - *surface_loc, &shell)
+                            .to_i32_floor();
                         with_pointer_constraint(&surface, &ptr, |constraint| match constraint {
                             Some(constraint) if constraint.is_active() => {
                                 // Constraint does not apply if not within region
-                                if !constraint.region().is_none_or(|x| {
-                                    x.contains(
-                                        (ptr.current_location() - *surface_loc).to_i32_floor(),
-                                    )
-                                }) {
+                                if !constraint.region().is_none_or(|x| x.contains(point)) {
                                     return;
                                 }
                                 match &*constraint {
@@ -632,11 +633,14 @@ impl State {
                                 return (false, None);
                             }
 
+                            let point =
+                                surface.client_coordinates(pos.as_logical() - *surface_loc, shell);
+
                             match surface {
                                 PointerFocusTarget::WlSurface { surface, .. } => {
                                     if under_from_surface_tree(
                                         surface,
-                                        position.as_logical() - surface_loc.to_f64(),
+                                        point,
                                         (0, 0),
                                         WindowSurfaceType::ALL,
                                     )
@@ -647,11 +651,7 @@ impl State {
                                 }
                                 PointerFocusTarget::X11Surface { surface, .. } => {
                                     if surface
-                                        .surface_under(
-                                            position.as_logical() - surface_loc.to_f64(),
-                                            (0, 0),
-                                            WindowSurfaceType::ALL,
-                                        )
+                                        .surface_under(point, (0, 0), WindowSurfaceType::ALL)
                                         .is_none()
                                     {
                                         return (false, None);
@@ -661,8 +661,7 @@ impl State {
                             }
 
                             if let Some(region) = &confine_region
-                                && !region
-                                    .contains((pos.as_logical() - *surface_loc).to_i32_floor())
+                                && !region.contains(point.to_i32_floor())
                             {
                                 return (false, None);
                             }
@@ -716,8 +715,10 @@ impl State {
                     ptr.frame(self);
 
                     // If pointer is now in a constraint region and window is in focused, activate it
-                    if let Some((under, surface_location)) = new_under
-                        .and_then(|(target, loc)| Some((target.wl_surface()?.into_owned(), loc)))
+                    if let Some((target, under, surface_location)) =
+                        new_under.and_then(|(target, loc)| {
+                            Some((target.clone(), target.wl_surface()?.into_owned(), loc))
+                        })
                     {
                         let shell = self.common.shell.read();
                         let is_focused = seat
@@ -726,14 +727,20 @@ impl State {
                             .is_some_and(|f| f.has_surface(&shell, &under));
 
                         if is_focused {
+                            // Computed before the constraint closure takes the surface's
+                            // state lock; see the pointer-motion path above.
+                            let point = target
+                                .client_coordinates(
+                                    ptr.current_location() - surface_location,
+                                    &shell,
+                                )
+                                .to_i32_floor();
                             with_pointer_constraint(&under, &ptr, |constraint| match constraint {
                                 Some(constraint) if !constraint.is_active() => {
                                     let region = match &*constraint {
                                         PointerConstraint::Locked(locked) => locked.region(),
                                         PointerConstraint::Confined(confined) => confined.region(),
                                     };
-                                    let point =
-                                        (ptr.current_location() - surface_location).to_i32_floor();
                                     if region.is_none_or(|region| region.contains(point)) {
                                         constraint.activate();
                                     }
@@ -2056,20 +2063,27 @@ impl State {
         let voice_config = &self.common.config.voice_config;
         let keysym = handle.modified_sym();
 
-        // In game mode, on the game's own output, the Super key is the LAUNCHER
-        // key: forward its raw press AND release to the launcher over the
-        // one.playtron.GameMode D-Bus interface (both edges, so the launcher can
-        // distinguish tap vs hold or change behavior later) and consume it, so it
-        // neither opens the start menu nor reaches the game. The controller GUIDE
-        // button reaches Grid directly via InputPlumber; only Super comes here.
-        if shell.game_mode.active
-            && shell.game_mode.output.as_ref() == Some(&focused_output)
-            && matches!(keysym, Keysym::Super_L | Keysym::Super_R)
+        // In game mode Super is the launcher key: consumed, and forwarded over D-Bus on
+        // release since it also starts the chords below.
+        let key_pressed = event.state() == KeyState::Pressed;
+        let is_super = matches!(keysym, Keysym::Super_L | Keysym::Super_R);
+        if is_super
+            && (shell.game_mode_on_screen(&focused_output)
+                || (!key_pressed && self.common.launcher_key.is_held()))
         {
-            let pressed = event.state() == KeyState::Pressed;
             drop(shell);
-            self.common.game_mode_bridge.notify_launcher_key(pressed);
+            if !key_pressed && let Some(tokens) = seat.supressed_keys().filter(&handle) {
+                for token in tokens {
+                    self.common.event_loop_handle.remove(token);
+                }
+            }
+            if self.common.launcher_key.update(key_pressed) {
+                self.common.game_mode_bridge.notify_launcher_tap();
+            }
             return FilterResult::Intercept(None);
+        }
+        if key_pressed && !is_super {
+            self.common.launcher_key.chord();
         }
 
         // Only the bare key is the gesture. Once another key joins it the press
@@ -2078,6 +2092,29 @@ impl State {
         let is_special_key = voice_config.matches_key_only(keysym);
         if !is_special_key && event.state() == KeyState::Pressed {
             self.common.special_action_state.cancel();
+        }
+
+        // Super+Tab and Super+Esc, only with workspaces disabled; otherwise both keep their
+        // desktop bindings.
+        let game_mode_chord = key_pressed
+            && modifiers.logo
+            && !(modifiers.ctrl || modifiers.alt || modifiers.shift)
+            && shell.game_mode.active
+            && !workspaces_enabled();
+        let toggle_desktop = game_mode_chord && key_matches(Keysym::Tab);
+        let force_quit = game_mode_chord
+            && key_matches(Keysym::Escape)
+            && shell.game_mode_on_screen(&focused_output);
+        if toggle_desktop || force_quit {
+            seat.modifiers_shortcut_queue().clear();
+            seat.supressed_keys().add(&handle, None);
+            drop(shell);
+            if toggle_desktop {
+                self.toggle_game_mode_desktop();
+            } else {
+                self.force_quit_game_mode_app();
+            }
+            return FilterResult::Intercept(None);
         }
 
         // A release ALWAYS closes an in-flight gesture, whatever the gates below
@@ -2833,10 +2870,21 @@ impl State {
                         // Override redirect windows take a grab on their own via
                         // the Xwayland keyboard grab protocol. Don't focus them via click.
                     }
-                    Stage::OverlaySurface { .. } => {
-                        // Keyboard input to a blocking game-mode overlay is routed
-                        // by the input grab (SetOverlay blocking); pointer falls
-                        // through to the game.
+                    Stage::OverlaySurface { surface } => {
+                        // A blocking overlay gets the pointer, so a click on it keeps keyboard
+                        // focus there rather than on the game behind it.
+                        if let Some(grab) = shell.game_mode.input_grab.as_ref()
+                            && surface
+                                .focus_under(
+                                    global_pos.to_local(output).as_logical(),
+                                    WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                                )
+                                .is_some()
+                            && let Some(target) =
+                                crate::dbus::game_mode::focus_target_for(shell, grab)
+                        {
+                            return ControlFlow::Break(Ok(Some(target)));
+                        }
                     }
                     Stage::StickyPopups(layout) => {
                         if let Some(element) =
@@ -3145,8 +3193,23 @@ impl State {
             });
 
             if let Some((output, geometry, surface_offset)) = found {
+                let scale = shell
+                    .game_mode
+                    .game_surface
+                    .as_ref()
+                    .filter(|game| shell.game_mode.active && game.surface_offset(surface).is_some())
+                    .and_then(|game| {
+                        shell
+                            .workspaces()
+                            .spaces()
+                            .find_map(|ws| ws.controlled_surface_scale(game))
+                    })
+                    .unwrap_or((1.0, 1.0));
                 let pos_in_element = location + surface_offset.to_f64();
-                let window_size = geometry.size.to_f64();
+                let window_size = Size::<f64, Logical>::from((
+                    geometry.size.w as f64 / scale.0,
+                    geometry.size.h as f64 / scale.1,
+                ));
 
                 let is_legal = |p: Point<f64, Logical>| {
                     let in_window =
@@ -3170,8 +3233,8 @@ impl State {
                 let origin = geometry.loc.to_f64();
 
                 if is_legal(pos_in_element) {
-                    let x = workspace_origin.x + origin.x + pos_in_element.x;
-                    let y = workspace_origin.y + origin.y + pos_in_element.y;
+                    let x = workspace_origin.x + origin.x + pos_in_element.x * scale.0;
+                    let y = workspace_origin.y + origin.y + pos_in_element.y * scale.1;
                     Some((Point::<_, Global>::new(x, y), output.clone()))
                 } else {
                     None
