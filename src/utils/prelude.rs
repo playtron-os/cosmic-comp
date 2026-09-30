@@ -15,7 +15,7 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     sync::{
         Mutex,
-        atomic::{AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
 };
 
@@ -32,6 +32,9 @@ pub trait OutputExt {
     fn set_mirroring(&self, output: Option<Output>);
 
     fn is_enabled(&self) -> bool;
+    /// Disabled because enabling it failed on connect, not by choice.
+    fn enable_failed(&self) -> bool;
+    fn set_enable_failed(&self, failed: bool);
     fn config(&self) -> Ref<'_, OutputConfig>;
     fn config_mut(&self) -> RefMut<'_, OutputConfig>;
 
@@ -41,6 +44,7 @@ pub trait OutputExt {
 struct Vrr(AtomicU8);
 struct VrrSupport(AtomicU8);
 struct Mirroring(Mutex<Option<WeakOutput>>);
+struct EnableFailed(AtomicBool);
 
 impl OutputExt for Output {
     fn is_internal(&self) -> bool {
@@ -148,6 +152,22 @@ impl OutputExt for Output {
             .get::<RefCell<OutputConfig>>()
             .map(|conf| conf.borrow().enabled != OutputState::Disabled)
             .unwrap_or(false)
+    }
+
+    fn enable_failed(&self) -> bool {
+        self.user_data()
+            .get::<EnableFailed>()
+            .is_some_and(|failed| failed.0.load(Ordering::SeqCst))
+    }
+
+    fn set_enable_failed(&self, failed: bool) {
+        let user_data = self.user_data();
+        user_data.insert_if_missing_threadsafe(|| EnableFailed(AtomicBool::new(false)));
+        user_data
+            .get::<EnableFailed>()
+            .unwrap()
+            .0
+            .store(failed, Ordering::SeqCst);
     }
 
     fn config(&self) -> Ref<'_, OutputConfig> {

@@ -192,6 +192,13 @@ impl State {
         }
         self.common.refresh();
 
+        // A layout the user applied is theirs to keep, a display they disabled included.
+        if !test_only {
+            for (output, _) in &conf {
+                output.set_enable_failed(false);
+            }
+        }
+
         for output in conf
             .iter()
             .filter(|(_, c)| {

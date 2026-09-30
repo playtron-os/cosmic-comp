@@ -651,14 +651,19 @@ impl Config {
         let mut infos = outputs
             .map(|o| {
                 let o = o.borrow();
-                (
-                    Into::<CompOutputInfo>::into(o.clone()).0,
-                    o.user_data()
-                        .get::<RefCell<OutputConfig>>()
-                        .unwrap()
-                        .borrow()
-                        .clone(),
-                )
+                let mut config = o
+                    .user_data()
+                    .get::<RefCell<OutputConfig>>()
+                    .unwrap()
+                    .borrow()
+                    .clone();
+                // One failed connection must not keep a display dark on every later one.
+                if config.enabled == OutputState::Disabled && o.enable_failed() {
+                    config.enabled = OutputState::Enabled;
+                } else if config.enabled != OutputState::Disabled {
+                    o.set_enable_failed(false);
+                }
+                (Into::<CompOutputInfo>::into(o.clone()).0, config)
             })
             .collect::<Vec<(OutputInfo, OutputConfig)>>();
         infos.sort_by(|(a, _), (b, _)| a.cmp(b));
