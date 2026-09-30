@@ -458,6 +458,17 @@ impl Config {
         clock: &Clock<Monotonic>,
     ) -> anyhow::Result<()> {
         let outputs = output_state.outputs().collect::<Vec<_>>();
+
+        // An output left mirroring one that is gone has no workspaces and nothing to show, and
+        // as the known-good fallback below it would fail again: it goes back to extending.
+        for output in &outputs {
+            let dangling = matches!(&output.config().enabled,
+                OutputState::Mirroring(conn) if !outputs.iter().any(|o| &o.name() == conn));
+            if dangling {
+                output.config_mut().enabled = OutputState::Enabled;
+            }
+        }
+
         let mut infos = outputs
             .iter()
             .cloned()
@@ -641,14 +652,19 @@ impl Config {
         let mut infos = outputs
             .map(|o| {
                 let o = o.borrow();
-                (
-                    Into::<CompOutputInfo>::into(o.clone()).0,
-                    o.user_data()
-                        .get::<RefCell<OutputConfig>>()
-                        .unwrap()
-                        .borrow()
-                        .clone(),
-                )
+                let mut config = o
+                    .user_data()
+                    .get::<RefCell<OutputConfig>>()
+                    .unwrap()
+                    .borrow()
+                    .clone();
+                // One failed connection must not keep a display dark on every later one.
+                if config.enabled == OutputState::Disabled && o.enable_failed() {
+                    config.enabled = OutputState::Enabled;
+                } else if config.enabled != OutputState::Disabled {
+                    o.set_enable_failed(false);
+                }
+                (Into::<CompOutputInfo>::into(o.clone()).0, config)
             })
             .collect::<Vec<(OutputInfo, OutputConfig)>>();
         infos.sort_by(|(a, _), (b, _)| a.cmp(b));

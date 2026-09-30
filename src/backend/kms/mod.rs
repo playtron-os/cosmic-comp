@@ -557,6 +557,7 @@ fn init_udev(
                     if !added.is_empty() {
                         for output in added {
                             output.config_mut().enabled = OutputState::Disabled;
+                            output.set_enable_failed(true);
                         }
                         if let Err(err) = state.refresh_output_config() {
                             error!("Unrecoverable config error: {}", err);
@@ -679,6 +680,7 @@ impl State {
                 if !added.is_empty() {
                     for output in added {
                         output.config_mut().enabled = OutputState::Disabled;
+                        output.set_enable_failed(true);
                     }
                     if let Err(err) = state.refresh_output_config() {
                         error!("Unrecoverable config error: {}", err);
