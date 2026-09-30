@@ -1,3 +1,21 @@
+# [1.51.0](https://github.com/playtron-os/cosmic-comp/compare/v1.50.0...v1.51.0) (2026-09-30)
+
+
+### Bug Fixes
+
+* a wallpaper click dismisses popovers that ignore layer clicks ([fdc2d5d](https://github.com/playtron-os/cosmic-comp/commit/fdc2d5d0b897493c5a256098df8fc38766510b0d))
+* external display hotplug leaks, blank first plug and stalls ([#18](https://github.com/playtron-os/cosmic-comp/issues/18)) ([ebdfeeb](https://github.com/playtron-os/cosmic-comp/commit/ebdfeeb9a0630e84ee383d9d9c15f3272cba7fc9))
+* **game-mode:** force quit a game that is behind the launcher ([177e352](https://github.com/playtron-os/cosmic-comp/commit/177e35251c4ffb70be81f48d87bd87b895182ed2))
+* **game-mode:** keep a game on screen when an overlay takes its focus ([f8506e0](https://github.com/playtron-os/cosmic-comp/commit/f8506e0fe47afd9e4311c026bd86ccc1fb287e25))
+* **game-mode:** keep the game the active X window under the QAM ([35b3750](https://github.com/playtron-os/cosmic-comp/commit/35b3750c603093d143b8f4ecbbbf7765aeb867f2))
+* **game-mode:** stabilize launcher/game handoffs and scaled input ([2bdfd63](https://github.com/playtron-os/cosmic-comp/commit/2bdfd6391e745d3c1179b759fda8e40b61410512))
+* keep the desktop when a mirrored display is unplugged, and stop remembering failed displays as disabled ([#16](https://github.com/playtron-os/cosmic-comp/issues/16)) ([2bd7d54](https://github.com/playtron-os/cosmic-comp/commit/2bd7d54662edc7bcfabb9889c6125b0c53687697))
+
+
+### Features
+
+* **game-mode:** add Super+Tab to the desktop and Super+Esc force quit ([dda2b36](https://github.com/playtron-os/cosmic-comp/commit/dda2b363f5068b4912536e424f4aa7b9e7428901))
+
 # [1.50.0](https://github.com/playtron-os/cosmic-comp/compare/v1.49.3...v1.50.0) (2026-09-22)
 
 
