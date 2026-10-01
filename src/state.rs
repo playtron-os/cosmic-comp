@@ -1084,7 +1084,12 @@ impl State {
                     let mut guard = self.common.workspace_state.update();
                     let animation = self.common.config.cosmic_conf.workspace_transition;
                     let initial = shell.take_initial_realm_activation();
-                    shell.switch_realm(&active.id, (!initial).then_some(animation), &mut guard);
+                    shell.switch_realm(
+                        &active.id,
+                        (!initial).then_some(animation),
+                        &mut guard,
+                        &self.common.event_loop_handle,
+                    );
                     let accent = active
                         .accent
                         .map(|[r, g, b]| iced_core::Color::from_rgb(r, g, b));

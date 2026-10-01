@@ -495,6 +495,7 @@ where
 
     pub fn refresh(&mut self, workspace_state: &WorkspaceState<D>) {
         let mut dirty = std::mem::replace(&mut self.dirty, false);
+        let mut retired = Vec::new();
 
         self.toplevels.retain(|window| {
             let mut state = window
@@ -530,10 +531,16 @@ where
                         handle.closed();
                     }
                 }
+                // An unmap that never reached `remove_toplevel` would otherwise
+                // leave it in every client's list, open, for good.
+                retired.extend(state.foreign_handle.take());
                 dirty = true;
                 false
             }
         });
+        for handle in retired {
+            self.foreign_toplevel_list.remove_toplevel(&handle);
+        }
 
         if !dirty && self.last_dirty {
             for instance in &self.instances {
