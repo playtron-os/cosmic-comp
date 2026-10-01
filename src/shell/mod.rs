@@ -2071,6 +2071,35 @@ impl Workspaces {
         self.spaces_mut().find(|w| &w.handle == handle)
     }
 
+    /// The desktop holding `surface`'s window: mapped, fullscreen or minimized.
+    pub fn space_holding(&self, surface: &WlSurface) -> Option<&Workspace> {
+        self.spaces().find(|w| {
+            w.get_fullscreen_surfaces()
+                .any(|f| f.surface.has_surface(surface, WindowSurfaceType::ALL))
+                || w.mapped()
+                    .any(|e| e.has_surface(surface, WindowSurfaceType::ALL))
+                || w.minimized_windows.iter().any(|m| {
+                    m.mapped()
+                        .is_some_and(|m| m.has_surface(surface, WindowSurfaceType::ALL))
+                })
+        })
+    }
+
+    /// Whether this realm holds `surface`'s window anywhere, sticky or
+    /// minimized out of a desktop included.
+    pub fn holds(&self, surface: &WlSurface) -> bool {
+        self.space_holding(surface).is_some()
+            || self.sets.values().any(|set| {
+                set.sticky_layer
+                    .mapped()
+                    .any(|m| m.has_surface(surface, WindowSurfaceType::ALL))
+                    || set.minimized_windows.iter().any(|m| {
+                        m.windows()
+                            .any(|w| w.has_surface(surface, WindowSurfaceType::ALL))
+                    })
+            })
+    }
+
     pub fn spaces_for_output(&self, output: &Output) -> impl Iterator<Item = &Workspace> {
         self.sets
             .get(output)
@@ -2326,16 +2355,13 @@ impl Common {
         // must not appear in any listing — the taskbar's running dot, alt-tab,
         // the dock. `surface_in_active_workspace` already answered this for
         // screen capture and its own doc named window listings as the other half;
-        // this is that half. Machine-plane clients (the panel, dock, launcher)
-        // carry no workspace and stay visible from everywhere, so the shell's own
-        // surfaces are unaffected.
+        // this is that half. A machine-plane app's window is listed in the realm
+        // holding it, see `listed_in_active_realm`.
         {
             let shell = self.shell.read();
             self.toplevel_info_state
                 .set_visible(&self.workspace_state, |window| {
-                    window
-                        .wl_surface()
-                        .is_none_or(|surface| shell.surface_in_active_workspace(surface.as_ref()))
+                    shell.listed_in_active_realm(window)
                 });
         }
         self.toplevel_info_state.refresh(&self.workspace_state);
@@ -2803,6 +2829,7 @@ impl Shell {
         id: &str,
         animation: Option<WorkspaceTransition>,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+        evlh: &LoopHandle<'static, State>,
     ) {
         if self.active_realm == id {
             return;
@@ -2851,7 +2878,53 @@ impl Shell {
                 workspace_state.add_group_output(&set.group, output);
             }
         }
+        self.carry_machine_windows(&previous, workspace_state, evlh);
         tracing::info!(from = previous, to = id, "realm switched");
+    }
+
+    /// Move the machine-plane windows in realm `from` into the one on screen,
+    /// each onto the desktop showing on its output.
+    ///
+    /// They belong to no workspace, so they go wherever the user does: a
+    /// window left behind in a realm off screen could neither be seen nor
+    /// reached. A workspace app's window stays with its workspace.
+    fn carry_machine_windows(
+        &mut self,
+        from: &str,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+        evlh: &LoopHandle<'static, State>,
+    ) {
+        let Some(realm) = self.realms.get(from) else {
+            return;
+        };
+        let carried = realm
+            .spaces()
+            .flat_map(|space| {
+                space
+                    .get_fullscreen_surfaces()
+                    .map(|f| f.surface.clone())
+                    .chain(space.mapped().flat_map(|m| m.windows().map(|(w, _)| w)))
+                    .chain(space.minimized_windows.iter().flat_map(|m| m.windows()))
+                    .map(move |window| (space.handle, space.output().clone(), window))
+            })
+            .filter(|(_, _, window)| self.client_workspace(window).is_none())
+            .collect::<Vec<_>>();
+        for (from, output, window) in carried {
+            let Some(to) = self.active_space(&output).map(|space| space.handle) else {
+                continue;
+            };
+            // Not followed: the desktop it lands on is the one showing.
+            let _ = self.move_window(
+                None,
+                &window,
+                &from,
+                &to,
+                false,
+                None,
+                workspace_state,
+                evlh,
+            );
+        }
     }
 
     /// Add an output to **every** realm, not just the one on screen.
@@ -2930,6 +3003,23 @@ impl Shell {
             .and_then(|c| c.get_data::<crate::state::ClientState>())
             .and_then(|data| data.workspace.as_deref());
         crate::workspace_tag::visible_in(workspace, self.active_workspace())
+    }
+
+    /// Is this window listed while the realm on screen is showing?
+    ///
+    /// A workspace app's window is listed in its own workspace, which its client
+    /// answers. A machine-plane window has no workspace of its own, so it is
+    /// listed where it is, which is the realm on screen: see
+    /// `carry_machine_windows`. Listing it everywhere showed it running in
+    /// every workspace while it could be reached in one.
+    pub fn listed_in_active_realm(&self, window: &CosmicSurface) -> bool {
+        let Some(surface) = window.wl_surface() else {
+            return true;
+        };
+        if self.client_workspace(window).is_some() || self.active_workspace().is_none() {
+            return self.surface_in_active_workspace(&surface);
+        }
+        self.workspaces().holds(&surface)
     }
 
     // These four take the seats, which Shell owns. Reaching them through
@@ -3687,17 +3777,7 @@ impl Shell {
                 .map(|w| (w.handle, output.clone())),
             None => self
                 .workspaces()
-                .spaces()
-                .find(|w| {
-                    w.get_fullscreen_surfaces()
-                        .any(|f| f.surface.has_surface(surface, WindowSurfaceType::ALL))
-                        || w.mapped()
-                            .any(|e| e.has_surface(surface, WindowSurfaceType::ALL))
-                        || w.minimized_windows.iter().any(|m| {
-                            m.mapped()
-                                .is_some_and(|m| m.has_surface(surface, WindowSurfaceType::ALL))
-                        })
-                })
+                .space_holding(surface)
                 .map(|w| (w.handle, w.output().clone())),
         }
     }
@@ -8050,7 +8130,13 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
-        for set in self.workspaces_mut().sets.values_mut() {
+        // Every realm: a window can close while the realm holding it is off
+        // screen, and one left mapped there stays advertised as open.
+        for set in self
+            .realms
+            .values_mut()
+            .flat_map(|realm| realm.sets.values_mut())
+        {
             let sticky_res = set.sticky_layer.mapped().find_map(|m| {
                 m.windows()
                     .position(|(s, _)| &s == surface)
@@ -8281,7 +8367,13 @@ impl Shell {
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
         evlh: &LoopHandle<'static, State>,
     ) -> Option<(KeyboardFocusTarget, Point<i32, Global>)> {
-        let from_output = self.workspaces().space_for_handle(from)?.output.clone();
+        // `from` may be in a realm off screen, see `carry_machine_windows`; `to`
+        // is always in the one showing.
+        let from_output = self
+            .realm_for_handle(from)?
+            .space_for_handle(from)?
+            .output
+            .clone();
         let to_output = self.workspaces().space_for_handle(to)?.output.clone();
         let to_is_tiling = self
             .workspaces()
@@ -8289,7 +8381,11 @@ impl Shell {
             .unwrap()
             .tiling_enabled;
 
-        let from_workspace = self.workspaces_mut().space_for_handle_mut(from).unwrap(); // checked above
+        let from_workspace = self
+            .realms
+            .values_mut()
+            .find_map(|realm| realm.space_for_handle_mut(from))
+            .unwrap(); // checked above
 
         let is_minimized = window.is_minimized();
         let is_fullscreen = from_workspace
