@@ -1,3 +1,11 @@
+## [1.51.1](https://github.com/playtron-os/cosmic-comp/compare/v1.51.0...v1.51.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* take smithay's sampling tranche fix ([#19](https://github.com/playtron-os/cosmic-comp/issues/19)) ([049bdb7](https://github.com/playtron-os/cosmic-comp/commit/049bdb7a688539eea44940717d4c422e4b8469cd))
+* **workspaces:** carry machine-plane windows across a workspace switch ([#20](https://github.com/playtron-os/cosmic-comp/issues/20)) ([d5b48b6](https://github.com/playtron-os/cosmic-comp/commit/d5b48b6032632f5f2b117e411cd83766d2ea12b2))
+
 # [1.51.0](https://github.com/playtron-os/cosmic-comp/compare/v1.50.0...v1.51.0) (2026-09-30)
 
 
