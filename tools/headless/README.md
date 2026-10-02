@@ -69,3 +69,14 @@ bar headers rather than the Halo.
 Point `CC_BIN` at another build and use another `CC_STATE` to run two
 compositors side by side, e.g. a `master` worktree for the "before" shots and
 the branch for "after".
+
+## Halo state shots
+
+`halo-shots.sh OUTDIR` records the Halo in every window state the design
+specifies (normal, the four overflow tiers, overlapping windows with the
+background one hovered, Fill, snapped halves, fullscreen hidden and revealed, a
+drag clamped at the top, an overlay-mode app) at scales 1 and 1.5, dark and
+light, and runs `halo-measure.py` on each shot. `PANEL_BIN` adds the dock and
+`HIVE_BIN` the overlay-mode app. The measurements land in
+`OUTDIR/measure.jsonl`: pill height, the gap between pill and window, and the
+window's distance from the usable area's top, against 32, 4 and 40 x scale.
