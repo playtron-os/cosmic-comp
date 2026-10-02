@@ -133,6 +133,13 @@ cmd_up() {
 		ln -sfn "$STATE/data/icetron/themes/${CC_THEME:-playtron}" "$XDG_CONFIG_HOME/icetron/current-theme"
 	fi
 	set_mode "${CC_MODE:-dark}"
+	# The repo's default shortcuts, as a package installs them.
+	local keys
+	keys=$(dirname "$(realpath "$0")")/../../data/keybindings.ron
+	if [ -f "$keys" ]; then
+		mkdir -p "$STATE/data/cosmic/com.system76.CosmicSettings.Shortcuts/v1" "$XDG_CONFIG_HOME/cosmic"
+		cp "$keys" "$STATE/data/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
+	fi
 
 	cat >"$STATE/dbus.conf" <<-EOF
 		<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
@@ -167,6 +174,8 @@ cmd_up() {
 	wait_for "xdo search --pid $(cat "$STATE/comp.pid") >/dev/null 2>&1"
 	win=$(xdo search --pid "$(cat "$STATE/comp.pid")" | head -n1)
 	xdo windowmove "$win" 0 0 windowsize "$win" "${size%x*}" "${size#*x}"
+	# No window manager hands out focus, so give the keyboard to the nested window.
+	xdo windowfocus --sync "$win"
 	wait_for "comp wlr-randr | grep -q '${size%x*}x${size#*x} px'"
 	sleep 0.5
 	[ "${CC_SCALE:-1}" = 1 ] || cmd_scale "$CC_SCALE"
