@@ -24,6 +24,8 @@ export CC_STATE=${CC_STATE:-$out/.state}
 T=$here/headless.sh
 FRONT=1e3a5f
 BACK=4a2a5c
+# A neutral title and a bare shell: the title shows in the Halo, the prompt in the window.
+FOOT_TITLE="kora@kora: ~"
 
 python() {
 	if command -v python3 >/dev/null; then
@@ -34,8 +36,8 @@ python() {
 }
 
 foot_at() { # COLOR WxH
-	"$T" run foot -o "colors-dark.background=$1" -o "colors-light.background=$1" \
-		--window-size-pixels="$2" >/dev/null
+	"$T" run foot --title "$FOOT_TITLE" -o "colors-dark.background=$1" -o "colors-light.background=$1" \
+		--window-size-pixels="$2" bash --norc --noprofile >/dev/null
 }
 
 measure() { # SHOT STATE [ARGS...]

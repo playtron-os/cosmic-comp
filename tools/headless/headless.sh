@@ -45,6 +45,10 @@ Environment for `up`:
   CC_CLEAR    desktop colour, #RRGGBB (default: #2a2a2e)
   CC_DATA_DIRS extra XDG data dirs (desktop entries, icons) for the compositor and clients
   TMPDIR      parent of the short-lived runtime dir (socket paths must stay short)
+
+Environment for `run`:
+  CC_CLIENT_ENV  more variables to pass to clients, by name (they start with an empty environment)
+  CC_CLIENT_NET  set to give clients network access (default: none)
 EOF
 }
 
@@ -91,6 +95,8 @@ isolate() {
 	export DBUS_SESSION_BUS_ADDRESS=unix:path=$r/bus
 	# No system bus: cosmic-comp would otherwise take logind inhibitors on the real seat.
 	export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$r/no-system-bus
+	# Screenshots get published: nothing on screen may name the real user, host or place.
+	export USER=kora LOGNAME=kora HOSTNAME=kora TZ=UTC PS1='kora@kora:~$ '
 }
 
 xdo() { DISPLAY=$(cat "$STATE/display") xdotool "$@"; }
@@ -137,10 +143,48 @@ start_xvfb() {
 # caller's journal and runtime dir when bubblewrap is there to do it.
 sandbox() {
 	SANDBOX=()
-	command -v bwrap >/dev/null || return 0
+	if ! command -v bwrap >/dev/null; then
+		echo "headless: no bwrap, so clients see the real user and host names" >&2
+		return 0
+	fi
 	SANDBOX=(bwrap --dev-bind / / --tmpfs /run/systemd/journal)
 	case $(runtime) in /run/user/*) ;; *) SANDBOX+=(--tmpfs /run/user) ;; esac
+	# The user is kora on host kora, also to getpwuid and gethostname.
+	SANDBOX+=(--unshare-uts --hostname kora)
+	local file
+	for file in passwd group hostname; do
+		# bwrap binds onto the file itself, not a symlink to it (NixOS links /etc/hostname).
+		[ -e "/etc/$file" ] && SANDBOX+=(--ro-bind "$STATE/$file" "$(readlink -f "/etc/$file")")
+	done
+	[ -d /run/nscd ] && SANDBOX+=(--tmpfs /run/nscd)
+	# Clients get no network unless asked: the dock's weather would locate the host.
+	[ "${1:-}" != client ] || [ -n "${CC_CLIENT_NET:-}" ] || SANDBOX+=(--unshare-net)
 	SANDBOX+=(--)
+}
+
+# What a client may inherit: the session `isolate` built, plus toolkit and
+# renderer knobs. Nothing of the caller's shell (prompt, history, cwd) gets in.
+clean_env() {
+	CLEAN_ENV=(env -i -C "$HOME")
+	local name
+	for name in $(compgen -e); do
+		case $name in
+		PATH | LANG | LANGUAGE | LC_* | LOCALE_ARCHIVE* | LD_LIBRARY_PATH | FONTCONFIG_* | XKB_* | XCURSOR_* | \
+			HOME | USER | LOGNAME | HOSTNAME | TZ | PS1 | XDG_* | WAYLAND_DISPLAY | DISPLAY | DBUS_* | \
+			RUST_* | ICED_* | WGPU_* | LIBGL_* | MESA_* | GALLIUM_* | VK_* | __GLX_* | __EGL_* | EGL_* | \
+			COSMIC_* | ICETRON_* | KORA_* | AGENTOS_*) ;;
+		*) [[ " ${CC_CLIENT_ENV:-} " == *" $name "* ]] || continue ;;
+		esac
+		CLEAN_ENV+=("$name=${!name}")
+	done
+}
+
+# /etc/passwd, /etc/group and /etc/hostname as the sandbox shows them.
+identity() {
+	printf 'root:x:0:0:root:/root:/bin/sh\nkora:x:%s:%s:Kora:%s:/bin/sh\nnobody:x:65534:65534::/:/bin/sh\n' \
+		"$(id -u)" "$(id -g)" "$STATE/home" >"$STATE/passwd"
+	printf 'root:x:0:\nkora:x:%s:\nnogroup:x:65534:\n' "$(id -g)" >"$STATE/group"
+	echo kora >"$STATE/hostname"
 }
 
 # bwrap forks the command; record that child too, so `down` stops it rather
@@ -168,6 +212,7 @@ cmd_up() {
 	local r; r=$(mktemp -d "${TMPDIR:-/tmp}/cchl.XXXXXX")
 	echo "$r" >"$STATE/runtime"
 	rm -rf "${STATE:?}/home" "${STATE:?}/data" "${STATE:?}/etc" "${STATE:?}"/*.log "${STATE:?}"/*.pid
+	identity
 	mkdir -p "$STATE/home/.config" "$STATE/home/.local/share" "$STATE/home/.local/state" \
 		"$STATE/home/.cache" "$STATE/data" "$STATE/etc"
 	isolate
@@ -205,9 +250,10 @@ cmd_up() {
 	sandbox
 	local n; n=$(cut -c2- "$STATE/display")
 
-	DISPLAY=:$n COSMIC_BACKEND=winit LIBGL_ALWAYS_SOFTWARE=1 LD_LIBRARY_PATH=$libs \
-		COSMIC_CLEAR_COLOR=${CC_CLEAR:-#2a2a2e} RUST_LOG=${RUST_LOG:-warn} \
-		setsid "${SANDBOX[@]}" "$bin" --no-xwayland >"$STATE/comp.log" 2>&1 &
+	export DISPLAY=:$n COSMIC_BACKEND=winit LIBGL_ALWAYS_SOFTWARE=1 LD_LIBRARY_PATH=$libs \
+		COSMIC_CLEAR_COLOR=${CC_CLEAR:-#2a2a2e} RUST_LOG=${RUST_LOG:-warn}
+	clean_env
+	setsid "${SANDBOX[@]}" "${CLEAN_ENV[@]}" "$bin" --no-xwayland >"$STATE/comp.log" 2>&1 &
 	echo $! >"$STATE/comp.pid"
 	sandboxed "$STATE/comp.pid"
 	wait_for "ls $r | grep -qx 'wayland-[0-9]*'"
@@ -251,6 +297,7 @@ cmd_env() {
 	echo "export DBUS_SESSION_BUS_ADDRESS=unix:path=$r/bus DBUS_SYSTEM_BUS_ADDRESS=unix:path=$r/no-system-bus"
 	echo "export HOME=$STATE/home XDG_CONFIG_HOME=$STATE/home/.config XDG_DATA_HOME=$STATE/home/.local/share"
 	echo "export XDG_STATE_HOME=$STATE/home/.local/state XDG_CACHE_HOME=$STATE/home/.cache"
+	echo "export USER=kora LOGNAME=kora HOSTNAME=kora TZ=UTC"
 	echo "unset DISPLAY"
 }
 
@@ -258,8 +305,12 @@ cmd_run() {
 	[ $# -gt 0 ] || die "run: missing command"
 	isolate
 	local log; log=$STATE/client-$(basename "$1")-$(date +%s%N).log
-	sandbox
-	WAYLAND_DISPLAY=$(cat "$STATE/socket") setsid "${SANDBOX[@]}" "$@" >"$log" 2>&1 &
+	# Clients start in the private HOME, so a relative path is resolved here.
+	case $1 in */*) set -- "$(realpath "$1")" "${@:2}" ;; esac
+	sandbox client
+	export WAYLAND_DISPLAY; WAYLAND_DISPLAY=$(cat "$STATE/socket")
+	clean_env
+	setsid "${SANDBOX[@]}" "${CLEAN_ENV[@]}" "$@" >"$log" 2>&1 &
 	echo $! >>"$STATE/clients.pid"
 	sandboxed "$STATE/clients.pid"
 	echo $!
@@ -322,8 +373,8 @@ cmd_selftest() {
 	[ -e "$STATE/runtime" ] || { cmd_up >/dev/null; up=1; }
 	local size=${CC_SIZE:-1920x1080} cx cy
 	cx=$(( ${size%x*} / 2 )) cy=$(( ${size#*x} / 2 ))
-	cmd_run foot -o colors-dark.background=202020 -o colors-light.background=202020 \
-		--window-size-pixels=900x600 >/dev/null
+	cmd_run foot --title "kora@kora: ~" -o colors-dark.background=202020 -o colors-light.background=202020 \
+		--window-size-pixels=900x600 bash --norc --noprofile >/dev/null
 	sleep 2
 	cmd_move "$cx" "$cy"
 	# Typing reaches the client: the shell turns the terminal green.

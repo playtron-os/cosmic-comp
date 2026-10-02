@@ -22,6 +22,28 @@ touching your own desktop.
 - `down` kills only the pids `up` and `run` recorded, and removes the runtime
   directory.
 
+## Nothing personal in the shots
+
+Screenshots end up in public pull requests, so nothing on screen may name you,
+your machine or where you are:
+
+- The compositor and every client run as user `kora` on host `kora`: `USER`,
+  `LOGNAME` and `HOSTNAME` are set, and with bubblewrap `getpwuid`,
+  `gethostname` and `/etc/hostname` say so too (a private `/etc/passwd`,
+  `/etc/group` and UTS namespace; nscd is hidden so it cannot answer for the
+  real files). Without bubblewrap only the environment changes, and the
+  harness says so.
+- Clients start in the private `HOME` with an empty environment plus the
+  session's and toolkit or renderer variables (`RUST_*`, `ICED_*`, `WGPU_*`,
+  `LIBGL_*`, `COSMIC_*`, `KORA_*`, `AGENTOS_*` and the like). Name any other
+  variable a client needs in `CC_CLIENT_ENV="NAME ..."`. The caller's prompt,
+  `PROMPT_COMMAND`, history and working directory never reach them.
+- `TZ=UTC`, and clients have no network (`CC_CLIENT_NET=1` gives it back), so
+  the dock's clock and weather cannot place you.
+- `PS1` is `kora@kora:~$ `; `halo-shots.sh` and `selftest` start foot with a
+  fixed title and `bash --norc --noprofile`.
+- Keep `CC_STATE` itself on a neutral path if a client might show it.
+
 ## Requirements
 
 `Xvfb`, `xdotool`, `grim`, `wlr-randr`, `dbus-daemon`, plus the libraries winit
