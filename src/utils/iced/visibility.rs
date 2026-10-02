@@ -20,6 +20,9 @@ pub struct Visibility {
     /// Layer-shell popups animate their first buffer; ordinary window chrome
     /// instead starts in its requested visibility state.
     pub animate_initial: bool,
+    /// A theme's motion for the popup's role. It moves every channel on its curve, from its
+    /// enter pose and toward its exit pose; the fields above then give only the enter pose.
+    pub kit: Option<crate::shell::layer_open::Kit>,
 }
 
 impl Visibility {
@@ -43,18 +46,45 @@ impl Visibility {
             hidden_offset: Vector::new(0.0, crate::shell::layer_open::FadeRise::offset(0.0)),
             hidden_scale: crate::shell::layer_open::FadeRise::scale(0.0),
             animate_initial: true,
+            kit: None,
+        }
+    }
+
+    /// A compositor-owned context menu: the theme's context menu motion, or FadeRise.
+    pub fn context_menu(motion: crate::backend::render::animations::motion::Motion) -> Self {
+        match motion.surfaces.context_menu {
+            Some(role) => {
+                let kit = crate::shell::layer_open::Kit::new(role);
+                Self {
+                    duration: kit.duration,
+                    hidden_offset: Vector::new(role.enter.x, role.enter.y),
+                    hidden_scale: role.enter.scale,
+                    kit: Some(kit),
+                    ..Self::fade_rise(motion)
+                }
+            }
+            None => Self::fade_rise(motion),
+        }
+    }
+
+    /// Where an entrance starts.
+    fn entering(self) -> VisibilityFrame {
+        VisibilityFrame {
+            opacity: 0.0,
+            offset: self.hidden_offset,
+            scale: self.hidden_scale,
         }
     }
 
     fn target(self) -> VisibilityFrame {
-        if self.visible {
-            VisibilityFrame::VISIBLE
-        } else {
-            VisibilityFrame {
+        match (self.visible, self.kit) {
+            (true, _) => VisibilityFrame::VISIBLE,
+            (false, Some(kit)) => VisibilityFrame {
                 opacity: 0.0,
-                offset: self.hidden_offset,
-                scale: self.hidden_scale,
-            }
+                offset: Vector::new(kit.motion.exit.x, kit.motion.exit.y),
+                scale: kit.motion.exit.scale,
+            },
+            (false, None) => self.entering(),
         }
     }
 }
@@ -133,11 +163,7 @@ impl VisibilityAnimation {
         Self {
             settings,
             from: if pending {
-                Visibility {
-                    visible: false,
-                    ..settings
-                }
-                .target()
+                settings.entering()
             } else {
                 settings.target()
             },
@@ -179,7 +205,8 @@ impl VisibilityAnimation {
             ..self.settings
         }
         .target();
-        let reverse_open = self.settings.animate_initial
+        let reverse_open = settings.kit.is_none()
+            && self.settings.animate_initial
             && self.settings.visible
             && !settings.visible
             && self.settings
@@ -229,8 +256,16 @@ impl VisibilityAnimation {
             _ => self.clock.interpolate(0.0, 1.0, now),
         };
         let target = self.settings.target();
-        let opacity = cubic_bezier_cp(progress, self.settings.opacity_curve);
-        let translation = cubic_bezier_cp(progress, self.settings.translation_curve);
+        let (opacity, translation) = match self.settings.kit {
+            Some(kit) => {
+                let moved = kit.progress(self.settings.duration.mul_f32(progress));
+                (moved, moved)
+            }
+            None => (
+                cubic_bezier_cp(progress, self.settings.opacity_curve),
+                cubic_bezier_cp(progress, self.settings.translation_curve),
+            ),
+        };
         VisibilityFrame {
             opacity: (self.from.opacity + (target.opacity - self.from.opacity) * opacity)
                 .clamp(0.0, 1.0),
@@ -402,5 +437,64 @@ mod tests {
             now,
         );
         assert!(disabled.is_fully_hidden(now));
+    }
+
+    /// A theme's context menu motion moves a compositor menu from its enter pose and toward its
+    /// exit pose on that curve (Playtron: the kit ContextMenu's 120ms gentleOut tween).
+    #[test]
+    fn a_context_menu_moves_on_the_theme_s_motion() {
+        use icetron_themes::{LayerMotion, MotionCurve, MotionPose};
+        let mut motion = CompTheme::default().motion;
+        assert_eq!(
+            Visibility::context_menu(motion),
+            Visibility::fade_rise(motion),
+            "no motion is FadeRise"
+        );
+        motion.surfaces.context_menu = Some(LayerMotion {
+            curve: MotionCurve::Tween {
+                ms: 120.0,
+                ease: [0.16, 1.0, 0.3, 1.0],
+            },
+            enter: MotionPose {
+                x: 0.0,
+                y: -2.0,
+                scale: 0.97,
+            },
+            exit: MotionPose {
+                x: 0.0,
+                y: -2.0,
+                scale: 0.98,
+            },
+        });
+        let settings = Visibility::context_menu(motion);
+        let mut animation = VisibilityAnimation::new(settings);
+        let now = Instant::now();
+        assert_eq!(
+            animation.frame(now).offset.y,
+            -2.0,
+            "waits at the enter pose"
+        );
+        assert!(animation.start_on_draw(now));
+        // motion's gentleOut has gone 0.902844 of the way at 40ms.
+        let frame = animation.frame(now + Duration::from_millis(40));
+        assert!((frame.opacity - 0.902844).abs() < 1e-3, "{frame:?}");
+        assert!((frame.offset.y + 2.0 * (1.0 - 0.902844)).abs() < 1e-3);
+        assert!((frame.scale - (0.97 + 0.03 * 0.902844)).abs() < 1e-4);
+
+        let shut = now + Duration::from_secs(1);
+        animation.update(
+            Visibility {
+                visible: false,
+                ..settings
+            },
+            shut,
+        );
+        let gone = animation.frame(shut + Duration::from_secs(1));
+        assert_eq!(gone.opacity, 0.0);
+        assert!(
+            (gone.scale - 0.98).abs() < 1e-6,
+            "it leaves toward the exit pose"
+        );
+        assert!(animation.is_fully_hidden(shut + Duration::from_secs(1)));
     }
 }

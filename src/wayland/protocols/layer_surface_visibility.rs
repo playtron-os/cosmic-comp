@@ -53,6 +53,9 @@ pub enum LayerTransition {
     /// it — a client animating its own pixels cannot move the blur, which is a
     /// property of the surface and stays behind as a rectangle.
     FluidReveal,
+    /// What the surface is (version 5): the compositor plays the theme's motion for that
+    /// role, or [`Self::Fade`]'s when the theme gives none. Never slides.
+    Role(crate::shell::layer_open::Role),
 }
 
 /// User data for the visibility controller
@@ -94,7 +97,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(4, ());
+        >(5, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -280,6 +283,7 @@ where
                 }
             }
             zcosmic_layer_surface_visibility_v1::Request::SetTransition { transition } => {
+                use crate::shell::layer_open::Role;
                 let transition = match transition {
                     WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Slide) => {
                         LayerTransition::Slide
@@ -289,6 +293,30 @@ where
                     }
                     WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::FluidReveal) => {
                         LayerTransition::FluidReveal
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Popover) => {
+                        LayerTransition::Role(Role::Popover)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Panel) => {
+                        LayerTransition::Role(Role::Panel)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::ControlPanel) => {
+                        LayerTransition::Role(Role::ControlPanel)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Launcher) => {
+                        LayerTransition::Role(Role::Launcher)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Spotlight) => {
+                        LayerTransition::Role(Role::Spotlight)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Notification) => {
+                        LayerTransition::Role(Role::Notification)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::ContextMenu) => {
+                        LayerTransition::Role(Role::ContextMenu)
+                    }
+                    WEnum::Value(zcosmic_layer_surface_visibility_v1::Transition::Modal) => {
+                        LayerTransition::Role(Role::Modal)
                     }
                     other => {
                         warn!(?other, "SetTransition called with unknown transition value");

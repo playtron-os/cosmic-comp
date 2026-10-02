@@ -417,7 +417,7 @@ impl Program for ContextMenu {
     fn visibility(&self, theme: &CompTheme) -> Option<crate::utils::iced::Visibility> {
         self.halo.then(|| crate::utils::iced::Visibility {
             visible: !self.closing.load(Ordering::SeqCst),
-            ..crate::utils::iced::Visibility::fade_rise(theme.motion)
+            ..crate::utils::iced::Visibility::context_menu(theme.motion)
         })
     }
 
