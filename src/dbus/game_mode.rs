@@ -1265,10 +1265,10 @@ impl State {
             let shell = self.common.shell.read();
             let gm = &shell.game_mode;
             (gm.active
-                && gm
-                    .game_surface
-                    .as_ref()
-                    .is_some_and(|surface| !surface.alive() || !shell.is_surface_mapped(surface)))
+                && gm.game_surface.as_ref().is_some_and(|surface| {
+                    !surface.alive()
+                        || !(shell.is_surface_mapped(surface) || parked_in_realm(&shell, surface))
+                }))
             .then_some((gm.app_id, gm.pending_app_id))
         };
         if let Some((Some(app_id), pending)) = missing_app {
@@ -2377,6 +2377,18 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
 
 fn is_game_surface(surface: &CosmicSurface) -> bool {
     surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// Whether `surface` is still on game mode's desktop in a realm that is not
+/// showing. Switching away from that Kora workspace puts its windows away with
+/// it; game mode stays on them and is back on screen when the realm is.
+fn parked_in_realm(shell: &Shell, surface: &CosmicSurface) -> bool {
+    shell.game_mode.workspace.is_some_and(|handle| {
+        shell.workspaces().space_for_handle(&handle).is_none()
+            && shell
+                .space_for_handle_any_realm(&handle)
+                .is_some_and(|ws| ws.get_fullscreen_surfaces().any(|f| &f.surface == surface))
+    })
 }
 
 /// Whether a desktop holding windows of these app ids is not `app_id`'s own:
