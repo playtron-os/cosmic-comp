@@ -1015,6 +1015,7 @@ dependencies = [
  "egui",
  "egui_plot",
  "freedesktop-desktop-entry",
+ "futures-channel",
  "futures-executor",
  "futures-util",
  "glam 0.33.7",

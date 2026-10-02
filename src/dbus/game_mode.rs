@@ -248,6 +248,9 @@ pub struct GameModeIo {
     /// Authorization verdict per unique bus name. dbus-daemon never reuses a
     /// unique name, so a verdict stays valid for the life of that connection.
     authorized: Mutex<std::collections::HashMap<String, bool>>,
+    /// The process a Kora workspace's bus bridge vouched for, per unique bus
+    /// name: from here every call on such a connection is the bridge's.
+    attested: Mutex<std::collections::HashMap<String, Arc<std::os::fd::OwnedFd>>>,
     /// Live recent frame time (ns) of the output showing the game, written by the
     /// KMS surface thread (via [`Shell`]) and read by `AppFrametimeNs` for Auto-TDP.
     /// 0 when no game is fullscreen.
@@ -342,7 +345,115 @@ fn client_binary_allowed(pid: u32) -> bool {
     })
 }
 
+/// The pid a pidfd names, or `None` once that process has exited.
+fn pid_of_pidfd(pidfd: &std::os::fd::OwnedFd) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd())).ok()?;
+    pid_in_fdinfo(&info)
+}
+
+/// A pidfd's fdinfo names its process, or `-1` once it has exited.
+fn pid_in_fdinfo(info: &str) -> Option<u32> {
+    info.lines()
+        .find_map(|line| line.strip_prefix("Pid:"))
+        .and_then(|pid| pid.trim().parse().ok())
+}
+
+fn uid_of(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The unit a cgroup file's process runs in: its innermost path segment.
+fn unit_of_cgroup(cgroup: &str) -> Option<&str> {
+    cgroup.lines().next()?.rsplit('/').next()
+}
+
+/// Whether `pid` is a Kora workspace's bus bridge, and if so which workspace's.
+///
+/// Inside a workspace every call reaches the session bus from the bridge, so
+/// only the bridge can say which app it relays. It is matched as the binary is
+/// in [`client_binary_allowed`], and must run as its workspace's bridge unit.
+fn workspace_of_bridge(pid: u32) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let exe = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+    let is_bridge = crate::utils::process::which("kora-ws-bridge")
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .any(|bridge| bridge.dev() == exe.dev() && bridge.ino() == exe.ino());
+    if !is_bridge {
+        return None;
+    }
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let workspace = crate::workspace_tag::of_cgroup(&cgroup)?;
+    (unit_of_cgroup(&cgroup)? == format!("kora-ws-{workspace}-bridge.service")).then_some(workspace)
+}
+
+/// Check that the process behind `pidfd` may be vouched for by `bridge`: alive,
+/// in the bridge's workspace and owned by the same user. Its pid, if so.
+fn attested_pid(bridge: u32, pidfd: &std::os::fd::OwnedFd) -> Result<u32, &'static str> {
+    let workspace =
+        workspace_of_bridge(bridge).ok_or("the sender is not a workspace's bus bridge")?;
+    let pid = pid_of_pidfd(pidfd).ok_or("not a pidfd of a live process")?;
+    if crate::workspace_tag::of_pid(pid).as_deref() != Some(workspace.as_str()) {
+        return Err("the caller is not in the bridge's workspace");
+    }
+    if uid_of(pid).is_none() || uid_of(pid) != uid_of(bridge) {
+        return Err("the caller belongs to another user");
+    }
+    // Everything above was read through the pid; the pidfd says whether it
+    // still names the process it was handed over for.
+    if pid_of_pidfd(pidfd) != Some(pid) {
+        return Err("the caller exited");
+    }
+    Ok(pid)
+}
+
 impl GameModeIo {
+    /// Record the process a workspace's bus bridge vouches for on `sender`'s
+    /// connection, so its calls are judged by that process instead.
+    async fn attest(
+        self: &Arc<Self>,
+        sender: String,
+        pidfd: std::os::fd::OwnedFd,
+    ) -> Result<(), &'static str> {
+        let executor = self.executor.clone().ok_or("no executor")?;
+        let (done, verdict) = futures_channel::oneshot::channel();
+        let io = self.clone();
+        // Off this task, on a connection of its own: see `send_from`.
+        executor.spawn_ok(async move {
+            let bridge = async {
+                let conn = zbus::Connection::session().await.ok()?;
+                let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
+                let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
+                proxy.get_connection_unix_process_id(name).await.ok()
+            }
+            .await;
+            let result = bridge
+                .ok_or("the sender has no process")
+                .and_then(|bridge| attested_pid(bridge, &pidfd));
+            match result {
+                Ok(pid) => {
+                    info!(target: GAMING_TARGET, %sender, pid, "game-mode caller attested");
+                    io.authorized.lock().unwrap().remove(&sender);
+                    io.attested
+                        .lock()
+                        .unwrap()
+                        .insert(sender, Arc::new(pidfd));
+                }
+                Err(why) => warn!(target: GAMING_TARGET, %sender, why, "refused an attestation"),
+            }
+            let _ = done.send(result.map(|_| ()));
+        });
+        verdict.await.unwrap_or(Err("the attestation was dropped"))
+    }
+
     /// Forward a control request, but only from an authorized client.
     ///
     /// The caller is identified by the pid the BUS reports for its connection, so
@@ -365,14 +476,18 @@ impl GameModeIo {
             return;
         };
         let io = self.clone();
+        let attested = self.attested.lock().unwrap().get(&sender).cloned();
         executor.spawn_ok(async move {
-            let pid = async {
-                let conn = zbus::Connection::session().await.ok()?;
-                let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
-                let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
-                proxy.get_connection_unix_process_id(name).await.ok()
-            }
-            .await;
+            let pid = match attested {
+                Some(pidfd) => pid_of_pidfd(&pidfd),
+                None => async {
+                    let conn = zbus::Connection::session().await.ok()?;
+                    let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
+                    let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
+                    proxy.get_connection_unix_process_id(name).await.ok()
+                }
+                .await,
+            };
             let authorized = pid.is_some_and(client_binary_allowed);
             io.authorized
                 .lock()
@@ -614,6 +729,23 @@ impl GameModeInterface {
         self.io.send_from(GameModeCommand::Enter { app_id }, sender);
     }
 
+    /// Vouch for the process behind this connection: only a Kora workspace's
+    /// bus bridge may, for the app whose connection it relays.
+    async fn attest_peer(
+        &self,
+        pidfd: zbus::zvariant::OwnedFd,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header
+            .sender()
+            .ok_or_else(|| zbus::fdo::Error::AuthFailed("no sender".into()))?
+            .to_string();
+        self.io
+            .attest(sender, pidfd.into())
+            .await
+            .map_err(|why| zbus::fdo::Error::AccessDenied(why.into()))
+    }
+
     /// Leave game mode and return to the launcher.
     async fn exit_game_mode(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
         let sender = header.sender().map(|name| name.to_string());
@@ -850,6 +982,7 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) -> GameM
         cmd: Mutex::new(cmd_tx),
         executor: Some(executor.clone()),
         authorized: Mutex::new(std::collections::HashMap::new()),
+        attested: Mutex::new(std::collections::HashMap::new()),
         frametime_ns: Arc::new(AtomicU64::new(0)),
     });
 
@@ -2363,6 +2496,35 @@ pub(crate) fn focus_target_for(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_pidfd_names_its_process_until_it_exits() {
+        assert_eq!(pid_in_fdinfo("pos:\t0\nflags:\t02000002\nPid:\t4242\n"), Some(4242));
+        assert_eq!(pid_in_fdinfo("pos:\t0\nPid:\t-1\n"), None, "exited");
+        assert_eq!(pid_in_fdinfo("pos:\t0\nflags:\t02\n"), None, "not a pidfd");
+    }
+
+    #[test]
+    fn a_pidfd_of_this_process_reads_back() {
+        let Ok(pidfd) = rustix::process::pidfd_open(
+            rustix::process::getpid(),
+            rustix::process::PidfdFlags::empty(),
+        ) else {
+            return;
+        };
+        assert_eq!(pid_of_pidfd(&pidfd), Some(std::process::id()));
+        assert_eq!(uid_of(std::process::id()), Some(rustix::process::getuid().as_raw()));
+    }
+
+    #[test]
+    fn the_unit_is_the_innermost_cgroup() {
+        let bridge = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-gameframe.slice/kora-ws-gameframe-bridge.service\n";
+        assert_eq!(unit_of_cgroup(bridge), Some("kora-ws-gameframe-bridge.service"));
+        assert_eq!(
+            crate::workspace_tag::of_cgroup(bridge).as_deref(),
+            Some("gameframe")
+        );
+    }
+
     /// `*` anywhere in the list opens it, including alongside real paths and
     /// with the whitespace a hand-written unit file tends to pick up.
     #[test]
@@ -2462,6 +2624,7 @@ mod tests {
             let io = Arc::new(GameModeIo {
                 executor: None,
                 authorized: Mutex::new(std::collections::HashMap::new()),
+        attested: Mutex::new(std::collections::HashMap::new()),
                 shared: Mutex::new(GameModeShared {
                     active: true,
                     active_app_id: 1234,
