@@ -7477,6 +7477,26 @@ impl Shell {
             .as_ref()
             .and(self.game_mode.workspace)
             .or(workspace_handle);
+        // The quick-access menu floats on the launcher's own desktop: it is drawn
+        // over the game from there, and the game's desktop stays as it is.
+        let quick_access =
+            self.game_mode.active && crate::dbus::game_mode::is_quick_access_window(&window);
+        let launcher_desktop = quick_access
+            .then(|| {
+                self.workspaces().spaces().find_map(|ws| {
+                    ws.get_fullscreen_surfaces()
+                        .any(|f| crate::dbus::game_mode::is_launcher_window(&f.surface))
+                        .then_some(ws.handle)
+                })
+            })
+            .flatten();
+        let workspace_handle = launcher_desktop.or(workspace_handle);
+        let game_mode_output = game_mode_output.or_else(|| {
+            launcher_desktop
+                .is_some()
+                .then(|| self.game_mode.output.clone())
+                .flatten()
+        });
         // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
         let mut output = game_mode_output
             .or(output)
@@ -7563,6 +7583,7 @@ impl Shell {
         if let Some(FocusTarget::Window(focused)) = maybe_focused
             && let Some(stack) = focused.stack_ref()
             && !is_dialog
+            && !quick_access
             && !should_be_maximized
             && !(workspace.is_tiled(&focused.active_window()) && floating_exception)
         {
@@ -7586,7 +7607,7 @@ impl Shell {
         }
 
         let workspace_empty = workspace.mapped().next().is_none();
-        if is_dialog || floating_exception || !workspace.tiling_enabled {
+        if is_dialog || floating_exception || quick_access || !workspace.tiling_enabled {
             // For X11 transient children, use the X11 geometry as initial position
             // so they appear next to their parent (e.g. Android emulator side panel).
             let initial_position = window
@@ -7689,7 +7710,10 @@ impl Shell {
             window.force_configure();
         }
 
-        let new_target = if self.game_mode_hides(&window) {
+        // The quick-access menu takes the keyboard through game mode's input grab.
+        let new_target = if quick_access {
+            None
+        } else if self.game_mode_hides(&window) {
             // Game mode renders ONLY its controlled surface on that workspace, so a
             // window it will not draw must not take the keyboard either: focusing an
             // invisible window looks exactly like a hung game (keystrokes vanish

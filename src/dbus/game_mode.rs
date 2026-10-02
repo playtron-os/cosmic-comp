@@ -26,7 +26,7 @@ use smithay::desktop::space::SpaceElement as _;
 use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{IsAlive, Rectangle, Size};
+use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size};
 use smithay::wayland::alpha_modifier::AlphaModifierSurfaceCachedState;
 use smithay::wayland::compositor::{
     SurfaceAttributes, TraversalAction, with_states, with_surface_tree_downward,
@@ -88,6 +88,31 @@ pub const LAUNCHER_APP_ID: u32 = 769;
 /// working for a native-Wayland launcher (which can't carry `STEAM_GAME`).
 /// Add the launcher's `app_id` here if it ships under a different one.
 const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
+
+/// The launcher's quick-access menu in a window of its own: shown over the
+/// game at the output's right edge, rather than the launcher's whole window
+/// blended over it.
+const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
+
+/// Whether `window` is the launcher's own.
+pub fn is_launcher_window(window: &CosmicSurface) -> bool {
+    LAUNCHER_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
+}
+
+/// Whether `window` is the launcher's quick-access menu.
+pub fn is_quick_access_window(window: &CosmicSurface) -> bool {
+    QUICK_ACCESS_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
+}
+
+/// Where the game-mode overlay sits on its output: the launcher covers it
+/// from the origin, the quick-access menu is anchored to the right edge.
+pub fn overlay_offset(surface: &CosmicSurface, output: &Output) -> Point<i32, Logical> {
+    if !is_quick_access_window(surface) {
+        return Point::default();
+    }
+    let width = output.geometry().size.w;
+    Point::from(((width - surface.geometry().size.w).max(0), 0))
+}
 
 /// Super in game mode. The launcher acts on release, so a tap is forwarded only once
 /// Super comes back up without having started a chord.
@@ -442,10 +467,7 @@ impl GameModeIo {
                 Ok(pid) => {
                     info!(target: GAMING_TARGET, %sender, pid, "game-mode caller attested");
                     io.authorized.lock().unwrap().remove(&sender);
-                    io.attested
-                        .lock()
-                        .unwrap()
-                        .insert(sender, Arc::new(pidfd));
+                    io.attested.lock().unwrap().insert(sender, Arc::new(pidfd));
                 }
                 Err(why) => warn!(target: GAMING_TARGET, %sender, why, "refused an attestation"),
             }
@@ -2113,23 +2135,25 @@ impl State {
             let is_overlay_window = |w: &CosmicSurface| {
                 w.is_overlay() || LAUNCHER_APP_IDS.contains(&w.app_id().to_lowercase().as_str())
             };
-            let surface = (active && asserted)
-                .then(|| {
-                    shell.workspaces().spaces().find_map(|ws| {
-                        // Normal mapped windows first, then fullscreen surfaces: when
-                        // game mode has latched the launcher it is FULLSCREEN, so it
-                        // lives in `fullscreen_surfaces`, not `mapped()` — scanning
-                        // only `mapped()` here is why the QAM resolved to None.
-                        ws.mapped()
-                            .flat_map(|m| m.windows().map(|(s, _)| s))
-                            .find(|w| is_overlay_window(w))
-                            .or_else(|| {
-                                ws.get_fullscreen_surfaces()
-                                    .map(|f| f.surface.clone())
-                                    .find(|w| is_overlay_window(w))
-                            })
-                    })
+            let find = |wanted: &dyn Fn(&CosmicSurface) -> bool| {
+                shell.workspaces().spaces().find_map(|ws| {
+                    // Normal mapped windows first, then fullscreen surfaces: when
+                    // game mode has latched the launcher it is FULLSCREEN, so it
+                    // lives in `fullscreen_surfaces`, not `mapped()` — scanning
+                    // only `mapped()` here is why the QAM resolved to None.
+                    ws.mapped()
+                        .flat_map(|m| m.windows().map(|(s, _)| s))
+                        .find(|w| wanted(w))
+                        .or_else(|| {
+                            ws.get_fullscreen_surfaces()
+                                .map(|f| f.surface.clone())
+                                .find(|w| wanted(w))
+                        })
                 })
+            };
+            // The quick-access menu's own window while it is open, else the launcher.
+            let surface = (active && asserted)
+                .then(|| find(&is_quick_access_window).or_else(|| find(&is_overlay_window)))
                 .flatten();
             let surface_app_id = surface.as_ref().map(app_id_of);
             if surface != shell.game_mode.overlay_surface {
@@ -2181,6 +2205,21 @@ impl State {
                 "overlay visibility changed"
             );
             bridge.notify_focus_changed();
+        }
+        // The input grab follows the overlay onto the quick-access window, which
+        // maps after the launcher has already asserted a blocking overlay.
+        let regrab = {
+            let shell = self.common.shell.read();
+            match (
+                &shell.game_mode.input_grab,
+                &shell.game_mode.overlay_surface,
+            ) {
+                (Some(grab), Some(overlay)) => grab != overlay && is_quick_access_window(overlay),
+                _ => false,
+            }
+        };
+        if regrab {
+            self.grab_overlay_input();
         }
     }
 
@@ -2498,7 +2537,10 @@ mod tests {
 
     #[test]
     fn a_pidfd_names_its_process_until_it_exits() {
-        assert_eq!(pid_in_fdinfo("pos:\t0\nflags:\t02000002\nPid:\t4242\n"), Some(4242));
+        assert_eq!(
+            pid_in_fdinfo("pos:\t0\nflags:\t02000002\nPid:\t4242\n"),
+            Some(4242)
+        );
         assert_eq!(pid_in_fdinfo("pos:\t0\nPid:\t-1\n"), None, "exited");
         assert_eq!(pid_in_fdinfo("pos:\t0\nflags:\t02\n"), None, "not a pidfd");
     }
@@ -2512,13 +2554,19 @@ mod tests {
             return;
         };
         assert_eq!(pid_of_pidfd(&pidfd), Some(std::process::id()));
-        assert_eq!(uid_of(std::process::id()), Some(rustix::process::getuid().as_raw()));
+        assert_eq!(
+            uid_of(std::process::id()),
+            Some(rustix::process::getuid().as_raw())
+        );
     }
 
     #[test]
     fn the_unit_is_the_innermost_cgroup() {
         let bridge = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-gameframe.slice/kora-ws-gameframe-bridge.service\n";
-        assert_eq!(unit_of_cgroup(bridge), Some("kora-ws-gameframe-bridge.service"));
+        assert_eq!(
+            unit_of_cgroup(bridge),
+            Some("kora-ws-gameframe-bridge.service")
+        );
         assert_eq!(
             crate::workspace_tag::of_cgroup(bridge).as_deref(),
             Some("gameframe")
@@ -2624,7 +2672,7 @@ mod tests {
             let io = Arc::new(GameModeIo {
                 executor: None,
                 authorized: Mutex::new(std::collections::HashMap::new()),
-        attested: Mutex::new(std::collections::HashMap::new()),
+                attested: Mutex::new(std::collections::HashMap::new()),
                 shared: Mutex::new(GameModeShared {
                     active: true,
                     active_app_id: 1234,
