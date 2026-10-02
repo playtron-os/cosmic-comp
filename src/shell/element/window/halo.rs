@@ -42,9 +42,9 @@ const PALETTE_EDGE_MARGIN: i32 = 10;
 /// the card would leave the output puts it above the pill instead, and a card
 /// that fits neither way slides up over the window rather than off the screen.
 ///
-/// `PALETTE_TOP_OFFSET` is the design's distance from a floating window's top
-/// edge, whose pill ends 16px in; taken as clearance under `pill_bottom`, a
-/// joined or fullscreen pill gets the same gap.
+/// `PALETTE_TOP_OFFSET` is the design's distance from a window's top edge to
+/// the card (`top = anchor.y + 22`); taken as clearance under `pill_bottom`, a
+/// fullscreen pill, which hangs inside the output, gets the same gap.
 pub(super) fn palette_origin(
     theme: &crate::comp_theme::CompTheme,
     window: Rectangle<i32, Global>,
@@ -539,25 +539,26 @@ mod tests {
     fn the_palette_hangs_centred_under_the_pill_inside_the_output() {
         let mut theme = icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
         theme.window_header_style = icetron_themes::WindowHeaderStyle::Halo;
+        theme.halo_style = header_bar::design_halo_style();
         let theme = crate::comp_theme::CompTheme::new(std::sync::Arc::new(theme), false);
         let output = Rectangle::<i32, Global>::new((0, 0).into(), (1920, 1080).into());
         let window = Rectangle::new((500, 300).into(), (800, 600).into());
         let card = Size::from((430, 300));
         assert_eq!(
-            palette_origin(&theme, window, 16, output, card),
+            palette_origin(&theme, window, -4, output, card),
             Point::from((500 + 400 - 215, 300 + 22))
         );
-        // A joined pill ends 15px lower, and the palette keeps its clearance.
-        assert_eq!(palette_origin(&theme, window, 31, output, card).y, 300 + 37);
+        // A fullscreen pill ends 42px into the output; the card keeps the same clearance.
+        assert_eq!(palette_origin(&theme, output, 42, output, card).y, 42 + 26);
         // Against an edge it stops at the margin instead of leaving the output.
         let left = Rectangle::new((-100, -50).into(), (300, 600).into());
         assert_eq!(
-            palette_origin(&theme, left, 16, output, card),
+            palette_origin(&theme, left, -4, output, card),
             Point::from((10, 10))
         );
         let right = Rectangle::new((1800, 300).into(), (300, 600).into());
         assert_eq!(
-            palette_origin(&theme, right, 16, output, card).x,
+            palette_origin(&theme, right, -4, output, card).x,
             1920 - 430 - 10
         );
     }
@@ -570,25 +571,26 @@ mod tests {
     fn a_palette_that_would_leave_the_output_goes_above_the_pill_or_slides_up() {
         let mut theme = icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
         theme.window_header_style = icetron_themes::WindowHeaderStyle::Halo;
+        theme.halo_style = header_bar::design_halo_style();
         let theme = crate::comp_theme::CompTheme::new(std::sync::Arc::new(theme), false);
         let output = Rectangle::<i32, Global>::new((0, 0).into(), (1920, 1080).into());
         let low = Rectangle::new((500, 900).into(), (800, 600).into());
         let card = Size::from((430, 300));
-        // The floating pill spans -15..16 from the window's top: above means the
-        // card's bottom sits 6px over the pill's top.
+        // The pill spans -36..-4 from the window's top: above means the card's
+        // bottom sits 26px over the pill's top.
         assert_eq!(
-            palette_origin(&theme, low, 16, output, card).y,
-            900 - 15 - 6 - 300
+            palette_origin(&theme, low, -4, output, card).y,
+            900 - 36 - 26 - 300
         );
         let window = Rectangle::new((500, 300).into(), (800, 600).into());
         let tall = Size::from((430, 800));
         assert_eq!(
-            palette_origin(&theme, window, 16, output, tall).y,
+            palette_origin(&theme, window, -4, output, tall).y,
             1080 - 10 - 800,
             "neither side fits, so it slides up to the bottom margin"
         );
         let huge = Size::from((430, 1200));
-        assert_eq!(palette_origin(&theme, low, 16, output, huge).y, 10);
+        assert_eq!(palette_origin(&theme, low, -4, output, huge).y, 10);
     }
 
     #[test]
