@@ -7661,9 +7661,21 @@ impl Shell {
                         None
                     }
                 });
-            workspace
-                .floating_layer
-                .map(mapped.clone(), initial_position);
+            if quick_access {
+                // Full height at the width it asked for: game mode draws it down the
+                // output's right edge, not as a window the floating layer sizes.
+                let size = Size::from((window.geometry().size.w, output.geometry().size.h));
+                workspace.floating_layer.map_internal(
+                    mapped.clone(),
+                    initial_position,
+                    Some(size),
+                    None,
+                );
+            } else {
+                workspace
+                    .floating_layer
+                    .map(mapped.clone(), initial_position);
+            }
         } else {
             for mapped in workspace
                 .mapped()
