@@ -76,24 +76,19 @@ def find_window(img, color, tol=24):
                 seen[p] = seen.get(p, 0) + 1
     if not rows:
         return None
-    # Lines where the colour fills a good share, so stray pixels of the same
-    # colour elsewhere (antialiased text in the pill) do not stretch the box.
+    # Count only lines the colour mostly fills, so stray pixels of it do not stretch the box.
     ys = [y for y, n in rows.items() if n >= 0.3 * max(rows.values())]
     xs = [x for x, n in cols.items() if n >= 0.1 * max(cols.values())]
     left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
     drawn = max(seen, key=seen.get)
     near = lambda x, y: 0 <= x < img.width and 0 <= y < img.height and dist(img.at(x, y), drawn) <= tol
-    # Refine each edge within a few pixels of the coarse box, along many lines,
-    # so text along an edge or another window over part of it does not move it.
     cols = [left + (right - left) * i // 40 for i in range(4, 37)]
     rows = [top + (bottom - top) * i // 40 for i in range(4, 37)]
-    # An edge is the first line, within a few pixels of the coarse box, where any
-    # of those samples shows the background: text never fills a whole line.
+    # An edge is the first line near the coarse box where any sample shows the background.
     row = lambda y: any(near(x, y) for x in cols)
     col = lambda x: any(near(x, y) for y in rows)
     top = next((y for y in range(top - 3, top + 4) if row(y)), top)
-    # An unfocused window's 1px border is close to its background. A top line
-    # brighter than the line below it is that border: shadows only darken.
+    # A top line brighter than the next is an unfocused border: shadows only darken.
     bright = lambda y: sum(sum(img.at(x, y)) for x in cols) / len(cols)
     for _ in range(2):
         if top + 1 < img.height and bright(top) > bright(top + 1) + 15:
@@ -141,9 +136,7 @@ def find_pill(img, win, clear, mode, scale):
     x0, x1 = max(0, left - 2), min(img.width, right + 2)
     runs = {}
     for y in range(band_top, top):
-        # Light glass is only a little lighter than the desktop, and window shadows
-        # darken both: compare with the desktop beside the pill on the same row.
-        # The brightest of a few pixels out, so a frame edge's antialiasing is not taken for desktop.
+        # Light glass: compare with the desktop just beside the pill on the same row.
         behind = max((img.at(max(0, x0 - k), y) for k in range(0, round(8 * scale) + 1, 2)), key=sum)
         if mode == "dark" or dist(behind, clear) > 40:
             behind = clear
@@ -152,9 +145,7 @@ def find_pill(img, win, clear, mode, scale):
             runs[y] = widest_run(hits, round(20 * scale))
     if not runs:
         return None
-    # The pill is the widest glass in the band; a row belongs to it only where
-    # its glass overlaps that, so a lit frame edge or a line of text beside the
-    # pill (a fullscreen prompt) does not stretch it.
+    # A row belongs to the pill only where it overlaps the widest glass run.
     ref = max(runs.values(), key=lambda r: r[2])
     rows = {y: (lo, hi + 1) for y, (lo, hi, n) in runs.items()
             if n >= round(24 * scale) and lo <= ref[1] and hi >= ref[0]}
@@ -212,7 +203,6 @@ def main():
         top = frame_top(img, win, s)
         width = win[2] - win[0] + 2 * round(s)
         if args.fullscreen:
-            # Fullscreen: the pill hangs 10px inside the top edge, over the client.
             behind = hex_rgb(color)
             pill = find_pill(img, (win[0], round(60 * s), win[2], win[3]), behind, args.mode, s)
         else:

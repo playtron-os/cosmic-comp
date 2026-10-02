@@ -88,11 +88,9 @@ fn grabbable_position(
     ))
 }
 
-/// Space between two snapped Halo halves: `halfSnapRect`'s gutter.
 pub(crate) const HALO_TILE_GAP: i32 = 10;
 
-/// `zone` less the `clearance` a Halo floats in above its window: where that
-/// window may sit, and what Fill and the snap tiles fill.
+/// Where a Halo window may sit: the zone less the room its Halo floats in.
 pub(crate) fn below_halo<C>(zone: Rectangle<i32, C>, clearance: i32) -> Rectangle<i32, C> {
     let top = clearance.clamp(0, zone.size.h.max(0));
     Rectangle::new(
@@ -346,9 +344,7 @@ pub enum TiledCorners {
 }
 
 impl TiledCorners {
-    /// Where a snapped window goes. A Halo window's halves are the design's
-    /// `halfSnapRect`: flush with the zone (the panel holds the outer margins)
-    /// and [`HALO_TILE_GAP`] apart. Everything else keeps COSMIC's tiles.
+    /// A Halo window's halves are the design's `halfSnapRect`; other tiles keep COSMIC's.
     pub fn tile(
         &self,
         zone: Rectangle<i32, Logical>,
@@ -3902,7 +3898,7 @@ impl FloatingLayout {
                     );
                 }
 
-                // A Halo window's own frame draws the design's focus hairline and ring.
+                // A Halo window's own frame draws its focus.
                 if indicator_thickness > 0 && elem.halo_clearance() == 0 {
                     let element = IndicatorShader::focus_element(
                         renderer,
@@ -4010,10 +4006,8 @@ mod tests {
         size(800, 600)
     }
 
-    /// The design's `getHaloOverhang()` at 1x: 4 breathing room, 32 pill, 4 gap.
     const HALO: i32 = 40;
 
-    /// Fill, open, restore and clamp all start from the zone less the Halo's room.
     #[test]
     fn a_halo_window_keeps_its_overhang_free_above_it() {
         let zone = Rectangle::<i32, Local>::new(at(10, 0), size(1900, 1018));
@@ -4026,7 +4020,6 @@ mod tests {
         assert_eq!(below_halo(tiny, HALO).size.h, 0, "never a negative height");
     }
 
-    /// A dropped window's top stops 40px below the zone, so its pill stays on screen.
     #[test]
     fn a_drop_never_lifts_the_pill_off_the_screen() {
         let zone = below_halo(
@@ -4038,8 +4031,6 @@ mod tests {
         assert_eq!(grabbable_position(at(300, 41), win(), zone).y, 41);
     }
 
-    /// `halfSnapRect`: halves start under the Halo's room, fill the zone to its
-    /// bottom and keep 10px between them; the panel holds the outer margins.
     #[test]
     fn halo_halves_are_the_design_s_half_snap_rects() {
         let zone = Rectangle::<i32, Logical>::new((10, 0).into(), (1900, 1018).into());
@@ -4049,7 +4040,6 @@ mod tests {
         assert_eq!(left, Rectangle::new(at(10, HALO), size(945, 978)));
         assert_eq!(right, Rectangle::new(at(965, HALO), size(945, 978)));
         assert_eq!(right.loc.x - (left.loc.x + left.size.w), HALO_TILE_GAP);
-        // Other tiles, and windows without a Halo, keep COSMIC's gaps.
         let top = TiledCorners::Top.tile(halo, (4, 4), true);
         assert_eq!(top.loc.y, HALO + 4);
         assert_eq!(

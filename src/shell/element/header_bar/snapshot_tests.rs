@@ -215,7 +215,6 @@ fn fill_keeps_its_glyph_and_label_in_every_state_and_emits_its_action() {
             size.width,
         )
         .unwrap();
-        // Fill is immediately left of the fullscreen button in this two-action header.
         let point = Point::new(
             pill.x + pill.width
                 - metrics.padding_horizontal
@@ -424,7 +423,6 @@ fn halo_partial_repaint_matches_fresh_frame() {
     );
 }
 
-/// Every glyph's tint, in draw order.
 fn glyph_tints(renderer: &mut Renderer) -> Vec<Color> {
     renderer
         .layers()
@@ -453,7 +451,6 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
         assert_eq!(
             color,
             if index == 0 {
-                // The app mark belongs to the workspace, not the window's chrome.
                 theme.halo_accent()
             } else {
                 theme.text_secondary()
@@ -466,7 +463,6 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
     }
 }
 
-/// Draw the whole header and save it as a PNG preview.
 fn save(
     renderer: &mut Renderer,
     viewport: &Viewport,
@@ -482,8 +478,7 @@ fn save(
         &[Rectangle::with_size(viewport.logical_size())],
     );
     let mut png = pixels.clone();
-    // Tiny-Skia's iced renderer emits BGRA for the compositor's ARGB buffer;
-    // PNG expects RGBA. This conversion is only for the saved preview.
+    // tiny-skia draws BGRA for the compositor; PNG wants RGBA.
     for pixel in png.data_mut().chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
@@ -515,8 +510,6 @@ fn halo_record_glyph_turns_destructive_while_recording() {
     }
 }
 
-/// `.kora-halo__identity`: the app's name leads; the window's title follows as
-/// the selection only when it says something the name does not.
 #[test]
 fn the_app_name_leads_and_the_window_title_follows_as_the_selection() {
     let theme = theme();
@@ -533,7 +526,6 @@ fn the_app_name_leads_and_the_window_title_follows_as_the_selection() {
     assert_eq!(name.expect("the name").source, "Files");
     assert_eq!(selection.expect("the selection").source, "Documents");
 
-    // Without an app name the window's title is all there is.
     let (mut nameless, _, _cache) = render(&theme, 1024.0, 1.0, |header| {
         header.title("Documents").focused(true).on_close(())
     });
@@ -542,7 +534,6 @@ fn the_app_name_leads_and_the_window_title_follows_as_the_selection() {
     assert!(selection.is_none());
 }
 
-/// The label role for the name, the caption role for the selection.
 #[test]
 fn the_identity_uses_the_label_and_caption_roles() {
     let theme = theme();
@@ -607,8 +598,6 @@ fn halo_shadow_fades_before_the_buffer_edge() {
     }
 }
 
-/// The drawn pill sits where every placement path leaves room for it: its
-/// bottom 4px above the window, its top 36px above it, at any scale.
 #[test]
 fn the_drawn_pill_floats_4px_above_the_window() {
     let theme = theme();
@@ -720,7 +709,6 @@ fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
         .collect()
 }
 
-/// The name and, when it is shown, the selection beside it.
 fn identity(renderer: &mut Renderer, theme: &CompTheme) -> (Option<DrawnText>, Option<DrawnText>) {
     let drawn = drawn_text(renderer);
     let by_color = |wanted: Color| drawn.iter().find(|text| text.color == wanted).cloned();
@@ -743,7 +731,6 @@ fn control_icons(renderer: &mut Renderer) -> Vec<Rectangle> {
         .collect()
 }
 
-/// The hairline dividers between the identity, the app side and the window side.
 fn dividers(renderer: &mut Renderer, theme: &CompTheme) -> Vec<Rectangle> {
     let metrics = theme.halo_style();
     renderer
@@ -768,7 +755,6 @@ fn pill(renderer: &mut Renderer, theme: &CompTheme, width: f32) -> Rectangle {
     .0
 }
 
-/// A header carrying every control there is.
 fn everything<'a>(header: HeaderBar<'a, ()>) -> HeaderBar<'a, ()> {
     header
         .title(LONG)
@@ -784,8 +770,6 @@ fn everything<'a>(header: HeaderBar<'a, ()>) -> HeaderBar<'a, ()> {
         .on_new_window(())
 }
 
-/// `halo.css` `[data-tier]`: tier 2 folds the inactive pins away, tier 3 the
-/// ⌄, `+` and window verbs behind ⋯, tier 4 the dividers as well.
 #[test]
 fn the_overflow_tiers_shed_what_the_design_sheds() {
     let theme = theme();
@@ -835,7 +819,6 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
             );
         }
     }
-    // An active capture stays out at every tier.
     for width in [600.0_f32, 400.0, 240.0] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
             everything(header)
@@ -852,7 +835,6 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
             "{width}px keeps the recording pin"
         );
     }
-    // A secondary panel takes tier 4 at any width.
     let (mut renderer, _, _cache) = render(&theme, 1200.0, 1.0, |header| {
         everything(header).window_width(1200.0).panel(true)
     });
@@ -860,7 +842,6 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
     assert!(dividers(&mut renderer, &theme).is_empty());
 }
 
-/// ⋯ is the route to every shed verb: it opens the window's commands.
 #[test]
 fn more_opens_the_commands_once_the_verbs_have_shed() {
     use iced_core::{Event, Point, mouse::Cursor};
@@ -912,9 +893,6 @@ fn more_opens_the_commands_once_the_verbs_have_shed() {
     assert_eq!(messages, vec![Message::Commands]);
 }
 
-/// A window whose title is long and whose app name is unknown — an Android
-/// emulator is the case this came from — still keeps its controls and a
-/// readable name at every tier.
 #[test]
 fn a_lone_long_title_never_pushes_the_controls_out() {
     let theme = theme();
@@ -947,8 +925,6 @@ fn a_lone_long_title_never_pushes_the_controls_out() {
     }
 }
 
-/// `.kora-halo__title` caps the name at 144px, `.kora-halo__sub` the selection
-/// at 128px, and `.kora-halo__identity` the two together at 192px.
 #[test]
 fn the_identity_keeps_the_design_caps() {
     let theme = theme();
@@ -1024,7 +1000,6 @@ fn an_unbroken_word_and_a_cluster_are_cut_on_a_character_boundary() {
     }
 }
 
-/// Within a tier the controls never move or shrink, however long the title.
 #[test]
 fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
     let theme = theme();
@@ -1281,7 +1256,6 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
             span.0 > 0 && span.1 < width,
             "a {width}px window's pill {span:?} left no band to fall through"
         );
-        // The pill the element reports is the pill the hit test assumes.
         let above = ssd_header_render_overhang(&theme) as f64;
         assert_eq!(bounds.loc.y - above, -36.0);
         assert_eq!(bounds.loc.y + bounds.size.h - above, -4.0);

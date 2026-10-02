@@ -1110,8 +1110,6 @@ impl CosmicMapped {
     // MERGE: dropped `blur_corner_radius`, `has_blur` and the `HasBlur` impl — our
     // KDE-blur pipeline is replaced by upstream's frosted-glass (blur_effect) work.
 
-    /// Room every placement keeps free above this element for its Halo; 0 for
-    /// windows without one and for stacks, whose tabs sit inside their geometry.
     pub fn halo_clearance(&self) -> i32 {
         match &self.element {
             CosmicMappedInternal::Window(w) => w.halo_clearance(),

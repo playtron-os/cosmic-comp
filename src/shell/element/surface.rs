@@ -396,8 +396,6 @@ impl CosmicSurface {
         }
     }
 
-    /// A dialog or secondary panel: an xdg toplevel with a parent, or an X11
-    /// window transient for another.
     pub fn has_parent(&self) -> bool {
         match self.0.underlying_surface() {
             WindowSurface::Wayland(toplevel) => toplevel.parent().is_some(),

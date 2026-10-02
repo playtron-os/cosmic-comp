@@ -15,12 +15,10 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tracing::info;
 
-/// WindowFrame's focused border, `color-mix(in oklch, atmosphere 60%, os-border)`.
 const FRAME_FOCUS_WEIGHT: f32 = 0.60;
-/// WindowFrame's focus ring, `0 0 0 1px color-mix(atmosphere 30%, transparent)`.
 const FRAME_RING_ALPHA: f32 = 0.30;
 
-/// CSS `color-mix(in oklch, accent <weight>, border)` premultiplies L/C but not hue.
+/// CSS `color-mix(in oklch, ...)` premultiplies L and C but not hue.
 fn mix_border_accent(border: Color, accent: Color, weight: f32) -> Color {
     use palette::{FromColor, Mix, Oklch, Srgb};
     let alpha = border.a * (1.0 - weight) + accent.a * weight;
@@ -215,7 +213,6 @@ impl CompTheme {
         }
     }
 
-    /// The Halo pill's edge: the 45% atmosphere mix `halo.css` gives `.kora-halo`.
     pub(crate) fn halo_pill_border(&self) -> Color {
         mix_border_accent(
             self.window_border_color(),

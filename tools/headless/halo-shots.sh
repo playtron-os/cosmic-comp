@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# Record the Halo in every window state with headless.sh, and measure each shot.
-#
-#   halo-shots.sh OUTDIR [STATE...]
-#
-# Uses the same CC_BIN / CC_THEMES / CC_DATA_DIRS as headless.sh; HIVE_BIN and
-# PANEL_BIN add an overlay-mode first-party app and the dock when set. SCALES and
-# MODES pick the matrix (default "1 1.5" and "dark light"). Writes
-# OUTDIR/<scale>-<mode>-<state>.png and appends measurements to OUTDIR/measure.jsonl.
-# USABLE_TOP is the usable area's top in logical px (18, the panel's top spacer,
-# when PANEL_BIN is set; else 0).
+# Record and measure the Halo in every window state: halo-shots.sh OUTDIR [STATE...]. See README.md.
 set -euo pipefail
 
 here=$(dirname "$(realpath "$0")")
@@ -24,7 +15,6 @@ export CC_STATE=${CC_STATE:-$out/.state}
 T=$here/headless.sh
 FRONT=1e3a5f
 BACK=4a2a5c
-# A neutral title and a bare shell: the title shows in the Halo, the prompt in the window.
 FOOT_TITLE="kora@kora: ~"
 
 python() {
@@ -88,7 +78,6 @@ run_state() {
 			"$T" move $((l + 30)) $((t + 60)); sleep 0.6
 		fi
 		shoot "$state"
-		# Light glass over another window looks like its shadow in pixels: read those by eye.
 		[ "$mode" = light ] || measure "$out/$scale-$mode-$state.ppm" "$state" --window $FRONT --window $BACK ;;
 	fill)
 		foot_at $FRONT 900x560; sleep 2; "$T" key super+m; sleep 1.5; park; shoot fill
@@ -105,7 +94,6 @@ run_state() {
 		measure "$out/$scale-$mode-$state.ppm" "$state" --window $FRONT --fullscreen ;;
 	drag-top)
 		foot_at $FRONT 900x560; sleep 2
-		# Grab the pill by its name: the controls beside it are buttons, not handles.
 		read -r x y < <(pill_handle "$(shoot_tmp)" $FRONT)
 		"$T" drag $x $y $x 2 16 --hold; sleep 0.4
 		shoot drag-top

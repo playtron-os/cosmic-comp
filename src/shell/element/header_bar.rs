@@ -73,8 +73,7 @@ pub(crate) fn halo_focus_outline(
     }
 }
 
-/// Decoration space inside the window's geometry: a bar's own band. A Halo
-/// floats above the window and reserves none.
+/// A Halo floats above the window and reserves nothing inside it.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     let style = theme.window_header_style();
     if style == WindowHeaderStyle::Halo {
@@ -84,8 +83,6 @@ pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     }
 }
 
-/// Height a decorated window gives up above its client: a bar's band, or the
-/// room a Halo floats in.
 pub fn ssd_top_reserve(theme: &CompTheme) -> i32 {
     if uses_halo_header(theme) {
         halo_clearance(theme)
@@ -100,8 +97,6 @@ pub fn ssd_header_render_height(theme: &CompTheme) -> u32 {
     ssd_header_input_height(theme) + padding.top as u32 + padding.bottom as u32
 }
 
-/// Height of the chrome's layout box: the band above the window plus the
-/// overlay drag strip. What takes input inside it is [`HaloBand::hit`]'s call.
 pub fn ssd_header_input_height(theme: &CompTheme) -> u32 {
     header_render_height_for(&**theme, theme.window_header_style()) as u32
 }
@@ -138,8 +133,7 @@ pub fn ssd_header_overhang(theme: &CompTheme) -> u32 {
     }
 }
 
-/// Room every placement keeps free above a Halo window: the design's
-/// `getHaloOverhang()`, 40 logical px (4 breathing room, 32 pill, 4 gap).
+/// Room kept free above a Halo window: 4 above the pill, the 32px pill, 4 below.
 pub fn halo_clearance(theme: &CompTheme) -> i32 {
     ssd_header_overhang(theme) as i32
 }
@@ -149,8 +143,6 @@ pub fn uses_halo_header(theme: &CompTheme) -> bool {
     theme.window_header_style() == WindowHeaderStyle::Halo
 }
 
-/// The pill's top and bottom edges, relative to the top of the window it
-/// decorates: `(-36, -4)` with the design's metrics.
 pub(crate) fn halo_pill_rows(theme: &CompTheme) -> (i32, i32) {
     let metrics = theme.halo_style();
     let overhang = ssd_header_overhang(theme) as i32;
@@ -160,19 +152,14 @@ pub(crate) fn halo_pill_rows(theme: &CompTheme) -> (i32, i32) {
     )
 }
 
-/// The pill's bottom edge, relative to the top of the window it decorates.
 pub(crate) fn halo_pill_bottom(theme: &CompTheme) -> i32 {
     halo_pill_rows(theme).1
 }
 
-/// What a Halo takes input in, relative to the top-left of the client it decorates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HaloBand {
-    /// The painted pill's x span, once it has been laid out.
     pub pill: Option<(i32, i32)>,
-    /// The pill's top and bottom rows.
     pub rows: (i32, i32),
-    /// Depth of the overlay drag strip inside the client; 0 in reserved mode.
     pub strip: i32,
 }
 
@@ -189,10 +176,7 @@ impl HaloBand {
         }
     }
 
-    /// The painted pill takes input over its span. The gap between pill and
-    /// window is a full-width bridge so the reveal does not flicker on the way
-    /// up, and an overlay client gives its top strip to the Halo for dragging.
-    /// Everything else above the window belongs to whatever is behind it.
+    /// The pill, a full-width bridge in the gap below it, and an overlay client's drag strip.
     pub(crate) fn hit(&self, width: i32, x: i32, y: i32) -> bool {
         let (top, bottom) = self.rows;
         let on_pill = self
@@ -211,8 +195,6 @@ pub(crate) fn fullscreen_pill_bottom(theme: &CompTheme) -> i32 {
     (pill_top + f64::from(metrics.pill_height())).ceil() as i32
 }
 
-/// The Halo's overflow tier, from the window's width in logical pixels — the
-/// design's width divided by display scale. Secondary panels are always tier 4.
 pub(crate) fn halo_tier(width: f32, panel: bool) -> u8 {
     if panel {
         4
@@ -280,15 +262,10 @@ pub struct HeaderBar<'a, Message> {
     focused: bool,
     hovered: bool,
     maximized: bool,
-    /// Whether the top corners sit in SCREEN corners, so a bar header must
-    /// square them. Distinct from `maximized`: a maximized window laid out into
-    /// an inset non-exclusive zone is still maximized while no longer touching
-    /// the top edge.
+    /// Screen corners, not maximized: a maximized window in an inset zone keeps them.
     square_top: bool,
     compositor_outline: bool,
-    /// The decorated window's width, which picks the Halo's overflow tier.
     window_width: Option<f32>,
-    /// A secondary panel (a toplevel with a parent) always takes tier 4.
     panel: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
@@ -364,8 +341,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// Pressing the app glyph, or ⋯ once the verbs have shed. Without it the
-    /// glyph is a plain mark.
     pub fn on_commands(mut self, msg: Message) -> Self {
         self.on_commands = Some(msg);
         self
@@ -409,8 +384,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// Square a bar header's top corners. Must agree with the frame drawn
-    /// around it — see `CosmicWindowInternal::squares_top_corners`.
     pub fn square_top(mut self, square_top: bool) -> Self {
         self.square_top = square_top;
         self
@@ -436,13 +409,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// The decorated window's logical width: what decides the overflow tier.
     pub fn window_width(mut self, width: f32) -> Self {
         self.window_width = Some(width);
         self
     }
 
-    /// A secondary panel keeps the guaranteed minimum whatever its width.
     pub fn panel(mut self, panel: bool) -> Self {
         self.panel = panel;
         self
@@ -452,9 +423,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         halo_tier(self.window_width.unwrap_or(f32::INFINITY), self.panel)
     }
 
-    /// The identity the Halo shows: the app's name, then the window's current
-    /// selection (its title) unless that only repeats the name. An app with no
-    /// known name shows its window title alone.
     fn identity(&self) -> (&str, Option<&str>) {
         match self.app_name.as_deref().filter(|name| !name.is_empty()) {
             Some(name) => (
@@ -563,8 +531,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .into()
     }
 
-    /// The Halo: `[glyph] [app · selection] │ [pins] [⌄] [+] │ [⋯] [Park] [Fill]
-    /// [Fullscreen] [Close]`, shedding by tier as `halo.css` does.
     fn into_halo_element(
         self,
         theme: &'a CompTheme,
@@ -580,7 +546,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .window_header_style(WindowHeaderStyle::Halo)
             .title(Some(&self.title))
             .focused(self.focused)
-            // Halo visibility is composited with its blur by IcedElement.
             .hovered(true)
             .is_windowed(!self.maximized)
             .backdrop_blur(true)
@@ -589,9 +554,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .halo_divider(tier < 4)
             .menu_open(self.menu_open);
         if self.compositor_outline {
-            // The outline shader draws the pill's edge. Icetron mixes its own from
-            // the border AND the accent, so blanking the border alone leaves a
-            // hairline, and at 2x that hairline streaks straight past the corner.
+            // Icetron mixes the edge from border and accent, so the accent goes too.
             header = header.accent(iced_core::Color::TRANSPARENT);
         }
 
@@ -599,8 +562,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let name = name.to_owned();
         let selection = selection.map(str::to_owned);
 
-        // A window whose mark never resolved still needs the button: the glyph
-        // is the route to its commands, so it falls back to a generic one.
+        // The glyph is the route to the commands, so a missing mark falls back.
         let app_icon = self.app_icon.clone().unwrap_or(AppIcon::Svg {
             bytes: icons::APP_WINDOW.bytes,
             symbolic: true,
@@ -614,8 +576,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             theme,
         );
 
-        // `.kora-halo__identity`: the name at the label role, the selection at
-        // the caption role, 8px apart, capped at 144 / 128 / 192px together.
         let mut name_style = theme.text_styles().role(TextRole::Label);
         name_style.font_weight = metrics.title_font_weight;
         let name_text = container(
@@ -628,17 +588,14 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let mut identity = crate::utils::iced::ElasticRow::new()
             .spacing(metrics.gap)
             .reserve(self.halo_trailing_width(theme, tier))
-            // Close and ⋯ never leave, so their room outranks the floor.
             .reserve_min(2.0 * metrics.control_size + metrics.border_width + 3.0 * metrics.gap)
             .floor(name_style.font_size * 6.0)
             .push_rigid(glyph);
-        // At tier 4 the name gives way too (`[data-tier="4"] .kora-halo__title`).
         identity = if tier == 4 {
             identity.push_elastic(name_text)
         } else {
             identity.push_rigid(name_text)
         };
-        // The selection takes what the name leaves of the 192px identity.
         let name_width = measure_text_width(&name, &name_style)
             .ceil()
             .min(HALO_NAME_MAX);
@@ -675,12 +632,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .compositor_managed(true);
         header = header.title_content(identity);
 
-        // App side: pins, the app menu and a new window.
         let mut trailing = row![].spacing(metrics.gap).align_y(Alignment::Center);
         let pins: Vec<_> = self
             .tray
             .iter()
-            // Past tier 1 only an active stateful pin stays out.
             .filter(|entry| tier == 1 || entry.on)
             .collect();
         if !pins.is_empty() {
@@ -724,7 +679,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         header = header.trailing(trailing);
 
-        // Window side: ⋯ once the verbs have shed, then the verbs and Close.
         let mut actions = row![].spacing(metrics.gap).align_y(Alignment::Center);
         if tier >= 3 {
             if let Some(message) = self.on_commands.clone() {
@@ -783,8 +737,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         header = header.action_buttons(actions);
 
-        // Own all gestures beside the custom controls. Do not also wire
-        // AppHeader's inner drag area, which would consume these events.
+        // Own every gesture here; AppHeader's drag area would consume them.
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
         let mut gestures = draggable(header_elem);
@@ -797,7 +750,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if let Some(message) = self.on_right_click {
             gestures = gestures.on_right_click(message);
         }
-        // The pill may span the whole window (`max-width: 100%`).
         container(gestures)
             .width(Length::Fill)
             .height(Length::Fixed(ssd_header_render_height(theme) as f32))
@@ -805,9 +757,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .into()
     }
 
-    /// Natural width of everything after the identity at `tier`: the app side
-    /// (pins, ⌄, +), the divider and the window side. The identity keeps room
-    /// for it so the name gives way before any control does.
     fn halo_trailing_width(&self, theme: &CompTheme, tier: u8) -> f32 {
         let metrics = theme.halo_style();
         let pins = self
@@ -849,7 +798,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     }
 }
 
-/// `.kora-halo__title` / `.kora-halo__sub` / `.kora-halo__identity` max widths.
 const HALO_NAME_MAX: f32 = 144.0;
 const HALO_SELECTION_MAX: f32 = 128.0;
 const HALO_IDENTITY_MAX: f32 = 192.0;
@@ -860,7 +808,6 @@ const HALO_IDENTITY_MAX: f32 = 192.0;
 const RECORD_DOT_PX: f32 = 5.0;
 const RECORD_DOT_INSET_PX: f32 = 1.0;
 
-/// An app's mark at `size`. Only a symbolic glyph takes `tint`.
 fn app_mark<'a, Message: 'a>(
     icon: &AppIcon,
     size: f32,
@@ -868,9 +815,7 @@ fn app_mark<'a, Message: 'a>(
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     match icon {
         AppIcon::Svg { bytes, symbolic } => {
-            // A fully transparent tint is this iced fork's opt-out from the
-            // colour filter: `None` reads as "inherit the parent's text colour",
-            // which would paint a full-colour app mark flat.
+            // A transparent tint opts out of the colour filter; None would inherit the text colour.
             let tint = if *symbolic {
                 tint
             } else {
@@ -889,7 +834,6 @@ fn app_mark<'a, Message: 'a>(
     }
 }
 
-/// `.kora-halo__div`: a hairline in the OS divider colour.
 fn halo_divider<'a, Message: 'a>(
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
@@ -905,8 +849,6 @@ fn halo_divider<'a, Message: 'a>(
         .into()
 }
 
-/// `.kora-halo__glyph`: the app's mark on no backing of its own, with the
-/// design's 1.5px half-accent ring while hovered, pressed or open.
 fn halo_glyph<'a, Message: Clone + 'static>(
     mark: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
     on_press: Option<Message>,
@@ -1135,8 +1077,6 @@ mod tests {
         CompTheme::new(Arc::new(theme), false)
     }
 
-    /// `halo.css` `top: calc(-2rem - var(--spacing-1))`: a 32px pill whose
-    /// bottom sits 4px above every window, inside the 40px `HALO_OVERHANG`.
     #[test]
     fn every_halo_floats_its_pill_4px_above_the_window() {
         let theme = halo_theme();
@@ -1145,7 +1085,6 @@ mod tests {
         assert_eq!(halo_clearance(&theme), 40);
         assert_eq!(ssd_header_overhang(&theme), 40);
         assert_eq!(ssd_top_reserve(&theme), 40);
-        // Nothing is reserved inside the window, in either protocol mode.
         assert_eq!(ssd_header_height(&theme), 0);
         assert_eq!(ssd_header_input_height(&theme), 56);
         let padding = halo_shadow_padding(&theme);
@@ -1164,8 +1103,6 @@ mod tests {
         assert_eq!(halo_clearance(&theme), 0);
     }
 
-    /// The painted pill takes input over its span, the 4px gap is a full-width
-    /// bridge, and only an overlay client lends its top 16px as a drag strip.
     #[test]
     fn the_band_takes_input_on_the_pill_the_bridge_and_an_overlay_strip() {
         let theme = halo_theme();
@@ -1175,11 +1112,9 @@ mod tests {
             let band = HaloBand::new(&theme, pill, overlay);
             let hit = |x, y| band.hit(width, x, y);
             let case = format!("overlay={overlay}");
-            // The pill, edge to edge.
             for (x, y) in [(300, -36), (499, -36), (400, -20), (300, -5)] {
                 assert!(hit(x, y), "pill at ({x}, {y}) {case}");
             }
-            // Beside it and above it the band belongs to the window behind.
             for (x, y) in [
                 (299, -20),
                 (500, -20),
@@ -1190,7 +1125,6 @@ mod tests {
             ] {
                 assert!(!hit(x, y), "see-through at ({x}, {y}) {case}");
             }
-            // The gap between pill and window bridges the whole width.
             for x in [0, 150, 799] {
                 assert!(hit(x, -4) && hit(x, -1), "bridge at {x} {case}");
             }
@@ -1198,18 +1132,15 @@ mod tests {
                 !hit(-1, -2) && !hit(800, -2),
                 "the bridge ends at the window {case}"
             );
-            // Inside the client only an overlay client gives up its strip.
             assert_eq!(hit(10, 0), overlay, "{case}");
             assert_eq!(hit(10, 15), overlay, "{case}");
             assert!(!hit(10, 16), "{case}");
         }
-        // Until the pill has been laid out, and while it is hidden, only the bridge answers.
         let band = HaloBand::new(&theme, None, false);
         assert!(!band.hit(width, 400, -20));
         assert!(band.hit(width, 400, -2));
     }
 
-    /// `halo-layout.ts` `haloTier`: width ÷ display scale against 680 / 480 / 280.
     #[test]
     fn the_overflow_tier_follows_the_design_thresholds() {
         for (width, tier) in [
@@ -1231,7 +1162,6 @@ mod tests {
         );
     }
 
-    /// Fullscreen keeps the prototype's 10px inset under the top edge.
     #[test]
     fn a_fullscreen_pill_hangs_10px_inside_the_output() {
         let theme = halo_theme();
@@ -1244,7 +1174,6 @@ mod tests {
         assert_eq!(fullscreen_pill_bottom(&theme), 42);
     }
 
-    /// Every Halo slides 3px as it hides; none fades in place any more.
     #[test]
     fn a_hidden_halo_rests_3px_low() {
         let theme = halo_theme();

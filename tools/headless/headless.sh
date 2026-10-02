@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Run cosmic-comp nested and headless, drive it, and screenshot it.
-# Nothing reaches the caller's display, session bus, systemd or config: see README.md.
 set -euo pipefail
 
 NIXPKGS=${CC_NIXPKGS:-github:NixOS/nixpkgs/34ab99075ac4f7e40cf037eef32cb1c360bb85e9}
 TOOLS=(Xvfb xdotool grim wlr-randr dbus-daemon)
 NIX_PKGS=(xvfb xdotool grim wlr-randr dbus foot)
-# winit dlopens these; the repo's devShell already puts them on LD_LIBRARY_PATH.
 NIX_LIBS=(libx11 libxcursor libxi libxcb libxkbcommon libglvnd wayland)
 
 STATE=${CC_STATE:-$PWD/.headless}
@@ -52,7 +50,6 @@ Environment for `run`:
 EOF
 }
 
-# Re-exec once under `nix shell` when tools are missing and nix exists.
 need_tools() {
 	local missing=0 t
 	for t in "${TOOLS[@]}"; do command -v "$t" >/dev/null || missing=1; done
@@ -82,7 +79,6 @@ lib_path() {
 
 runtime() { cat "$STATE/runtime" 2>/dev/null || die "not up (no $STATE/runtime)"; }
 
-# The caller's session must never leak in: no display, bus, seat or notify socket.
 isolate() {
 	unset WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS NOTIFY_SOCKET SWAYSOCK I3SOCK \
 		XDG_SESSION_ID XDG_SEAT XDG_VTNR XDG_SESSION_TYPE XDG_CURRENT_DESKTOP XAUTHORITY
@@ -114,8 +110,7 @@ set_mode() {
 	case $1 in dark) echo true >"$dir/is_dark" ;; light) echo false >"$dir/is_dark" ;; *) die "mode: dark|light" ;; esac
 }
 
-# Claim a display at random and keep it only if the X lock names our server:
-# harnesses started at the same moment must never share one.
+# Keep a random display only if its X lock names our server: parallel harnesses never share one.
 start_xvfb() {
 	local size=$1 n pid i try
 	for try in $(seq 20); do
@@ -139,8 +134,7 @@ start_xvfb() {
 	die "no free X display"
 }
 
-# cosmic-comp logs to journald when it can; keep it and its clients off the
-# caller's journal and runtime dir when bubblewrap is there to do it.
+# Hide journald and /run/user from cosmic-comp and its clients when bwrap is there.
 sandbox() {
 	SANDBOX=()
 	if ! command -v bwrap >/dev/null; then
@@ -149,7 +143,6 @@ sandbox() {
 	fi
 	SANDBOX=(bwrap --dev-bind / / --tmpfs /run/systemd/journal)
 	case $(runtime) in /run/user/*) ;; *) SANDBOX+=(--tmpfs /run/user) ;; esac
-	# The user is kora on host kora, also to getpwuid and gethostname.
 	SANDBOX+=(--unshare-uts --hostname kora)
 	local file
 	for file in passwd group hostname; do
@@ -162,8 +155,6 @@ sandbox() {
 	SANDBOX+=(--)
 }
 
-# What a client may inherit: the session `isolate` built, plus toolkit and
-# renderer knobs. Nothing of the caller's shell (prompt, history, cwd) gets in.
 clean_env() {
 	CLEAN_ENV=(env -i -C "$HOME")
 	local name
@@ -179,7 +170,6 @@ clean_env() {
 	done
 }
 
-# /etc/passwd, /etc/group and /etc/hostname as the sandbox shows them.
 identity() {
 	printf 'root:x:0:0:root:/root:/bin/sh\nkora:x:%s:%s:Kora:%s:/bin/sh\nnobody:x:65534:65534::/:/bin/sh\n' \
 		"$(id -u)" "$(id -g)" "$STATE/home" >"$STATE/passwd"
@@ -187,8 +177,7 @@ identity() {
 	echo kora >"$STATE/hostname"
 }
 
-# bwrap forks the command; record that child too, so `down` stops it rather
-# than only the bwrap process that watches it.
+# bwrap forks the command; record the child so `down` stops it too.
 sandboxed() {
 	local file=$1 parent child i
 	[ ${#SANDBOX[@]} -gt 0 ] || return 0
@@ -222,7 +211,6 @@ cmd_up() {
 		ln -sfn "$STATE/data/icetron/themes/${CC_THEME:-playtron}" "$XDG_CONFIG_HOME/icetron/current-theme"
 	fi
 	set_mode "${CC_MODE:-dark}"
-	# The repo's default shortcuts, as a package installs them.
 	local keys
 	keys=$(dirname "$(realpath "$0")")/../../data/keybindings.ron
 	if [ -f "$keys" ]; then
@@ -258,9 +246,7 @@ cmd_up() {
 	sandboxed "$STATE/comp.pid"
 	wait_for "ls $r | grep -qx 'wayland-[0-9]*'"
 	ls "$r" | grep -x 'wayland-[0-9]*' | head -n1 >"$STATE/socket"
-	# winit opens a 1280x800 window; fill the X screen with it.
 	local win
-	# Ours is the only window on this private server.
 	wait_for "xdo search --name . >/dev/null 2>&1"
 	win=$(xdo search --name . | head -n1)
 	xdo windowmove "$win" 0 0 windowsize "$win" "${size%x*}" "${size#*x}"
@@ -277,7 +263,6 @@ cmd_down() {
 	for p in clients comp xvfb dbus; do
 		[ -f "$STATE/$p.pid" ] || continue
 		while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$STATE/$p.pid"
-		# Let each exit, so Xvfb removes its socket and lock before the next run.
 		while read -r pid; do
 			for _ in $(seq 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
 		done <"$STATE/$p.pid"
@@ -305,7 +290,6 @@ cmd_run() {
 	[ $# -gt 0 ] || die "run: missing command"
 	isolate
 	local log; log=$STATE/client-$(basename "$1")-$(date +%s%N).log
-	# Clients start in the private HOME, so a relative path is resolved here.
 	case $1 in */*) set -- "$(realpath "$1")" "${@:2}" ;; esac
 	sandbox client
 	export WAYLAND_DISPLAY; WAYLAND_DISPLAY=$(cat "$STATE/socket")
@@ -351,12 +335,10 @@ cmd_drag() {
 cmd_key() { xdo key --delay 60 "$@"; sleep 0.1; }
 cmd_type() { xdo type --delay 30 "$*"; sleep 0.1; }
 
-# The pixel at X,Y of a fresh shot, as "R G B".
 pixel() {
 	local ppm=$STATE/selftest.ppm
 	rm -f "$ppm"
 	cmd_shot "$ppm" || { echo "- - -"; return; }
-	# P6 header: magic, width, height, maxval; then RGB triplets.
 	local w
 	w=$(head -c 64 "$ppm" | tr -s "\n" " " | awk "{print \$2}")
 	local header=$(head -c 64 "$ppm" | tr "\n" " " | awk "{printf \"%s %s %s %s \", \$1, \$2, \$3, \$4}" | wc -c)
@@ -377,14 +359,11 @@ cmd_selftest() {
 		--window-size-pixels=900x600 bash --norc --noprofile >/dev/null
 	sleep 2
 	cmd_move "$cx" "$cy"
-	# Typing reaches the client: the shell turns the terminal green.
 	cmd_type "printf '\033]11;#00c000\a'"
 	cmd_key Return
 	sleep 0.8
-	# Clear of the pointer, which shots include.
 	px=$(pixel $((cx + 60)) $((cy - 40)))
 	if near "$px" "0 192 0"; then echo "PASS typing reaches the focused client"; else echo "FAIL typing: centre is $px"; ok=0; fi
-	# A compositor shortcut: Super+M fills the output with the window.
 	cmd_key super+m
 	sleep 1.5
 	px=$(pixel 30 "$cy")

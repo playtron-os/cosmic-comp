@@ -42,9 +42,7 @@ const PALETTE_EDGE_MARGIN: i32 = 10;
 /// the card would leave the output puts it above the pill instead, and a card
 /// that fits neither way slides up over the window rather than off the screen.
 ///
-/// `PALETTE_TOP_OFFSET` is the design's distance from a window's top edge to
-/// the card (`top = anchor.y + 22`); taken as clearance under `pill_bottom`, a
-/// fullscreen pill, which hangs inside the output, gets the same gap.
+/// The card sits 22px below the window's top; a fullscreen pill gets the same gap.
 pub(super) fn palette_origin(
     theme: &crate::comp_theme::CompTheme,
     window: Rectangle<i32, Global>,
@@ -548,7 +546,6 @@ mod tests {
             palette_origin(&theme, window, -4, output, card),
             Point::from((500 + 400 - 215, 300 + 22))
         );
-        // A fullscreen pill ends 42px into the output; the card keeps the same clearance.
         assert_eq!(palette_origin(&theme, output, 42, output, card).y, 42 + 26);
         // Against an edge it stops at the margin instead of leaving the output.
         let left = Rectangle::new((-100, -50).into(), (300, 600).into());
@@ -576,8 +573,6 @@ mod tests {
         let output = Rectangle::<i32, Global>::new((0, 0).into(), (1920, 1080).into());
         let low = Rectangle::new((500, 900).into(), (800, 600).into());
         let card = Size::from((430, 300));
-        // The pill spans -36..-4 from the window's top: above means the card's
-        // bottom sits 26px over the pill's top.
         assert_eq!(
             palette_origin(&theme, low, -4, output, card).y,
             900 - 36 - 26 - 300

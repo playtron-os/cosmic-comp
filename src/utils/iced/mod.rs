@@ -2004,7 +2004,6 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     output_scale.x,
                     theme.halo_pill_border(),
                     theme.window_border_width() * zoom as f32,
-                    // The pill has no focus ring of its own; only the frame does.
                     Color::TRANSPARENT,
                     Some(OutlineFocus {
                         progress: frame.progress,

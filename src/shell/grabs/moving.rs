@@ -563,8 +563,7 @@ impl MoveGrab {
                 } else {
                     grab_state.location.y
                 };
-                // The Halo floats above the window, so the window's top stops its
-                // clearance below the zone and the pill never leaves the screen.
+                // The window's top stops its Halo's clearance below the zone.
                 let clearance = self.window.halo_clearance();
                 if clearance > 0 {
                     let zone = layer_map_for_output(&self.cursor_output).non_exclusive_zone();

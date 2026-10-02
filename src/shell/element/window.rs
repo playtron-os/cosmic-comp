@@ -209,12 +209,9 @@ pub enum Focus {
     ResizeBottomLeft,
 }
 
-/// Where a window's server-side chrome takes input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeaderBand {
-    /// A bar `height` px tall at the top of the window's geometry; 0 for none.
     Bar(i32),
-    /// A Halo floating above the client.
     Halo(super::header_bar::HaloBand),
 }
 
@@ -227,10 +224,7 @@ impl Focus {
         Self::under_geometry(surface.geometry(), band, location)
     }
 
-    /// `geo` is the client's geometry. A Halo takes input only where
-    /// [`HaloBand::hit`](super::header_bar::HaloBand::hit) says, so the resize
-    /// borders hug the client's own edges and the rest of the band above the
-    /// window belongs to whatever is behind it.
+    /// A Halo takes input only where its band hits, so resize borders hug the client.
     pub(super) fn under_geometry(
         geo: Rectangle<i32, Logical>,
         band: HeaderBand,
@@ -609,7 +603,6 @@ impl CosmicWindowInternal {
             .and_then(|app| app.new_window.clone())
     }
 
-    /// Space a bar header takes inside the window's geometry; a Halo takes none.
     fn ssd_height(&self) -> i32 {
         super::header_bar::ssd_header_height(&self.theme.lock().unwrap()) as i32
     }
@@ -622,14 +615,12 @@ impl CosmicWindowInternal {
         super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32
     }
 
-    /// The client asked for the Halo's drag strip over its top edge.
     fn halo_overlay(&self) -> bool {
         self.window
             .wl_surface()
             .is_some_and(|surface| crate::wayland::protocols::halo_header::allows_overlay(&surface))
     }
 
-    /// Room placement keeps above this window for its Halo; 0 without one.
     fn halo_clearance(&self) -> i32 {
         if self.uses_halo_header()
             && self.has_ssd(true)
@@ -957,8 +948,7 @@ impl CosmicWindow {
         self.0.with_program(|p| p.window.clone())
     }
 
-    /// Where this window's chrome takes input. Reads the painted pill, so it
-    /// must be called outside `with_program`.
+    /// Reads the painted pill, so call it outside `with_program`.
     fn header_band(&self) -> HeaderBand {
         let (halo, shown) = self.0.with_program(|p| {
             (
@@ -974,8 +964,7 @@ impl CosmicWindow {
         if !halo {
             return HeaderBand::Bar(self.0.with_program(|p| p.ssd_height()));
         }
-        // A hidden pill is not there to press (`pointer-events: none`); the
-        // bridge still reveals it, as hovering the window does.
+        // A hidden pill is not there to press; the bridge still reveals it.
         let pill = shown
             .then(|| self.0.backdrop_input_bounds())
             .flatten()
@@ -989,7 +978,6 @@ impl CosmicWindow {
         })
     }
 
-    /// Room placement keeps above this window for its Halo; 0 without one.
     pub fn halo_clearance(&self) -> i32 {
         self.0.with_program(|p| p.halo_clearance())
     }
@@ -2831,8 +2819,6 @@ mod tests {
 
     use crate::shell::element::header_bar::HaloBand;
 
-    /// The design's band: pill rows -36..-4 over x 300..500 of an 800px client
-    /// whose geometry starts at (7, 9) in its surface.
     fn halo_hit(overlay: bool) -> impl Fn(f64, f64) -> Option<Focus> {
         let geo = Rectangle::new((7, 9).into(), (800, 600).into());
         let band = HeaderBand::Halo(HaloBand {
@@ -2843,8 +2829,6 @@ mod tests {
         move |x, y| Focus::under_geometry(geo, band, (x + 7.0, y + 9.0).into())
     }
 
-    /// The pill, its bridge and (for an overlay client) its drag strip are
-    /// chrome; the rest of the band above the window falls through.
     #[test]
     fn a_floating_halo_takes_input_only_where_the_design_draws_it() {
         for overlay in [false, true] {
@@ -2861,8 +2845,6 @@ mod tests {
         }
     }
 
-    /// Resizing starts at the client's edges for every Halo window; above the
-    /// window the bridge outranks the top border.
     #[test]
     fn halo_resize_borders_hug_the_client_edges() {
         for overlay in [false, true] {
@@ -2881,7 +2863,6 @@ mod tests {
         }
     }
 
-    /// A bar is a band inside the window's own geometry.
     #[test]
     fn a_bar_header_routes_its_band_and_resizes_around_it() {
         let geo = Rectangle::new((0, 0).into(), (800, 600).into());
