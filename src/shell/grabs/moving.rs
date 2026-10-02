@@ -323,9 +323,7 @@ impl MoveGrabState {
                 .to_f64()
                 .upscale(scale)
                 .to_i32_round();
-            let backdrop_geometry = self
-                .window
-                .backdrop_geometry(Rectangle::new(render_location, scaled_size).as_local());
+            let backdrop_geometry = Rectangle::new(render_location, scaled_size).as_local();
 
             push(
                 BackdropShader::element(
@@ -340,10 +338,10 @@ impl MoveGrabState {
             );
         }
 
-        let non_exclusive_geometry = {
-            let layers = layer_map_for_output(output);
-            layers.non_exclusive_zone()
-        };
+        let non_exclusive_geometry = crate::shell::layout::floating::below_halo(
+            layer_map_for_output(output).non_exclusive_zone(),
+            self.window.halo_clearance(),
+        );
 
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);
         let thickness = self.indicator_thickness.max(1);
@@ -560,6 +558,15 @@ impl MoveGrab {
                 } else {
                     grab_state.location.y
                 };
+                // The Halo floats above the window, so the window's top stops its
+                // clearance below the zone and the pill never leaves the screen.
+                let clearance = self.window.halo_clearance();
+                if clearance > 0 {
+                    let zone = layer_map_for_output(&self.cursor_output).non_exclusive_zone();
+                    let top = output_loc.y + f64::from(zone.loc.y + clearance)
+                        - f64::from(grab_state.window_offset.y);
+                    grab_state.location.y = grab_state.location.y.max(top);
+                }
             }
 
             for output in shell.outputs() {

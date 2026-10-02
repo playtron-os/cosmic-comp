@@ -153,7 +153,7 @@ fn halo_header_double_click_toggles_without_stealing_button_clicks_or_drags() {
 }
 
 #[test]
-fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
+fn fill_keeps_its_glyph_and_label_in_every_state_and_emits_its_action() {
     use iced_core::{
         Event, Point,
         widget::{Id, Operation},
@@ -183,14 +183,9 @@ fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
     let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
     tokens.duration_fast = 0.0;
     let theme = CompTheme::new(Arc::new(tokens), true);
-    let maximize = crate::fl!("window-menu-maximize");
-    let restore = crate::fl!("window-menu-restore");
-    for (maximized, fullscreen, expected) in [
-        (false, false, maximize.as_str()),
-        (true, false, restore.as_str()),
-        (false, true, restore.as_str()),
-        (true, true, restore.as_str()),
-    ] {
+    let fill = crate::fl!("halo-fill");
+    for (maximized, fullscreen) in [(false, false), (true, false), (false, true), (true, true)] {
+        let expected = fill.as_str();
         let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
         let header = header_bar()
             .theme(&theme)
@@ -220,7 +215,7 @@ fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
             size.width,
         )
         .unwrap();
-        // Maximize is immediately left of the fullscreen button in this two-action header.
+        // Fill is immediately left of the fullscreen button in this two-action header.
         let point = Point::new(
             pill.x + pill.width
                 - metrics.padding_horizontal
@@ -277,6 +272,7 @@ fn maximize_control_shows_restore_in_fullscreen_and_emits_its_action() {
 fn theme() -> CompTheme {
     let mut theme = DEFAULT_THEME_PAIR.load(true);
     theme.window_header_style = WindowHeaderStyle::Halo;
+    theme.halo_style = super::design_halo_style();
     theme.radii_max = 9999.0;
     theme.glass_glance = Color::from_rgba(0.0, 0.0, 0.0, 0.76);
     theme.shadow_popover = [(8.0, 16.0, 0.102), (16.0, 32.0, 0.149), (32.0, 64.0, 0.2)]
@@ -428,13 +424,9 @@ fn halo_partial_repaint_matches_fresh_frame() {
     );
 }
 
-#[test]
-fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
-    let mut theme = theme();
-    let accent = Color::from_rgb(0.18, 0.62, 0.91);
-    theme.workspace_accent = Some(accent);
-    let (mut renderer, viewport, _cache) = layout(&theme, 1024.0, "Explorer", 1.0);
-    let glyphs: Vec<_> = renderer
+/// Every glyph's tint, in draw order.
+fn glyph_tints(renderer: &mut Renderer) -> Vec<Color> {
+    renderer
         .layers()
         .iter()
         .flat_map(|layer| &layer.images)
@@ -442,43 +434,63 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
             iced_graphics::Image::Vector { svg, .. } => svg.color,
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
+    let mut theme = theme();
+    let accent = Color::from_rgb(0.18, 0.62, 0.91);
+    theme.workspace_accent = Some(accent);
+    let (mut renderer, viewport, _cache) = layout(&theme, 1024.0, "Explorer", 1.0);
+    let glyphs = glyph_tints(&mut renderer);
     assert_eq!(
         glyphs.len(),
         9,
-        "app mark, screenshot, record, menu, new, minimize, maximize, fullscreen, close"
+        "app mark, screenshot, record, menu, new, park, fill, fullscreen, close"
     );
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
             color,
             if index == 0 {
-                // The app mark is the one glyph that belongs to the workspace
-                // rather than to the window's chrome, so it takes the accent.
+                // The app mark belongs to the workspace, not the window's chrome.
                 theme.halo_accent()
             } else {
-                theme.text_tertiary()
+                theme.text_secondary()
             },
-            "every icon but the app mark, the chevron included, is a neutral text token"
+            "every icon but the app mark rests in `--color-text-secondary`"
         );
     }
     if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
-        let mut pixels =
-            tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
-        draw(
-            &mut renderer,
-            &viewport,
-            &mut pixels,
-            &[Rectangle::with_size(viewport.logical_size())],
-        );
-        // Tiny-Skia's iced renderer emits BGRA for the compositor's ARGB buffer;
-        // PNG expects RGBA. This conversion is only for the saved preview.
-        for pixel in pixels.data_mut().chunks_exact_mut(4) {
-            pixel.swap(0, 2);
-        }
-        pixels
-            .save_png(std::path::PathBuf::from(dir).join("halo-controls.png"))
-            .unwrap();
+        save(&mut renderer, &viewport, &dir, "halo-controls.png");
     }
+}
+
+/// Draw the whole header and save it as a PNG preview.
+fn save(
+    renderer: &mut Renderer,
+    viewport: &Viewport,
+    dir: &std::ffi::OsStr,
+    name: &str,
+) -> tiny_skia::Pixmap {
+    let mut pixels =
+        tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+    draw(
+        renderer,
+        viewport,
+        &mut pixels,
+        &[Rectangle::with_size(viewport.logical_size())],
+    );
+    let mut png = pixels.clone();
+    // Tiny-Skia's iced renderer emits BGRA for the compositor's ARGB buffer;
+    // PNG expects RGBA. This conversion is only for the saved preview.
+    for pixel in png.data_mut().chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    png.save_png(dir.join(name)).unwrap();
+    pixels
 }
 
 #[test]
@@ -488,15 +500,7 @@ fn halo_record_glyph_turns_destructive_while_recording() {
         layout_with(&theme, 1024.0, "Explorer", 1.0, |header| {
             header.tray(capture_tray(true))
         });
-    let glyphs: Vec<_> = renderer
-        .layers()
-        .iter()
-        .flat_map(|layer| &layer.images)
-        .filter_map(|image| match image {
-            iced_graphics::Image::Vector { svg, .. } => svg.color,
-            _ => None,
-        })
-        .collect();
+    let glyphs = glyph_tints(&mut renderer);
     assert_eq!(glyphs.len(), 9, "the dot is a quad, not a tenth glyph");
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
@@ -504,36 +508,75 @@ fn halo_record_glyph_turns_destructive_while_recording() {
             match index {
                 0 => theme.halo_accent(),
                 2 => theme.feedback_error_primary(),
-                _ => theme.text_tertiary(),
+                _ => theme.text_secondary(),
             },
             "only the active Record glyph wears the destructive colour"
         );
     }
 }
 
+/// `.kora-halo__identity`: the app's name leads; the window's title follows as
+/// the selection only when it says something the name does not.
 #[test]
-fn halo_app_name_is_a_secondary_label_only_for_a_distinct_title() {
+fn the_app_name_leads_and_the_window_title_follows_as_the_selection() {
     let theme = theme();
-    let secondary_labels = |renderer: &mut Renderer| {
-        renderer
-            .layers()
-            .iter()
-            .flat_map(|layer| &layer.text)
-            .flat_map(|item| item.as_slice())
-            .filter(|text| match text {
-                iced_graphics::text::Text::Paragraph { color, .. }
-                | iced_graphics::text::Text::Cached { color, .. }
-                | iced_graphics::text::Text::Editor { color, .. } => {
-                    *color == theme.text_quaternary()
-                }
-                _ => false,
-            })
-            .count()
-    };
     let (mut same, _, _same_cache) = layout(&theme, 1024.0, "Files", 1.0);
+    let (name, selection) = identity(&mut same, &theme);
+    assert_eq!(name.expect("the name").source, "Files");
+    assert!(
+        selection.is_none(),
+        "a title equal to the name is redundant"
+    );
+
     let (mut different, _, _different_cache) = layout(&theme, 1024.0, "Documents", 1.0);
-    assert_eq!(secondary_labels(&mut same), 0);
-    assert_eq!(secondary_labels(&mut different), 1);
+    let (name, selection) = identity(&mut different, &theme);
+    assert_eq!(name.expect("the name").source, "Files");
+    assert_eq!(selection.expect("the selection").source, "Documents");
+
+    // Without an app name the window's title is all there is.
+    let (mut nameless, _, _cache) = render(&theme, 1024.0, 1.0, |header| {
+        header.title("Documents").focused(true).on_close(())
+    });
+    let (name, selection) = identity(&mut nameless, &theme);
+    assert_eq!(name.expect("the title").source, "Documents");
+    assert!(selection.is_none());
+}
+
+/// The label role for the name, the caption role for the selection.
+#[test]
+fn the_identity_uses_the_label_and_caption_roles() {
+    let theme = theme();
+    let (mut renderer, _, _cache) = layout(&theme, 1024.0, "Documents", 1.0);
+    let sizes: Vec<(String, f32)> = renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.text)
+        .flat_map(|item| item.as_slice())
+        .filter_map(|text| match text {
+            iced_graphics::text::Text::Paragraph { paragraph, .. } => {
+                let paragraph = paragraph.upgrade()?;
+                let buffer = paragraph.buffer();
+                let source = buffer.lines.first()?.text().to_owned();
+                Some((source, buffer.metrics().font_size))
+            }
+            _ => None,
+        })
+        .collect();
+    let size = |wanted: &str| {
+        sizes
+            .iter()
+            .find(|(source, _)| source == wanted)
+            .map(|(_, size)| *size)
+    };
+    use icetron_themes::TextRole;
+    assert_eq!(
+        size("Files"),
+        Some(theme.text_styles().role(TextRole::Label).font_size)
+    );
+    assert_eq!(
+        size("Documents"),
+        Some(theme.text_styles().role(TextRole::Caption).font_size)
+    );
 }
 
 #[test]
@@ -564,83 +607,41 @@ fn halo_shadow_fades_before_the_buffer_edge() {
     }
 }
 
+/// The drawn pill sits where every placement path leaves room for it: its
+/// bottom 4px above the window, its top 36px above it, at any scale.
 #[test]
-fn halo_shadow_padding_preserves_pill_and_blur_position() {
+fn the_drawn_pill_floats_4px_above_the_window() {
     let theme = theme();
-    let (mut renderer, _, _cache) = layout(&theme, 1024.0, "Explorer", 1.5);
-    let (pill, _) = super::super::window::halo_backdrop_blur(
-        renderer.layers(),
-        theme.halo_style().pill_height(),
-        1024.0,
-    )
-    .expect("actual header draw must contain the blur pill");
-    assert_eq!(pill.y - ssd_header_render_overhang(&theme) as f32, -15.0);
-    assert_eq!(
-        pill.y + pill.height - ssd_header_render_overhang(&theme) as f32,
-        16.0
-    );
-    assert_eq!(ssd_header_input_height(&theme), 34);
-    assert_eq!(ssd_header_height(&theme), 0);
-}
-
-#[test]
-fn attached_halo_is_flush_with_square_bottom_corners() {
-    let theme = theme();
-    let mut floating_size = None;
-    for joined in [false, true] {
-        let (mut renderer, _, _cache) = layout_with(&theme, 900.0, "Explorer", 1.5, |header| {
-            header.joined_to_window(joined)
-        });
+    for scale in [1.0, 1.5, 2.0] {
+        let (mut renderer, _, _cache) = layout(&theme, 1024.0, "Explorer", scale);
         let (pill, radii) = super::super::window::halo_backdrop_blur(
             renderer.layers(),
             theme.halo_style().pill_height(),
-            900.0,
+            1024.0,
         )
-        .expect("the actual background/shadow shape supplies the blur corners");
-        let size = (pill.width, pill.height);
-        if let Some(expected) = floating_size {
-            assert_eq!(size, expected, "joining Halo must not resize or replace it");
-        } else {
-            floating_size = Some(size);
-        }
-        let reserved = ssd_header_height_for(&theme, joined);
-        let offset = halo_header_offset(&theme, joined);
-        let top = pill.y - ssd_header_render_overhang(&theme) as f32 - offset as f32;
-        let bottom = top + pill.height;
-        assert_eq!(radii, if joined { [0, 16, 0, 16] } else { [16; 4] });
+        .expect("actual header draw must contain the blur pill");
+        let above = ssd_header_render_overhang(&theme) as f32;
+        assert_eq!(pill.y - above, -36.0, "{scale}x");
+        assert_eq!(pill.y + pill.height - above, -4.0, "{scale}x");
+        assert_eq!(pill.height, 32.0, "{scale}x");
+        assert_eq!(radii, [16; 4], "round at both ends ({scale}x)");
         let (quad, _) = renderer
             .layers()
             .iter()
             .flat_map(|layer| &layer.quads)
             .find(|(quad, _)| quad.bounds == pill && quad.border.width > 0.0)
             .expect("the Halo's own border quad");
-        let width = theme.halo_style().border_width;
-        assert_eq!(
-            quad.border.sides,
-            joined.then_some([width, width, 0.0, width])
-        );
-        assert_eq!(bottom, if joined { reserved as f32 } else { 16.0 });
-        if joined {
-            assert_eq!(
-                top, 0.0,
-                "maximized/tiled Halo must start inside the allocated frame"
-            );
-            assert_eq!(
-                reserved as f32, pill.height,
-                "reserve the visible header, not its shadow buffer"
-            );
-        } else {
-            assert_eq!(
-                reserved, 0,
-                "protocol opt-in keeps the original overlay geometry"
-            );
-        }
+        assert_eq!(quad.border.sides, None, "a border on all four sides");
     }
+    assert_eq!(
+        ssd_header_height(&theme),
+        0,
+        "nothing is reserved in the window"
+    );
 }
 
 // ---------------------------------------------------------------------------
-// The Halo pill is capped clear of the window's rounded top corners, and the
-// identity gives way for the controls rather than the other way round.
+// Identity and overflow tiers.
 // ---------------------------------------------------------------------------
 
 /// A 16x16 square, enough to stand in for a symbolic app mark.
@@ -719,13 +720,13 @@ fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
         .collect()
 }
 
-/// The title and, when it is shown, the app name beside it.
+/// The name and, when it is shown, the selection beside it.
 fn identity(renderer: &mut Renderer, theme: &CompTheme) -> (Option<DrawnText>, Option<DrawnText>) {
     let drawn = drawn_text(renderer);
     let by_color = |wanted: Color| drawn.iter().find(|text| text.color == wanted).cloned();
     (
         by_color(theme.text_primary()),
-        by_color(theme.text_quaternary()),
+        by_color(theme.text_secondary()),
     )
 }
 
@@ -742,7 +743,7 @@ fn control_icons(renderer: &mut Renderer) -> Vec<Rectangle> {
         .collect()
 }
 
-/// The hairline dividers between the tray, the menu and the window controls.
+/// The hairline dividers between the identity, the app side and the window side.
 fn dividers(renderer: &mut Renderer, theme: &CompTheme) -> Vec<Rectangle> {
     let metrics = theme.halo_style();
     renderer
@@ -767,393 +768,222 @@ fn pill(renderer: &mut Renderer, theme: &CompTheme, width: f32) -> Rectangle {
     .0
 }
 
-/// Widest the pill may be in a `width`-wide window, and how far in it starts.
-fn cap(theme: &CompTheme, width: f32, square_top: bool) -> (f32, f32) {
-    let margin = halo_corner_margin(theme, square_top);
-    ((width - 2.0 * margin).max(0.0), margin)
+/// A header carrying every control there is.
+fn everything<'a>(header: HeaderBar<'a, ()>) -> HeaderBar<'a, ()> {
+    header
+        .title(LONG)
+        .app_name("Files")
+        .focused(true)
+        .on_close(())
+        .on_minimize(())
+        .on_maximize(())
+        .on_right_click(())
+        .on_commands(())
+        .tray(capture_tray(false))
+        .on_fullscreen((), false)
+        .on_new_window(())
 }
 
-/// Everything the pill can give up, widest first, with what survives it.
-fn shed(theme: &CompTheme, width: f32) -> (usize, bool, usize) {
-    let (mut renderer, _, _cache) = render(theme, width, 1.0, |header| {
-        header
-            .title(LONG)
-            .app_name("Files")
-            .focused(true)
-            .on_close(())
-            .on_minimize(())
-            .on_maximize(())
-            .on_right_click(())
-            .tray(capture_tray(false))
-            .on_fullscreen((), false)
-            .on_new_window(())
-    });
-    let glyphs = control_icons(&mut renderer).len();
-    let (title, app_name) = identity(&mut renderer, theme);
-    let title_drawn = title.is_some_and(|text| !text.drawn().is_empty());
-    (glyphs, title_drawn, app_name.is_some())
-        .pipe(|(glyphs, title, app)| (glyphs, title, usize::from(app)))
-}
-
-trait Pipe: Sized {
-    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
-        f(self)
+/// `halo.css` `[data-tier]`: tier 2 folds the inactive pins away, tier 3 the
+/// ⌄, `+` and window verbs behind ⋯, tier 4 the dividers as well.
+#[test]
+fn the_overflow_tiers_shed_what_the_design_sheds() {
+    let theme = theme();
+    for (width, glyphs, divider_count, case) in [
+        (
+            1200.0_f32,
+            9,
+            2,
+            "tier 1: mark, 2 pins, ⌄, +, park, fill, fullscreen, close",
+        ),
+        (680.0, 9, 2, "tier 1 at its threshold"),
+        (
+            600.0,
+            7,
+            1,
+            "tier 2: mark, ⌄, +, park, fill, fullscreen, close",
+        ),
+        (480.0, 7, 1, "tier 2 at its threshold"),
+        (400.0, 3, 1, "tier 3: mark, ⋯, close"),
+        (280.0, 3, 1, "tier 3 at its threshold"),
+        (240.0, 3, 0, "tier 4: mark, ⋯, close, no dividers"),
+    ] {
+        let (mut renderer, viewport, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header).window_width(width)
+        });
+        assert_eq!(
+            control_icons(&mut renderer).len(),
+            glyphs,
+            "{width}px {case}"
+        );
+        assert_eq!(
+            dividers(&mut renderer, &theme).len(),
+            divider_count,
+            "{width}px {case}"
+        );
+        let bounds = pill(&mut renderer, &theme, width);
+        assert!(
+            bounds.x >= 0.0 && bounds.x + bounds.width <= width + 0.5,
+            "{width}px: the pill {bounds:?} leaves the window"
+        );
+        if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("halo-tier-{width}.png"),
+            );
+        }
     }
+    // An active capture stays out at every tier.
+    for width in [600.0_f32, 400.0, 240.0] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header)
+                .tray(capture_tray(true))
+                .window_width(width)
+        });
+        let tints = glyph_tints(&mut renderer);
+        assert_eq!(
+            tints
+                .iter()
+                .filter(|tint| **tint == theme.feedback_error_primary())
+                .count(),
+            1,
+            "{width}px keeps the recording pin"
+        );
+    }
+    // A secondary panel takes tier 4 at any width.
+    let (mut renderer, _, _cache) = render(&theme, 1200.0, 1.0, |header| {
+        everything(header).window_width(1200.0).panel(true)
+    });
+    assert_eq!(control_icons(&mut renderer).len(), 3);
+    assert!(dividers(&mut renderer, &theme).is_empty());
 }
-impl<T> Pipe for T {}
 
-/// A pill too narrow for everything gives its parts up in order rather than
-/// dropping the controls on the floor: the app name goes first, the tray
-/// next, then the window controls, and the title and close button remain.
-/// A window whose title is long and whose frame is narrow — an Android
-/// emulator is the case this came from. Its identity is the title alone: no
-/// icon, and an app name that repeats the title and so is hidden. That single
-/// child used to escape the row that keeps room for the controls, so the title
-/// drew in full and pushed every control out, close included.
+/// ⋯ is the route to every shed verb: it opens the window's commands.
+#[test]
+fn more_opens_the_commands_once_the_verbs_have_shed() {
+    use iced_core::{Event, Point, mouse::Cursor};
+    #[derive(Debug, Clone, PartialEq)]
+    enum Message {
+        Commands,
+        Close,
+    }
+    let theme = theme();
+    let mut renderer = Renderer::new(Font::DEFAULT, Pixels(16.0));
+    let header = header_bar()
+        .theme(&theme)
+        .title("Files")
+        .focused(true)
+        .window_width(400.0)
+        .on_commands(Message::Commands)
+        .on_close(Message::Close)
+        .into_element();
+    let size = Size::new(400.0, ssd_header_render_height(&theme) as f32);
+    let mut ui = UserInterface::build(
+        header,
+        size,
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+    ui.draw(
+        &mut renderer,
+        &theme.to_iced_theme(),
+        &Style::default(),
+        mouse::Cursor::Unavailable,
+    );
+    let icons = control_icons(&mut renderer);
+    assert_eq!(icons.len(), 3, "mark, ⋯, close");
+    let more = icons[1];
+    let point = Point::new(more.center_x(), more.center_y());
+    let mut messages = Vec::new();
+    for event in [
+        Event::Mouse(mouse::Event::CursorMoved { position: point }),
+        Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ] {
+        ui.update(
+            &[event],
+            Cursor::Available(point),
+            &mut renderer,
+            &mut messages,
+        );
+    }
+    assert_eq!(messages, vec![Message::Commands]);
+}
+
+/// A window whose title is long and whose app name is unknown — an Android
+/// emulator is the case this came from — still keeps its controls and a
+/// readable name at every tier.
 #[test]
 fn a_lone_long_title_never_pushes_the_controls_out() {
     let theme = theme();
     let title = "Android Emulator - Pixel7_API36_1:5554";
-    for width in [604.0_f32, 460.0, 400.0, 340.0, 302.0] {
+    for width in [1200.0_f32, 604.0, 460.0, 400.0, 340.0, 302.0, 260.0] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
             header
                 .title(title)
                 .focused(true)
+                .window_width(width)
                 .on_close(())
                 .on_minimize(())
                 .on_maximize(())
                 .on_right_click(())
+                .on_commands(())
                 .tray(capture_tray(false))
                 .on_fullscreen((), false)
                 .on_new_window(())
         });
-        let glyphs = control_icons(&mut renderer).len();
-        let drawn = identity(&mut renderer, &theme).0.expect("the title");
-        assert!(
-            glyphs >= 1,
-            "{width}px drew no controls at all — the close button must survive"
-        );
-        assert!(
-            !drawn.drawn().is_empty(),
-            "{width}px drew no name beside the controls"
-        );
-        // Anything that does not fit is cut, rather than drawn over the
-        // controls or pushing them out of the pill.
-        let fits = width >= 604.0;
-        assert_eq!(
-            drawn.ellipsized,
-            !fits,
-            "{width}px: ellipsized={} for {:?}",
-            drawn.ellipsized,
-            drawn.drawn()
-        );
-    }
-}
-
-#[test]
-fn a_narrow_pill_sheds_its_parts_in_order() {
-    let theme = theme();
-    let widths = [
-        2400.0_f32, 1200.0, 900.0, 700.0, 600.0, 520.0, 460.0, 400.0, 360.0, 320.0, 300.0, 280.0,
-        260.0, 240.0, 220.0, 200.0, 180.0, 160.0, 140.0, 120.0, 100.0,
-    ];
-    let mut seen: Vec<(f32, usize, bool, usize)> = Vec::new();
-    for width in widths {
-        let (glyphs, title, app) = shed(&theme, width);
-        seen.push((width, glyphs, title, app));
-    }
-    let widest = seen[0].1;
-    assert_eq!(
-        widest, 9,
-        "a roomy pill draws the app mark and every control: {seen:?}"
-    );
-    // Below this the pill is narrower than the close button and a word
-    // together. The identity, the tray and the controls are three rows iced
-    // lays out in turn, so which of them gives way first stops being ordered
-    // down there and a narrower window can keep one more glyph than a wider
-    // one. No window reaches these widths — the compositor's own minimum is
-    // far above them — and the pill is unusable either way, so the order is
-    // only promised where it can be seen.
-    const ORDERED_ABOVE: f32 = 200.0;
-    for pair in seen.windows(2) {
-        let (wide, wide_glyphs, _, wide_app) = pair[0];
-        let (narrow, narrow_glyphs, _, narrow_app) = pair[1];
-        assert!(
-            narrow_glyphs <= wide_glyphs || narrow < ORDERED_ABOVE,
-            "{narrow}px drew more controls than {wide}px: {seen:?}"
-        );
-        assert!(
-            narrow_app <= wide_app || narrow < ORDERED_ABOVE,
-            "{narrow}px kept an app name {wide}px had dropped: {seen:?}"
-        );
-    }
-    // The app name is the first thing to go, before any control does.
-    let first_control_loss = seen.iter().find(|(_, glyphs, _, _)| *glyphs < widest);
-    if let Some((width, _, _, app)) = first_control_loss {
-        assert_eq!(
-            *app, 0,
-            "a control left at {width}px while the app name was still there: {seen:?}"
-        );
-    }
-    // Close never leaves, and the title outlives every other control: while
-    // anything besides close is still drawn there is room for text too. Below
-    // that the window is narrower than a close button and a word together.
-    // The app mark is drawn whenever the title is, and both are in the
-    // identity row, so a pill down to its last controls carries the mark and
-    // close and nothing else.
-    for (width, glyphs, title, _) in &seen {
-        assert!(*glyphs >= 1, "the close button left at {width}px: {seen:?}");
-        assert!(
-            *title || *glyphs <= 3,
-            "the title went before the controls did at {width}px: {seen:?}"
-        );
-    }
-    // And it really does shed: the narrowest here keeps far less than the widest.
-    let narrowest = seen.last().expect("a sweep").1;
-    assert!(
-        narrowest < widest,
-        "nothing was ever shed across {widths:?}: {seen:?}"
-    );
-}
-
-#[test]
-fn halo_pill_keeps_the_window_corner_radius_clear_on_both_sides() {
-    let theme = theme();
-    // Anything below this and the controls alone outgrow the capped pill; the
-    // identity is gone by then and there is nothing left to give up.
-    for width in [2400.0_f32, 1024.0, 900.0, 600.0, 460.0, 400.0, 320.0] {
-        for (title, app_name) in [
-            ("Files", "Files"),
-            ("Documents", "Files"),
-            (LONG, "Files"),
-            (LONG, LONG),
-            ("Doc", LONG),
-            ("", "Files"),
-            (LONG_WORD, "Files"),
-            (CLUSTERS, "Files"),
-        ] {
-            for square_top in [false, true] {
-                for joined in [false, true] {
-                    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-                        header
-                            .title(title)
-                            .app_name(app_name)
-                            .focused(true)
-                            .square_top(square_top)
-                            .joined_to_window(joined)
-                            .on_close(())
-                            .on_minimize(())
-                            .on_maximize(())
-                            .on_right_click(())
-                            .tray(capture_tray(false))
-                            .on_fullscreen((), false)
-                            .on_new_window(())
-                    });
-                    let bounds = pill(&mut renderer, &theme, width);
-                    let (widest, margin) = cap(&theme, width, square_top);
-                    let case = format!(
-                        "{width}px, {title:?}/{app_name:?}, square_top={square_top}, joined={joined}"
-                    );
-                    assert!(
-                        bounds.width <= widest + 0.5,
-                        "pill {} wide in a {width}px window may not pass {widest} ({case})",
-                        bounds.width
-                    );
-                    assert!(
-                        bounds.x >= margin - 0.5 && bounds.x + bounds.width <= width - margin + 0.5,
-                        "pill {bounds:?} reaches into the {margin}px corner margin ({case})"
-                    );
-                    assert!(
-                        (bounds.x - (width - bounds.width) / 2.0).abs() <= 0.5,
-                        "pill {bounds:?} is not centred ({case})"
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// The regression itself: before the cap, a title long enough to fill the
-/// window made the pill exactly as wide as the window, so its rounded bottom
-/// corners met the window's rounded top corners and left a notch.
-#[test]
-fn a_long_title_no_longer_stretches_the_pill_across_the_whole_window() {
-    let theme = theme();
-    let width = 400.0;
-    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
-    let bounds = pill(&mut renderer, &theme, width);
-    let margin = halo_corner_margin(&theme, false);
-    assert!(margin > 0.0, "a floating window has rounded top corners");
-    assert!(
-        bounds.width < width,
-        "the pill still fills the window: {bounds:?}"
-    );
-    assert!(
-        bounds.width <= width - 2.0 * margin + 0.5,
-        "the pill must stop {margin}px short of each edge: {bounds:?}"
-    );
-}
-
-#[test]
-fn a_squared_top_needs_no_margin_and_keeps_the_full_width() {
-    let theme = theme();
-    assert_eq!(halo_corner_margin(&theme, true), 0.0);
-    assert_eq!(
-        halo_corner_margin(&theme, false),
-        theme.radius_window()[0],
-        "the margin is the radius actually in effect, not a constant"
-    );
-    let mut bar = DEFAULT_THEME_PAIR.load(true);
-    bar.window_header_style = WindowHeaderStyle::Bar;
-    let bar = CompTheme::new(Arc::new(bar), true);
-    assert_eq!(
-        halo_corner_margin(&bar, false),
-        0.0,
-        "a bar header is flush with the frame and owns its own corners"
-    );
-
-    // A maximized window squares its top corners, so the pill may use the lot.
-    let width = 400.0;
-    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-        header
-            .title(LONG)
-            .app_name("Files")
-            .focused(true)
-            .square_top(true)
-            .maximized(true)
-            .on_close(())
-            .on_minimize(())
-            .on_maximize(())
-            .on_right_click(())
-            .tray(capture_tray(false))
-            .on_fullscreen((), false)
-            .on_new_window(())
-    });
-    let bounds = pill(&mut renderer, &theme, width);
-    let capped = width - 2.0 * halo_corner_margin(&theme, false);
-    assert!(
-        bounds.width > capped && bounds.width <= width,
-        "a squared top lifts the {capped}px cap: {bounds:?}"
-    );
-}
-
-#[test]
-fn the_cap_only_bites_once_the_pill_would_reach_the_corners() {
-    let theme = theme();
-    let margin = halo_corner_margin(&theme, false);
-    // What the pill wants, measured where nothing constrains it.
-    let (mut renderer, _, _cache) = layout(&theme, 4000.0, LONG, 1.0);
-    let natural = pill(&mut renderer, &theme, 4000.0).width;
-
-    for (width, expected) in [
-        (4000.0_f32, natural),
-        (natural + 2.0 * margin + 40.0, natural),
-        // Exactly at the threshold the pill still gets everything it asked for.
-        (natural + 2.0 * margin, natural),
-    ] {
-        let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
         let bounds = pill(&mut renderer, &theme, width);
+        let icons = control_icons(&mut renderer);
+        let close = icons.last().expect("the close button");
         assert!(
-            (bounds.width - expected).abs() <= 0.5,
-            "a {width}px window must leave the pill at {expected}, not {}",
-            bounds.width
+            close.x + close.width <= bounds.x + bounds.width,
+            "{width}px: close hangs out of the pill"
         );
+        let drawn = identity(&mut renderer, &theme).0.expect("the title");
+        assert!(drawn.drawn().len() > 4, "{width}px left no readable name");
+        assert!(drawn.ellipsized, "{width}px: 144px caps the name");
     }
-
-    // One pixel narrower and the title starts to give way.
-    let width = natural + 2.0 * margin - 1.0;
-    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
-    let bounds = pill(&mut renderer, &theme, width);
-    assert!(bounds.width < natural, "the cap must bite at {width}px");
-    assert!(bounds.width <= width - 2.0 * margin + 0.5);
-    let (title, _) = identity(&mut renderer, &theme);
-    assert!(title.expect("the title").ellipsized);
 }
 
+/// `.kora-halo__title` caps the name at 144px, `.kora-halo__sub` the selection
+/// at 128px, and `.kora-halo__identity` the two together at 192px.
 #[test]
-fn the_capped_title_ellipsizes_and_the_app_name_survives() {
+fn the_identity_keeps_the_design_caps() {
     let theme = theme();
-    let wide = 2400.0;
-    let narrow = 460.0;
-
-    // Wide: both labels are drawn whole, so the cap changed nothing.
-    let (mut renderer, _, _cache) = layout(&theme, wide, LONG, 1.0);
-    let (title, app_name) = identity(&mut renderer, &theme);
-    let title = title.expect("the title");
-    let app_name = app_name.expect("the app name");
-    assert!(!title.ellipsized && title.drawn() == LONG);
-    assert!(!app_name.ellipsized && app_name.drawn() == "Files");
-
-    // Narrow: the title gives way, the app name keeps every letter.
-    let (mut renderer, _, _cache) = layout(&theme, narrow, LONG, 1.0);
-    let (title, app_name) = identity(&mut renderer, &theme);
-    let title = title.expect("the title");
-    let app_name = app_name.expect("the app name");
-    assert!(title.ellipsized, "the title must be cut: {title:?}");
-    assert!(
-        !title.drawn().is_empty() && LONG.starts_with(title.drawn()) && title.drawn() != LONG,
-        "the title must be a shorter head of itself, ending in an ellipsis: {title:?}"
-    );
-    assert_eq!(title.source, LONG);
-    assert!(
-        !app_name.ellipsized && app_name.drawn() == "Files",
-        "the short app name is cheap to draw in full: {app_name:?}"
-    );
-}
-
-#[test]
-fn a_long_app_name_ellipsizes_instead_of_eating_the_title() {
-    let theme = theme();
-    let width = 460.0;
-
-    // Short title, long app name: the title is cheap, so only the name is cut.
-    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-        header
-            .title("Doc")
-            .app_name(LONG)
-            .focused(true)
-            .on_close(())
-            .on_minimize(())
-            .on_maximize(())
-            .on_right_click(())
-            .tray(capture_tray(false))
-            .on_fullscreen((), false)
-            .on_new_window(())
-    });
-    let (title, app_name) = identity(&mut renderer, &theme);
-    let title = title.expect("the title");
-    let app_name = app_name.expect("the app name");
-    assert!(!title.ellipsized && title.drawn() == "Doc");
-    assert!(
-        app_name.ellipsized,
-        "the app name must be cut: {app_name:?}"
-    );
-    assert!(!app_name.drawn().is_empty() && LONG.starts_with(app_name.drawn()));
-
-    // Both long: neither may be squeezed out of existence.
-    let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-        header
-            .title(LONG)
-            .app_name(LONG_WORD)
-            .focused(true)
-            .on_close(())
-            .on_minimize(())
-            .on_maximize(())
-            .on_right_click(())
-            .tray(capture_tray(false))
-            .on_fullscreen((), false)
-            .on_new_window(())
-    });
-    let (title, app_name) = identity(&mut renderer, &theme);
-    let title = title.expect("the title");
-    let app_name = app_name.expect("the app name");
-    for text in [&title, &app_name] {
-        assert!(text.ellipsized, "both labels must be cut: {text:?}");
+    let width = 2400.0;
+    let bare = {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header).title("").app_name("")
+        });
+        pill(&mut renderer, &theme, width).width
+    };
+    for (name, title) in [
+        ("Files", LONG),
+        (LONG, "Doc"),
+        (LONG, LONG),
+        (LONG_WORD, CLUSTERS),
+    ] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header).title(title).app_name(name)
+        });
+        let extra = pill(&mut renderer, &theme, width).width - bare;
+        let gap = theme.halo_style().gap;
         assert!(
-            !text.drawn().is_empty(),
-            "neither label may be replaced by nothing: {text:?}"
+            extra <= 192.0 + gap + 1.0,
+            "{name:?}/{title:?}: the identity took {extra}px"
         );
-        assert!(text.source.starts_with(text.drawn()));
+        let (name_drawn, selection) = identity(&mut renderer, &theme);
+        let name_drawn = name_drawn.expect("the name");
+        assert_eq!(name_drawn.ellipsized, name.len() > 8, "{name:?}");
+        if let Some(selection) = selection {
+            assert!(
+                selection.ellipsized || selection.source.len() <= 3,
+                "{title:?}"
+            );
+            assert!(!selection.drawn().is_empty());
+        }
     }
 }
 
@@ -1161,19 +991,29 @@ fn a_long_app_name_ellipsizes_instead_of_eating_the_title() {
 fn an_unbroken_word_and_a_cluster_are_cut_on_a_character_boundary() {
     let theme = theme();
     for source in [LONG_WORD, CLUSTERS] {
-        for width in [520.0_f32, 460.0, 420.0, 400.0, 380.0] {
-            let (mut renderer, _, _cache) = layout(&theme, width, source, 1.0);
-            let (title, _) = identity(&mut renderer, &theme);
-            let title = title.expect("the title");
+        for (width, as_name) in [
+            (1200.0_f32, false),
+            (700.0, false),
+            (400.0, true),
+            (240.0, true),
+        ] {
+            let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+                let header = everything(header).window_width(width);
+                if as_name {
+                    header.title("Doc").app_name(source)
+                } else {
+                    header.title(source).app_name("Files")
+                }
+            });
+            let (name, selection) = identity(&mut renderer, &theme);
+            let text = if as_name { name } else { selection }.expect("the label");
             // `drawn` is `None` when the glyph coverage ends mid-character.
-            let drawn = title
+            let drawn = text
                 .drawn
                 .as_deref()
                 .unwrap_or_else(|| panic!("{source:?} cut inside a character at {width}px"));
-            assert!(source.starts_with(drawn), "{title:?} at {width}px");
-            assert!(!drawn.is_empty(), "{title:?} at {width}px");
-            // A cut immediately before a mark that joins the character before
-            // it would have split the cluster it belongs to.
+            assert!(source.starts_with(drawn), "{text:?} at {width}px");
+            assert!(!drawn.is_empty(), "{text:?} at {width}px");
             if let Some(next) = source[drawn.len()..].chars().next() {
                 assert!(
                     !matches!(next, '\u{0300}'..='\u{036F}' | '\u{200D}' | '\u{FE00}'..='\u{FE0F}'),
@@ -1184,35 +1024,23 @@ fn an_unbroken_word_and_a_cluster_are_cut_on_a_character_boundary() {
     }
 }
 
+/// Within a tier the controls never move or shrink, however long the title.
 #[test]
 fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
     let theme = theme();
-    let wide = 2400.0;
-    let (mut renderer, _, _cache) = layout(&theme, wide, "Files", 1.0);
-    let roomy = pill(&mut renderer, &theme, wide);
-    // The app mark rides with the title rather than with the controls, so it
-    // is not one of the glyphs whose spacing this test pins down.
+    let (mut renderer, _, _cache) = render(&theme, 2400.0, 1.0, |header| {
+        everything(header).title("Files").window_width(2400.0)
+    });
+    let roomy = pill(&mut renderer, &theme, 2400.0);
     let expected: Vec<Rectangle> = control_icons(&mut renderer).split_off(1);
-    assert_eq!(
-        expected.len(),
-        8,
-        "screenshot, record, menu, new, minimize, maximize, fullscreen, close"
-    );
+    assert_eq!(expected.len(), 8);
     let expected_dividers = dividers(&mut renderer, &theme);
-    assert_eq!(
-        expected_dividers.len(),
-        2,
-        "before the tray and the controls"
-    );
-    let divider = theme.halo_style().border_width;
-
-    // 360px is the narrowest window that still fits every control: below it the
-    // title has shrunk to the width it keeps (see `halo_corner_margin`'s floor)
-    // and the tray starts to go. The controls that remain must not move or
-    // change size, which is what this measures.
-    for width in [2400.0_f32, 900.0, 600.0, 460.0, 400.0, 360.0] {
+    assert_eq!(expected_dividers.len(), 2);
+    for width in [2400.0_f32, 900.0, 700.0] {
         for title in [LONG, LONG_WORD, CLUSTERS] {
-            let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
+            let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+                everything(header).title(title).window_width(width)
+            });
             let bounds = pill(&mut renderer, &theme, width);
             let icons = control_icons(&mut renderer).split_off(1);
             let case = format!("{width}px, {title:?}");
@@ -1223,37 +1051,12 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
                     (want.width, want.height),
                     "a control was shrunk ({case})"
                 );
-                // Same distance from the pill's trailing edge: neither
-                // squeezed together nor pushed out of the pill.
                 let offset = bounds.x + bounds.width - icon.x;
                 let wanted = roomy.x + roomy.width - want.x;
-                assert!(
-                    (offset - wanted).abs() <= 0.01,
-                    "control moved by {} ({case})",
-                    offset - wanted
-                );
+                assert!((offset - wanted).abs() <= 0.01, "control moved ({case})");
             }
-            let last = icons.last().expect("the close button");
-            assert!(
-                last.x + last.width <= bounds.x + bounds.width - divider,
-                "the controls hang out of the pill ({case})"
-            );
             let drawn = dividers(&mut renderer, &theme);
             assert_eq!(drawn.len(), expected_dividers.len(), "({case})");
-            for (rule, want) in drawn.iter().zip(&expected_dividers) {
-                assert_eq!(
-                    (rule.width, rule.height),
-                    (want.width, want.height),
-                    "a divider was resized ({case})"
-                );
-                let offset = bounds.x + bounds.width - rule.x;
-                let wanted = roomy.x + roomy.width - want.x;
-                assert!(
-                    (offset - wanted).abs() <= 0.01,
-                    "divider moved by {} ({case})",
-                    offset - wanted
-                );
-            }
         }
     }
 }
@@ -1261,7 +1064,7 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
 #[test]
 fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
     let theme = theme();
-    let width = 420.0;
+    let width = 700.0;
     for (chevron, new_window, expected) in [
         (false, false, 7),
         (true, false, 8),
@@ -1273,6 +1076,7 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
                 .title(LONG)
                 .app_name("Files")
                 .focused(true)
+                .window_width(width)
                 .on_close(())
                 .on_minimize(())
                 .on_maximize(())
@@ -1293,16 +1097,11 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
         let icons = control_icons(&mut renderer);
         let case = format!("chevron={chevron}, new_window={new_window}");
         assert_eq!(icons.len(), expected, "{case}");
-        let (widest, _) = cap(&theme, width, false);
-        assert!(bounds.width <= widest + 0.5, "{case}");
         let last = icons.last().expect("the close button");
         assert!(
             last.x + last.width <= bounds.x + bounds.width,
             "the controls hang out of the pill ({case})"
         );
-        // Fewer controls is more room for the title, never less.
-        let (title, _) = identity(&mut renderer, &theme);
-        assert!(title.expect("the title").ellipsized, "{case}");
     }
 }
 
@@ -1316,154 +1115,82 @@ fn an_app_icon_is_never_shrunk_to_make_room_for_the_title() {
     let (mut renderer, _, _cache) = layout_with(&theme, 2400.0, "Files", 1.0, |header| {
         header.app_icon(icon())
     });
-    let roomy = control_icons(&mut renderer);
-    assert_eq!(roomy.len(), 9, "the app mark joins the eight controls");
-    let mark = roomy[0];
-
-    for width in [2400.0_f32, 900.0, 460.0, 400.0, 360.0] {
-        let (mut renderer, _, _cache) =
-            layout_with(&theme, width, LONG, 1.0, |header| header.app_icon(icon()));
+    let mark = control_icons(&mut renderer)[0];
+    assert_eq!((mark.width, mark.height), (14.0, 14.0), "a 14px mark");
+    for width in [2400.0_f32, 900.0, 460.0, 400.0, 260.0] {
+        let (mut renderer, _, _cache) = layout_with(&theme, width, LONG, 1.0, |header| {
+            header.app_icon(icon()).window_width(width)
+        });
         let icons = control_icons(&mut renderer);
-        assert_eq!(icons.len(), 9, "{width}px");
         assert_eq!(
             (icons[0].width, icons[0].height),
             (mark.width, mark.height),
             "the app mark was squeezed at {width}px"
         );
-        let (title, app_name) = identity(&mut renderer, &theme);
-        assert!(!title.expect("the title").drawn().is_empty(), "{width}px");
-        // The app name is the first thing to go, so it is only promised while
-        // there is room for it beside a readable title.
-        if width >= 460.0 {
-            assert!(
-                !app_name.expect("the app name").drawn().is_empty(),
-                "{width}px"
-            );
-        }
+        let (name, _) = identity(&mut renderer, &theme);
+        assert!(!name.expect("the name").drawn().is_empty(), "{width}px");
     }
 }
 
 #[test]
-fn an_absent_or_repeated_app_name_leaves_the_title_the_whole_pill() {
+fn an_absent_or_repeated_app_name_shows_the_title_alone() {
     let theme = theme();
-    let width = 460.0;
-    let mut alone = None;
     for name in [None, Some(""), Some(LONG)] {
-        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+        let (mut renderer, _, _cache) = render(&theme, 1200.0, 1.0, |header| {
             let header = header
                 .title(LONG)
                 .focused(true)
+                .window_width(1200.0)
                 .on_close(())
-                .on_minimize(())
-                .on_maximize(())
-                .on_right_click(())
-                .tray(capture_tray(false))
-                .on_fullscreen((), false)
-                .on_new_window(());
+                .tray(capture_tray(false));
             match name {
                 Some(name) => header.app_name(name),
                 None => header,
             }
         });
-        let (title, app_name) = identity(&mut renderer, &theme);
+        let (title, selection) = identity(&mut renderer, &theme);
         assert!(
-            app_name.is_none(),
-            "{name:?} adds nothing beside the title and must stay hidden"
+            selection.is_none(),
+            "{name:?} adds nothing beside the title"
         );
-        let drawn = title.expect("the title").drawn().to_owned();
-        if let Some(expected) = &alone {
-            assert_eq!(&drawn, expected, "{name:?}");
-        } else {
-            alone = Some(drawn);
-        }
+        assert_eq!(title.expect("the title").source, LONG, "{name:?}");
     }
-    // With a name to fit beside it, the title has to give some of that back.
-    let (mut renderer, _, _cache) = layout(&theme, width, LONG, 1.0);
-    let (title, app_name) = identity(&mut renderer, &theme);
-    assert!(app_name.is_some());
-    assert!(
-        title.expect("the title").drawn().len() < alone.expect("the title alone").len(),
-        "a visible app name must cost the title some of its width"
-    );
 }
 
 #[test]
 fn an_empty_header_still_draws_its_controls() {
     let theme = theme();
-    for width in [900.0_f32, 400.0] {
+    for (width, glyphs) in [(900.0_f32, 9), (400.0, 3)] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-            header
+            everything(header)
                 .title("")
-                .focused(true)
-                .on_close(())
-                .on_minimize(())
-                .on_maximize(())
-                .on_right_click(())
-                .tray(capture_tray(false))
-                .on_fullscreen((), false)
-                .on_new_window(())
+                .app_name("")
+                .window_width(width)
         });
         // The mark is drawn even with no title: it is the route to the
         // window's commands, so it cannot depend on there being text.
-        assert_eq!(control_icons(&mut renderer).len(), 9, "{width}px");
+        assert_eq!(control_icons(&mut renderer).len(), glyphs, "{width}px");
         assert!(drawn_text(&mut renderer).is_empty(), "{width}px");
-        let bounds = pill(&mut renderer, &theme, width);
-        let (widest, _) = cap(&theme, width, false);
-        assert!(bounds.width <= widest + 0.5, "{width}px");
     }
 }
 
 #[test]
 fn a_window_too_narrow_for_its_own_chrome_degrades_without_panicking() {
     let theme = theme();
-    let margin = halo_corner_margin(&theme, false);
-    for width in [
-        300.0_f32,
-        200.0,
-        120.0,
-        60.0,
-        2.0 * margin,
-        2.0 * margin - 1.0,
-        4.0,
-        1.0,
-    ] {
+    for width in [300.0_f32, 200.0, 120.0, 60.0, 28.0, 4.0, 1.0] {
         for title in ["Files", LONG] {
-            let (mut renderer, _, _cache) = layout(&theme, width, title, 1.0);
+            let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+                everything(header).title(title).window_width(width)
+            });
             let case = format!("{width}px, {title:?}");
-            let (widest, _) = cap(&theme, width, false);
-            assert!(widest >= 0.0, "{case}");
             for bounds in control_icons(&mut renderer) {
                 assert!(bounds.width >= 0.0 && bounds.height >= 0.0, "{case}");
             }
             for text in drawn_text(&mut renderer) {
                 assert!(text.drawn.is_some(), "{case}: {text:?}");
             }
-            let found = super::super::window::halo_backdrop_blur(
-                renderer.layers(),
-                theme.halo_style().pill_height(),
-                width,
-            );
-            if let Some((bounds, _)) = found {
-                assert!(
-                    bounds.width >= 0.0 && bounds.width <= widest + 0.5,
-                    "{case}"
-                );
-            }
         }
     }
-    // At 300px the title holds the readable width it keeps and the tray has
-    // begun to go, but the close button and a legible name both survive —
-    // which is the promise, rather than a particular control count.
-    let (mut renderer, _, _cache) = layout(&theme, 300.0, LONG, 1.0);
-    assert!(
-        !control_icons(&mut renderer).is_empty(),
-        "the close button left a 300px window"
-    );
-    let (title, _) = identity(&mut renderer, &theme);
-    assert!(
-        title.expect("the title").drawn().len() > 4,
-        "300px left no readable name"
-    );
 }
 
 #[test]
@@ -1498,94 +1225,10 @@ fn a_bar_header_is_left_alone() {
         let drawn = title.drawn().to_owned();
         assert!(LONG.starts_with(&drawn) && !drawn.is_empty());
         if let Some(expected) = &previous {
-            assert_eq!(&drawn, expected, "the margin must not reach bar headers");
+            assert_eq!(&drawn, expected, "the corners must not reach bar headers");
         } else {
             previous = Some(drawn);
         }
-    }
-}
-
-/// The pill the compositor paints is the only part of a Halo band that takes
-/// input. Beside it the band is see-through, so it belongs to the window behind
-/// — and a joined Halo's resize borders start at the client's own top edge, not
-/// at the top of the band.
-#[test]
-fn only_the_painted_pill_takes_input_out_of_the_halo_band() {
-    use super::super::window::{Focus, RESIZE_BORDER, halo_pill_span};
-    use smithay::utils::{Point, Rectangle as Rect};
-
-    let theme = theme();
-    let input = ssd_header_input_height(&theme) as i32;
-    // A joined Halo only; an overlay one keeps its whole strip and gets no
-    // range at all (`an_overlay_halo_keeps_its_whole_strip_draggable`).
-    let joined = true;
-    for width in [2400.0_f32, 1024.0, 600.0, 400.0] {
-        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
-            header
-                .title(LONG)
-                .app_name("Files")
-                .focused(true)
-                .joined_to_window(joined)
-                .on_close(())
-                .on_minimize(())
-                .on_maximize(())
-                .on_right_click(())
-                .tray(capture_tray(false))
-                .on_fullscreen((), false)
-        });
-        let bounds = pill(&mut renderer, &theme, width);
-        let span = halo_pill_span(f64::from(bounds.x), f64::from(bounds.width));
-        let top = ssd_header_height_for(&theme, joined) as i32;
-        let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, joined));
-        let geo = Rect::new(Point::from((0, 0)), (width as i32, 600).into());
-        let hit = |x: f64, y: f64| {
-            Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
-        };
-        let case = format!("{width}px, joined={joined}, pill={bounds:?}");
-
-        // The pill itself, all the way to its painted edges.
-        let band = f64::from(offset);
-        for x in [span.0, (span.0 + span.1) / 2, span.1 - 1] {
-            assert_eq!(
-                hit(f64::from(x), band),
-                Some(Focus::Header),
-                "the pill is unreachable at {x} ({case})"
-            );
-        }
-
-        // Beside it the band is see-through onto whatever is behind the
-        // window, clear of the resize border, and may not be claimed as chrome.
-        let beside = [
-            0.0,
-            f64::from(span.0) - 1.0,
-            f64::from(span.1),
-            width as f64 - 1.0,
-        ];
-        let clear = f64::from(top - RESIZE_BORDER) - 1.0;
-        for x in beside {
-            assert_eq!(
-                hit(x, clear),
-                None,
-                "the empty band swallowed ({x}, {clear}) ({case})"
-            );
-        }
-
-        // Resizing starts at the window's own edge either way.
-        assert_eq!(
-            hit(f64::from(span.0) - 1.0, f64::from(top - 1)),
-            Some(Focus::ResizeTop),
-            "no top border beside the pill ({case})"
-        );
-        assert_eq!(
-            hit(-1.0, f64::from(top - 1)),
-            Some(Focus::ResizeTopLeft),
-            "no top-left corner at the window's edge ({case})"
-        );
-        assert_eq!(
-            hit(f64::from(width as i32), f64::from(top - RESIZE_BORDER)),
-            Some(Focus::ResizeTopRight),
-            "no top-right corner at the window's edge ({case})"
-        );
     }
 }
 
@@ -1595,7 +1238,7 @@ fn only_the_painted_pill_takes_input_out_of_the_halo_band() {
 /// runs on every pointer motion, stubbing nothing but the client surface.
 #[test]
 fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
-    use super::super::window::{Focus, RESIZE_BORDER, halo_backdrop_blur, halo_pill_span};
+    use super::super::window::{Focus, HeaderBand, halo_backdrop_blur, halo_pill_span};
     use crate::utils::iced::{CompElement, IcedElement, Program};
     use smithay::utils::{Logical, Point, Rectangle as Rect, Size as SmithaySize};
 
@@ -1603,18 +1246,8 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
     impl Program for Halo {
         type Message = ();
         fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
-            header_bar()
-                .theme(theme)
+            everything(header_bar().theme(theme))
                 .title(&self.0)
-                .app_name("Files")
-                .focused(true)
-                .joined_to_window(true)
-                .on_close(())
-                .on_minimize(())
-                .on_maximize(())
-                .on_right_click(())
-                .tray(capture_tray(false))
-                .on_fullscreen((), false)
                 .into_element()
         }
         fn backdrop_blur(
@@ -1632,9 +1265,6 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
     // The font system is global; prime it the way the raster tests do.
     let _ = render(&theme, 200.0, 1.0, |header| header);
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
-    let input = ssd_header_input_height(&theme) as i32;
-    let top = ssd_header_height_for(&theme, true) as i32;
-    let offset = -(ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, true));
 
     for width in [2400, 1280, 640] {
         let element = IcedElement::new(
@@ -1651,17 +1281,18 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
             span.0 > 0 && span.1 < width,
             "a {width}px window's pill {span:?} left no band to fall through"
         );
+        // The pill the element reports is the pill the hit test assumes.
+        let above = ssd_header_render_overhang(&theme) as f64;
+        assert_eq!(bounds.loc.y - above, -36.0);
+        assert_eq!(bounds.loc.y + bounds.size.h - above, -4.0);
 
         let geo = Rect::new(Point::from((0, 0)), (width, 600).into());
-        let hit = |x: f64, y: f64| {
-            Focus::under_geometry(geo, top, input, offset, Some(span), (x, y).into())
-        };
-        let band = f64::from(offset);
+        let band = HeaderBand::Halo(HaloBand::new(&theme, Some(span), false));
+        let hit = |x: f64, y: f64| Focus::under_geometry(geo, band, (x, y).into());
         assert_eq!(
-            hit(f64::from((span.0 + span.1) / 2), band),
+            hit(f64::from((span.0 + span.1) / 2), -20.0),
             Some(Focus::Header)
         );
-        // Chrome behind a maximized window gets these back.
         for x in [
             0.0,
             f64::from(span.0) - 1.0,
@@ -1669,18 +1300,13 @@ fn a_rendered_halo_element_hands_the_hit_test_its_painted_pill() {
             f64::from(width - 1),
         ] {
             assert_eq!(
-                hit(x, band),
+                hit(x, -20.0),
                 None,
                 "the band at {x} still blocks the window behind ({width}px)"
             );
         }
-        // And its corners resize at the window, not out in the band.
-        assert_eq!(hit(-1.0, f64::from(top - 1)), Some(Focus::ResizeTopLeft));
-        assert_eq!(
-            hit(f64::from(width), f64::from(top - RESIZE_BORDER)),
-            Some(Focus::ResizeTopRight)
-        );
-        assert_eq!(hit(-1.0, band), None);
+        assert_eq!(hit(-1.0, -2.0), Some(Focus::ResizeTopLeft));
+        assert_eq!(hit(10.0, -2.0), Some(Focus::Header), "the bridge");
     }
 }
 
@@ -1794,37 +1420,34 @@ fn the_tray_draws_the_pins_it_is_given_in_order() {
 #[test]
 fn a_compositor_outlined_pill_has_no_edge_of_its_own() {
     let theme = theme();
-    for joined in [false, true] {
-        let (mut renderer, viewport, _cache) =
-            layout_with(&theme, 423.0, "Explorer", 2.0, |header| {
-                header.joined_to_window(joined).compositor_outline(true)
-            });
-        let (pill, _) = super::super::window::halo_backdrop_blur(
-            renderer.layers(),
-            theme.halo_style().pill_height(),
-            423.0,
-        )
-        .expect("the drawn Halo pill");
-        let mut pixels =
-            tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
-        draw(
-            &mut renderer,
-            &viewport,
-            &mut pixels,
-            &[Rectangle::with_size(viewport.logical_size())],
-        );
-        let top = (pill.y * 2.0).round() as u32;
-        let left = ((pill.x + 20.0) * 2.0) as u32;
-        let right = ((pill.x + pill.width - 20.0) * 2.0) as u32;
-        for row in top.saturating_sub(1)..=top + 2 {
-            for x in left..right {
-                let px = pixels.pixel(x, row).unwrap();
-                assert_eq!(
-                    (px.red(), px.green(), px.blue()),
-                    (0, 0, 0),
-                    "joined={joined}: the texture draws an edge at ({x}, {row})"
-                );
-            }
+    let (mut renderer, viewport, _cache) = layout_with(&theme, 423.0, "Explorer", 2.0, |header| {
+        header.compositor_outline(true)
+    });
+    let (pill, _) = super::super::window::halo_backdrop_blur(
+        renderer.layers(),
+        theme.halo_style().pill_height(),
+        423.0,
+    )
+    .expect("the drawn Halo pill");
+    let mut pixels =
+        tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+    draw(
+        &mut renderer,
+        &viewport,
+        &mut pixels,
+        &[Rectangle::with_size(viewport.logical_size())],
+    );
+    let top = (pill.y * 2.0).round() as u32;
+    let left = ((pill.x + 20.0) * 2.0) as u32;
+    let right = ((pill.x + pill.width - 20.0) * 2.0) as u32;
+    for row in top.saturating_sub(1)..=top + 2 {
+        for x in left..right {
+            let px = pixels.pixel(x, row).unwrap();
+            assert_eq!(
+                (px.red(), px.green(), px.blue()),
+                (0, 0, 0),
+                "the texture draws an edge at ({x}, {row})"
+            );
         }
     }
 }

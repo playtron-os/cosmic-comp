@@ -52,7 +52,7 @@ pub(super) fn palette_origin(
     output: Rectangle<i32, Global>,
     card: Size<i32, Logical>,
 ) -> Point<i32, Global> {
-    let gap = PALETTE_TOP_OFFSET as i32 - header_bar::halo_pill_bottom(theme, false);
+    let gap = PALETTE_TOP_OFFSET as i32 - header_bar::halo_pill_bottom(theme);
     let width = PALETTE_WIDTH as i32;
     let x = (window.loc.x + window.size.w / 2 - width / 2)
         .max(output.loc.x + PALETTE_EDGE_MARGIN)
@@ -397,7 +397,6 @@ fn open_surface(
                 _ => None,
             }) {
         let anchor = shell.element_geometry(mapped).map(|geometry| {
-            let joined = ui.with_program(|p| p.joined_halo());
             let center = geometry.loc + Point::from((geometry.size.w / 2, geometry.size.h / 2));
             let output = shell
                 .outputs()
@@ -406,7 +405,7 @@ fn open_surface(
                 .unwrap_or_else(|| seat.active_output());
             (
                 geometry,
-                header_bar::halo_pill_bottom(&theme, joined),
+                header_bar::halo_pill_bottom(&theme),
                 output.geometry(),
             )
         });

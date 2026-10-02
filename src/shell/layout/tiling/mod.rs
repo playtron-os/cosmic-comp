@@ -5882,7 +5882,7 @@ fn render_new_tree_windows<R>(
                     let backdrop = CosmicMappedRenderElement::Overlay(BackdropShader::element(
                         renderer,
                         Key::Window(Usage::Overlay, mapped.key()),
-                        mapped.backdrop_geometry(geo),
+                        geo,
                         corner_radius,
                         alpha * color.alpha_f32(),
                         color.to_rgb_f32(),
