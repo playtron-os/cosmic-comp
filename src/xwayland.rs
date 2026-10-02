@@ -720,8 +720,9 @@ impl Common {
         }
     }
 
-    pub fn update_xwayland_settings(&mut self) {
-        let new_scale = match self.config.cosmic_conf.descale_xwayland {
+    /// The scale X clients are given: the outputs', or 1 with descaling off.
+    pub fn xwayland_target_scale(&self) -> f64 {
+        match self.config.cosmic_conf.descale_xwayland {
             XwaylandDescaling::Disabled => 1.,
             XwaylandDescaling::Enabled => {
                 let shell = self.shell.read();
@@ -743,7 +744,11 @@ impl Common {
                         .fold(1f64, |acc, val| acc.max(val))
                 }
             }
-        };
+        }
+    }
+
+    pub fn update_xwayland_settings(&mut self) {
+        let new_scale = self.xwayland_target_scale();
         let (_, cursor_size) = load_cursor_env();
 
         // A server that is new, or whose scale changed, is rescaled; every one

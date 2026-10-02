@@ -23,7 +23,7 @@ use calloop::{
 };
 use smithay::{
     reexports::wayland_server::Client,
-    xwayland::{X11Wm, XWayland, XWaylandEvent, xwm::XwmId},
+    xwayland::{X11Wm, XWayland, XWaylandClientData, XWaylandEvent, xwm::XwmId},
 };
 use tracing::{debug, error, info, warn};
 
@@ -217,6 +217,12 @@ impl State {
                 return;
             }
         };
+        // Before the server reads its outputs: the client that started it is
+        // already connecting, and would see the screen at its unscaled size.
+        if let Some(data) = client.get_data::<XWaylandClientData>() {
+            data.compositor_state
+                .set_client_scale(self.common.xwayland_target_scale());
+        }
 
         let started = id.to_string();
         let inserted = self.common.event_loop_handle.insert_source(
