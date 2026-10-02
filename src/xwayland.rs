@@ -32,12 +32,21 @@ use smithay::{
         },
     },
     desktop::space::SpaceElement,
-    input::{keyboard::ModifiersState, pointer::CursorIcon},
-    reexports::{wayland_server::Client, x11rb::protocol::xproto::Window as X11Window},
+    input::{
+        keyboard::{KeyboardHandle, ModifiersState},
+        pointer::{CursorIcon, PointerHandle},
+    },
+    reexports::{
+        wayland_server::{
+            Client, Resource, backend::DisconnectReason, protocol::wl_surface::WlSurface,
+        },
+        x11rb::protocol::xproto::Window as X11Window,
+    },
     utils::{
         Buffer as BufferCoords, Logical, Point, Rectangle, SERIAL_COUNTER, Serial, Size, Transform,
     },
     wayland::{
+        seat::WaylandFocus,
         selection::{
             SelectionTarget,
             data_device::{
@@ -62,11 +71,18 @@ use crate::logger::GAMING_TARGET;
 use xcursor::parser::Image;
 use xkbcommon::xkb::Keysym;
 
+mod realm;
+pub use realm::{RealmXwayland, XwaylandRealm};
+
 #[derive(Debug)]
 pub struct XWaylandState {
     pub client: Client,
     pub xwm: Option<X11Wm>,
+    /// The workspace this server is for; `None` is the session's.
+    pub realm: Option<String>,
     pub display: u32,
+    /// The scale its clients were last given.
+    pub scale: Option<f64>,
     pub pressed_keys: Vec<Keycode>,
     pub pressed_buttons: Vec<u32>,
     pub last_modifier_state: Option<ModifiersState>,
@@ -75,11 +91,11 @@ pub struct XWaylandState {
     pub xrdb_thread: Sender<(String, u32, u32)>,
 }
 
-fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: u32) {
+fn xrdb_thread(rx: Receiver<(String, u32, u32)>, display: String) {
     while let Ok((cursor_theme, cursor_size, dpi)) = rx.recv() {
         if let Ok(mut child) = std::process::Command::new("xrdb")
             .arg("-merge")
-            .env("DISPLAY", format!(":{}", display))
+            .env("DISPLAY", &display)
             .stdin(Stdio::piped())
             .spawn()
         {
@@ -143,20 +159,12 @@ impl State {
                     x11_socket,
                     display_number,
                 } => {
-                    let (tx, rx) = mpsc::channel();
-                    std::thread::spawn(move || xrdb_thread(rx, display_number));
-
-                    data.common.xwayland_state = Some(XWaylandState {
-                        client: client.clone(),
-                        xwm: None,
-                        display: display_number,
-                        pressed_keys: Vec::new(),
-                        pressed_buttons: Vec::new(),
-                        last_modifier_state: None,
-                        clipboard_selection_dirty: None,
-                        primary_selection_dirty: None,
-                        xrdb_thread: tx,
-                    });
+                    data.common.xwayland_state = Some(XWaylandState::new(
+                        client.clone(),
+                        None,
+                        display_number,
+                        format!(":{display_number}"),
+                    ));
 
                     let wm = match X11Wm::start_wm(
                         data.common.event_loop_handle.clone(),
@@ -262,6 +270,25 @@ fn scale_cursor(
 }
 
 impl XWaylandState {
+    /// `display_name` is what reaches the server from here as `DISPLAY`.
+    fn new(client: Client, realm: Option<String>, display: u32, display_name: String) -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || xrdb_thread(rx, display_name));
+        XWaylandState {
+            client,
+            xwm: None,
+            realm,
+            display,
+            scale: None,
+            pressed_keys: Vec::new(),
+            pressed_buttons: Vec::new(),
+            last_modifier_state: None,
+            clipboard_selection_dirty: None,
+            primary_selection_dirty: None,
+            xrdb_thread: tx,
+        }
+    }
+
     pub fn reload_cursor(&mut self, scale: f64) {
         if let Some(wm) = self.xwm.as_mut() {
             let (theme, size) = load_cursor_theme();
@@ -291,7 +318,72 @@ impl XWaylandState {
     }
 }
 
+/// Whether `xstate`'s server may hear input that is not its own: the session's,
+/// as ever; a workspace's only while what has it is in that workspace too.
+fn may_eavesdrop(xstate: &XWaylandState, focus_realm: Option<&str>) -> bool {
+    xstate
+        .realm
+        .as_deref()
+        .is_none_or(|realm| focus_realm == Some(realm))
+}
+
+fn realm_of_surface(surface: &WlSurface) -> Option<String> {
+    crate::workspace_tag::of_client(&surface.client()?)
+}
+
+fn reset_eavesdropping(
+    xstate: &mut XWaylandState,
+    keyboard: &KeyboardHandle<State>,
+    pointer: &PointerHandle<State>,
+    serial: Serial,
+) {
+    xstate.last_modifier_state.take();
+    for key in xstate.pressed_keys.drain(..).rev() {
+        for wl_keyboard in keyboard.client_keyboards(&xstate.client) {
+            wl_keyboard.key(serial.into(), 0, key.raw() - 8, KeyState::Released.into());
+        }
+    }
+    for button in xstate.pressed_buttons.drain(..).rev() {
+        for wl_pointer in pointer.client_pointers(&xstate.client) {
+            wl_pointer.button(serial.into(), 0, button, ButtonState::Released.into());
+        }
+    }
+}
+
 impl Common {
+    /// Every X server that is up: the session's, then each workspace's.
+    pub fn xwayland_states(&self) -> impl Iterator<Item = &XWaylandState> {
+        self.xwayland_state.iter().chain(
+            self.realm_xwayland
+                .values()
+                .filter_map(|realm| realm.state.as_ref()),
+        )
+    }
+
+    pub fn xwayland_states_mut(&mut self) -> impl Iterator<Item = &mut XWaylandState> {
+        self.xwayland_state.iter_mut().chain(
+            self.realm_xwayland
+                .values_mut()
+                .filter_map(|realm| realm.state.as_mut()),
+        )
+    }
+
+    /// The server `xwm` manages.
+    pub fn xwayland_for(&mut self, xwm: XwmId) -> Option<&mut XWaylandState> {
+        self.xwayland_states_mut()
+            .find(|xstate| xstate.xwm.as_ref().is_some_and(|wm| wm.id() == xwm))
+    }
+
+    pub fn xwm_for(&mut self, xwm: XwmId) -> Option<&mut X11Wm> {
+        self.xwayland_for(xwm)?.xwm.as_mut()
+    }
+
+    fn xwm_ids(&self) -> Vec<XwmId> {
+        self.xwayland_states()
+            .filter_map(|xstate| xstate.xwm.as_ref().map(X11Wm::id))
+            .collect()
+    }
+
     pub fn has_x_keyboard_focus(&self, xwmid: XwmId) -> bool {
         let keyboard = self
             .shell
@@ -309,19 +401,13 @@ impl Common {
     fn has_x_pointer_focus(&self, xwmid: XwmId) -> bool {
         let pointer = self.shell.read().seats.last_active().get_pointer().unwrap();
 
-        if let Some(x_client) = self.xwayland_state.as_ref().and_then(|xstate| {
-            xstate
-                .xwm
-                .as_ref()
-                .is_some_and(|xwm| xwm.id() == xwmid)
-                .then_some(&xstate.client)
-        }) {
-            pointer
-                .current_focus()
-                .is_some_and(|target| target.is_client(x_client))
-        } else {
-            false
-        }
+        self.xwayland_states()
+            .find(|xstate| xstate.xwm.as_ref().is_some_and(|xwm| xwm.id() == xwmid))
+            .is_some_and(|xstate| {
+                pointer
+                    .current_focus()
+                    .is_some_and(|target| target.is_client(&xstate.client))
+            })
     }
 
     pub fn xwayland_notify_focus_change(
@@ -329,44 +415,45 @@ impl Common {
         target: Option<KeyboardFocusTarget>,
         serial: Serial,
     ) {
-        if let Some(xwm_id) = self
-            .xwayland_state
+        if target
             .as_ref()
-            .and_then(|xstate| xstate.xwm.as_ref())
-            .map(|xwm| xwm.id())
+            .is_some_and(|target| matches!(target, KeyboardFocusTarget::LockSurface(_)))
         {
-            if target
-                .as_ref()
-                .is_some_and(|target| matches!(target, KeyboardFocusTarget::LockSurface(_)))
+            self.xwayland_reset_eavesdropping(serial);
+            return;
+        }
+
+        let gaining = self
+            .xwm_ids()
+            .into_iter()
+            .filter(|&id| {
+                !self.has_x_keyboard_focus(id)
+                    && target.as_ref().is_some_and(|target| target.is_xwm(id))
+            })
+            .collect::<Vec<_>>();
+        if gaining.is_empty() {
+            return;
+        }
+
+        let seat = self.shell.read().seats.last_active().clone();
+        let keyboard = seat.get_keyboard().unwrap();
+        let pointer = seat.get_pointer().unwrap();
+        for id in gaining {
+            let Some(xstate) = self.xwayland_for(id) else {
+                continue;
+            };
+            reset_eavesdropping(xstate, &keyboard, &pointer, serial);
+
+            let xwm = xstate.xwm.as_mut().unwrap();
+            if let Some(mime_types) = xstate.clipboard_selection_dirty.take()
+                && let Err(err) = xwm.new_selection(SelectionTarget::Clipboard, Some(mime_types))
             {
-                self.xwayland_reset_eavesdropping(serial);
-                return;
+                warn!(?err, "Failed to set Xwayland clipboard selection.");
             }
-
-            if !self.has_x_keyboard_focus(xwm_id)
-                && target.as_ref().is_some_and(|target| target.is_xwm(xwm_id))
+            if let Some(mime_types) = xstate.primary_selection_dirty.take()
+                && let Err(err) = xwm.new_selection(SelectionTarget::Primary, Some(mime_types))
             {
-                self.xwayland_reset_eavesdropping(serial);
-
-                let xstate = self.xwayland_state.as_mut().unwrap();
-                if let Some(mime_types) = xstate.clipboard_selection_dirty.take()
-                    && let Err(err) = xstate
-                        .xwm
-                        .as_mut()
-                        .unwrap()
-                        .new_selection(SelectionTarget::Clipboard, Some(mime_types))
-                {
-                    warn!(?err, "Failed to set Xwayland clipboard selection.");
-                }
-                if let Some(mime_types) = xstate.primary_selection_dirty.take()
-                    && let Err(err) = xstate
-                        .xwm
-                        .as_mut()
-                        .unwrap()
-                        .new_selection(SelectionTarget::Primary, Some(mime_types))
-                {
-                    warn!(?err, "Failed to set Xwayland clipboard selection.");
-                }
+                warn!(?err, "Failed to set Xwayland clipboard selection.");
             }
         }
     }
@@ -375,18 +462,8 @@ impl Common {
         let seat = self.shell.read().seats.last_active().clone();
         let keyboard = seat.get_keyboard().unwrap();
         let pointer = seat.get_pointer().unwrap();
-
-        let xstate = self.xwayland_state.as_mut().unwrap();
-        xstate.last_modifier_state.take();
-        for key in xstate.pressed_keys.drain(..).rev() {
-            for wl_keyboard in keyboard.client_keyboards(&xstate.client) {
-                wl_keyboard.key(serial.into(), 0, key.raw() - 8, KeyState::Released.into());
-            }
-        }
-        for button in xstate.pressed_buttons.drain(..).rev() {
-            for wl_pointer in pointer.client_pointers(&xstate.client) {
-                wl_pointer.button(serial.into(), 0, button, ButtonState::Released.into());
-            }
+        for xstate in self.xwayland_states_mut() {
+            reset_eavesdropping(xstate, &keyboard, &pointer, serial);
         }
     }
 
@@ -404,15 +481,6 @@ impl Common {
             return;
         }
 
-        if self.xwayland_state.as_ref().is_none_or(|xstate| {
-            xstate
-                .xwm
-                .as_ref()
-                .is_none_or(|xwm| self.has_x_keyboard_focus(xwm.id()))
-        }) {
-            return;
-        }
-
         let keyboard = self
             .shell
             .read()
@@ -423,7 +491,6 @@ impl Common {
         let modifiers = keyboard.modifier_state();
         let is_modifier = sym.is_modifier_key();
 
-        let xstate = self.xwayland_state.as_mut().unwrap();
         if state == KeyState::Pressed {
             match config {
                 EavesdroppingKeyboardMode::Modifiers => {
@@ -439,37 +506,49 @@ impl Common {
                 }
                 _ => {}
             }
-
-            xstate.pressed_keys.push(code);
-        } else {
-            let mut removed = false;
-            xstate.pressed_keys.retain(|c| {
-                if *c == code {
-                    removed = true;
-                    false
-                } else {
-                    true
-                }
-            });
-
-            if !removed {
-                // Don't forward released events, we don't have a record off.
-                return;
-            }
         }
 
-        tracing::trace!("Forwaring key {} {:?} to xwayland", code.raw() - 8, state);
-        for wl_keyboard in keyboard.client_keyboards(&xstate.client) {
-            wl_keyboard.key(serial.into(), time, code.raw() - 8, state.into());
-            if xstate.last_modifier_state != Some(modifiers) {
-                xstate.last_modifier_state = Some(modifiers);
-                wl_keyboard.modifiers(
-                    serial.into(),
-                    modifiers.serialized.depressed,
-                    modifiers.serialized.latched,
-                    modifiers.serialized.locked,
-                    modifiers.serialized.layout_effective,
-                );
+        let focus = keyboard.current_focus();
+        let focus_realm = focus
+            .as_ref()
+            .and_then(|target| realm_of_surface(WaylandFocus::wl_surface(target)?.as_ref()));
+        let listening = self
+            .xwayland_states()
+            .filter_map(|xstate| {
+                let id = xstate.xwm.as_ref()?.id();
+                let listens = if state == KeyState::Pressed {
+                    may_eavesdrop(xstate, focus_realm.as_deref())
+                } else {
+                    // A release goes where its press went, wherever focus is now.
+                    xstate.pressed_keys.contains(&code)
+                };
+                (listens && !self.has_x_keyboard_focus(id)).then_some(id)
+            })
+            .collect::<Vec<_>>();
+
+        for id in listening {
+            let Some(xstate) = self.xwayland_for(id) else {
+                continue;
+            };
+            if state == KeyState::Pressed {
+                xstate.pressed_keys.push(code);
+            } else {
+                xstate.pressed_keys.retain(|c| *c != code);
+            }
+
+            tracing::trace!("Forwaring key {} {:?} to xwayland", code.raw() - 8, state);
+            for wl_keyboard in keyboard.client_keyboards(&xstate.client) {
+                wl_keyboard.key(serial.into(), time, code.raw() - 8, state.into());
+                if xstate.last_modifier_state != Some(modifiers) {
+                    xstate.last_modifier_state = Some(modifiers);
+                    wl_keyboard.modifiers(
+                        serial.into(),
+                        modifiers.serialized.depressed,
+                        modifiers.serialized.latched,
+                        modifiers.serialized.locked,
+                        modifiers.serialized.layout_effective,
+                    );
+                }
             }
         }
     }
@@ -487,56 +566,55 @@ impl Common {
         }
 
         let pointer = self.shell.read().seats.last_active().get_pointer().unwrap();
-
-        if self.xwayland_state.as_ref().is_none_or(|xstate| {
-            xstate
-                .xwm
-                .as_ref()
-                .is_none_or(|xwm| self.has_x_pointer_focus(xwm.id()))
-        }) {
-            return;
-        }
-
-        let xstate = self.xwayland_state.as_mut().unwrap();
-        if state == ButtonState::Pressed {
-            xstate.pressed_buttons.push(button);
-        } else {
-            let mut removed = false;
-            xstate.pressed_buttons.retain(|b| {
-                if *b == button {
-                    removed = true;
-                    false
+        let focus = pointer.current_focus();
+        let focus_realm = focus
+            .as_ref()
+            .and_then(|target| realm_of_surface(WaylandFocus::wl_surface(target)?.as_ref()));
+        let listening = self
+            .xwayland_states()
+            .filter_map(|xstate| {
+                let id = xstate.xwm.as_ref()?.id();
+                let listens = if state == ButtonState::Pressed {
+                    may_eavesdrop(xstate, focus_realm.as_deref())
                 } else {
-                    true
-                }
-            });
+                    // Released where it was pressed; one reset in between has
+                    // released it already.
+                    xstate.pressed_buttons.contains(&button)
+                };
+                (listens && !self.has_x_pointer_focus(id)).then_some(id)
+            })
+            .collect::<Vec<_>>();
 
-            if !removed {
-                // Don't forward released events, we don't have a record off.
-                // This can happen if `xwayland_reset_eavesdropping` was called in between
-                return;
+        for id in listening {
+            let Some(xstate) = self.xwayland_for(id) else {
+                continue;
+            };
+            if state == ButtonState::Pressed {
+                xstate.pressed_buttons.push(button);
+            } else {
+                xstate.pressed_buttons.retain(|b| *b != button);
             }
-        }
 
-        tracing::trace!("Forwaring ptr button {} {:?} to Xwayland", button, state);
-        for wl_pointer in pointer.client_pointers(&xstate.client) {
-            wl_pointer.button(serial.into(), time, button, state.into());
+            tracing::trace!("Forwaring ptr button {} {:?} to Xwayland", button, state);
+            for wl_pointer in pointer.client_pointers(&xstate.client) {
+                wl_pointer.button(serial.into(), time, button, state.into());
+            }
         }
     }
 
     #[profiling::function]
     pub fn update_x11_stacking_order(&mut self) {
-        let shell = self.shell.read();
-        let seat = shell.seats.last_active();
-        let active_output = seat.active_output();
+        if self.xwayland_states().all(|xstate| xstate.xwm.is_none()) {
+            return;
+        }
 
-        if let Some(xwm) = self
-            .xwayland_state
-            .as_mut()
-            .and_then(|state| state.xwm.as_mut())
-        {
+        let order = {
+            let shell = self.shell.read();
+            let seat = shell.seats.last_active();
+            let active_output = seat.active_output();
+
             // front to back, given that is how the workspace enumerates
-            let order = shell
+            shell
                 .workspaces()
                 .sets
                 .iter()
@@ -624,12 +702,18 @@ impl Common {
                                 }),
                         )
                 })
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        };
 
+        for xstate in self.xwayland_states_mut() {
+            let Some(xwm) = xstate.xwm.as_mut() else {
+                continue;
+            };
             // we don't include the popup elements, which contain the OR windows, because we are not supposed to restack them.
             // Which is also why we match upwards, to not disturb elements at the top.
             //
             // But this also means we need to match across all outputs and workspaces at once, to be sure nothing that shouldn't be on top of us is.
+            // Each WM restacks only its own windows and passes over the others'.
             if let Err(err) = xwm.update_stacking_order_upwards(order.iter().rev()) {
                 warn!(wm_id = ?xwm.id(), ?err, "Failed to update Xwm stacking order.");
             }
@@ -662,16 +746,24 @@ impl Common {
         };
         let (_, cursor_size) = load_cursor_env();
 
-        // compare with current scale
-        if let Some(xwayland) = self.xwayland_state.as_mut() {
-            let geometries = if Some(new_scale) != self.xwayland_scale {
-                // backup geometries
-                let geometries = self
-                    .shell
+        // A server that is new, or whose scale changed, is rescaled; every one
+        // is told the current resources and cursor.
+        let shell = self.shell.clone();
+        let mut rescaled = None::<Vec<(X11Surface, Rectangle<i32, Logical>)>>;
+        for xwayland in self.xwayland_states_mut() {
+            if xwayland.scale != Some(new_scale) {
+                // backup geometries, in every realm: a workspace's server has
+                // windows in its own, on screen or not
+                let xwm_id = xwayland.xwm.as_ref().map(X11Wm::id);
+                let geometries = shell
                     .read()
-                    .mapped()
+                    .mapped_everywhere()
                     .flat_map(|m| m.windows().map(|(s, _)| s))
-                    .filter_map(|s| s.0.x11_surface().map(|x| (x.clone(), x.geometry())))
+                    .filter_map(|s| {
+                        s.x11_surface()
+                            .filter(|x| xwm_id.is_some() && x.xwm_id() == xwm_id)
+                            .map(|x| (x.clone(), x.geometry()))
+                    })
                     .collect::<Vec<_>>();
 
                 // update xorg dpi
@@ -703,10 +795,16 @@ impl Common {
                     }
                 }
 
-                Some(geometries)
-            } else {
-                None
-            };
+                // update client scale
+                xwayland
+                    .client
+                    .get_data::<XWaylandClientData>()
+                    .unwrap()
+                    .compositor_state
+                    .set_client_scale(new_scale);
+                xwayland.scale = Some(new_scale);
+                rescaled.get_or_insert_default().extend(geometries);
+            }
 
             if xwayland
                 .xrdb_thread
@@ -722,66 +820,55 @@ impl Common {
 
             // update cursor
             xwayland.reload_cursor(new_scale);
+        }
 
-            if let Some(geometries) = geometries {
-                // update client scale
-                xwayland
-                    .client
-                    .get_data::<XWaylandClientData>()
-                    .unwrap()
-                    .compositor_state
-                    .set_client_scale(new_scale);
-
-                // update wl/xdg_outputs
-                for output in self.shell.read().outputs() {
-                    output.change_current_state(None, None, None, None);
-                }
-
-                // update geometries
-                for (surface, geometry) in geometries.iter() {
-                    if let Err(err) = surface.configure(*geometry) {
-                        warn!(?err, surface = ?surface.window_id(), "Failed to update geometry after scale change");
-                    }
-                }
-                self.update_x11_stacking_order();
-
-                self.xwayland_scale = Some(new_scale);
+        if let Some(geometries) = rescaled {
+            // update wl/xdg_outputs
+            for output in self.shell.read().outputs() {
+                output.change_current_state(None, None, None, None);
             }
+
+            // update geometries
+            for (surface, geometry) in geometries.iter() {
+                if let Err(err) = surface.configure(*geometry) {
+                    warn!(?err, surface = ?surface.window_id(), "Failed to update geometry after scale change");
+                }
+            }
+            self.update_x11_stacking_order();
+
+            self.xwayland_scale = Some(new_scale);
         }
     }
 
     pub fn update_xwayland_primary_output(&mut self) {
-        let mut xwayland_primary_output = None;
-        for output in self.output_configuration_state.outputs() {
-            if output.config().xwayland_primary {
-                xwayland_primary_output = Some(output);
-                break;
+        let xwayland_primary_output = self
+            .output_configuration_state
+            .outputs()
+            .find(|output| output.config().xwayland_primary);
+
+        for xstate in self.xwayland_states_mut() {
+            if let Some(xwm) = xstate.xwm.as_mut()
+                && let Err(err) = xwm.set_randr_primary_output(xwayland_primary_output.as_ref())
+            {
+                warn!(wm_id = ?xwm.id(), "Failed to set xwayland primary output: {}", err);
             }
         }
-
-        if let Some(xstate) = self.xwayland_state.as_mut()
-            && let Some(xwm) = xstate.xwm.as_mut()
-            && let Err(err) = xwm.set_randr_primary_output(xwayland_primary_output.as_ref())
-        {
-            warn!("Failed to set xwayland primary output: {}", err);
-            return;
-        };
 
         self.output_configuration_state.update();
     }
 }
 
 impl XwmHandler for State {
-    fn xwm_state(&mut self, _xwm: XwmId) -> &mut X11Wm {
-        self.common
-            .xwayland_state
-            .as_mut()
-            .and_then(|state| state.xwm.as_mut())
-            .unwrap()
+    fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
+        self.common.xwm_for(xwm).unwrap()
     }
 
-    fn new_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
-    fn new_override_redirect_window(&mut self, _xwm: XwmId, _window: X11Surface) {}
+    fn new_window(&mut self, xwm: XwmId, window: X11Surface) {
+        self.tag_x11_realm(xwm, &window);
+    }
+    fn new_override_redirect_window(&mut self, xwm: XwmId, window: X11Surface) {
+        self.tag_x11_realm(xwm, &window);
+    }
     fn destroyed_window(&mut self, _xwm: XwmId, window: X11Surface) {
         debug!(
             target: GAMING_TARGET,
@@ -885,7 +972,7 @@ impl XwmHandler for State {
             .and_then(|data| data.user_data.get::<ActivationContext>())
         {
             shell.pending_activations.insert(
-                crate::shell::ActivationKey::X11(window.window_id()),
+                crate::shell::ActivationKey::X11(crate::shell::X11Key::of(&window)),
                 *context,
             );
         }
@@ -932,9 +1019,12 @@ impl XwmHandler for State {
         let mut shell = self.common.shell.write();
 
         // Insert activation context if not already present.
-        if let std::collections::hash_map::Entry::Vacant(e) = shell
-            .pending_activations
-            .entry(crate::shell::ActivationKey::X11(surface.window_id()))
+        if let std::collections::hash_map::Entry::Vacant(e) =
+            shell
+                .pending_activations
+                .entry(crate::shell::ActivationKey::X11(crate::shell::X11Key::of(
+                    &surface,
+                )))
             && let Some(startup_id) = startup_id_opt
             && let Some(context) = self
                 .common
@@ -1244,7 +1334,7 @@ impl XwmHandler for State {
                 if let Some(own_pos) = or_windows.iter().position(|or| or == &window) {
                     let compare_pos = or_windows
                         .iter()
-                        .position(|or| or.window_id() == id)
+                        .position(|or| or.window_id() == id && or.xwm_id() == window.xwm_id())
                         .unwrap_or(0);
                     if compare_pos > own_pos {
                         let this = or_windows.remove(own_pos);
@@ -1472,30 +1562,44 @@ impl XwmHandler for State {
 
     fn send_selection(
         &mut self,
-        _xwm: XwmId,
+        xwm: XwmId,
         selection: SelectionTarget,
         mime_type: String,
         fd: OwnedFd,
     ) {
         let seat = self.common.shell.read().seats.last_active().clone();
-        match selection {
-            SelectionTarget::Clipboard => {
-                // A persisted (compositor-owned) clipboard can't be read back
-                // via `request_data_device_client_selection` — serve it from our
-                // own cache instead.
-                if current_data_device_selection_userdata(&seat).as_deref()
-                    == Some(&SelectionUserData::Persisted)
+        // A compositor-owned selection can't be read back through
+        // `request_*_client_selection`: one persisted is served from our cache,
+        // one another X server owns from that server.
+        let owner = match selection {
+            SelectionTarget::Clipboard => current_data_device_selection_userdata(&seat),
+            SelectionTarget::Primary => current_primary_selection_userdata(&seat),
+        }
+        .as_deref()
+        .copied();
+        match (selection, owner) {
+            (SelectionTarget::Clipboard, Some(SelectionUserData::Persisted)) => {
+                crate::clipboard::serve(self, &mime_type, fd);
+            }
+            (_, Some(SelectionUserData::Xwayland(owner))) if owner != xwm => {
+                if let Some(xwm) = self.common.xwm_for(owner)
+                    && let Err(err) = xwm.send_selection(selection, mime_type, fd)
                 {
-                    crate::clipboard::serve(self, &mime_type, fd);
-                } else if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd)
-                {
+                    warn!(
+                        ?err,
+                        "Failed to send selection from one Xwayland to another."
+                    );
+                }
+            }
+            (SelectionTarget::Clipboard, _) => {
+                if let Err(err) = request_data_device_client_selection(&seat, mime_type, fd) {
                     error!(
                         ?err,
                         "Failed to request current wayland clipboard for Xwayland.",
                     );
                 }
             }
-            SelectionTarget::Primary => {
+            (SelectionTarget::Primary, _) => {
                 if let Err(err) = request_primary_client_selection(&seat, mime_type, fd) {
                     error!(
                         ?err,
@@ -1518,37 +1622,46 @@ impl XwmHandler for State {
             SelectionTarget::Clipboard => set_data_device_selection(
                 &self.common.display_handle,
                 &seat,
-                mime_types,
+                mime_types.clone(),
                 SelectionUserData::Xwayland(xwm),
             ),
             SelectionTarget::Primary => set_primary_selection(
                 &self.common.display_handle,
                 &seat,
-                mime_types,
+                mime_types.clone(),
                 SelectionUserData::Xwayland(xwm),
             ),
         }
+        // Setting it here tells no handler, so the other X servers hear it now.
+        self.bridge_selection_to_other_xwayland(selection, Some(mime_types), Some(xwm));
     }
 
     fn cleared_selection(&mut self, xwm: XwmId, selection: SelectionTarget) {
         let shell = self.common.shell.read();
+        let mut cleared = false;
         for seat in shell.seats.iter() {
             match selection {
                 SelectionTarget::Clipboard => {
                     if current_data_device_selection_userdata(seat).as_deref()
                         == Some(&SelectionUserData::Xwayland(xwm))
                     {
-                        clear_data_device_selection(&self.common.display_handle, seat)
+                        clear_data_device_selection(&self.common.display_handle, seat);
+                        cleared = true;
                     }
                 }
                 SelectionTarget::Primary => {
                     if current_primary_selection_userdata(seat).as_deref()
                         == Some(&SelectionUserData::Xwayland(xwm))
                     {
-                        clear_primary_selection(&self.common.display_handle, seat)
+                        clear_primary_selection(&self.common.display_handle, seat);
+                        cleared = true;
                     }
                 }
             }
+        }
+        drop(shell);
+        if cleared {
+            self.bridge_selection_to_other_xwayland(selection, None, Some(xwm));
         }
     }
 
@@ -1564,24 +1677,89 @@ impl XwmHandler for State {
             .write_outputs(self.common.output_configuration_state.outputs());
     }
 
-    fn disconnected(&mut self, _xwm: XwmId) {
-        let xwayland_state = self.common.xwayland_state.as_mut().unwrap();
-        xwayland_state.xwm = None;
+    fn disconnected(&mut self, xwm: XwmId) {
+        // Not from inside the WM's own dispatch: losing it unmaps its windows
+        // and drops the WM.
+        self.common
+            .event_loop_handle
+            .insert_idle(move |state| state.xwayland_lost(xwm));
     }
 }
 
 impl State {
+    /// Mark a workspace server's window with the workspace, before it has a
+    /// surface to tell by.
+    fn tag_x11_realm(&self, xwm: XwmId, window: &X11Surface) {
+        if let Some(realm) = self.realm_of_xwm(xwm) {
+            window
+                .user_data()
+                .insert_if_missing_threadsafe(|| XwaylandRealm(realm));
+        }
+    }
+
+    /// A server's connection closed. A workspace's is started again on its
+    /// next client; the session's stays down, as before.
+    fn xwayland_lost(&mut self, xwm: XwmId) {
+        if let Some(realm) = self.realm_of_xwm(xwm) {
+            self.realm_xwayland_failed(&realm);
+            return;
+        }
+        self.unmap_x11_windows_of(xwm);
+        if let Some(xstate) = self.common.xwayland_state.as_mut()
+            && xstate.xwm.as_ref().is_some_and(|wm| wm.id() == xwm)
+        {
+            // Its client too, or a request of theirs still queued asks for the WM.
+            self.common
+                .display_handle
+                .backend_handle()
+                .kill_client(xstate.client.id(), DisconnectReason::ConnectionClosed);
+            xstate.xwm = None;
+        }
+    }
+
+    /// Take every window of `xwm` off the desktops, in every realm. First, while
+    /// the WM is alive: a window whose WM is gone compares equal to nothing.
+    fn unmap_x11_windows_of(&mut self, xwm: XwmId) {
+        let mut shell = self.common.shell.write();
+        shell
+            .pending_windows
+            .retain(|p| p.surface.x11_surface().and_then(X11Surface::xwm_id) != Some(xwm));
+        shell
+            .override_redirect_windows
+            .retain(|or| or.xwm_id() != Some(xwm));
+        let windows = shell
+            .mapped_everywhere()
+            .flat_map(|m| m.windows().map(|(s, _)| s))
+            .filter_map(|s| s.x11_surface().filter(|x| x.xwm_id() == Some(xwm)).cloned())
+            .collect::<Vec<_>>();
+        if windows.is_empty() {
+            return;
+        }
+        let seat = shell.seats.last_active().clone();
+        for window in &windows {
+            shell.unmap_surface(window, &seat, &mut self.common.toplevel_info_state);
+        }
+        let outputs = shell.outputs().cloned().collect::<Vec<_>>();
+        for output in &outputs {
+            shell.refresh_active_space(output);
+        }
+        drop(shell);
+        for output in &outputs {
+            self.backend.schedule_render(output);
+        }
+    }
+
     pub(crate) fn map_x11_window_now(&mut self, window: &CosmicSurface) {
         // Guard against zombie maps: an X11 window can be unmapped/destroyed while
         // we wait for its _NET_WM_SYNC_REQUEST ack.
         if let Some(x11) = window.x11_surface()
             && (!x11.alive() || x11.mapped_window_id().is_none())
         {
-            let win_id = x11.window_id();
+            let key = crate::shell::X11Key::of(x11);
             let mut shell = self.common.shell.write();
             shell
                 .pending_windows
-                .retain(|p| p.surface.x11_surface().map(|s| s.window_id()) != Some(win_id));
+                .retain(|p| p.surface.x11_key() != Some(key));
             return;
         }
         self.check_pending_pid_embeds_for_window(window);

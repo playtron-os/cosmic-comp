@@ -445,6 +445,8 @@ pub struct Common {
     pub workspace_state: WorkspaceState<State>,
     pub xwayland_scale: Option<f64>,
     pub xwayland_state: Option<XWaylandState>,
+    /// Each running workspace's X server, by workspace id.
+    pub realm_xwayland: std::collections::HashMap<String, crate::xwayland::RealmXwayland>,
     pub xwayland_shell_state: XWaylandShellState,
     pub pointer_focus_state: Option<PointerFocusState>,
 
@@ -1028,6 +1030,7 @@ impl State {
                 launcher_key: Default::default(),
                 xwayland_scale: None,
                 xwayland_state: None,
+                realm_xwayland: std::collections::HashMap::new(),
                 xwayland_shell_state,
                 pointer_focus_state: None,
                 dbus_state,
@@ -1045,11 +1048,25 @@ impl State {
         }
     }
 
+    /// Follow the workspace registry: its realms, and their X servers.
+    pub fn set_workspace_registry(&mut self, registry: crate::dbus::workspaces::Registry) {
+        let running = match &registry {
+            crate::dbus::workspaces::Registry::Present { running, .. } => Some(running.clone()),
+            // A registry restarting is not its workspaces stopping; only its
+            // list says which have.
+            crate::dbus::workspaces::Registry::Absent => None,
+        };
+        self.apply_workspace_registry(registry);
+        if let Some(running) = running {
+            self.sync_realm_xwayland(&running);
+        }
+    }
+
     /// Put a realm on screen, in response to the workspace registry.
     ///
     /// Lives here rather than on `Shell` because swapping which realm is
     /// exposed touches the workspace-protocol state, which `Common` owns.
-    pub fn set_workspace_registry(&mut self, registry: crate::dbus::workspaces::Registry) {
+    fn apply_workspace_registry(&mut self, registry: crate::dbus::workspaces::Registry) {
         use crate::dbus::workspaces::Registry;
 
         let mut shell = self.common.shell.write();
