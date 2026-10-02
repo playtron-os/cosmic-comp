@@ -1922,7 +1922,11 @@ impl State {
             return;
         }
 
-        let game_mode = std::mem::take(&mut shell.game_mode);
+        let mut game_mode = std::mem::take(&mut shell.game_mode);
+        // Learned once per client and per root-window change, so the next game
+        // still needs them.
+        shell.game_mode.controller_pid = game_mode.controller_pid;
+        shell.game_mode.baselayer_appids = std::mem::take(&mut game_mode.baselayer_appids);
         // The scale-reject latch lives on Shell (not the GameMode struct that
         // mem::take just reset), so clear it here too — a fresh game must not
         // inherit the previous one's letterbox latch.
