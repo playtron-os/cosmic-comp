@@ -52,7 +52,11 @@ bar headers rather than the Halo.
 - `press`, `release`, `click` and `drag` leave a frame between events, because
   iced ignores a press and release that land in the same frame. `dclick` is
   fast enough to count as a double click.
-- `key super+Up` sends keys to the compositor; clients get them when focused.
+- `key super+m` sends keys and `type TEXT` types text; the compositor sees
+  them first, the focused client gets the rest. `up` gives the nested window
+  X keyboard focus and installs the repo's `data/keybindings.ron`.
+- `selftest` checks the path end to end: it types into foot and presses Super+M,
+  and fails unless both show up in a shot.
 - Clients run with the nested environment; `eval "$(headless.sh env)"` gives a
   shell the same environment, e.g. to run `wlr-randr` or `grim` by hand.
 - First-party iced apps run as they do on a device: pass their binary to

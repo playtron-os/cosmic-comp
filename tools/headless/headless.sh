@@ -28,6 +28,8 @@ usage: headless.sh <command> [args]
   drag X1 Y1 X2 Y2 [STEPS] [--hold]
                      press at X1,Y1, move there in STEPS, release unless --hold
   key KEYS...        xdotool key, e.g. `key super+Up`
+  type TEXT          type TEXT into the focused client
+  selftest           check pointer, typing and a compositor shortcut end to end (needs foot)
   scale S            set the output scale (1, 1.25, 1.5, 2, ...)
   mode dark|light    switch the colour mode
   pids               list the pids `up` and `run` started
@@ -248,6 +250,48 @@ cmd_drag() {
 }
 
 cmd_key() { xdo key --delay 60 "$@"; sleep 0.1; }
+cmd_type() { xdo type --delay 30 "$*"; sleep 0.1; }
+
+# The pixel at X,Y of a fresh shot, as "R G B".
+pixel() {
+	local ppm=$STATE/selftest.ppm
+	cmd_shot "$ppm"
+	# P6 header: magic, width, height, maxval; then RGB triplets.
+	local w
+	w=$(head -c 64 "$ppm" | tr -s "\n" " " | awk "{print \$2}")
+	local header=$(head -c 64 "$ppm" | tr "\n" " " | awk "{printf \"%s %s %s %s \", \$1, \$2, \$3, \$4}" | wc -c)
+	od -An -tu1 -j $((header + ($2 * w + $1) * 3)) -N 3 "$ppm" | xargs
+}
+
+near() { # "R G B" "R G B" -> success when every channel is within 24
+	local a=($1) b=($2) i
+	for i in 0 1 2; do [ $(( a[i] > b[i] ? a[i] - b[i] : b[i] - a[i] )) -le 24 ] || return 1; done
+}
+
+cmd_selftest() {
+	local up=0 ok=1 px
+	[ -e "$STATE/runtime" ] || { cmd_up >/dev/null; up=1; }
+	local size=${CC_SIZE:-1920x1080} cx cy
+	cx=$(( ${size%x*} / 2 )) cy=$(( ${size#*x} / 2 ))
+	cmd_run foot -o colors-dark.background=202020 -o colors-light.background=202020 \
+		--window-size-pixels=900x600 >/dev/null
+	sleep 2
+	cmd_move "$cx" "$cy"
+	# Typing reaches the client: the shell turns the terminal green.
+	cmd_type "printf '\033]11;#00c000\a'"
+	cmd_key Return
+	sleep 0.8
+	# Clear of the pointer, which shots include.
+	px=$(pixel $((cx + 60)) $((cy - 40)))
+	if near "$px" "0 192 0"; then echo "PASS typing reaches the focused client"; else echo "FAIL typing: centre is $px"; ok=0; fi
+	# A compositor shortcut: Super+M fills the output with the window.
+	cmd_key super+m
+	sleep 1.5
+	px=$(pixel 30 "$cy")
+	if near "$px" "0 192 0"; then echo "PASS shortcuts reach the compositor"; else echo "FAIL shortcut: left edge is $px"; ok=0; fi
+	[ "$up" = 0 ] || cmd_down
+	[ "$ok" = 1 ]
+}
 
 cmd_scale() {
 	local out
@@ -266,7 +310,7 @@ main() {
 	shift
 	case $cmd in
 	-h | --help | help) usage ;;
-	up | down | env | run | shot | move | press | release | click | dclick | drag | key | scale | mode | pids)
+	up | down | env | run | shot | move | press | release | click | dclick | drag | key | type | scale | mode | pids | selftest)
 		need_tools "$cmd" "$@"
 		"cmd_$cmd" "$@"
 		;;
