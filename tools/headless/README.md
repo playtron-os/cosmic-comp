@@ -35,8 +35,8 @@ screenshots are deterministic across machines.
 
 ```bash
 cargo build
-cd ../icetron-theme-playtron && cargo build && cd -   # writes target/themes/playtron/*.ron
-export CC_THEMES=../icetron-theme-playtron/target/themes CC_STATE=/tmp/cc-shots
+# CC_THEMES: target/themes of an icetron-theme-playtron build (cargo build there)
+export CC_THEMES=/path/to/icetron-theme-playtron/target/themes CC_STATE=/tmp/cc-shots
 tools/headless/headless.sh up
 tools/headless/headless.sh run foot --window-size-pixels=900x560
 tools/headless/headless.sh shot /tmp/cc-shots/foot.png
@@ -85,3 +85,5 @@ light, and runs `halo-measure.py` on each shot. `PANEL_BIN` adds the dock and
 `HIVE_BIN` the overlay-mode app. The measurements land in
 `OUTDIR/measure.jsonl`: pill height, the gap between pill and window, and the
 window's distance from the usable area's top, against 32, 4 and 40 x scale.
+The overlapping states are measured in dark mode only: light glass over another
+window cannot be told from its shadow by pixels.
