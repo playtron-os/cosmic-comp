@@ -350,7 +350,11 @@ impl MoveGrabState {
             && &self.cursor_output == output
         {
             let base_color = theme.neutral_color();
-            let overlay_geometry = t.overlay_geometry(non_exclusive_geometry, gaps);
+            let overlay_geometry = t.overlay_geometry(
+                non_exclusive_geometry,
+                gaps,
+                self.window.halo_clearance() > 0,
+            );
 
             push(
                 IndicatorShader::element(
@@ -378,7 +382,11 @@ impl MoveGrabState {
                 BackdropShader::element(
                     renderer,
                     Key::Window(Usage::SnappingIndicator, self.window.key()),
-                    t.overlay_geometry(non_exclusive_geometry, gaps),
+                    t.overlay_geometry(
+                        non_exclusive_geometry,
+                        gaps,
+                        self.window.halo_clearance() > 0,
+                    ),
                     theme.radius_s(),
                     0.4,
                     [base_color.red, base_color.green, base_color.blue],
@@ -451,6 +459,7 @@ impl SnappingZone {
         &self,
         non_exclusive_geometry: Rectangle<i32, Logical>,
         gaps: (i32, i32),
+        halo: bool,
     ) -> Rectangle<i32, Local> {
         match self {
             SnappingZone::Maximize => non_exclusive_geometry.as_local(),
@@ -458,9 +467,7 @@ impl SnappingZone {
             SnappingZone::TopLeft => {
                 TiledCorners::TopLeft.relative_geometry(non_exclusive_geometry, gaps)
             }
-            SnappingZone::Left => {
-                TiledCorners::Left.relative_geometry(non_exclusive_geometry, gaps)
-            }
+            SnappingZone::Left => TiledCorners::Left.tile(non_exclusive_geometry, gaps, halo),
             SnappingZone::BottomLeft => {
                 TiledCorners::BottomLeft.relative_geometry(non_exclusive_geometry, gaps)
             }
@@ -470,9 +477,7 @@ impl SnappingZone {
             SnappingZone::BottomRight => {
                 TiledCorners::BottomRight.relative_geometry(non_exclusive_geometry, gaps)
             }
-            SnappingZone::Right => {
-                TiledCorners::Right.relative_geometry(non_exclusive_geometry, gaps)
-            }
+            SnappingZone::Right => TiledCorners::Right.tile(non_exclusive_geometry, gaps, halo),
             SnappingZone::TopRight => {
                 TiledCorners::TopRight.relative_geometry(non_exclusive_geometry, gaps)
             }

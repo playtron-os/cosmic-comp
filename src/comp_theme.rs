@@ -404,7 +404,11 @@ mod focus_border_tests {
         let theme = theme(WindowHeaderStyle::Halo);
         assert_eq!(
             theme.focused_window_border(true),
-            mix_border_accent(theme.window_border_color(), theme.primary(), FRAME_FOCUS_WEIGHT)
+            mix_border_accent(
+                theme.window_border_color(),
+                theme.primary(),
+                FRAME_FOCUS_WEIGHT
+            )
         );
         let bar = super::focus_border_tests::theme(WindowHeaderStyle::Bar);
         assert_eq!(bar.focused_window_border(true), bar.window_border_color());

@@ -88,6 +88,9 @@ fn grabbable_position(
     ))
 }
 
+/// Space between two snapped Halo halves: `halfSnapRect`'s gutter.
+pub(crate) const HALO_TILE_GAP: i32 = 10;
+
 /// `zone` less the `clearance` a Halo floats in above its window: where that
 /// window may sit, and what Fill and the snap tiles fill.
 pub(crate) fn below_halo<C>(zone: Rectangle<i32, C>, clearance: i32) -> Rectangle<i32, C> {
@@ -285,6 +288,7 @@ impl Animation {
         current_geometry: Rectangle<i32, Local>,
         tiled_state: Option<&TiledCorners>,
         gaps: (i32, i32),
+        halo: bool,
         motion: crate::backend::render::animations::motion::Motion,
     ) -> Rectangle<i32, Local> {
         let (duration, target_rect) = match self {
@@ -301,7 +305,7 @@ impl Animation {
             }
             Animation::Tiled { .. } => {
                 let target_geometry = if let Some(target_rect) =
-                    tiled_state.map(|state| state.relative_geometry(output_geometry, gaps))
+                    tiled_state.map(|state| state.tile(output_geometry, gaps, halo))
                 {
                     target_rect
                 } else {
@@ -342,6 +346,28 @@ pub enum TiledCorners {
 }
 
 impl TiledCorners {
+    /// Where a snapped window goes. A Halo window's halves are the design's
+    /// `halfSnapRect`: flush with the zone (the panel holds the outer margins)
+    /// and [`HALO_TILE_GAP`] apart. Everything else keeps COSMIC's tiles.
+    pub fn tile(
+        &self,
+        zone: Rectangle<i32, Logical>,
+        gaps: (i32, i32),
+        halo: bool,
+    ) -> Rectangle<i32, Local> {
+        match self {
+            TiledCorners::Left | TiledCorners::Right if halo => {
+                let width = (zone.size.w - HALO_TILE_GAP) / 2;
+                let x = match self {
+                    TiledCorners::Right => zone.loc.x + zone.size.w - width,
+                    _ => zone.loc.x,
+                };
+                Rectangle::new((x, zone.loc.y).into(), (width, zone.size.h).into())
+            }
+            _ => self.relative_geometry(zone, gaps),
+        }
+    }
+
     pub fn relative_geometry(
         &self,
         output_geometry: Rectangle<i32, Logical>,
@@ -472,7 +498,7 @@ impl FloatingLayout {
             let tiled_state = *mapped.floating_tiled.lock().unwrap();
             if let Some(tiled_state) = tiled_state {
                 let zone = below_halo(output_geometry, mapped.halo_clearance());
-                let geometry = tiled_state.relative_geometry(zone, self.gaps());
+                let geometry = tiled_state.tile(zone, self.gaps(), mapped.halo_clearance() > 0);
                 self.map_internal(
                     mapped,
                     Some(geometry.loc),
@@ -2319,6 +2345,7 @@ impl FloatingLayout {
                         current_geometry,
                         tiled_state.as_ref(),
                         self.gaps(),
+                        element.halo_clearance() > 0,
                         self.theme.motion,
                     )
                 } else {
@@ -2400,7 +2427,8 @@ impl FloatingLayout {
                     (Direction::Left, _) => TiledCorners::Left,
                 };
 
-                let new_geo = new_state.relative_geometry(output_geometry, self.gaps());
+                let new_geo =
+                    new_state.tile(output_geometry, self.gaps(), element.halo_clearance() > 0);
                 let (new_pos, new_size) = (new_geo.loc, new_geo.size);
                 element.set_tiled(true); // TODO: More fine grained?
                 element.set_maximized(false);
@@ -3520,6 +3548,7 @@ impl FloatingLayout {
                             .unwrap_or(geometry),
                         elem.floating_tiled.lock().unwrap().as_ref(),
                         self.gaps(),
+                        elem.halo_clearance() > 0,
                         self.theme.motion,
                     ),
                 ),
@@ -3537,6 +3566,7 @@ impl FloatingLayout {
                             .unwrap_or(geometry),
                         elem.floating_tiled.lock().unwrap().as_ref(),
                         self.gaps(),
+                        elem.halo_clearance() > 0,
                         self.theme.motion,
                     );
 
@@ -3603,6 +3633,7 @@ impl FloatingLayout {
                                     .unwrap_or(geometry),
                                 elem.floating_tiled.lock().unwrap().as_ref(),
                                 self.gaps(),
+                                elem.halo_clearance() > 0,
                                 self.theme.motion,
                             );
 
@@ -3644,6 +3675,7 @@ impl FloatingLayout {
                                     .unwrap_or(geometry),
                                 elem.floating_tiled.lock().unwrap().as_ref(),
                                 self.gaps(),
+                                elem.halo_clearance() > 0,
                                 self.theme.motion,
                             );
 
@@ -3944,9 +3976,10 @@ impl FloatingLayout {
         let layers = layer_map_for_output(&output);
         let non_exclusive = layers.non_exclusive_zone();
         std::mem::drop(layers);
-        corners.relative_geometry(
+        corners.tile(
             below_halo(non_exclusive, mapped.halo_clearance()),
             self.gaps(),
+            mapped.halo_clearance() > 0,
         )
     }
 
@@ -4005,21 +4038,24 @@ mod tests {
         assert_eq!(grabbable_position(at(300, 41), win(), zone).y, 41);
     }
 
-    /// Snap tiles fill the zone below the overhang, the same as Fill.
+    /// `halfSnapRect`: halves start under the Halo's room, fill the zone to its
+    /// bottom and keep 10px between them; the panel holds the outer margins.
     #[test]
-    fn snap_tiles_start_below_the_overhang() {
+    fn halo_halves_are_the_design_s_half_snap_rects() {
         let zone = Rectangle::<i32, Logical>::new((10, 0).into(), (1900, 1018).into());
         let halo = below_halo(zone, HALO);
-        for corner in [
-            TiledCorners::Left,
-            TiledCorners::Right,
-            TiledCorners::Top,
-            TiledCorners::TopLeft,
-        ] {
-            let tile = corner.relative_geometry(halo, (0, 0));
-            assert_eq!(tile.loc.y, HALO, "{corner:?}");
-            assert!(tile.loc.y + tile.size.h <= 1018, "{corner:?}");
-        }
+        let left = TiledCorners::Left.tile(halo, (4, 4), true);
+        let right = TiledCorners::Right.tile(halo, (4, 4), true);
+        assert_eq!(left, Rectangle::new(at(10, HALO), size(945, 978)));
+        assert_eq!(right, Rectangle::new(at(965, HALO), size(945, 978)));
+        assert_eq!(right.loc.x - (left.loc.x + left.size.w), HALO_TILE_GAP);
+        // Other tiles, and windows without a Halo, keep COSMIC's gaps.
+        let top = TiledCorners::Top.tile(halo, (4, 4), true);
+        assert_eq!(top.loc.y, HALO + 4);
+        assert_eq!(
+            TiledCorners::Left.tile(zone, (4, 4), false),
+            TiledCorners::Left.relative_geometry(zone, (4, 4))
+        );
     }
 
     #[test]
