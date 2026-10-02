@@ -52,6 +52,7 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
         hidden_offset: iced_core::Vector::new(0.0, 3.0),
         hidden_scale: 1.0,
         animate_initial: false,
+        kit: None,
     }
 }
 
@@ -126,7 +127,8 @@ fn halo_shadow_padding(theme: &CompTheme) -> iced_core::Padding {
             .iter()
             .filter(|s| !s.inset && s.color.a > 0.0)
         {
-            let reach = shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
+            // A CSS blur reaches three sigmas, 1.5x its radius, as iced draws it.
+            let reach = 1.5 * shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
             padding.top = padding.top.max((reach - shadow.offset.y).ceil());
             padding.bottom = padding.bottom.max((reach + shadow.offset.y).ceil());
         }
