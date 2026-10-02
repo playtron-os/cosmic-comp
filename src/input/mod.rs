@@ -844,13 +844,29 @@ impl State {
                     }
 
                     let ptr = seat.get_pointer().unwrap();
-                    ptr.motion(
+                    // Xwayland places a press where the last motion that came with
+                    // a relative one left the pointer. So an absolute device sends
+                    // its delta too, as a mouse does, and a surface it enters gets
+                    // a motion as well, which an enter alone does not count as.
+                    let delta = position.as_logical() - ptr.current_location();
+                    let entering =
+                        ptr.current_focus() != under.as_ref().map(|(target, _)| target.clone());
+                    let motion = MotionEvent {
+                        location: position.as_logical(),
+                        serial,
+                        time: event.time_msec(),
+                    };
+                    ptr.motion(self, under.clone(), &motion);
+                    if entering && under.is_some() {
+                        ptr.motion(self, under.clone(), &motion);
+                    }
+                    ptr.relative_motion(
                         self,
                         under,
-                        &MotionEvent {
-                            location: position.as_logical(),
-                            serial,
-                            time: event.time_msec(),
+                        &RelativeMotionEvent {
+                            delta,
+                            delta_unaccel: delta,
+                            utime: smithay::backend::input::Event::time(&event),
                         },
                     );
                     ptr.frame(self);
