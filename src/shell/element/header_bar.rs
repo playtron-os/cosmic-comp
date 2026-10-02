@@ -1203,7 +1203,7 @@ mod tests {
             assert_eq!(hit(10, 15), overlay, "{case}");
             assert!(!hit(10, 16), "{case}");
         }
-        // Until the pill has been laid out only the bridge answers.
+        // Until the pill has been laid out, and while it is hidden, only the bridge answers.
         let band = HaloBand::new(&theme, None, false);
         assert!(!band.hit(width, 400, -20));
         assert!(band.hit(width, 400, -2));

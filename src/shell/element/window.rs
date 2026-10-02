@@ -960,15 +960,25 @@ impl CosmicWindow {
     /// Where this window's chrome takes input. Reads the painted pill, so it
     /// must be called outside `with_program`.
     fn header_band(&self) -> HeaderBand {
-        let halo = self.0.with_program(|p| {
-            p.uses_halo_header() && p.has_ssd(false) && !is_surface_embedded(&p.window)
+        let (halo, shown) = self.0.with_program(|p| {
+            (
+                p.uses_halo_header() && p.has_ssd(false) && !is_surface_embedded(&p.window),
+                super::header_bar::halo_is_visible(
+                    p.fullscreen_output.is_some(),
+                    p.pointer_over_window.load(Ordering::SeqCst),
+                    p.activated.load(Ordering::SeqCst),
+                    p.menu_open.load(Ordering::SeqCst) || p.commands_open.load(Ordering::SeqCst),
+                ),
+            )
         });
         if !halo {
             return HeaderBand::Bar(self.0.with_program(|p| p.ssd_height()));
         }
-        let pill = self
-            .0
-            .backdrop_input_bounds()
+        // A hidden pill is not there to press (`pointer-events: none`); the
+        // bridge still reveals it, as hovering the window does.
+        let pill = shown
+            .then(|| self.0.backdrop_input_bounds())
+            .flatten()
             .map(|rect| halo_pill_span(rect.loc.x, rect.size.w));
         self.0.with_program(|p| {
             HeaderBand::Halo(super::header_bar::HaloBand::new(
