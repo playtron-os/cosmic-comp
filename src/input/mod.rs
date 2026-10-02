@@ -2873,10 +2873,11 @@ impl State {
                     Stage::OverlaySurface { surface } => {
                         // A blocking overlay gets the pointer, so a click on it keeps keyboard
                         // focus there rather than on the game behind it.
+                        let offset = crate::dbus::game_mode::overlay_offset(surface, output);
                         if let Some(grab) = shell.game_mode.input_grab.as_ref()
                             && surface
                                 .focus_under(
-                                    global_pos.to_local(output).as_logical(),
+                                    global_pos.to_local(output).as_logical() - offset.to_f64(),
                                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                                 )
                                 .is_some()
@@ -3103,15 +3104,18 @@ impl State {
                         // without this the overlay renders but swallows no pointer
                         // events and clicks fall through to the game behind it.
                         // A non-blocking overlay is passive and keeps falling through.
+                        let offset = crate::dbus::game_mode::overlay_offset(surface, output);
                         if shell.game_mode.input_grab.is_some()
                             && let Some((target, surface_offset)) = surface.focus_under(
-                                global_pos.to_local(output).as_logical(),
+                                global_pos.to_local(output).as_logical() - offset.to_f64(),
                                 WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                             )
                         {
                             return ControlFlow::Break(Ok(Some((
                                 target,
-                                surface_offset.as_local().to_global(output),
+                                (surface_offset + offset.to_f64())
+                                    .as_local()
+                                    .to_global(output),
                             ))));
                         }
                     }
