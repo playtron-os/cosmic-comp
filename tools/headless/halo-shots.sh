@@ -67,7 +67,7 @@ shoot() { # STATE
 park() { "$T" move 4 4; sleep 0.4; }
 
 run_state() {
-	local state=$1 s=$scale
+	local state=$1
 	case $state in
 	normal)
 		foot_at $FRONT 900x560; sleep 2; park; shoot normal
@@ -75,7 +75,8 @@ run_state() {
 	tier1 | tier2 | tier3 | tier4)
 		local w
 		case $state in tier1) w=760 ;; tier2) w=560 ;; tier3) w=380 ;; tier4) w=230 ;; esac
-		foot_at $FRONT "$(python -c "print(round($w * $s))")x$(python -c "print(round(300 * $s))")"
+		# foot takes --window-size-pixels in logical px under fractional scaling.
+		foot_at $FRONT "${w}x300"
 		sleep 2; park; shoot "$state"
 		measure "$out/$scale-$mode-$state.ppm" "$state" --window $FRONT ;;
 	overlap | overlap-hover)
@@ -101,17 +102,23 @@ run_state() {
 		measure "$out/$scale-$mode-$state.ppm" "$state" --window $FRONT --fullscreen ;;
 	drag-top)
 		foot_at $FRONT 900x560; sleep 2
-		read -r l t r b < <(rect "$(shoot_tmp)" $FRONT)
-		local x=$(((l + r) / 2)) y=$((t - $(python -c "print(round(20 * $s))")))
+		# Grab the pill by its name: the controls beside it are buttons, not handles.
+		read -r x y < <(pill_handle "$(shoot_tmp)" $FRONT)
 		"$T" drag $x $y $x 2 16 --hold; sleep 0.4
 		shoot drag-top
 		measure "$out/$scale-$mode-drag-top.ppm" drag-top --window $FRONT
 		"$T" release ;;
 	overlay)
 		[ -n "${HIVE_BIN:-}" ] || { echo "overlay: HIVE_BIN not set, skipped" >&2; return; }
-		"$T" run "$HIVE_BIN" >/dev/null; sleep 6; park; shoot overlay ;;
+		"$T" run "$HIVE_BIN" >/dev/null; sleep 6; park; shoot overlay
+		measure "$out/$scale-$mode-overlay.ppm" overlay --window 131414 ;;
 	*) echo "unknown state $state" >&2; return 1 ;;
 	esac
+}
+
+pill_handle() { # SHOT COLOR -> a point on the pill's name
+	python "$here/halo-measure.py" "$1" --scale "$scale" --mode "$mode" --clear "$clear" --window "$2" |
+		python -c "import json, sys; r = json.load(sys.stdin); p = r['pill']; print(round(p[0] + 50 * $scale), round(p[1] + p[3] / 2))"
 }
 
 shoot_tmp() {
