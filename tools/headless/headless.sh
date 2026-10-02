@@ -41,6 +41,7 @@ Environment for `up`:
   CC_THEMES   dir holding <theme>/{dark,light}.ron (default: the built-in fallback)
   CC_THEME    theme to activate from CC_THEMES (default: playtron)
   CC_CLEAR    desktop colour, #RRGGBB (default: #2a2a2e)
+  CC_DATA_DIRS extra XDG data dirs (desktop entries, icons) for the compositor and clients
   TMPDIR      parent of the short-lived runtime dir (socket paths must stay short)
 EOF
 }
@@ -83,7 +84,7 @@ isolate() {
 	export HOME=$STATE/home
 	export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share
 	export XDG_STATE_HOME=$HOME/.local/state XDG_CACHE_HOME=$HOME/.cache
-	export XDG_DATA_DIRS=$STATE/data XDG_CONFIG_DIRS=$STATE/etc
+	export XDG_DATA_DIRS=$STATE/data${CC_DATA_DIRS:+:$CC_DATA_DIRS} XDG_CONFIG_DIRS=$STATE/etc
 	export XDG_RUNTIME_DIR=$r
 	export DBUS_SESSION_BUS_ADDRESS=unix:path=$r/bus
 	# No system bus: cosmic-comp would otherwise take logind inhibitors on the real seat.
