@@ -1741,6 +1741,35 @@ impl State {
             }
         };
 
+        // Each game gets a desktop of its own. One that fullscreened itself did so
+        // on whatever desktop was showing, usually the launcher's, so it moves
+        // like a windowed game does.
+        let shared = is_fullscreen && app_id != LAUNCHER_APP_ID && {
+            let shell = self.common.shell.read();
+            shell
+                .workspaces()
+                .space_for_handle(&source_ws)
+                .is_some_and(|ws| {
+                    desktop_is_shared(
+                        app_id,
+                        ws.get_fullscreen_surfaces()
+                            .map(|f| app_id_of(&f.surface))
+                            .chain(
+                                ws.mapped()
+                                    .flat_map(|m| m.windows().map(|(w, _)| app_id_of(&w))),
+                            ),
+                    )
+                })
+        };
+        if shared {
+            info!(target: GAMING_TARGET, app_id, "app fullscreened on a shared desktop");
+        }
+        let (is_fullscreen, relocate_fullscreen) = if shared {
+            (false, true)
+        } else {
+            (is_fullscreen, relocate_fullscreen)
+        };
+
         let seat = self.common.shell.read().seats.last_active().clone();
         // Record the normal-desktop workspace only on the first entry into game
         // mode, so a full exit can return there; app switches keep that origin.
@@ -2350,6 +2379,13 @@ fn is_game_surface(surface: &CosmicSurface) -> bool {
     surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
 }
 
+/// Whether a desktop holding windows of these app ids is not `app_id`'s own:
+/// any window of another app, the launcher included, makes it shared. The
+/// app's own dialogs and helpers carry its id and do not.
+fn desktop_is_shared(app_id: u32, windows: impl IntoIterator<Item = u32>) -> bool {
+    windows.into_iter().any(|window| window != app_id)
+}
+
 /// A live game window anywhere, including one minimized or left behind the launcher.
 fn any_game_surface(shell: &Shell) -> Option<CosmicSurface> {
     shell.workspaces().spaces().find_map(|ws| {
@@ -2538,6 +2574,23 @@ pub(crate) fn focus_target_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_shares_a_desktop_with_any_other_app() {
+        assert!(
+            !desktop_is_shared(105_600, [105_600, 105_600]),
+            "its own dialogs"
+        );
+        assert!(
+            desktop_is_shared(105_600, [LAUNCHER_APP_ID, 105_600]),
+            "the launcher's"
+        );
+        assert!(
+            desktop_is_shared(105_600, [0, 105_600]),
+            "an untagged window"
+        );
+        assert!(!desktop_is_shared(105_600, []), "alone");
+    }
 
     #[test]
     fn a_pidfd_names_its_process_until_it_exits() {
