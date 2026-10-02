@@ -140,7 +140,7 @@ impl OutputEdges {
 
 pub mod surface;
 use self::stack::MoveResult;
-pub use self::surface::CosmicSurface;
+pub use self::surface::{CosmicSurface, X11Key};
 pub mod stack;
 pub use self::stack::CosmicStack;
 pub mod window;

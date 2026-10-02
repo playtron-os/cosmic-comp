@@ -22,44 +22,58 @@ pub enum SelectionUserData {
 }
 
 impl State {
-    /// Mirror a Wayland selection into Xwayland: applied now while an X11 client
-    /// has keyboard focus, otherwise held until one gains it. `None` clears.
+    /// Mirror a Wayland selection into every Xwayland: applied now in the one
+    /// whose client has keyboard focus, held in the others until one of theirs
+    /// gains it. `None` clears.
     pub fn bridge_selection_to_xwayland(
         &mut self,
         target: SelectionTarget,
         mime_types: Option<Vec<String>>,
     ) {
-        let Some(xwm_id) = self
+        self.bridge_selection_to_other_xwayland(target, mime_types, None);
+    }
+
+    /// As [`Self::bridge_selection_to_xwayland`], for a selection that `owner`'s
+    /// server set or cleared itself.
+    pub fn bridge_selection_to_other_xwayland(
+        &mut self,
+        target: SelectionTarget,
+        mime_types: Option<Vec<String>>,
+        owner: Option<XwmId>,
+    ) {
+        let xwm_ids = self
             .common
-            .xwayland_state
-            .as_ref()
-            .and_then(|xstate| xstate.xwm.as_ref())
-            .map(|xwm| xwm.id())
-        else {
-            return;
-        };
+            .xwayland_states()
+            .filter_map(|xstate| xstate.xwm.as_ref().map(|xwm| xwm.id()))
+            .filter(|id| Some(*id) != owner)
+            .collect::<Vec<_>>();
 
-        let x_has_focus = self.common.has_x_keyboard_focus(xwm_id);
+        for xwm_id in xwm_ids {
+            let x_has_focus = self.common.has_x_keyboard_focus(xwm_id);
+            let Some(xstate) = self.common.xwayland_for(xwm_id) else {
+                continue;
+            };
+            let xwm = xstate.xwm.as_mut().unwrap();
 
-        let xstate = self.common.xwayland_state.as_mut().unwrap();
-        let xwm = xstate.xwm.as_mut().unwrap();
-
-        match mime_types {
-            Some(mime_types) if !x_has_focus => match target {
-                SelectionTarget::Clipboard => xstate.clipboard_selection_dirty = Some(mime_types),
-                SelectionTarget::Primary => xstate.primary_selection_dirty = Some(mime_types),
-            },
-            Some(mime_types) => {
-                if let Err(err) = xwm.new_selection(target, Some(mime_types)) {
-                    warn!(?err, "Failed to set Xwayland clipboard selection.");
+            match mime_types.clone() {
+                Some(mime_types) if !x_has_focus => match target {
+                    SelectionTarget::Clipboard => {
+                        xstate.clipboard_selection_dirty = Some(mime_types)
+                    }
+                    SelectionTarget::Primary => xstate.primary_selection_dirty = Some(mime_types),
+                },
+                Some(mime_types) => {
+                    if let Err(err) = xwm.new_selection(target, Some(mime_types)) {
+                        warn!(?err, "Failed to set Xwayland clipboard selection.");
+                    }
                 }
-            }
-            None => {
-                if let Err(err) = xwm.new_selection(target, None) {
-                    warn!(?err, "Failed to clear Xwayland selection.");
+                None => {
+                    if let Err(err) = xwm.new_selection(target, None) {
+                        warn!(?err, "Failed to clear Xwayland selection.");
+                    }
+                    xstate.clipboard_selection_dirty = None;
+                    xstate.primary_selection_dirty = None;
                 }
-                xstate.clipboard_selection_dirty = None;
-                xstate.primary_selection_dirty = None;
             }
         }
     }
@@ -102,12 +116,8 @@ impl SelectionHandler for State {
     ) {
         match user_data {
             SelectionUserData::Persisted => crate::clipboard::serve(self, &mime_type, fd),
-            SelectionUserData::Xwayland(_) => {
-                if let Some(xwm) = self
-                    .common
-                    .xwayland_state
-                    .as_mut()
-                    .and_then(|xstate| xstate.xwm.as_mut())
+            SelectionUserData::Xwayland(xwm_id) => {
+                if let Some(xwm) = self.common.xwm_for(*xwm_id)
                     && let Err(err) = xwm.send_selection(target, mime_type, fd)
                 {
                     warn!(?err, "Failed to send selection (X11 -> Wayland).");

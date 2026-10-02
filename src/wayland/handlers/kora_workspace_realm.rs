@@ -2,7 +2,7 @@
 
 use crate::{
     delegate_kora_workspace_realm,
-    state::{ClientState, State},
+    state::State,
     wayland::protocols::{
         kora_workspace_realm::{RealmHandler, RealmState},
         workspace::WorkspaceGroupHandle,
@@ -29,9 +29,7 @@ impl RealmHandler for State {
     }
 
     fn client_workspace(&self, client: &Client) -> Option<String> {
-        client
-            .get_data::<ClientState>()
-            .and_then(|state| state.workspace.clone())
+        crate::workspace_tag::of_client(client)
     }
 
     fn assign_layer_realm(&mut self, surface: &WlSurface, id: String) {

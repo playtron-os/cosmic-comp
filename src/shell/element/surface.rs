@@ -78,10 +78,35 @@ use smithay::{
     },
     xwayland::{
         X11Surface,
-        xwm::{WmWindowType, X11Relatable},
+        xwm::{WmWindowType, X11Relatable, XwmId},
     },
 };
 use tracing::trace;
+
+/// An X11 window by its server as well as its id: every Xwayland hands out the
+/// same ids, so with one per workspace an id alone names several windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct X11Key {
+    pub xwm: Option<XwmId>,
+    pub window: u32,
+}
+
+impl X11Key {
+    pub fn of(surface: &X11Surface) -> Self {
+        X11Key {
+            xwm: surface.xwm_id(),
+            window: surface.window_id(),
+        }
+    }
+
+    /// The window `surface` is transient for (`WM_TRANSIENT_FOR`), on its server.
+    pub fn parent_of(surface: &X11Surface) -> Option<Self> {
+        Some(X11Key {
+            xwm: surface.xwm_id(),
+            window: surface.is_transient_for()?,
+        })
+    }
+}
 
 use crate::{
     state::{State, SurfaceDmabufFeedback},
@@ -397,9 +422,17 @@ impl CosmicSurface {
     }
 
     /// The X11 window this surface is transient for (`WM_TRANSIENT_FOR`), if any.
-    pub fn transient_for(&self) -> Option<u32> {
+    pub fn transient_for(&self) -> Option<X11Key> {
         match self.0.underlying_surface() {
-            WindowSurface::X11(surface) => surface.is_transient_for(),
+            WindowSurface::X11(surface) => X11Key::parent_of(surface),
+            WindowSurface::Wayland(_) => None,
+        }
+    }
+
+    /// This surface's X11 window, if it is an XWayland window.
+    pub fn x11_key(&self) -> Option<X11Key> {
+        match self.0.underlying_surface() {
+            WindowSurface::X11(surface) => Some(X11Key::of(surface)),
             WindowSurface::Wayland(_) => None,
         }
     }

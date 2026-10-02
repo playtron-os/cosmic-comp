@@ -2018,14 +2018,16 @@ impl State {
                     .cloned()
             })
             .flatten();
-        if let Some(xwm) = self
-            .common
-            .xwayland_state
-            .as_mut()
-            .and_then(|x| x.xwm.as_mut())
-            && let Err(err) = xwm.set_active_window_override(game.as_ref())
-        {
-            warn!(target: GAMING_TARGET, ?err, "failed to keep the game the active X window");
+        // On the game's own server; every other one is left to its focus.
+        for xstate in self.common.xwayland_states_mut() {
+            let Some(xwm) = xstate.xwm.as_mut() else {
+                continue;
+            };
+            let id = xwm.id();
+            let game = game.as_ref().filter(|game| game.xwm_id() == Some(id));
+            if let Err(err) = xwm.set_active_window_override(game) {
+                warn!(target: GAMING_TARGET, ?err, "failed to keep the game the active X window");
+            }
         }
         let changed = {
             let mut s = bridge.shared().lock().unwrap();
@@ -2067,7 +2069,7 @@ impl State {
         let canonical = {
             let shell = self.common.shell.read();
             shell
-                .element_for_x11_window_id(x11.window_id())
+                .element_for_x11_window(crate::shell::X11Key::of(x11))
                 .map(|m| m.active_window())
         };
         let Some(window) = canonical else { return };
@@ -2261,10 +2263,10 @@ pub fn is_game_child(base: &CosmicSurface, app_id: u32, surface: &CosmicSurface)
         return false;
     }
     let base_pid = base.pid();
-    let base_window_id = base.x11_window_id();
+    let base_window = base.x11_key();
     app_id_of(surface) == app_id
         || (base_pid.is_some() && surface.pid() == base_pid)
-        || (base_window_id.is_some() && surface.transient_for() == base_window_id)
+        || (base_window.is_some() && surface.transient_for() == base_window)
 }
 
 fn resolve_game_children(shell: &Shell, base: &CosmicSurface, app_id: u32) -> Vec<CosmicSurface> {
@@ -2325,8 +2327,9 @@ fn overlay_window_present(shell: &Shell) -> bool {
         .spaces()
         .any(|ws| ws.mapped().any(|m| m.active_window().is_overlay()))
         || shell.override_redirect_windows.iter().any(|s| {
-            s.steam_overlay().is_some_and(|v| v != 0)
-                || s.external_overlay().is_some_and(|v| v != 0)
+            shell.x11_in_active_workspace(s)
+                && (s.steam_overlay().is_some_and(|v| v != 0)
+                    || s.external_overlay().is_some_and(|v| v != 0))
         })
 }
 
