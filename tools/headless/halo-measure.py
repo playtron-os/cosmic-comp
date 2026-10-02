@@ -118,6 +118,16 @@ def is_glass(p, behind, mode):
     return sum(p) > sum(behind) + 6
 
 
+def widest_run(xs, gap):
+    """The largest cluster of sorted x positions no more than `gap` apart: (lo, hi, count)."""
+    best = cur = (xs[0], xs[0], 1)
+    for x in xs[1:]:
+        cur = (cur[0], x, cur[2] + 1) if x - cur[1] <= gap else (x, x, 1)
+        if cur[2] > best[2]:
+            best = cur
+    return best
+
+
 def find_pill(img, win, clear, mode, scale):
     """The glass run of rows nearest above `win`: (left, top, right, bottom).
 
@@ -129,16 +139,25 @@ def find_pill(img, win, clear, mode, scale):
     expected = glass(clear, mode)
     band_top = max(0, top - round(60 * scale))
     x0, x1 = max(0, left - 2), min(img.width, right + 2)
-    rows = {}
+    runs = {}
     for y in range(band_top, top):
         # Light glass is only a little lighter than the desktop, and window shadows
         # darken both: compare with the desktop beside the pill on the same row.
-        behind = img.at(x0, y)
+        # The brightest of a few pixels out, so a frame edge's antialiasing is not taken for desktop.
+        behind = max((img.at(max(0, x0 - k), y) for k in range(0, round(8 * scale) + 1, 2)), key=sum)
         if mode == "dark" or dist(behind, clear) > 40:
             behind = clear
         hits = [x for x in range(x0, x1) if is_glass(img.at(x, y), behind, mode)]
-        if len(hits) >= round(24 * scale):
-            rows[y] = (min(hits), max(hits) + 1)
+        if hits:
+            runs[y] = widest_run(hits, round(20 * scale))
+    if not runs:
+        return None
+    # The pill is the widest glass in the band; a row belongs to it only where
+    # its glass overlaps that, so a lit frame edge or a line of text beside the
+    # pill (a fullscreen prompt) does not stretch it.
+    ref = max(runs.values(), key=lambda r: r[2])
+    rows = {y: (lo, hi + 1) for y, (lo, hi, n) in runs.items()
+            if n >= round(24 * scale) and lo <= ref[1] and hi >= ref[0]}
     if not rows:
         return None
     bottom = max(rows) + 1
