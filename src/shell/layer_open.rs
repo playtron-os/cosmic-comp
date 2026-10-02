@@ -99,6 +99,19 @@ const FLUID_FADE_KNEE: f32 = 0.4;
 /// `fluidReveal`: opacity at the knee.
 const FLUID_FADE_KNEE_ALPHA: f32 = 0.8;
 
+/// `COSMIC_HOLD_LAYER_OPEN_MS`: hold every entrance that many ms in, so the headless harness can
+/// shoot it at fixed times. Unset, entrances run on the clock.
+pub(crate) fn held_open() -> Option<Duration> {
+    static HOLD: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *HOLD.get_or_init(|| {
+        std::env::var("COSMIC_HOLD_LAYER_OPEN_MS")
+            .ok()?
+            .parse()
+            .ok()
+            .map(Duration::from_millis)
+    })
+}
+
 /// Per-surface open-animation tracking.
 #[derive(Debug, Clone)]
 pub struct LayerOpen {
@@ -165,9 +178,14 @@ impl LayerOpen {
         }
     }
 
+    /// Time since the entrance began, or the harness's held time.
+    fn elapsed(&self) -> Duration {
+        held_open().unwrap_or_else(|| self.start.elapsed())
+    }
+
     /// Linear progress through the animation, `0.0` at start to `1.0` at rest.
     fn progress(&self) -> f32 {
-        (self.start.elapsed().as_secs_f32() / self.duration().as_secs_f32()).clamp(0.0, 1.0)
+        (self.elapsed().as_secs_f32() / self.duration().as_secs_f32()).clamp(0.0, 1.0)
     }
 
     /// The single eased factor `t ∈ [0,1]` that drives translate and scale.
@@ -227,7 +245,7 @@ impl LayerOpen {
 
     /// True while the animation is still running.
     pub fn is_animating(&self) -> bool {
-        self.start.elapsed() < self.duration()
+        self.elapsed() < self.duration()
     }
 }
 

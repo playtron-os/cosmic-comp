@@ -221,7 +221,13 @@ impl VisibilityAnimation {
         if self.pending {
             return self.from;
         }
-        let progress = self.clock.interpolate(0.0, 1.0, now);
+        let progress = match crate::shell::layer_open::held_open() {
+            // The harness holds an entrance at a fixed time, as it does a layer surface's.
+            Some(held) if self.settings.visible => {
+                (held.as_secs_f32() / self.settings.duration.as_secs_f32()).min(1.0)
+            }
+            _ => self.clock.interpolate(0.0, 1.0, now),
+        };
         let target = self.settings.target();
         let opacity = cubic_bezier_cp(progress, self.settings.opacity_curve);
         let translation = cubic_bezier_cp(progress, self.settings.translation_curve);
