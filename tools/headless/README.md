@@ -7,13 +7,18 @@ touching your own desktop.
 
 ## How it is isolated
 
-- cosmic-comp runs its winit backend inside a private `Xvfb` on a free display
-  number (`:90` upwards). Nothing is drawn on your screen.
+- cosmic-comp runs its winit backend inside a private `Xvfb` on a random free
+  display number (`:100`-`:999`), kept only if its X lock names our server, so
+  harnesses started at the same moment never share one. Nothing is drawn on
+  your screen.
 - Every process gets a fresh `HOME` and XDG directories under `CC_STATE`, a
   short runtime directory under `$TMPDIR`, and its own D-Bus session bus.
 - The system bus points at a socket that does not exist, so the compositor
   cannot take logind inhibitors or talk to power daemons on the real machine.
 - `--no-xwayland`; no systemd notification (the winit backend never sends it).
+- With bubblewrap installed, the compositor and its clients run with
+  `/run/systemd/journal` and `/run/user` hidden, so cosmic-comp's journald
+  logging stays out of your journal and nothing finds your runtime dir.
 - `down` kills only the pids `up` and `run` recorded, and removes the runtime
   directory.
 

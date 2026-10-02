@@ -108,10 +108,52 @@ set_mode() {
 	case $1 in dark) echo true >"$dir/is_dark" ;; light) echo false >"$dir/is_dark" ;; *) die "mode: dark|light" ;; esac
 }
 
-free_display() {
-	local n=90
-	while [ -e "/tmp/.X11-unix/X$n" ] || [ -e "/tmp/.X$n-lock" ]; do n=$((n + 1)); done
-	echo "$n"
+# Claim a display at random and keep it only if the X lock names our server:
+# harnesses started at the same moment must never share one.
+start_xvfb() {
+	local size=$1 n pid i try
+	for try in $(seq 20); do
+		n=$((100 + RANDOM % 900))
+		[ -e "/tmp/.X11-unix/X$n" ] || [ -e "/tmp/.X$n-lock" ] && continue
+		setsid Xvfb ":$n" -screen 0 "${size}x24" -nolisten tcp -nolisten local -noreset \
+			>"$STATE/xvfb.log" 2>&1 &
+		pid=$!
+		for i in $(seq 200); do
+			[ -e "/tmp/.X11-unix/X$n" ] && break
+			kill -0 "$pid" 2>/dev/null || break
+			sleep 0.05
+		done
+		if kill -0 "$pid" 2>/dev/null && [ "$(tr -d " " <"/tmp/.X$n-lock" 2>/dev/null)" = "$pid" ]; then
+			echo "$pid" >"$STATE/xvfb.pid"
+			echo ":$n" >"$STATE/display"
+			return 0
+		fi
+		kill "$pid" 2>/dev/null || true
+	done
+	die "no free X display"
+}
+
+# cosmic-comp logs to journald when it can; keep it and its clients off the
+# caller's journal and runtime dir when bubblewrap is there to do it.
+sandbox() {
+	SANDBOX=()
+	command -v bwrap >/dev/null || return 0
+	SANDBOX=(bwrap --dev-bind / / --tmpfs /run/systemd/journal)
+	case $(runtime) in /run/user/*) ;; *) SANDBOX+=(--tmpfs /run/user) ;; esac
+	SANDBOX+=(--)
+}
+
+# bwrap forks the command; record that child too, so `down` stops it rather
+# than only the bwrap process that watches it.
+sandboxed() {
+	local file=$1 parent child i
+	[ ${#SANDBOX[@]} -gt 0 ] || return 0
+	parent=$(tail -n1 "$file")
+	for i in $(seq 100); do
+		child=$(pgrep -P "$parent" | head -n1) && [ -n "$child" ] && break
+		sleep 0.02
+	done
+	[ -z "${child:-}" ] || echo "$child" >>"$file"
 }
 
 cmd_up() {
@@ -159,22 +201,22 @@ cmd_up() {
 	setsid dbus-daemon --config-file="$STATE/dbus.conf" --nofork --nopidfile >"$STATE/dbus.log" 2>&1 &
 	echo $! >"$STATE/dbus.pid"
 
-	local n; n=$(free_display)
-	setsid Xvfb ":$n" -screen 0 "${size}x24" -nolisten tcp -nolisten local -noreset >"$STATE/xvfb.log" 2>&1 &
-	echo $! >"$STATE/xvfb.pid"
-	echo ":$n" >"$STATE/display"
-	wait_for "[ -e /tmp/.X11-unix/X$n ]"
+	start_xvfb "$size"
+	sandbox
+	local n; n=$(cut -c2- "$STATE/display")
 
 	DISPLAY=:$n COSMIC_BACKEND=winit LIBGL_ALWAYS_SOFTWARE=1 LD_LIBRARY_PATH=$libs \
 		COSMIC_CLEAR_COLOR=${CC_CLEAR:-#2a2a2e} RUST_LOG=${RUST_LOG:-warn} \
-		setsid "$bin" --no-xwayland >"$STATE/comp.log" 2>&1 &
+		setsid "${SANDBOX[@]}" "$bin" --no-xwayland >"$STATE/comp.log" 2>&1 &
 	echo $! >"$STATE/comp.pid"
+	sandboxed "$STATE/comp.pid"
 	wait_for "ls $r | grep -qx 'wayland-[0-9]*'"
 	ls "$r" | grep -x 'wayland-[0-9]*' | head -n1 >"$STATE/socket"
 	# winit opens a 1280x800 window; fill the X screen with it.
 	local win
-	wait_for "xdo search --pid $(cat "$STATE/comp.pid") >/dev/null 2>&1"
-	win=$(xdo search --pid "$(cat "$STATE/comp.pid")" | head -n1)
+	# Ours is the only window on this private server.
+	wait_for "xdo search --name . >/dev/null 2>&1"
+	win=$(xdo search --name . | head -n1)
 	xdo windowmove "$win" 0 0 windowsize "$win" "${size%x*}" "${size#*x}"
 	# No window manager hands out focus, so give the keyboard to the nested window.
 	xdo windowfocus --sync "$win"
@@ -189,6 +231,10 @@ cmd_down() {
 	for p in clients comp xvfb dbus; do
 		[ -f "$STATE/$p.pid" ] || continue
 		while read -r pid; do kill "$pid" 2>/dev/null || true; done <"$STATE/$p.pid"
+		# Let each exit, so Xvfb removes its socket and lock before the next run.
+		while read -r pid; do
+			for _ in $(seq 40); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+		done <"$STATE/$p.pid"
 		rm -f "$STATE/$p.pid"
 	done
 	if [ -f "$STATE/runtime" ]; then
@@ -212,8 +258,10 @@ cmd_run() {
 	[ $# -gt 0 ] || die "run: missing command"
 	isolate
 	local log; log=$STATE/client-$(basename "$1")-$(date +%s%N).log
-	WAYLAND_DISPLAY=$(cat "$STATE/socket") setsid "$@" >"$log" 2>&1 &
+	sandbox
+	WAYLAND_DISPLAY=$(cat "$STATE/socket") setsid "${SANDBOX[@]}" "$@" >"$log" 2>&1 &
 	echo $! >>"$STATE/clients.pid"
+	sandboxed "$STATE/clients.pid"
 	echo $!
 }
 
@@ -255,7 +303,8 @@ cmd_type() { xdo type --delay 30 "$*"; sleep 0.1; }
 # The pixel at X,Y of a fresh shot, as "R G B".
 pixel() {
 	local ppm=$STATE/selftest.ppm
-	cmd_shot "$ppm"
+	rm -f "$ppm"
+	cmd_shot "$ppm" || { echo "- - -"; return; }
 	# P6 header: magic, width, height, maxval; then RGB triplets.
 	local w
 	w=$(head -c 64 "$ppm" | tr -s "\n" " " | awk "{print \$2}")
