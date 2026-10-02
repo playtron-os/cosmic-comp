@@ -5841,8 +5841,6 @@ impl Shell {
 
     /// Set a surface's show/hide transition (via layer_surface_visibility protocol).
     /// Surfaces that never call this fall back to the anchor-based heuristic.
-    /// Which non-sliding motion a surface plays, from the transition it asked for and the
-    /// theme's motion for its role.
     fn layer_style(&self, surface_id: &ObjectId) -> layer_open::Style {
         use crate::wayland::protocols::layer_surface_visibility::LayerTransition;
         match self.layer_transitions.get(surface_id) {
@@ -5911,8 +5909,7 @@ impl Shell {
         // below drives the same render path; the style only says how far, how
         // long, and on what curve.
         let style = self.layer_style(&surface_id);
-        // A theme's motion takes over from one in flight at the pose it has reached, as motion
-        // retargets from the current value; FadeRise back-dates its clock instead, below.
+        // A Kit motion takes over from the pose reached; FadeRise back-dates its clock below.
         let kit = matches!(style, layer_open::Style::Kit(_));
         let kit_close_from = (hidden && kit)
             .then(|| {
@@ -5921,7 +5918,6 @@ impl Shell {
                     .find(|o| o.surface_id == surface_id)
                     .map(|o| o.pose())
                     .or_else(|| {
-                        // Never shown: it leaves from nothing.
                         self.pending_layer_opens
                             .contains_key(&surface_id)
                             .then_some(layer_open::Pose {

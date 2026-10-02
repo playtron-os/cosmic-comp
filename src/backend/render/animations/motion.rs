@@ -92,11 +92,10 @@ pub struct Motion {
     pub ease_standard_cp: [f32; 4],
     /// Window/workspace spring (`spring_window`), macOS-smooth.
     pub window_spring: SpringParams,
-    /// Each kind of shell surface's show/hide motion.
     pub surfaces: SurfaceMotions,
 }
 
-/// The theme's motion for each role a layer surface can name; `None` is FadeRise.
+/// The theme's motion per surface role; `None` is FadeRise.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SurfaceMotions {
     pub popover: Option<LayerMotion>,

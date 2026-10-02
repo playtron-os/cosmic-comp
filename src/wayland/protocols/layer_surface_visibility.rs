@@ -53,8 +53,7 @@ pub enum LayerTransition {
     /// it — a client animating its own pixels cannot move the blur, which is a
     /// property of the surface and stays behind as a rectangle.
     FluidReveal,
-    /// What the surface is (version 5): the compositor plays the theme's motion for that
-    /// role, or [`Self::Fade`]'s when the theme gives none. Never slides.
+    /// What the surface is (v5): the theme's motion for it, else fade. Never slides.
     Role(crate::shell::layer_open::Role),
 }
 

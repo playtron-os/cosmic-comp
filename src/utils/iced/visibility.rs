@@ -20,8 +20,7 @@ pub struct Visibility {
     /// Layer-shell popups animate their first buffer; ordinary window chrome
     /// instead starts in its requested visibility state.
     pub animate_initial: bool,
-    /// A theme's motion for the popup's role. It moves every channel on its curve, from its
-    /// enter pose and toward its exit pose; the fields above then give only the enter pose.
+    /// The role's theme motion; the fields above then give only its enter pose.
     pub kit: Option<crate::shell::layer_open::Kit>,
 }
 
@@ -50,7 +49,6 @@ impl Visibility {
         }
     }
 
-    /// A compositor-owned context menu: the theme's context menu motion, or FadeRise.
     pub fn context_menu(motion: crate::backend::render::animations::motion::Motion) -> Self {
         match motion.surfaces.context_menu {
             Some(role) => {
@@ -67,7 +65,6 @@ impl Visibility {
         }
     }
 
-    /// Where an entrance starts.
     fn entering(self) -> VisibilityFrame {
         VisibilityFrame {
             opacity: 0.0,
@@ -249,7 +246,6 @@ impl VisibilityAnimation {
             return self.from;
         }
         let progress = match crate::shell::layer_open::held_open() {
-            // The harness holds an entrance at a fixed time, as it does a layer surface's.
             Some(held) if self.settings.visible => {
                 (held.as_secs_f32() / self.settings.duration.as_secs_f32()).min(1.0)
             }
@@ -439,8 +435,6 @@ mod tests {
         assert!(disabled.is_fully_hidden(now));
     }
 
-    /// A theme's context menu motion moves a compositor menu from its enter pose and toward its
-    /// exit pose on that curve (Playtron: the kit ContextMenu's 120ms gentleOut tween).
     #[test]
     fn a_context_menu_moves_on_the_theme_s_motion() {
         use icetron_themes::{LayerMotion, MotionCurve, MotionPose};

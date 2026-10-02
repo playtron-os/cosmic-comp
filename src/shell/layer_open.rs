@@ -19,11 +19,8 @@
 //!
 //! ALL THREE channels (alpha, translateY, scale) are driven from a single
 //! eased factor `t ∈ [0,1]` so they stay perfectly in sync.
-//!
-//! A surface can instead name what it is (`layer_surface_visibility` v5: popover, panel,
-//! launcher, notification, ...). The theme's motion for that role then moves it
-//! ([`Style::Kit`]): a spring or tween from the role's enter pose to rest, and from rest
-//! toward its exit pose. A role the theme gives no motion plays FadeRise as above.
+//! A surface that names its role (`layer_surface_visibility` v5) moves on the theme's motion
+//! for it instead ([`Style::Kit`]), or FadeRise when the theme gives none.
 
 use crate::backend::render::animations::motion;
 use icetron_p::animation::{easing, spring::Spring};
@@ -65,8 +62,6 @@ impl FadeRise {
     }
 }
 
-/// What a surface is, as it names itself through `layer_surface_visibility` v5. The theme
-/// gives each role its own motion; a role it gives none plays [`Style::FadeRise`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     Popover,
@@ -80,7 +75,6 @@ pub enum Role {
 }
 
 impl Role {
-    /// The theme's motion for this role, `None` for FadeRise.
     pub fn motion(self, surfaces: &motion::SurfaceMotions) -> Option<LayerMotion> {
         match self {
             Role::Popover => surfaces.popover,
@@ -95,8 +89,7 @@ impl Role {
     }
 }
 
-/// Where a surface is drawn while it moves: opacity, offset in logical px, and scale about its
-/// centre.
+/// Opacity, offset in logical px and scale about the centre.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Pose {
     pub alpha: f32,
@@ -113,7 +106,6 @@ impl Pose {
         scale: 1.0,
     };
 
-    /// A theme's hidden pose, where the surface is transparent.
     pub fn hidden(pose: MotionPose) -> Self {
         Self {
             alpha: 0.0,
@@ -123,7 +115,7 @@ impl Pose {
         }
     }
 
-    /// `progress` of the way to `to`. A spring passes 1 on the way; only opacity is held.
+    /// A spring passes 1 on the way; only opacity is held.
     pub fn toward(self, to: Self, progress: f32) -> Self {
         let lerp = |a: f32, b: f32| a + (b - a) * progress;
         Self {
@@ -135,7 +127,6 @@ impl Pose {
     }
 }
 
-/// A role's motion from the theme, its length worked out once.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Kit {
     pub motion: LayerMotion,
@@ -146,7 +137,6 @@ impl Kit {
     pub fn new(motion: LayerMotion) -> Self {
         let duration = match motion.curve {
             MotionCurve::Spring(spring) => {
-                // Settled on a whole millisecond.
                 motion::ms(Spring::from_token(spring).settle_time() * 1000.0)
             }
             MotionCurve::Tween { ms, .. } => motion::ms(ms),
@@ -154,8 +144,6 @@ impl Kit {
         Self { motion, duration }
     }
 
-    /// How far toward its target a move on this curve has gone after `elapsed`: 0 at the
-    /// start, 1 there; a spring passes 1 on the way.
     pub fn progress(&self, elapsed: Duration) -> f32 {
         match self.motion.curve {
             MotionCurve::Spring(spring) => {
@@ -182,9 +170,6 @@ impl Kit {
 }
 
 /// Which show/hide motion a surface plays.
-///
-/// Every style drives the same channels through the same render path; they differ only in how
-/// far, how long, and on what curve.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Style {
     /// The default: a subtle rise and fade, for popovers, panels and modals.
@@ -199,12 +184,10 @@ pub enum Style {
     /// BACKDROP BLUR animates with the surface — a client animating its own
     /// pixels leaves the blur behind as a rectangle that cannot follow it.
     FluidReveal,
-    /// A role's motion from the theme: its curve between its enter and exit poses.
     Kit(Kit),
 }
 
 impl Style {
-    /// What a surface plays for the role it named: the theme's motion for it, or FadeRise.
     pub fn for_role(role: Role, motion: &motion::Motion) -> Self {
         role.motion(&motion.surfaces)
             .map_or(Style::FadeRise, |m| Style::Kit(Kit::new(m)))
@@ -231,8 +214,7 @@ const FLUID_FADE_KNEE: f32 = 0.4;
 /// `fluidReveal`: opacity at the knee.
 const FLUID_FADE_KNEE_ALPHA: f32 = 0.8;
 
-/// `COSMIC_HOLD_LAYER_OPEN_MS`: hold every entrance that many ms in, so the headless harness can
-/// shoot it at fixed times. Unset, entrances run on the clock.
+/// `COSMIC_HOLD_LAYER_OPEN_MS` stops entrances that many ms in, for harness frame strips.
 pub(crate) fn held_open() -> Option<Duration> {
     static HOLD: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
     *HOLD.get_or_init(|| {
@@ -255,7 +237,6 @@ pub struct LayerOpen {
     motion: motion::Motion,
     /// Which motion this surface asked for.
     style: Style,
-    /// Where a [`Style::Kit`] entrance starts, when it takes over from a close in flight.
     from: Option<Pose>,
 }
 
@@ -275,8 +256,7 @@ impl LayerOpen {
         }
     }
 
-    /// As [`LayerOpen::styled`], starting from `from` rather than the style's own start: how a [`Style::Kit`]
-    /// motion takes over from one in flight, as motion retargets from the current value.
+    /// A [`Style::Kit`] motion taking over at `from`, as motion retargets from the current value.
     pub fn styled_from(
         surface_id: ObjectId,
         motion: motion::Motion,
@@ -329,7 +309,6 @@ impl LayerOpen {
         }
     }
 
-    /// Time since the entrance began, or the harness's held time.
     fn elapsed(&self) -> Duration {
         held_open().unwrap_or_else(|| self.start.elapsed())
     }
@@ -401,7 +380,6 @@ impl LayerOpen {
         }
     }
 
-    /// Where a [`Style::Kit`] entrance has the surface now. Other styles read their own channels.
     pub fn pose(&self) -> Pose {
         match self.style {
             Style::Kit(kit) => self
@@ -449,7 +427,6 @@ pub struct LayerClose {
     motion: motion::Motion,
     /// Which motion this surface asked for.
     style: Style,
-    /// Where a [`Style::Kit`] exit starts, when it takes over from an entrance in flight.
     from: Option<Pose>,
 }
 
@@ -469,8 +446,6 @@ impl LayerClose {
         }
     }
 
-    /// As [`LayerClose::styled`], starting from `from` rather than at rest: how a [`Style::Kit`]
-    /// motion takes over from one in flight, as motion retargets from the current value.
     pub fn styled_from(
         surface_id: ObjectId,
         motion: motion::Motion,
@@ -579,7 +554,6 @@ impl LayerClose {
         1.0 - t * (1.0 - to)
     }
 
-    /// Where a [`Style::Kit`] exit has the surface now. Other styles read their own channels.
     pub fn pose(&self) -> Pose {
         match self.style {
             Style::Kit(kit) => self
@@ -622,7 +596,6 @@ mod tests {
         LayerMotion { curve, enter, exit }
     }
 
-    /// Playtron's motions, which are the kit's (`icetron-theme-playtron`).
     fn kit() -> motion::SurfaceMotions {
         let snappy = MotionCurve::Spring([400.0, 32.0, 1.0]);
         motion::SurfaceMotions {
@@ -659,8 +632,7 @@ mod tests {
         }
     }
 
-    /// How far each curve has gone at [`TIMES`], read off motion itself (`motion-dom`'s spring
-    /// and `motion-utils`' cubicBezier, design `main`), and when motion calls a spring done.
+    /// Read off motion itself: motion-dom's spring and motion-utils' cubicBezier.
     fn motion_truth(role: Role) -> ([f32; 5], Option<u64>) {
         let snappy = ([0.0, 0.207637, 0.595652, 0.787073, 0.993347], Some(473));
         match role {
@@ -731,7 +703,6 @@ mod tests {
                 let got = open.pose();
                 let want_y = m.enter.y * (1.0 - p);
                 let want_scale = m.enter.scale + (1.0 - m.enter.scale) * p;
-                // The open's clock has run on a little since it was back-dated.
                 assert!(
                     (got.y - want_y).abs() < 0.05,
                     "{role:?} at {ms}ms: y {}",
@@ -774,7 +745,6 @@ mod tests {
         assert!((at_rest.scale - 0.97).abs() < 1e-3);
     }
 
-    /// Hiding mid-entrance starts the exit where the entrance had got to, as motion retargets.
     #[test]
     fn a_reversal_starts_from_the_current_pose() {
         let motion = kit_motion();
@@ -788,7 +758,6 @@ mod tests {
         assert!((reopen.pose().scale - start.scale).abs() < 1e-3);
     }
 
-    /// With no motion for a role, a surface naming it plays FadeRise, frame for frame.
     #[test]
     fn a_role_the_theme_leaves_alone_is_fade_rise() {
         let motion = CompTheme::default().motion;
