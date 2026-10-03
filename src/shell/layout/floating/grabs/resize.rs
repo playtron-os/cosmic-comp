@@ -118,9 +118,11 @@ impl ResizeSurfaceGrab {
 
         // Use the non-exclusive zone (area excluding layer-shell panels) for edge snapping
         // so windows can't be resized behind panels.
-        let usable_zone = layer_map_for_output(&self.output)
-            .non_exclusive_zone()
-            .as_local();
+        let usable_zone = crate::shell::layout::floating::below_halo(
+            layer_map_for_output(&self.output).non_exclusive_zone(),
+            self.window.halo_clearance(),
+        )
+        .as_local();
 
         if self.edges.intersects(left_right) {
             if self.edges.intersects(ResizeEdge::LEFT) {
@@ -694,9 +696,11 @@ impl ResizeSurfaceGrab {
         self.window.configure();
 
         // Update fills_output_zone based on the final resize geometry.
-        let zone = layer_map_for_output(&self.output)
-            .non_exclusive_zone()
-            .as_local();
+        let zone = crate::shell::layout::floating::below_halo(
+            layer_map_for_output(&self.output).non_exclusive_zone(),
+            self.window.halo_clearance(),
+        )
+        .as_local();
         let final_loc = ResizeData {
             edges: self.edges,
             initial_window_location: self.initial_window_location,

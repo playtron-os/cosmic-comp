@@ -396,6 +396,13 @@ impl CosmicSurface {
         }
     }
 
+    pub fn has_parent(&self) -> bool {
+        match self.0.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => toplevel.parent().is_some(),
+            WindowSurface::X11(surface) => surface.is_transient_for().is_some(),
+        }
+    }
+
     /// The X11 window this surface is transient for (`WM_TRANSIENT_FOR`), if any.
     pub fn transient_for(&self) -> Option<u32> {
         match self.0.underlying_surface() {

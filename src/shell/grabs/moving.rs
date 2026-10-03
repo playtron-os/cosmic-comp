@@ -323,9 +323,7 @@ impl MoveGrabState {
                 .to_f64()
                 .upscale(scale)
                 .to_i32_round();
-            let backdrop_geometry = self
-                .window
-                .backdrop_geometry(Rectangle::new(render_location, scaled_size).as_local());
+            let backdrop_geometry = Rectangle::new(render_location, scaled_size).as_local();
 
             push(
                 BackdropShader::element(
@@ -340,10 +338,10 @@ impl MoveGrabState {
             );
         }
 
-        let non_exclusive_geometry = {
-            let layers = layer_map_for_output(output);
-            layers.non_exclusive_zone()
-        };
+        let non_exclusive_geometry = crate::shell::layout::floating::below_halo(
+            layer_map_for_output(output).non_exclusive_zone(),
+            self.window.halo_clearance(),
+        );
 
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);
         let thickness = self.indicator_thickness.max(1);
@@ -352,7 +350,11 @@ impl MoveGrabState {
             && &self.cursor_output == output
         {
             let base_color = theme.neutral_color();
-            let overlay_geometry = t.overlay_geometry(non_exclusive_geometry, gaps);
+            let overlay_geometry = t.overlay_geometry(
+                non_exclusive_geometry,
+                gaps,
+                self.window.halo_clearance() > 0,
+            );
 
             push(
                 IndicatorShader::element(
@@ -380,7 +382,11 @@ impl MoveGrabState {
                 BackdropShader::element(
                     renderer,
                     Key::Window(Usage::SnappingIndicator, self.window.key()),
-                    t.overlay_geometry(non_exclusive_geometry, gaps),
+                    t.overlay_geometry(
+                        non_exclusive_geometry,
+                        gaps,
+                        self.window.halo_clearance() > 0,
+                    ),
                     theme.radius_s(),
                     0.4,
                     [base_color.red, base_color.green, base_color.blue],
@@ -453,6 +459,7 @@ impl SnappingZone {
         &self,
         non_exclusive_geometry: Rectangle<i32, Logical>,
         gaps: (i32, i32),
+        halo: bool,
     ) -> Rectangle<i32, Local> {
         match self {
             SnappingZone::Maximize => non_exclusive_geometry.as_local(),
@@ -460,9 +467,7 @@ impl SnappingZone {
             SnappingZone::TopLeft => {
                 TiledCorners::TopLeft.relative_geometry(non_exclusive_geometry, gaps)
             }
-            SnappingZone::Left => {
-                TiledCorners::Left.relative_geometry(non_exclusive_geometry, gaps)
-            }
+            SnappingZone::Left => TiledCorners::Left.tile(non_exclusive_geometry, gaps, halo),
             SnappingZone::BottomLeft => {
                 TiledCorners::BottomLeft.relative_geometry(non_exclusive_geometry, gaps)
             }
@@ -472,9 +477,7 @@ impl SnappingZone {
             SnappingZone::BottomRight => {
                 TiledCorners::BottomRight.relative_geometry(non_exclusive_geometry, gaps)
             }
-            SnappingZone::Right => {
-                TiledCorners::Right.relative_geometry(non_exclusive_geometry, gaps)
-            }
+            SnappingZone::Right => TiledCorners::Right.tile(non_exclusive_geometry, gaps, halo),
             SnappingZone::TopRight => {
                 TiledCorners::TopRight.relative_geometry(non_exclusive_geometry, gaps)
             }
@@ -560,6 +563,14 @@ impl MoveGrab {
                 } else {
                     grab_state.location.y
                 };
+                // The window's top stops its Halo's clearance below the zone.
+                let clearance = self.window.halo_clearance();
+                if clearance > 0 {
+                    let zone = layer_map_for_output(&self.cursor_output).non_exclusive_zone();
+                    let top = output_loc.y + f64::from(zone.loc.y + clearance)
+                        - f64::from(grab_state.window_offset.y);
+                    grab_state.location.y = grab_state.location.y.max(top);
+                }
             }
 
             for output in shell.outputs() {

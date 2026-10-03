@@ -1483,7 +1483,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2816,7 +2816,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#483631fa4ac30c16d1d4bca9e28528d6c8c90cf0"
+source = "git+https://github.com/playtron-os/iced.git#5de30844ac19c893280c597aeeadc2afde4b70e3"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3008,7 +3008,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#f2398e9c9e40f7cd7f5f0524edbf69b9f87dd6fe"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#f0c8119cf81b2a30be1076ab2d64afebe178e7c4"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -3022,10 +3022,10 @@ dependencies = [
  "image",
  "jxl-oxide",
  "once_cell",
- "palette",
  "parking_lot",
  "rayon",
  "reqwest",
+ "resvg 0.45.1",
  "tokio",
  "tracing",
  "wasm-bindgen-futures",
@@ -3040,7 +3040,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#212500c52f02dfd529d72a7cd8075d6758b42f9e"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#f33a55984fe0291cf256aff8d98b60da48724d6e"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",
@@ -3716,7 +3716,7 @@ version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4413,7 +4413,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4985,7 +4985,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -7337,7 +7337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab27f167b093214c68413a2e0bcd318f0591af475597405ff68138ba0a433379"
 dependencies = [
  "cc",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -8035,7 +8035,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

@@ -1107,16 +1107,15 @@ impl CosmicMapped {
         }
     }
 
-    pub fn backdrop_geometry(&self, outer: Rectangle<i32, Local>) -> Rectangle<i32, Local> {
-        match &self.element {
-            CosmicMappedInternal::Window(w) => w.backdrop_geometry(outer),
-            CosmicMappedInternal::Stack(_) => outer,
-            _ => unreachable!(),
-        }
-    }
-
     // MERGE: dropped `blur_corner_radius`, `has_blur` and the `HasBlur` impl — our
     // KDE-blur pipeline is replaced by upstream's frosted-glass (blur_effect) work.
+
+    pub fn halo_clearance(&self) -> i32 {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => w.halo_clearance(),
+            _ => 0,
+        }
+    }
 
     /// Check if this mapped element has server-side decorations (SSD header)
     pub fn has_ssd(&self) -> bool {

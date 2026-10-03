@@ -1812,10 +1812,7 @@ impl PointerTarget<State> for CosmicStack {
             let active_window = &p.windows.lock().unwrap()[p.active.load(Ordering::SeqCst)];
             let Some(next) = Focus::under(
                 active_window,
-                p.tab_height(),
-                p.tab_height(),
-                0,
-                None,
+                super::window::HeaderBand::Bar(p.tab_height()),
                 event.location,
             ) else {
                 return;
@@ -1848,10 +1845,7 @@ impl PointerTarget<State> for CosmicStack {
             let active_window = &p.windows.lock().unwrap()[active];
             let Some(next) = Focus::under(
                 active_window,
-                p.tab_height(),
-                p.tab_height(),
-                0,
-                None,
+                super::window::HeaderBand::Bar(p.tab_height()),
                 event.location,
             ) else {
                 return;

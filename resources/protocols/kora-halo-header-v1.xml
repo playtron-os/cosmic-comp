@@ -14,12 +14,13 @@
     is" without express or implied warranty.
   </copyright>
   <interface name="kora_halo_header_manager_v1" version="1">
-    <description summary="opt into overlay server-side Halo decorations">
-      By default, the compositor places Halo fully above the client content.
-      Its visible height is included in the window's outer geometry and excluded
-      from the size configured for client content, including when maximized.
-      A Halo-aware client may opt into the original overlapping layout and
-      keep its own controls clear of the floating header instead.
+    <description summary="opt into the Halo's drag strip over the client">
+      The compositor floats the Halo above every server-side decorated window,
+      clear of the client content and outside the window's geometry; window
+      placement keeps room for it. By default nothing of the Halo reaches into
+      the client. A Halo-aware client may opt into overlay mode, which also gives
+      the Halo a drag strip across the top of the client, and keeps its own
+      controls clear of that strip.
 
       This does not negotiate server-side decorations: clients must still use
       xdg-decoration for that. Client-side decorated windows, fullscreen edge
@@ -32,8 +33,8 @@
       <entry name="invalid_mode" value="2" summary="unknown header mode"/>
     </enum>
     <enum name="mode">
-      <entry name="reserved" value="0" summary="joined Halo with reserved decoration space (default)"/>
-      <entry name="overlay" value="1" summary="client supports an overlapping Halo"/>
+      <entry name="reserved" value="0" summary="Halo above the client, no strip over it (default)"/>
+      <entry name="overlay" value="1" summary="Halo above the client plus a drag strip over its top edge"/>
     </enum>
     <request name="destroy" type="destructor">
       <description summary="destroy the manager">
@@ -50,7 +51,8 @@
         inherits this mode.
 
         In overlay mode the client is responsible for keeping its controls
-        clear of the Halo. This request does not hide the compositor's Halo.
+        clear of the drag strip. Neither mode hides the compositor's Halo or
+        changes where it is drawn.
       </description>
       <arg name="surface" type="object" interface="wl_surface"/>
       <arg name="mode" type="uint" enum="mode"/>
