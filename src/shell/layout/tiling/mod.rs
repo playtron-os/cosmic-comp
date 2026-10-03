@@ -3122,35 +3122,20 @@ impl TilingLayout {
                     let node = tree.get(&node_id).unwrap();
                     let data = node.data();
                     if data.is_mapped(None) {
-                        let gap = (
-                            (
-                                if TilingLayout::has_adjacent_node(tree, &node_id, Direction::Left)
-                                {
-                                    inner / 2
-                                } else {
-                                    inner
-                                },
-                                if TilingLayout::has_adjacent_node(tree, &node_id, Direction::Up) {
-                                    inner / 2
-                                } else {
-                                    inner
-                                },
-                            ),
-                            (
-                                if TilingLayout::has_adjacent_node(tree, &node_id, Direction::Right)
-                                {
-                                    inner / 2
-                                } else {
-                                    inner
-                                },
-                                if TilingLayout::has_adjacent_node(tree, &node_id, Direction::Down)
-                                {
-                                    inner / 2
-                                } else {
-                                    inner
-                                },
-                            ),
-                        );
+                        let adjacent = [
+                            Direction::Left,
+                            Direction::Up,
+                            Direction::Right,
+                            Direction::Down,
+                        ]
+                        .map(|direction| {
+                            TilingLayout::has_adjacent_node(tree, &node_id, direction)
+                        });
+                        let clearance = match data {
+                            Data::Mapped { mapped, .. } => mapped.halo_clearance(),
+                            _ => 0,
+                        };
+                        let gap = tile_gaps(adjacent, inner, clearance);
                         geo.loc += gap.0.into();
                         geo.size -= gap.0.into();
                         geo.size -= gap.1.into();
@@ -3318,7 +3303,10 @@ impl TilingLayout {
         if matches!(overview, OverviewMode::None) {
             for (mapped, geo) in self.mapped() {
                 // Tiled windows are rendered cropped to their tile (`geo`), so input must be bound to the tile as well
-                if !geo.contains(location) {
+                let mut tile = geo;
+                tile.loc.y -= mapped.halo_clearance();
+                tile.size.h += mapped.halo_clearance();
+                if !tile.contains(location) {
                     continue;
                 }
                 if !mapped.bbox().contains((location - geo.loc).as_logical()) {
@@ -4390,6 +4378,12 @@ impl TilingLayout {
         let g = self.theme.gaps;
         (g.0 as i32, g.1 as i32)
     }
+}
+
+/// A tile's `((left, top), (right, bottom))` insets; a Halo window keeps its clearance above it.
+fn tile_gaps(adjacent: [bool; 4], inner: i32, clearance: i32) -> ((i32, i32), (i32, i32)) {
+    let [left, up, right, down] = adjacent.map(|near| if near { inner / 2 } else { inner });
+    ((left, up.max(clearance)), (right, down))
 }
 
 const GAP_KEYBOARD: i32 = 8;
@@ -5581,7 +5575,10 @@ fn render_new_tree_windows<R>(
             if swap_desc.as_ref().map(|desc| &desc.node) == Some(&node_id)
                 || focused.as_ref() == Some(&node_id)
             {
-                if indicator_thickness > 0 || data.is_group() {
+                // A Halo window's own frame draws its focus, as when floating.
+                let halo_frame = matches!(data, Data::Mapped { mapped, .. } if mapped.halo_clearance() > 0)
+                    && swap_desc.as_ref().map(|desc| &desc.node) != Some(&node_id);
+                if (indicator_thickness > 0 || data.is_group()) && !halo_frame {
                     let mut geo = geo;
 
                     let scale = geo.size.to_f64() / original_geo.size.to_f64();
@@ -5763,6 +5760,13 @@ fn render_new_tree_windows<R>(
                     (ConstrainScaleBehavior::CutOff, ConstrainAlign::TOP_LEFT)
                 };
 
+                // A Halo floats in the room its tile keeps above the window, outside `geo`.
+                let mut window_clip = geo;
+                if matches!(behavior, ConstrainScaleBehavior::CutOff) {
+                    let room = mapped.halo_clearance();
+                    window_clip.loc.y -= room;
+                    window_clip.size.h += room;
+                }
                 let map_elem = |element| match element {
                     CosmicMappedRenderElement::Stack(elem) => constrain_render_elements(
                         std::iter::once(elem),
@@ -5780,7 +5784,9 @@ fn render_new_tree_windows<R>(
                         std::iter::once(elem),
                         geo.loc.as_logical().to_physical_precise_round(output_scale)
                             - elem_geometry.loc,
-                        geo.as_logical().to_physical_precise_round(output_scale),
+                        window_clip
+                            .as_logical()
+                            .to_physical_precise_round(output_scale),
                         elem_geometry,
                         behavior,
                         align,
@@ -6105,5 +6111,21 @@ fn scale_to_center<C>(
             )
                 .into(),
         )
+    }
+}
+
+#[cfg(test)]
+mod halo_tests {
+    use super::tile_gaps;
+
+    #[test]
+    fn a_halo_tile_keeps_its_room_above() {
+        assert_eq!(tile_gaps([false; 4], 8, 40), ((8, 40), (8, 8)));
+        assert_eq!(
+            tile_gaps([true, true, false, false], 8, 40),
+            ((4, 40), (8, 8))
+        );
+        assert_eq!(tile_gaps([true; 4], 8, 0), ((4, 4), (4, 4)));
+        assert_eq!(tile_gaps([false; 4], 48, 40), ((48, 48), (48, 48)));
     }
 }
