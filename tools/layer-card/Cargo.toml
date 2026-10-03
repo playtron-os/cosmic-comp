@@ -1,0 +1,13 @@
+[package]
+name = "layer-card"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace]
+
+[dependencies]
+iced = { git = "https://github.com/playtron-os/iced.git", features = ["tokio", "tiny-skia"] }
+iced_layershell = { git = "https://github.com/playtron-os/exwlshelleventloop.git" }
+tokio = { version = "1", features = ["time"] }
