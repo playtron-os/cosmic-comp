@@ -5858,7 +5858,23 @@ impl Shell {
         transition: crate::wayland::protocols::layer_surface_visibility::LayerTransition,
     ) {
         tracing::debug!(?surface_id, ?transition, "set_surface_transition");
-        self.layer_transitions.insert(surface_id, transition);
+        self.layer_transitions
+            .insert(surface_id.clone(), transition);
+        // A client names its role once its first buffer is up, so the entrance that buffer
+        // started is restarted in the role's motion, on the same clock.
+        let style = self.layer_style(&surface_id);
+        let motion = self.theme.motion;
+        if let Some(open) = self
+            .layer_opens
+            .iter_mut()
+            .find(|o| o.surface_id == surface_id)
+            && open.start.elapsed() < Duration::from_millis(100)
+            && open.style() != style
+        {
+            let start = open.start;
+            *open = layer_open::LayerOpen::styled(surface_id, motion, style);
+            open.start = start;
+        }
     }
 
     /// Set a surface's hidden state (via layer_surface_visibility protocol)

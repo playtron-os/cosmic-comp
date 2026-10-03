@@ -241,6 +241,10 @@ pub struct LayerOpen {
 }
 
 impl LayerOpen {
+    pub fn style(&self) -> Style {
+        self.style
+    }
+
     pub fn new(surface_id: ObjectId, motion: motion::Motion) -> Self {
         Self::styled(surface_id, motion, Style::default())
     }
