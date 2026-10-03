@@ -5841,13 +5841,40 @@ impl Shell {
 
     /// Set a surface's show/hide transition (via layer_surface_visibility protocol).
     /// Surfaces that never call this fall back to the anchor-based heuristic.
+    fn layer_style(&self, surface_id: &ObjectId) -> layer_open::Style {
+        use crate::wayland::protocols::layer_surface_visibility::LayerTransition;
+        match self.layer_transitions.get(surface_id) {
+            Some(LayerTransition::FluidReveal) => layer_open::Style::FluidReveal,
+            Some(LayerTransition::Role(role)) => {
+                layer_open::Style::for_role(*role, &self.theme.motion)
+            }
+            _ => layer_open::Style::FadeRise,
+        }
+    }
+
     pub fn set_surface_transition(
         &mut self,
         surface_id: ObjectId,
         transition: crate::wayland::protocols::layer_surface_visibility::LayerTransition,
     ) {
         tracing::debug!(?surface_id, ?transition, "set_surface_transition");
-        self.layer_transitions.insert(surface_id, transition);
+        self.layer_transitions
+            .insert(surface_id.clone(), transition);
+        // A client names its role once its first buffer is up, so the entrance that buffer
+        // started is restarted in the role's motion, on the same clock.
+        let style = self.layer_style(&surface_id);
+        let motion = self.theme.motion;
+        if let Some(open) = self
+            .layer_opens
+            .iter_mut()
+            .find(|o| o.surface_id == surface_id)
+            && open.start.elapsed() < Duration::from_millis(100)
+            && open.style() != style
+        {
+            let start = open.start;
+            *open = layer_open::LayerOpen::styled(surface_id, motion, style);
+            open.start = start;
+        }
     }
 
     /// Set a surface's hidden state (via layer_surface_visibility protocol)
@@ -5888,17 +5915,42 @@ impl Shell {
         // `Fade` never slides (even if edge-anchored); otherwise fall back to
         // the anchor-based heuristic.
         let slide_edge = match self.layer_transitions.get(&surface_id) {
-            Some(LayerTransition::Fade | LayerTransition::FluidReveal) => None,
+            Some(
+                LayerTransition::Fade | LayerTransition::FluidReveal | LayerTransition::Role(_),
+            ) => None,
             _ => self.detect_layer_slide_edge(&surface_id),
         };
 
         // Which of the non-sliding motions this surface asked for. Everything
         // below drives the same render path; the style only says how far, how
         // long, and on what curve.
-        let style = match self.layer_transitions.get(&surface_id) {
-            Some(LayerTransition::FluidReveal) => layer_open::Style::FluidReveal,
-            _ => layer_open::Style::FadeRise,
-        };
+        let style = self.layer_style(&surface_id);
+        // A Kit motion takes over from the pose reached; FadeRise back-dates its clock below.
+        let kit = matches!(style, layer_open::Style::Kit(_));
+        let kit_close_from = (hidden && kit)
+            .then(|| {
+                self.layer_opens
+                    .iter()
+                    .find(|o| o.surface_id == surface_id)
+                    .map(|o| o.pose())
+                    .or_else(|| {
+                        self.pending_layer_opens
+                            .contains_key(&surface_id)
+                            .then_some(layer_open::Pose {
+                                alpha: 0.0,
+                                ..layer_open::Pose::REST
+                            })
+                    })
+            })
+            .flatten();
+        let kit_open_from = (!hidden && kit)
+            .then(|| {
+                self.layer_closes
+                    .iter()
+                    .find(|c| c.surface_id == surface_id)
+                    .map(|c| c.pose())
+            })
+            .flatten();
 
         // Hiding cancels any in-flight OPEN (entrance) animation. For a fade+rise
         // surface we first capture how "open" it currently is, so the close can start
@@ -6021,13 +6073,17 @@ impl Shell {
                 );
                 self.rise_surfaces.insert(surface_id.clone());
                 self.layer_closes.retain(|c| c.surface_id != surface_id);
-                self.layer_closes
-                    .push(layer_open::LayerClose::styled_backdated(
+                self.layer_closes.push(match kit_close_from {
+                    Some(from) => {
+                        layer_open::LayerClose::styled_from(surface_id.clone(), motion, style, from)
+                    }
+                    None => layer_open::LayerClose::styled_backdated(
                         surface_id.clone(),
                         close_backdate_ms,
                         motion,
                         style,
-                    ));
+                    ),
+                });
             } else {
                 let was_hidden = self.hidden_surfaces.remove(&surface_id);
                 let was_fading_out = self.layer_fade_out.remove(&surface_id).is_some();
@@ -6077,13 +6133,20 @@ impl Shell {
                         ((1.0 - close_progress) * motion.layer_open.as_millis() as f32) as u64;
                     self.layer_closes.retain(|c| c.surface_id != surface_id);
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
-                    self.layer_opens
-                        .push(layer_open::LayerOpen::styled_backdated(
+                    self.layer_opens.push(match kit_open_from {
+                        Some(from) => layer_open::LayerOpen::styled_from(
+                            surface_id.clone(),
+                            motion,
+                            style,
+                            from,
+                        ),
+                        None => layer_open::LayerOpen::styled_backdated(
                             surface_id.clone(),
                             backdate,
                             motion,
                             style,
-                        ));
+                        ),
+                    });
                 } else if was_fading_out {
                     // Legacy plain fade-out still in flight — rise in from scratch.
                     self.layer_opens.retain(|o| o.surface_id != surface_id);
@@ -6758,12 +6821,7 @@ impl Shell {
             // come through here, so reading the default would have the chat
             // input rise the popover distance on every re-show and only travel
             // properly when it happened to take the immediate path.
-            let style = match self.layer_transitions.get(surface_id) {
-                Some(
-                    crate::wayland::protocols::layer_surface_visibility::LayerTransition::FluidReveal,
-                ) => layer_open::Style::FluidReveal,
-                _ => layer_open::Style::FadeRise,
-            };
+            let style = self.layer_style(surface_id);
             self.layer_opens.push(layer_open::LayerOpen::styled(
                 surface_id.clone(),
                 motion,
@@ -8069,10 +8127,13 @@ impl Shell {
         //     close (slide-down). Registering the open SUPPRESSES the plain
         //     fade-in, so alpha/translate/scale stay driven by one eased factor.
         if !is_hidden {
-            let slide_in = (self.layer_transitions.get(&surface_id)
-                != Some(
-                    &crate::wayland::protocols::layer_surface_visibility::LayerTransition::Fade,
-                ))
+            let slide_in = (!matches!(
+                self.layer_transitions.get(&surface_id),
+                Some(
+                    crate::wayland::protocols::layer_surface_visibility::LayerTransition::Fade
+                        | crate::wayland::protocols::layer_surface_visibility::LayerTransition::Role(_)
+                )
+            ))
             .then(|| self.detect_layer_slide_edge(&surface_id))
             .flatten()
             .filter(|(_, _, exclusive_zone)| *exclusive_zone > 0);

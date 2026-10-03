@@ -19,7 +19,7 @@
 
 use std::time::Duration;
 
-use icetron_themes::ThemeInterface;
+use icetron_themes::{LayerMotion, ThemeInterface};
 
 pub use super::spring::{Spring, SpringParams};
 
@@ -92,6 +92,35 @@ pub struct Motion {
     pub ease_standard_cp: [f32; 4],
     /// Window/workspace spring (`spring_window`), macOS-smooth.
     pub window_spring: SpringParams,
+    pub surfaces: SurfaceMotions,
+}
+
+/// The theme's motion per surface role; `None` is FadeRise.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SurfaceMotions {
+    pub popover: Option<LayerMotion>,
+    pub panel: Option<LayerMotion>,
+    pub control_panel: Option<LayerMotion>,
+    pub launcher: Option<LayerMotion>,
+    pub spotlight: Option<LayerMotion>,
+    pub notification: Option<LayerMotion>,
+    pub context_menu: Option<LayerMotion>,
+    pub modal: Option<LayerMotion>,
+}
+
+impl SurfaceMotions {
+    pub fn from_theme(theme: &dyn ThemeInterface) -> Self {
+        Self {
+            popover: theme.popover_motion(),
+            panel: theme.panel_motion(),
+            control_panel: theme.control_panel_motion(),
+            launcher: theme.launcher_motion(),
+            spotlight: theme.spotlight_motion(),
+            notification: theme.notification_motion(),
+            context_menu: theme.context_menu_motion(),
+            modal: theme.modal_motion(),
+        }
+    }
 }
 
 impl Motion {
@@ -114,6 +143,7 @@ impl Motion {
             screenshot_flash: ms(theme.duration_slower()),
             ease_standard_cp: theme.ease_default(),
             window_spring: spring_params(theme.spring_window()),
+            surfaces: SurfaceMotions::from_theme(theme),
         }
     }
 
