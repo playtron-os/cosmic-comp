@@ -430,6 +430,8 @@ pub struct GameMode {
     pub first_frame_since: Option<Instant>,
     /// That game's window, driven at full frame rate while it is held back.
     pub first_frame_surface: Option<CosmicSurface>,
+    /// Since when the game's window has been gone, waiting for a replacement.
+    pub missing_since: Option<Instant>,
     /// Whether a gaming overlay is currently up over the game — either a real
     /// overlay window (`STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY`) or a client
     /// `SetOverlay(true)` assertion. Maintained by `refresh_overlay_visible`;

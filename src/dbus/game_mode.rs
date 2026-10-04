@@ -99,6 +99,10 @@ const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
 /// its black window, short enough that one that never draws still shows.
 const FIRST_FRAME_WAIT: Duration = Duration::from_secs(20);
 
+/// How long game mode waits for a replacement once the game's window is gone,
+/// before giving the screen back to the launcher or the desktop.
+const REPLACEMENT_WAIT: Duration = Duration::from_secs(8);
+
 /// Whether `window` is the launcher's own.
 pub fn is_launcher_window(window: &CosmicSurface) -> bool {
     LAUNCHER_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
@@ -1288,7 +1292,28 @@ impl State {
                 self.exit_game_mode();
             } else if pending.is_none() {
                 info!(target: GAMING_TARGET, app_id, "waiting for the app's replacement window");
-                self.common.shell.write().game_mode.pending_app_id = Some(app_id);
+                let mut shell = self.common.shell.write();
+                shell.game_mode.pending_app_id = Some(app_id);
+                shell.game_mode.missing_since = Some(Instant::now());
+            } else if pending == Some(app_id)
+                && self
+                    .common
+                    .shell
+                    .read()
+                    .game_mode
+                    .missing_since
+                    .is_some_and(|since| since.elapsed() >= REPLACEMENT_WAIT)
+            {
+                // Nothing replaced it, and nothing said it ended: the app died,
+                // likely along with its controller. Its desktop is empty, so
+                // never leave it on screen.
+                if no_launcher() {
+                    info!(target: GAMING_TARGET, app_id, "app gone, not replaced, no launcher; leaving game mode");
+                    self.exit_game_mode();
+                } else {
+                    info!(target: GAMING_TARGET, app_id, "app gone, not replaced; back to the launcher");
+                    self.enter_game_mode(LAUNCHER_APP_ID);
+                }
             }
         }
         self.try_resolve_pending_game_mode();
