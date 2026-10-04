@@ -5968,6 +5968,11 @@ impl Shell {
                                 | layer_slide::SlideVisibility::Hidden
                         )
                 });
+                // A hide asked for before the surface mapped had no edge to
+                // slide to and plays as a close. Showing must end that close,
+                // or its end hides the surface again for good.
+                let was_closing = self.layer_closes.iter().any(|c| c.surface_id == surface_id);
+                self.layer_closes.retain(|c| c.surface_id != surface_id);
                 tracing::debug!(
                     ?surface_id,
                     ?edge,
@@ -5975,10 +5980,11 @@ impl Shell {
                     exclusive_zone,
                     was_hidden,
                     was_sliding_out,
+                    was_closing,
                     "set_surface_hidden(false): starting slide-in"
                 );
                 // Only start slide-in if the surface was actually hidden or sliding out
-                if was_hidden || was_sliding_out {
+                if was_hidden || was_sliding_out || was_closing {
                     if let Some(existing) = self
                         .layer_slides
                         .iter_mut()
