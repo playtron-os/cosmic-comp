@@ -19,9 +19,12 @@
 //!
 //! ALL THREE channels (alpha, translateY, scale) are driven from a single
 //! eased factor `t ∈ [0,1]` so they stay perfectly in sync.
+//! A surface that names its role (`layer_surface_visibility` v5) moves on the theme's motion
+//! for it instead ([`Style::Kit`]), or FadeRise when the theme gives none.
 
 use crate::backend::render::animations::motion;
-use icetron_p::animation::easing;
+use icetron_p::animation::{easing, spring::Spring};
+use icetron_themes::{LayerMotion, MotionCurve, MotionPose};
 use std::time::{Duration, Instant};
 use wayland_backend::server::ObjectId;
 
@@ -59,11 +62,115 @@ impl FadeRise {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Popover,
+    Panel,
+    ControlPanel,
+    Launcher,
+    Spotlight,
+    Notification,
+    ContextMenu,
+    Modal,
+}
+
+impl Role {
+    pub fn motion(self, surfaces: &motion::SurfaceMotions) -> Option<LayerMotion> {
+        match self {
+            Role::Popover => surfaces.popover,
+            Role::Panel => surfaces.panel,
+            Role::ControlPanel => surfaces.control_panel,
+            Role::Launcher => surfaces.launcher,
+            Role::Spotlight => surfaces.spotlight,
+            Role::Notification => surfaces.notification,
+            Role::ContextMenu => surfaces.context_menu,
+            Role::Modal => surfaces.modal,
+        }
+    }
+}
+
+/// Opacity, offset in logical px and scale about the centre.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub alpha: f32,
+    pub x: f32,
+    pub y: f32,
+    pub scale: f32,
+}
+
+impl Pose {
+    pub const REST: Self = Self {
+        alpha: 1.0,
+        x: 0.0,
+        y: 0.0,
+        scale: 1.0,
+    };
+
+    pub fn hidden(pose: MotionPose) -> Self {
+        Self {
+            alpha: 0.0,
+            x: pose.x,
+            y: pose.y,
+            scale: pose.scale,
+        }
+    }
+
+    /// A spring passes 1 on the way; only opacity is held.
+    pub fn toward(self, to: Self, progress: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * progress;
+        Self {
+            alpha: lerp(self.alpha, to.alpha).clamp(0.0, 1.0),
+            x: lerp(self.x, to.x),
+            y: lerp(self.y, to.y),
+            scale: lerp(self.scale, to.scale),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Kit {
+    pub motion: LayerMotion,
+    pub duration: Duration,
+}
+
+impl Kit {
+    pub fn new(motion: LayerMotion) -> Self {
+        let duration = match motion.curve {
+            MotionCurve::Spring(spring) => {
+                motion::ms(Spring::from_token(spring).settle_time() * 1000.0)
+            }
+            MotionCurve::Tween { ms, .. } => motion::ms(ms),
+        };
+        Self { motion, duration }
+    }
+
+    pub fn progress(&self, elapsed: Duration) -> f32 {
+        match self.motion.curve {
+            MotionCurve::Spring(spring) => {
+                Spring::from_token(spring).progress(elapsed.as_secs_f32()).0
+            }
+            MotionCurve::Tween { ease, .. } => {
+                let t = if self.duration.is_zero() {
+                    1.0
+                } else {
+                    (elapsed.as_secs_f32() / self.duration.as_secs_f32()).min(1.0)
+                };
+                motion::cubic_bezier_cp(t, ease)
+            }
+        }
+    }
+
+    pub fn enter(&self) -> Pose {
+        Pose::hidden(self.motion.enter)
+    }
+
+    pub fn exit(&self) -> Pose {
+        Pose::hidden(self.motion.exit)
+    }
+}
+
 /// Which show/hide motion a surface plays.
-///
-/// Both styles drive the same three channels through the same render path; they
-/// differ only in how far, how long, and on what curve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Style {
     /// The default: a subtle rise and fade, for popovers, panels and modals.
     #[default]
@@ -77,6 +184,14 @@ pub enum Style {
     /// BACKDROP BLUR animates with the surface — a client animating its own
     /// pixels leaves the blur behind as a rectangle that cannot follow it.
     FluidReveal,
+    Kit(Kit),
+}
+
+impl Style {
+    pub fn for_role(role: Role, motion: &motion::Motion) -> Self {
+        role.motion(&motion.surfaces)
+            .map_or(Style::FadeRise, |m| Style::Kit(Kit::new(m)))
+    }
 }
 
 /// `fluidReveal`: distance the surface starts below its resting place.
@@ -99,6 +214,18 @@ const FLUID_FADE_KNEE: f32 = 0.4;
 /// `fluidReveal`: opacity at the knee.
 const FLUID_FADE_KNEE_ALPHA: f32 = 0.8;
 
+/// `COSMIC_HOLD_LAYER_OPEN_MS` stops entrances that many ms in, for harness frame strips.
+pub(crate) fn held_open() -> Option<Duration> {
+    static HOLD: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *HOLD.get_or_init(|| {
+        std::env::var("COSMIC_HOLD_LAYER_OPEN_MS")
+            .ok()?
+            .parse()
+            .ok()
+            .map(Duration::from_millis)
+    })
+}
+
 /// Per-surface open-animation tracking.
 #[derive(Debug, Clone)]
 pub struct LayerOpen {
@@ -110,9 +237,14 @@ pub struct LayerOpen {
     motion: motion::Motion,
     /// Which motion this surface asked for.
     style: Style,
+    from: Option<Pose>,
 }
 
 impl LayerOpen {
+    pub fn style(&self) -> Style {
+        self.style
+    }
+
     pub fn new(surface_id: ObjectId, motion: motion::Motion) -> Self {
         Self::styled(surface_id, motion, Style::default())
     }
@@ -124,6 +256,20 @@ impl LayerOpen {
             start: Instant::now(),
             motion,
             style,
+            from: None,
+        }
+    }
+
+    /// A [`Style::Kit`] motion taking over at `from`, as motion retargets from the current value.
+    pub fn styled_from(
+        surface_id: ObjectId,
+        motion: motion::Motion,
+        style: Style,
+        from: Pose,
+    ) -> Self {
+        Self {
+            from: Some(from),
+            ..Self::styled(surface_id, motion, style)
         }
     }
 
@@ -132,6 +278,7 @@ impl LayerOpen {
         match self.style {
             Style::FadeRise => FadeRise::new(self.motion).duration,
             Style::FluidReveal => FLUID_ENTER,
+            Style::Kit(kit) => kit.duration,
         }
     }
 
@@ -162,12 +309,17 @@ impl LayerOpen {
             start,
             motion,
             style,
+            from: None,
         }
+    }
+
+    fn elapsed(&self) -> Duration {
+        held_open().unwrap_or_else(|| self.start.elapsed())
     }
 
     /// Linear progress through the animation, `0.0` at start to `1.0` at rest.
     fn progress(&self) -> f32 {
-        (self.start.elapsed().as_secs_f32() / self.duration().as_secs_f32()).clamp(0.0, 1.0)
+        (self.elapsed().as_secs_f32() / self.duration().as_secs_f32()).clamp(0.0, 1.0)
     }
 
     /// The single eased factor `t ∈ [0,1]` that drives translate and scale.
@@ -180,6 +332,7 @@ impl LayerOpen {
         match self.style {
             Style::FadeRise => FadeRise::new(self.motion).factor(self.progress()),
             Style::FluidReveal => easing::EASE_OUT_BACK.y_at_x(self.progress()),
+            Style::Kit(kit) => kit.progress(self.elapsed()),
         }
     }
 
@@ -191,6 +344,7 @@ impl LayerOpen {
     pub fn alpha(&self) -> f32 {
         match self.style {
             Style::FadeRise => self.factor(),
+            Style::Kit(_) => self.pose().alpha,
             Style::FluidReveal => {
                 let p = self.progress();
                 if p < FLUID_FADE_KNEE {
@@ -208,9 +362,13 @@ impl LayerOpen {
     /// Starts at `(0, +OPEN_RISE_PX)` (below the resting position) and settles to
     /// `(0, 0)` — i.e. it slides UP.
     pub fn translate_offset(&self) -> (i32, i32) {
+        if let Style::Kit(_) = self.style {
+            let pose = self.pose();
+            return (pose.x.round() as i32, pose.y.round() as i32);
+        }
         let t = self.factor();
         let offset = match self.style {
-            Style::FadeRise => FadeRise::offset(t),
+            Style::FadeRise | Style::Kit(_) => FadeRise::offset(t),
             Style::FluidReveal => (1.0 - t) * FLUID_ENTER_RISE_PX,
         };
         (0, offset.round() as i32)
@@ -222,12 +380,31 @@ impl LayerOpen {
         match self.style {
             Style::FadeRise => FadeRise::scale(t),
             Style::FluidReveal => FLUID_ENTER_SCALE + t * (1.0 - FLUID_ENTER_SCALE),
+            Style::Kit(_) => self.pose().scale,
+        }
+    }
+
+    pub fn pose(&self) -> Pose {
+        match self.style {
+            Style::Kit(kit) => self
+                .from
+                .unwrap_or_else(|| kit.enter())
+                .toward(Pose::REST, kit.progress(self.elapsed())),
+            _ => {
+                let (x, y) = self.translate_offset();
+                Pose {
+                    alpha: self.alpha(),
+                    x: x as f32,
+                    y: y as f32,
+                    scale: self.scale(),
+                }
+            }
         }
     }
 
     /// True while the animation is still running.
     pub fn is_animating(&self) -> bool {
-        self.start.elapsed() < self.duration()
+        self.elapsed() < self.duration()
     }
 }
 
@@ -254,6 +431,7 @@ pub struct LayerClose {
     motion: motion::Motion,
     /// Which motion this surface asked for.
     style: Style,
+    from: Option<Pose>,
 }
 
 impl LayerClose {
@@ -268,6 +446,19 @@ impl LayerClose {
             start: Instant::now(),
             motion,
             style,
+            from: None,
+        }
+    }
+
+    pub fn styled_from(
+        surface_id: ObjectId,
+        motion: motion::Motion,
+        style: Style,
+        from: Pose,
+    ) -> Self {
+        Self {
+            from: Some(from),
+            ..Self::styled(surface_id, motion, style)
         }
     }
 
@@ -276,6 +467,7 @@ impl LayerClose {
         match self.style {
             Style::FadeRise => self.motion.layer_open,
             Style::FluidReveal => FLUID_EXIT,
+            Style::Kit(kit) => kit.duration,
         }
     }
 
@@ -306,6 +498,7 @@ impl LayerClose {
             start,
             motion,
             style,
+            from: None,
         }
     }
 
@@ -324,21 +517,29 @@ impl LayerClose {
         match self.style {
             Style::FadeRise => self.motion.ease_in_out(self.progress()),
             Style::FluidReveal => easing::EASE_IN.y_at_x(self.progress()),
+            Style::Kit(kit) => kit.progress(self.start.elapsed()),
         }
     }
 
     /// Opacity for the surface: `1.0 → 0.0`.
     pub fn alpha(&self) -> f32 {
-        1.0 - self.factor()
+        match self.style {
+            Style::Kit(_) => self.pose().alpha,
+            _ => 1.0 - self.factor(),
+        }
     }
 
     /// Translation offset `(x, y)` in logical pixels.
     /// Starts at `(0, 0)` (resting) and settles to `(0, +OPEN_RISE_PX)` — i.e.
     /// it slides DOWN, the reverse of the open's slide-up.
     pub fn translate_offset(&self) -> (i32, i32) {
+        if let Style::Kit(_) = self.style {
+            let pose = self.pose();
+            return (pose.x.round() as i32, pose.y.round() as i32);
+        }
         let t = self.factor();
         let drop = match self.style {
-            Style::FadeRise => OPEN_RISE_PX,
+            Style::FadeRise | Style::Kit(_) => OPEN_RISE_PX,
             Style::FluidReveal => FLUID_EXIT_DROP_PX,
         };
         (0, (t * drop).round() as i32)
@@ -346,12 +547,33 @@ impl LayerClose {
 
     /// Scale for the surface, falling away about its CENTER.
     pub fn scale(&self) -> f32 {
+        if let Style::Kit(_) = self.style {
+            return self.pose().scale;
+        }
         let t = self.factor();
         let to = match self.style {
-            Style::FadeRise => START_SCALE,
+            Style::FadeRise | Style::Kit(_) => START_SCALE,
             Style::FluidReveal => FLUID_EXIT_SCALE,
         };
         1.0 - t * (1.0 - to)
+    }
+
+    pub fn pose(&self) -> Pose {
+        match self.style {
+            Style::Kit(kit) => self
+                .from
+                .unwrap_or(Pose::REST)
+                .toward(kit.exit(), kit.progress(self.start.elapsed())),
+            _ => {
+                let (x, y) = self.translate_offset();
+                Pose {
+                    alpha: self.alpha(),
+                    x: x as f32,
+                    y: y as f32,
+                    scale: self.scale(),
+                }
+            }
+        }
     }
 
     /// True while the animation is still running.
@@ -362,3 +584,201 @@ impl LayerClose {
 
 // The eased factor is `Motion::ease_in_out` (the theme's `--ease-in-out`),
 // shared with every other curve consumer via the captured `motion::Motion`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::comp_theme::CompTheme;
+
+    const TIMES: [u64; 5] = [0, 40, 88, 120, 200];
+
+    fn pose(x: f32, y: f32, scale: f32) -> MotionPose {
+        MotionPose { x, y, scale }
+    }
+
+    fn role(curve: MotionCurve, enter: MotionPose, exit: MotionPose) -> LayerMotion {
+        LayerMotion { curve, enter, exit }
+    }
+
+    fn kit() -> motion::SurfaceMotions {
+        let snappy = MotionCurve::Spring([400.0, 32.0, 1.0]);
+        motion::SurfaceMotions {
+            popover: Some(role(snappy, pose(0.0, 6.0, 0.97), pose(0.0, 4.0, 0.97))),
+            panel: Some(role(snappy, pose(0.0, 8.0, 0.98), pose(0.0, 6.0, 0.98))),
+            control_panel: Some(role(
+                MotionCurve::Tween {
+                    ms: 160.0,
+                    ease: [0.42, 0.0, 0.58, 1.0],
+                },
+                pose(0.0, 6.0, 0.97),
+                pose(0.0, 4.0, 0.97),
+            )),
+            launcher: Some(role(snappy, pose(0.0, -10.0, 0.97), pose(0.0, -8.0, 0.97))),
+            spotlight: Some(role(snappy, pose(0.0, 0.0, 0.97), pose(0.0, 0.0, 0.97))),
+            notification: Some(role(
+                MotionCurve::Spring([350.0, 25.0, 0.8]),
+                pose(24.0, 0.0, 0.97),
+                pose(16.0, 0.0, 0.97),
+            )),
+            context_menu: Some(role(
+                MotionCurve::Tween {
+                    ms: 120.0,
+                    ease: [0.16, 1.0, 0.3, 1.0],
+                },
+                pose(0.0, -2.0, 0.97),
+                pose(0.0, -2.0, 0.98),
+            )),
+            modal: Some(role(
+                MotionCurve::Spring([350.0, 30.0, 1.0]),
+                pose(0.0, -8.0, 0.96),
+                pose(0.0, -4.0, 0.97),
+            )),
+        }
+    }
+
+    /// Read off motion itself: motion-dom's spring and motion-utils' cubicBezier.
+    fn motion_truth(role: Role) -> ([f32; 5], Option<u64>) {
+        let snappy = ([0.0, 0.207637, 0.595652, 0.787073, 0.993347], Some(473));
+        match role {
+            Role::Popover | Role::Panel | Role::Launcher | Role::Spotlight => snappy,
+            Role::Notification => ([0.0, 0.227870, 0.646824, 0.843486, 1.023697], Some(433)),
+            Role::Modal => ([0.0, 0.186741, 0.553639, 0.746477, 0.978180], Some(504)),
+            Role::ControlPanel => ([0.0, 0.128941, 0.585682, 0.871059, 1.0], None),
+            Role::ContextMenu => ([0.0, 0.902844, 0.997116, 1.0, 1.0], None),
+        }
+    }
+
+    const ROLES: [Role; 8] = [
+        Role::Popover,
+        Role::Panel,
+        Role::ControlPanel,
+        Role::Launcher,
+        Role::Spotlight,
+        Role::Notification,
+        Role::ContextMenu,
+        Role::Modal,
+    ];
+
+    fn kit_motion() -> motion::Motion {
+        let mut motion = CompTheme::default().motion;
+        motion.surfaces = kit();
+        motion
+    }
+
+    #[test]
+    fn each_role_moves_on_motion_s_curve() {
+        let motion = kit_motion();
+        for role in ROLES {
+            let Style::Kit(kit) = Style::for_role(role, &motion) else {
+                panic!("{role:?} has a motion");
+            };
+            let (truth, done) = motion_truth(role);
+            for (ms, want) in TIMES.into_iter().zip(truth) {
+                let got = kit.progress(Duration::from_millis(ms));
+                // motion solves a cubic bezier to about 1/4096 of its x; springs agree closer.
+                assert!(
+                    (got - want).abs() < 5e-4,
+                    "{role:?} at {ms}ms: {got} vs {want}"
+                );
+            }
+            if let Some(done) = done {
+                assert_eq!(
+                    kit.duration,
+                    Duration::from_millis(done),
+                    "{role:?} settles"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_entrance_runs_from_the_enter_pose_to_rest() {
+        let motion = kit_motion();
+        for role in ROLES {
+            let m = role.motion(&motion.surfaces).unwrap();
+            let (truth, _) = motion_truth(role);
+            for (ms, p) in TIMES.into_iter().zip(truth) {
+                let open = LayerOpen::styled_backdated(
+                    ObjectId::null(),
+                    ms,
+                    motion,
+                    Style::for_role(role, &motion),
+                );
+                let got = open.pose();
+                let want_y = m.enter.y * (1.0 - p);
+                let want_scale = m.enter.scale + (1.0 - m.enter.scale) * p;
+                assert!(
+                    (got.y - want_y).abs() < 0.05,
+                    "{role:?} at {ms}ms: y {}",
+                    got.y
+                );
+                assert!(
+                    (got.x - m.enter.x * (1.0 - p)).abs() < 0.05,
+                    "{role:?} at {ms}ms: x"
+                );
+                assert!(
+                    (got.scale - want_scale).abs() < 1e-3,
+                    "{role:?} at {ms}ms: scale"
+                );
+                assert!(
+                    (got.alpha - p.min(1.0)).abs() < 1e-2,
+                    "{role:?} at {ms}ms: alpha"
+                );
+                assert_eq!(
+                    open.translate_offset(),
+                    (got.x.round() as i32, got.y.round() as i32)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_exit_leaves_toward_the_exit_pose() {
+        let motion = kit_motion();
+        let style = Style::for_role(Role::Popover, &motion);
+        let close = LayerClose::styled_backdated(ObjectId::null(), 0, motion, style);
+        assert!((close.pose().alpha - 1.0).abs() < 1e-2);
+        let gone = LayerClose::styled_backdated(ObjectId::null(), 2000, motion, style);
+        assert!(!gone.is_animating());
+        let at_rest = gone.pose();
+        assert!(at_rest.alpha < 1e-3);
+        assert!(
+            (at_rest.y - 4.0).abs() < 0.05,
+            "popovers leave 4px low, not 6"
+        );
+        assert!((at_rest.scale - 0.97).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_reversal_starts_from_the_current_pose() {
+        let motion = kit_motion();
+        let style = Style::for_role(Role::Launcher, &motion);
+        let open = LayerOpen::styled_backdated(ObjectId::null(), 40, motion, style);
+        let reached = open.pose();
+        let close = LayerClose::styled_from(ObjectId::null(), motion, style, reached);
+        let start = close.pose();
+        assert!((start.y - reached.y).abs() < 0.05 && (start.alpha - reached.alpha).abs() < 1e-2);
+        let reopen = LayerOpen::styled_from(ObjectId::null(), motion, style, start);
+        assert!((reopen.pose().scale - start.scale).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_role_the_theme_leaves_alone_is_fade_rise() {
+        let motion = CompTheme::default().motion;
+        for role in ROLES {
+            assert_eq!(role.motion(&motion.surfaces), None);
+            assert_eq!(Style::for_role(role, &motion), Style::FadeRise);
+        }
+        let preset = FadeRise::new(motion);
+        for ms in TIMES {
+            let open = LayerOpen::styled_backdated(ObjectId::null(), ms, motion, Style::FadeRise);
+            let p = (ms as f32 / preset.duration.as_millis() as f32).min(1.0);
+            let t = preset.factor(p);
+            assert!((open.alpha() - t).abs() < 2e-2, "{ms}ms");
+            assert_eq!(
+                open.translate_offset().1,
+                FadeRise::offset(open.factor()).round() as i32
+            );
+        }
+    }
+}
