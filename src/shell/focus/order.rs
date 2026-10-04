@@ -217,13 +217,17 @@ fn render_input_order_internal<R: 'static>(
     }
 
     // Overlay-level layer shell, above everything. An exclusive game hides it
-    // all but the launcher's own: its quick settings, over the game.
+    // all but the launcher's own (its quick settings) and the OSD's volume and
+    // brightness indicator, which takes no input.
     let launcher = game_mode_exclusive
         .then(|| crate::dbus::game_mode::launcher_client(shell))
         .flatten();
     let over_game = |layer: &LayerSurface| {
         !game_mode_exclusive
             || launcher.is_some() && layer.wl_surface().client().as_ref() == launcher.as_ref()
+            || layer.namespace() == "osd"
+                && layer.cached_state().keyboard_interactivity
+                    == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
     };
     for (layer, popup, location, _alpha) in
         layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
