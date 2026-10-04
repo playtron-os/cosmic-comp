@@ -3411,6 +3411,40 @@ impl Shell {
                 .is_some_and(|ws| self.game_mode.workspace == Some(ws.handle))
     }
 
+    /// The desktop the launcher's `window` belongs on while a game has the
+    /// screen: the one it is on, or an empty one, beside the game's. On the
+    /// game's desktop game mode hides it, leaving no desktop to switch back to.
+    pub fn launcher_desktop_beside_game(
+        &self,
+        window: &CosmicSurface,
+        output: &Output,
+    ) -> Option<WorkspaceHandle> {
+        let gm = &self.game_mode;
+        if !gm.active
+            || gm.app_id == Some(crate::dbus::game_mode::LAUNCHER_APP_ID)
+            || gm.output.as_ref() != Some(output)
+            || !crate::dbus::game_mode::is_launcher_window(window)
+        {
+            return None;
+        }
+        let game = gm.workspace?;
+        let mut desktops = self
+            .realm_for_handle(&game)?
+            .set_for(output)?
+            .workspaces
+            .iter()
+            .filter(|ws| ws.handle != game);
+        let holds = |ws: &&Workspace| {
+            ws.mapped().any(|m| m.windows().any(|(w, _)| &w == window))
+                || ws.get_fullscreen_surfaces().any(|f| &f.surface == window)
+        };
+        desktops
+            .clone()
+            .find(holds)
+            .or_else(|| desktops.find(|ws| ws.is_empty()))
+            .map(|ws| ws.handle)
+    }
+
     /// Only the gaming controller can release its current fullscreen surface.
     pub fn game_mode_controls<S>(&self, surface: &S) -> bool
     where
@@ -7503,9 +7537,18 @@ impl Shell {
                 })
             })
             .flatten();
-        let workspace_handle = launcher_desktop.or(workspace_handle);
+        // The launcher coming back while a game is up maps beside it.
+        let launcher_beside_game = self
+            .game_mode
+            .output
+            .as_ref()
+            .and_then(|output| self.launcher_desktop_beside_game(&window, output));
+        let workspace_handle = launcher_desktop
+            .or(launcher_beside_game)
+            .or(workspace_handle);
         let game_mode_output = game_mode_output.or_else(|| {
             launcher_desktop
+                .or(launcher_beside_game)
                 .is_some()
                 .then(|| self.game_mode.output.clone())
                 .flatten()
@@ -10277,6 +10320,7 @@ impl Shell {
                 loop_handle,
             );
         } else {
+            let beside_game = self.launcher_desktop_beside_game(&mapped.active_window(), &output);
             let workspace = self.space_for_mut(&mapped)?;
             if mapped.is_minimized() {
                 // TODO: Rewrite the `MinimizedWindow` to restore to fullscreen
@@ -10296,7 +10340,10 @@ impl Shell {
             toplevel_leave_output(&window, &workspace.output);
             toplevel_leave_workspace(&window, &workspace.handle);
 
-            let workspace = self.active_space_mut(&output).unwrap();
+            let workspace = match beside_game {
+                Some(desktop) => self.space_for_handle_any_realm_mut(&desktop).unwrap(),
+                None => self.active_space_mut(&output).unwrap(),
+            };
             toplevel_enter_output(&window, &output);
             toplevel_enter_workspace(&window, &workspace.handle);
 
