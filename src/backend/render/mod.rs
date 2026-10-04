@@ -98,10 +98,10 @@ use smithay::{
 use smithay_egui::EguiState;
 
 pub mod adaptive_foreground;
-pub mod first_frame;
 pub mod animations;
 pub mod cursor;
 pub mod element;
+pub mod first_frame;
 pub mod gpu_profiler;
 pub mod perf_badge;
 pub mod shadow;

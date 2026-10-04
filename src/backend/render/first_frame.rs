@@ -56,7 +56,11 @@ pub fn has_drawn(state: &mut State, surface: &WlSurface, size: Size<i32, Logical
         .ok()
 }
 
-fn sample<R>(renderer: &mut R, surface: &WlSurface, size: Size<i32, Logical>) -> anyhow::Result<bool>
+fn sample<R>(
+    renderer: &mut R,
+    surface: &WlSurface,
+    size: Size<i32, Logical>,
+) -> anyhow::Result<bool>
 where
     R: Renderer + ImportAll + Offscreen<GlesRenderbuffer> + ExportMem + AsGlowRenderer,
     R::TextureId: Clone + 'static,
@@ -71,7 +75,14 @@ where
     let elements = smithay::backend::renderer::element::surface::render_elements_from_surface_tree::<
         R,
         WaylandSurfaceRenderElement<R>,
-    >(renderer, surface, Point::from((0, 0)), scale, 1.0, Kind::Unspecified);
+    >(
+        renderer,
+        surface,
+        Point::from((0, 0)),
+        scale,
+        1.0,
+        Kind::Unspecified,
+    );
     // No buffer yet is nothing drawn yet.
     if elements.is_empty() {
         return Ok(false);
@@ -97,7 +108,8 @@ where
 
 /// Whether any texel of an RGBA8 buffer is above black.
 fn drawn(rgba: &[u8]) -> bool {
-    rgba.chunks_exact(4).any(|px| px[..3].iter().any(|&c| c > DRAWN))
+    rgba.chunks_exact(4)
+        .any(|px| px[..3].iter().any(|&c| c > DRAWN))
 }
 
 #[cfg(test)]

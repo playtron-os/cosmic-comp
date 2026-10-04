@@ -1167,6 +1167,7 @@ impl State {
     /// Rebuild the game-mode snapshot (focus, display caps) from current
     /// compositor state and emit change notifications.
     pub fn refresh_game_mode_state(&mut self) {
+        self.follow_shown_desktop();
         let bridge = self.common.game_mode_bridge.clone();
         let shell = self.common.shell.read();
 
@@ -1679,6 +1680,10 @@ impl State {
 
     /// Fullscreen the app on an exclusive workspace, deferring until it maps.
     pub fn enter_game_mode(&mut self, app_id: u32) {
+        self.enter_game_mode_by(app_id, Entry::Asked);
+    }
+
+    fn enter_game_mode_by(&mut self, app_id: u32, entry: Entry) {
         let loop_handle = self.common.event_loop_handle.clone();
         // Preserve any client overlay assertion across a cross-app rebuild (the
         // GameMode literal below would otherwise reset it via `..Default`).
@@ -1738,14 +1743,22 @@ impl State {
             find_game_surface(&shell, app_id)
         };
         let Some((game, source_ws, output, is_fullscreen)) = resolved else {
+            if entry != Entry::Asked {
+                return;
+            }
             self.common.shell.write().game_mode.pending_app_id = Some(app_id);
             info!(target: GAMING_TARGET, app_id, "game mode deferred: no window with this app id yet");
             return;
         };
+        if let Entry::Shown(shown) = entry
+            && (shown != source_ws || !is_fullscreen)
+        {
+            return;
+        }
         // Leaving the launcher for a window the game has not drawn into yet
         // fades its loading screen into black. Keep it showing until the game
         // draws; the refresh tick asks again.
-        if self.awaiting_first_frame(app_id, &game) {
+        if entry == Entry::Asked && self.awaiting_first_frame(app_id, &game) {
             self.common.shell.write().game_mode.pending_app_id = Some(app_id);
             return;
         }
@@ -1882,7 +1895,8 @@ impl State {
             };
 
             let workspace = shell.active_space(&output).map(|ws| ws.handle);
-            if !first_entry {
+            // Already on screen when the user switched to it themselves.
+            if !first_entry && entry == Entry::Asked {
                 let crossfade = shell
                     .workspaces()
                     .active(&output)
@@ -2174,6 +2188,18 @@ impl State {
             true,
         );
         info!(target: GAMING_TARGET, "switched from the desktop back to game mode");
+    }
+
+    /// Follow the user to another game-mode app's desktop, picked from a
+    /// workspace switcher rather than asked for by the controller, so that
+    /// app is the one game mode reports and gives input to.
+    pub fn follow_shown_desktop(&mut self) {
+        let Some((app_id, shown)) = shown_desktop_app(&self.common.shell.read()) else {
+            return;
+        };
+        info!(target: GAMING_TARGET, app_id, "switched to the app's desktop; game mode follows");
+        self.enter_game_mode_by(app_id, Entry::Shown(shown));
+        self.refresh_overlay_visible();
     }
 
     /// Super+Esc: kill the running game, even behind the launcher, or the launcher when no
@@ -2497,6 +2523,50 @@ fn desktop_is_shared(app_id: u32, windows: impl IntoIterator<Item = u32>) -> boo
     windows.into_iter().any(|window| window != app_id)
 }
 
+/// How an app comes to be the one game mode shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// The controller asked for it.
+    Asked,
+    /// The user already switched to its desktop, this one.
+    Shown(WorkspaceHandle),
+}
+
+/// The game-mode app the user switched to, and its desktop, when that is not
+/// the one game mode shows. Only within game mode's own Kora workspace.
+fn shown_desktop_app(shell: &Shell) -> Option<(u32, WorkspaceHandle)> {
+    let gm = &shell.game_mode;
+    if !gm.active || gm.pending_app_id.is_some() {
+        return None;
+    }
+    let own = gm.workspace?;
+    shell.workspaces().space_for_handle(&own)?;
+    let shown = shell.active_space(gm.output.as_ref()?)?;
+    if shown.handle == own {
+        return None;
+    }
+    let app_id = followed_app(
+        gm.app_id,
+        shown
+            .get_fullscreen_surfaces()
+            .filter(|f| f.surface.alive())
+            .map(|f| app_id_of(&f.surface)),
+    )?;
+    Some((app_id, shown.handle))
+}
+
+/// Which of a desktop's fullscreen apps game mode should follow to: the first
+/// game-mode one, unless it is already the one shown.
+fn followed_app(
+    shown_app_id: Option<u32>,
+    fullscreen: impl IntoIterator<Item = u32>,
+) -> Option<u32> {
+    fullscreen
+        .into_iter()
+        .find(|&app_id| app_id != 0)
+        .filter(|&app_id| Some(app_id) != shown_app_id)
+}
+
 /// A live game window anywhere, including one minimized or left behind the launcher.
 fn any_game_surface(shell: &Shell) -> Option<CosmicSurface> {
     shell.workspaces().spaces().find_map(|ws| {
@@ -2701,6 +2771,28 @@ mod tests {
             "an untagged window"
         );
         assert!(!desktop_is_shared(105_600, []), "alone");
+    }
+
+    #[test]
+    fn game_mode_follows_to_another_app_s_desktop_only() {
+        assert_eq!(
+            followed_app(Some(105_600), [LAUNCHER_APP_ID]),
+            Some(LAUNCHER_APP_ID),
+            "the launcher's, from a game"
+        );
+        assert_eq!(
+            followed_app(Some(LAUNCHER_APP_ID), [105_600]),
+            Some(105_600),
+            "a game's, from the launcher"
+        );
+        assert_eq!(
+            followed_app(Some(105_600), [0, LAUNCHER_APP_ID]),
+            Some(LAUNCHER_APP_ID),
+            "past an untagged window"
+        );
+        assert_eq!(followed_app(Some(105_600), [105_600]), None, "the same app");
+        assert_eq!(followed_app(Some(105_600), [0]), None, "a desktop app's");
+        assert_eq!(followed_app(Some(105_600), []), None, "an empty desktop");
     }
 
     #[test]
