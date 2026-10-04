@@ -36,7 +36,7 @@
     - Can be shown instantly without Wayland roundtrip overhead
   </description>
 
-  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="4">
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="5">
     <description summary="manager for layer surface visibility">
       This interface allows layer-shell clients to control the visibility
       of their surfaces.
@@ -62,7 +62,7 @@
     </request>
   </interface>
 
-  <interface name="zcosmic_layer_surface_visibility_v1" version="4">
+  <interface name="zcosmic_layer_surface_visibility_v1" version="5">
     <description summary="visibility controller for a layer surface">
       This interface controls whether a layer surface is visible or hidden.
 
@@ -74,10 +74,22 @@
       <description summary="show/hide transition animation">
         Selects how the compositor animates this surface when it is hidden or
         shown via set_hidden / set_visible.
+
+        The entries from version 5 on say what the surface is rather than how it
+        moves: the compositor plays the motion its theme gives that kind of
+        surface, and "fade" when the theme gives none.
       </description>
       <entry name="slide" value="0" summary="slide the whole surface in/out from its anchored screen edge"/>
       <entry name="fade" value="1" summary="fade in/out with a subtle upward slide + scale (the default)"/>
       <entry name="fluid_reveal" value="2" since="3" summary="rise further and overshoot on the way in, accelerate away on the way out"/>
+      <entry name="popover" value="3" since="5" summary="a popover: the theme's popover motion, or fade"/>
+      <entry name="panel" value="4" since="5" summary="a panel opened from the dock: the theme's panel motion, or fade"/>
+      <entry name="control_panel" value="5" since="5" summary="the control panel: the theme's control panel motion, or fade"/>
+      <entry name="launcher" value="6" since="5" summary="the app launcher: the theme's launcher motion, or fade"/>
+      <entry name="spotlight" value="7" since="5" summary="spotlight search: the theme's spotlight motion, or fade"/>
+      <entry name="notification" value="8" since="5" summary="a notification toast: the theme's notification motion, or fade"/>
+      <entry name="context_menu" value="9" since="5" summary="a context menu: the theme's context menu motion, or fade"/>
+      <entry name="modal" value="10" since="5" summary="a modal dialog: the theme's modal motion, or fade"/>
     </enum>
 
     <request name="destroy" type="destructor">

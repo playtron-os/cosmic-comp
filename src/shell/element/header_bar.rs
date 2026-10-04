@@ -52,6 +52,7 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
         hidden_offset: iced_core::Vector::new(0.0, 3.0),
         hidden_scale: 1.0,
         animate_initial: false,
+        kit: None,
     }
 }
 
@@ -106,7 +107,8 @@ fn halo_shadow_padding(theme: &CompTheme) -> iced_core::Padding {
     let mut padding = iced_core::Padding::ZERO;
     if uses_halo_header(theme) {
         let shadow = icetron_p::prelude::halo_shadow();
-        let reach = shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
+        // A CSS blur reaches three sigmas, 1.5x its radius, as iced draws it.
+        let reach = 1.5 * shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
         padding.top = (reach - shadow.offset.y).ceil().max(0.0);
         padding.bottom = (reach + shadow.offset.y).ceil().max(0.0);
     }
@@ -1088,9 +1090,9 @@ mod tests {
         assert_eq!(ssd_header_height(&theme), 0);
         assert_eq!(ssd_header_input_height(&theme), 56);
         let padding = halo_shadow_padding(&theme);
-        assert_eq!((padding.top, padding.bottom), (10.0, 18.0));
-        assert_eq!(ssd_header_render_overhang(&theme), 50);
-        assert_eq!(ssd_header_render_height(&theme), 56 + 10 + 18);
+        assert_eq!((padding.top, padding.bottom), (17.0, 25.0));
+        assert_eq!(ssd_header_render_overhang(&theme), 57);
+        assert_eq!(ssd_header_render_height(&theme), 56 + 17 + 25);
     }
 
     #[test]
