@@ -2184,8 +2184,9 @@ impl State {
                         })
                 })
             };
-            // The quick-access menu's own window while it is open, else the launcher.
-            let surface = (active && asserted)
+            // The quick-access menu's own window while it is open, else the
+            // launcher; nothing when the menu is a layer surface.
+            let surface = (active && asserted && !launcher_has_overlay_layer(&shell))
                 .then(|| find(&is_quick_access_window).or_else(|| find(&is_overlay_window)))
                 .flatten();
             let surface_app_id = surface.as_ref().map(app_id_of);
@@ -2377,6 +2378,26 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
 
 fn is_game_surface(surface: &CosmicSurface) -> bool {
     surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// The client of the launcher's window. Its overlay-layer surface, quick
+/// settings, is the one layer surface drawn over a game.
+pub fn launcher_client(shell: &Shell) -> Option<smithay::reexports::wayland_server::Client> {
+    let (launcher, ..) = find_game_surface(shell, LAUNCHER_APP_ID)?;
+    launcher.wl_surface()?.client()
+}
+
+/// Whether the launcher has quick settings up on a layer surface of its own,
+/// hidden or sliding included. The layer stage draws that over the game, so
+/// there is no window of the launcher's to stack there.
+fn launcher_has_overlay_layer(shell: &Shell) -> bool {
+    let (Some(client), Some(output)) = (launcher_client(shell), shell.game_mode.output.as_ref())
+    else {
+        return false;
+    };
+    smithay::desktop::layer_map_for_output(output)
+        .layers_on(smithay::wayland::shell::wlr_layer::Layer::Overlay)
+        .any(|layer| layer.wl_surface().client().as_ref() == Some(&client))
 }
 
 /// Whether `surface` is still on game mode's desktop in a realm that is not

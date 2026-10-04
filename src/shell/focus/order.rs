@@ -216,29 +216,36 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    // Overlay-level layer shell
-    // overlay is above everything (suppressed for an exclusive game).
-    if !game_mode_exclusive {
-        for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
-        {
-            callback(Stage::LayerPopup {
-                layer,
-                popup: &popup,
-                location,
-                workspace_idx: current.1,
-            })?;
-        }
-        for (layer, location, alpha) in
-            layer_surfaces(output, Layer::Overlay, element_filter, &layer_visibility)
-        {
-            callback(Stage::LayerSurface {
-                layer,
-                location,
-                alpha,
-                workspace_idx: current.1,
-            })?;
-        }
+    // Overlay-level layer shell, above everything. An exclusive game hides it
+    // all but the launcher's own: its quick settings, over the game.
+    let launcher = game_mode_exclusive
+        .then(|| crate::dbus::game_mode::launcher_client(shell))
+        .flatten();
+    let over_game = |layer: &LayerSurface| {
+        !game_mode_exclusive
+            || launcher.is_some() && layer.wl_surface().client().as_ref() == launcher.as_ref()
+    };
+    for (layer, popup, location, _alpha) in
+        layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
+            .filter(|(layer, ..)| over_game(layer))
+    {
+        callback(Stage::LayerPopup {
+            layer,
+            popup: &popup,
+            location,
+            workspace_idx: current.1,
+        })?;
+    }
+    for (layer, location, alpha) in
+        layer_surfaces(output, Layer::Overlay, element_filter, &layer_visibility)
+            .filter(|(layer, ..)| over_game(layer))
+    {
+        callback(Stage::LayerSurface {
+            layer,
+            location,
+            alpha,
+            workspace_idx: current.1,
+        })?;
     }
 
     // calculate a bunch of stuff for workspace transitions
