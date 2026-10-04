@@ -68,6 +68,9 @@ pub struct Motion {
     pub scroll: Duration,
     /// Slide-content crossfade (was 220ms). `normal`.
     pub slide_crossfade: Duration,
+    /// Game mode's cross-fade between the launcher's desktop and a game's.
+    /// `slower`: at `normal` a launch read as a cut.
+    pub game_crossfade: Duration,
     /// Cross-workspace fade. `slow` is nearest the reference's 420ms.
     pub realm_fade: Duration,
     /// The shatter needs time for cracks to grow before the reveal.
@@ -104,6 +107,7 @@ impl Motion {
             fullscreen: ms(theme.duration_normal()),
             scroll: ms(theme.duration_normal()),
             slide_crossfade: ms(theme.duration_normal()),
+            game_crossfade: ms(theme.duration_slower()),
             realm_fade: ms(theme.duration_slow()),
             realm_shatter: ms(theme.duration_slower()) * 2,
             layer_open: ms(theme.duration_normal()),

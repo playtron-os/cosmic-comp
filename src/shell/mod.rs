@@ -425,6 +425,11 @@ pub struct GameMode {
     /// yet; resolved by `try_resolve_pending_game_mode` (the refresh tick and the
     /// `STEAM_GAME` property hook) once a matching window appears.
     pub pending_app_id: Option<u32>,
+    /// Since when a game launched from the launcher has been waiting to draw
+    /// its first frame, with the launcher still showing.
+    pub first_frame_since: Option<Instant>,
+    /// That game's window, driven at full frame rate while it is held back.
+    pub first_frame_surface: Option<CosmicSurface>,
     /// Whether a gaming overlay is currently up over the game — either a real
     /// overlay window (`STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY`) or a client
     /// `SetOverlay(true)` assertion. Maintained by `refresh_overlay_visible`;
@@ -1092,7 +1097,7 @@ impl WorkspaceSet {
                     (
                         Some((previous, delta @ WorkspaceDelta::Crossfade(start))),
                         WorkspaceDelta::Crossfade(_),
-                    ) if previous != idx && start.elapsed() < self.theme.motion.slide_crossfade => {
+                    ) if previous != idx && start.elapsed() < self.theme.motion.game_crossfade => {
                         // Replacement windows must keep the original outgoing scene.
                         Some((previous, delta))
                     }
@@ -1192,7 +1197,7 @@ impl WorkspaceSet {
                 }
                 WorkspaceDelta::Crossfade(st) => {
                     if Instant::now().duration_since(st).as_millis() as f32
-                        >= self.theme.motion.slide_crossfade.as_millis() as f32
+                        >= self.theme.motion.game_crossfade.as_millis() as f32
                     {
                         self.previously_active = None;
                     }

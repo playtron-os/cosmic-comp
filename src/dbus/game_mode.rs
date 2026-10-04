@@ -94,6 +94,11 @@ const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
 /// blended over it.
 const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
 
+/// How long a launch from the launcher keeps its loading screen up waiting
+/// for the game's first drawn frame. Long enough for a Proton game to clear
+/// its black window, short enough that one that never draws still shows.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(20);
+
 /// Whether `window` is the launcher's own.
 pub fn is_launcher_window(window: &CosmicSurface) -> bool {
     LAUNCHER_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
@@ -1712,6 +1717,13 @@ impl State {
             info!(target: GAMING_TARGET, app_id, "game mode deferred: no window with this app id yet");
             return;
         };
+        // Leaving the launcher for a window the game has not drawn into yet
+        // fades its loading screen into black. Keep it showing until the game
+        // draws; the refresh tick asks again.
+        if self.awaiting_first_frame(app_id, &game) {
+            self.common.shell.write().game_mode.pending_app_id = Some(app_id);
+            return;
+        }
         // Remember client intent before compositor-owned fullscreen changes the X11 state.
         if let Some(window) = game.x11_surface() {
             client_fullscreen(window);
@@ -1894,6 +1906,47 @@ impl State {
         // Give the game keyboard focus so it receives input immediately.
         if let Some(target) = focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, true);
+        }
+    }
+
+    /// Whether `game`, about to replace the launcher on screen, has yet to draw
+    /// anything. Only a launch from the launcher waits, and only for
+    /// [`FIRST_FRAME_WAIT`].
+    fn awaiting_first_frame(&mut self, app_id: u32, game: &CosmicSurface) -> bool {
+        if app_id == LAUNCHER_APP_ID {
+            return false;
+        }
+        let since = {
+            let mut shell = self.common.shell.write();
+            let gm = &mut shell.game_mode;
+            if !(gm.active && gm.app_id == Some(LAUNCHER_APP_ID)) {
+                return false;
+            }
+            gm.first_frame_surface = Some(game.clone());
+            *gm.first_frame_since.get_or_insert_with(|| {
+                info!(target: GAMING_TARGET, app_id, "waiting for the game's first frame");
+                Instant::now()
+            })
+        };
+        let waited = since.elapsed();
+        if waited >= FIRST_FRAME_WAIT {
+            info!(target: GAMING_TARGET, app_id, ?waited, "no first frame; showing the game anyway");
+            return false;
+        }
+        let Some(surface) = game.wl_surface().map(std::borrow::Cow::into_owned) else {
+            return true;
+        };
+        let size = game.geometry().size;
+        let drawn = crate::backend::render::first_frame::has_drawn(self, &surface, size);
+        debug!(target: GAMING_TARGET, app_id, ?drawn, ?size, "first frame sample");
+        match drawn {
+            Some(false) => true,
+            Some(true) => {
+                info!(target: GAMING_TARGET, app_id, ?waited, "first frame drawn; leaving the launcher");
+                false
+            }
+            // Unsampleable: show it rather than wait out the timeout blind.
+            None => false,
         }
     }
 

@@ -313,7 +313,7 @@ fn render_input_order_internal<R: 'static>(
                 let (previous_alpha, current_alpha) = match start {
                     WorkspaceDelta::Crossfade(st) => {
                         let t = (Instant::now().duration_since(*st).as_secs_f32()
-                            / shell.theme().motion.slide_crossfade.as_secs_f32())
+                            / shell.theme().motion.game_crossfade.as_secs_f32())
                         .clamp(0.0, 1.0);
                         (1.0, ease(EaseInOutCubic, 0.0, 1.0, t))
                     }
