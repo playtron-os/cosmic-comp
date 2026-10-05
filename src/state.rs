@@ -28,6 +28,7 @@ use crate::{
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
             kora_image_capture_size::CaptureSizeState,
+            kora_toplevel_identity::IdentityState,
             kora_workspace_realm::RealmState,
             layer_auto_hide::LayerAutoHideState,
             layer_corner_radius::LayerCornerRadiusState,
@@ -373,6 +374,7 @@ pub struct Common {
     pub size_transition_state: SizeTransitionState,
     /// Tells a switcher which workspace each desktop group belongs to.
     pub realm_state: RealmState,
+    pub toplevel_identity_state: IdentityState,
     pub capture_size_state: CaptureSizeState,
     /// Tells shell components when a workspace switch is animating, so they can
     /// fade their contents across it instead of swapping mid-animation.
@@ -805,6 +807,7 @@ impl State {
         let usable_area_state = UsableAreaState::new::<Self>(dh);
         let size_transition_state = SizeTransitionState::new::<Self>(dh);
         let realm_state = RealmState::new::<Self>(dh);
+        let toplevel_identity_state = IdentityState::new::<Self>(dh);
         let capture_size_state = CaptureSizeState::new::<Self>(dh);
         let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
@@ -972,6 +975,7 @@ impl State {
                 usable_area_state,
                 size_transition_state,
                 realm_state,
+                toplevel_identity_state,
                 capture_size_state,
                 workspace_transition_state,
                 edge_resize_state,
