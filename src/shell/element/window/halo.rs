@@ -621,7 +621,10 @@ mod tests {
         assert_eq!(windows, [1, 2]);
         assert!(offers_close_all(&windows, &1));
         assert!(!offers_close_all(&windows, &3));
-        assert!(offers_close_all(&[1], &1), "a lone window is offered it too");
+        assert!(
+            offers_close_all(&[1], &1),
+            "a lone window is offered it too"
+        );
         assert!(!offers_close_all::<u32>(&[], &1));
     }
 

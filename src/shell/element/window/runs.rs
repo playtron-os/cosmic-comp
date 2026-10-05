@@ -259,7 +259,10 @@ fn schedule_expiry(state: &mut State) {
 /// closing a window is a statement about the screen, not about the work.
 fn close_or_park(state: &mut State, surface: &CosmicSurface) -> bool {
     if has_live_work(surface) {
-        state.common.shell.write().minimize_request(surface);
+        let mut shell = state.common.shell.write();
+        shell.minimize_request(surface);
+        // A fullscreen window parks from its own desktop, which goes home.
+        shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
         true
     } else {
         surface.close();
