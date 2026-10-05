@@ -47,6 +47,19 @@ pub enum Tone {
     Neutral,
     /// Work the machine is doing for you.
     Ai,
+    NeedsYou,
+    Destructive,
+}
+
+impl Tone {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tone::Neutral => "neutral",
+            Tone::Ai => "ai",
+            Tone::NeedsYou => "needs-you",
+            Tone::Destructive => "destructive",
+        }
+    }
 }
 
 /// One toast. `app_icon` is a freedesktop icon name.
@@ -77,17 +90,14 @@ impl DBusState {
 impl DBusState {
     /// Show a system toast, fire and forget. A missing daemon is only logged.
     pub fn system_toast(&self, message: String, tone: Tone) {
+        let message = plain(message);
         let state = self.clone();
         self.spawn(async move {
-            let tone = match tone {
-                Tone::Neutral => "neutral",
-                Tone::Ai => "ai",
-            };
             let sent = async {
                 let conn = state.session_conn().await?;
                 SystemToastsProxy::new(conn)
                     .await?
-                    .toast(&message, tone)
+                    .toast(&message, tone.as_str())
                     .await
             };
             if let Err(err) = sent.await {
@@ -95,6 +105,12 @@ impl DBusState {
             }
         });
     }
+}
+
+/// Fluent's bidi isolate marks around a placeable surface as tofu in the
+/// toast's Latin-only fonts.
+pub fn plain(text: String) -> String {
+    text.replace(['\u{2068}', '\u{2069}'], "")
 }
 
 async fn send(state: &DBusState, notification: &Notification) -> zbus::Result<()> {
@@ -114,4 +130,39 @@ async fn send(state: &DBusState, notification: &Notification) -> zbus::Result<()
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fl;
+
+    #[test]
+    fn tones_go_by_the_names_the_daemon_reads() {
+        let names = [Tone::Neutral, Tone::Ai, Tone::NeedsYou, Tone::Destructive].map(Tone::as_str);
+        assert_eq!(names, ["neutral", "ai", "needs-you", "destructive"]);
+    }
+
+    #[test]
+    fn the_shells_toasts_read_as_the_prototype_writes_them() {
+        assert_eq!(fl!("screenshot-saved"), "Screenshot saved");
+        assert_eq!(fl!("recording-started"), "Recording this window");
+        assert_eq!(
+            fl!("recording-stopped"),
+            "Recording stopped — saved with provenance"
+        );
+        assert_eq!(fl!("halo-merged"), "Merged — this window is a tab now");
+        assert_eq!(
+            plain(fl!("halo-merged-tabs", tabs = 3)),
+            "Merged 3 tabs into the other window"
+        );
+        assert_eq!(
+            plain(fl!("halo-one-window", app = "Files")),
+            "Files opens one window"
+        );
+        assert_eq!(
+            plain(fl!("halo-info-toast", app = "Files")),
+            "Files — standard command set, provenance on every capture"
+        );
+    }
 }

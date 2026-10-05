@@ -351,8 +351,6 @@ pub struct Palette {
     /// The app's name, for the palette's own heading.
     pub scope: String,
     pub commands: Vec<icetron_p::prelude::HaloCommand>,
-    /// What the last pin attempt had to say, if anything.
-    notice: Mutex<Option<String>>,
     /// What has been typed into the search field.
     query: Mutex<String>,
 }
@@ -376,7 +374,6 @@ impl Palette {
             app_id: app_id.into(),
             scope: scope.into(),
             commands,
-            notice: Mutex::new(None),
             query: Mutex::new(String::new()),
         }
     }
@@ -547,23 +544,23 @@ impl Program for ContextMenu {
                 // the palette stays up and shows what it did.
                 self.keep_open.store(true, Ordering::SeqCst);
                 if let Some(palette) = self.palette.as_ref() {
-                    let full =
-                        crate::shell::element::window::commands::toggle_pin(&palette.app_id, &id)
-                            == icetron_p::prelude::PinOutcome::Full;
-                    // A pin or unpin needs no saying: the header shows it, and a
-                    // notice here would crowd the Ask row.
-                    let notice = full
-                        .then(|| crate::fl!("halo-pin-full", cap = icetron_p::prelude::TRAY_CAP));
-                    if !full {
-                        let app_id = palette.app_id.clone();
-                        loop_handle.insert_idle(move |state| {
+                    use crate::shell::element::window::commands;
+                    let outcome = commands::toggle_pin(&palette.app_id, &id);
+                    let app_id = palette.app_id.clone();
+                    loop_handle.insert_idle(move |state| {
+                        if outcome != icetron_p::prelude::PinOutcome::Full {
                             crate::shell::element::window::CosmicWindow::refresh_app_halos(
                                 &state.common.shell.read(),
                                 &app_id,
                             );
-                        });
-                    }
-                    *palette.notice.lock().unwrap() = notice;
+                        }
+                        let keys = state.common.config.shortcut_for_action(
+                            &cosmic_settings_config::shortcuts::Action::WindowCommands,
+                        );
+                        if let Some((message, tone)) = commands::pin_receipt(outcome, keys) {
+                            state.common.dbus_state.system_toast(message, tone);
+                        }
+                    });
                 }
             }
             Message::Query(query) => {
@@ -777,26 +774,12 @@ impl Program for ContextMenu {
                 // card grows to its rows instead of hiding some below a
                 // cut-off nothing can move.
                 .rows_height(None);
-            // The footer is always the Ask row; the tray's own refusal, when
-            // there is one, sits above it rather than in its place.
-            let mut footer = Column::new();
-            if let Some(notice) = palette.notice.lock().unwrap().clone() {
-                footer = footer.push(
-                    container(styled_text(
-                        notice,
-                        theme.text_styles().caption(),
-                        theme.text_tertiary(),
-                    ))
-                    .padding(theme.spacing_3()),
-                );
-            }
-            footer = footer.push(halo_ask_footer(
+            card = card.footer(halo_ask_footer(
                 crate::fl!("halo-ask-chat"),
                 crate::fl!("halo-ask-chat-hint"),
                 Message::AskChat,
                 &**theme,
             ));
-            card = card.footer(footer);
             let card: CompElement<'a, Self::Message> = card.into();
             return container(card).padding(palette_padding(theme)).into();
         }

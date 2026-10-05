@@ -11,6 +11,7 @@ use cosmic_settings_config::shortcuts;
 use icetron_p::prelude::{HaloCommand, HaloCommandGroup, PinOutcome};
 use icetron_themes::{Icon, icons};
 
+use crate::dbus::notifications::Tone;
 use crate::fl;
 use crate::state::State;
 use crate::utils::desktop_action::DesktopApp;
@@ -338,6 +339,25 @@ pub fn toggle_pin(app_id: &str, id: &str) -> PinOutcome {
     outcome
 }
 
+/// What the shell says about a pin, as the prototype's `togglePin` does: the
+/// header shows a pin, so only an unpin and a refusal are said.
+pub fn pin_receipt(outcome: PinOutcome, palette_keys: Option<String>) -> Option<(String, Tone)> {
+    match outcome {
+        PinOutcome::Pinned => None,
+        PinOutcome::Unpinned => Some((
+            match palette_keys {
+                Some(keys) => fl!("halo-unpinned", keys = keys),
+                None => fl!("halo-unpinned-unbound"),
+            },
+            Tone::Neutral,
+        )),
+        PinOutcome::Full => Some((
+            fl!("halo-pin-full", cap = icetron_p::prelude::TRAY_CAP),
+            Tone::NeedsYou,
+        )),
+    }
+}
+
 /// The chat panel's own command with `query` appended as one shell-quoted
 /// argument, so a question typed into the palette arrives as the
 /// conversation's opening line. An empty query adds nothing.
@@ -389,8 +409,31 @@ mod tests {
     }
 
     use super::*;
+    use crate::dbus::notifications::plain;
     use crate::utils::desktop_action::DesktopApp;
     use icetron_p::prelude::TRAY_CAP;
+
+    #[test]
+    fn pin_receipts_read_as_the_prototype_writes_them() {
+        let receipt = |outcome, keys: Option<&str>| {
+            pin_receipt(outcome, keys.map(str::to_owned)).map(|(text, tone)| (plain(text), tone))
+        };
+        assert_eq!(receipt(PinOutcome::Pinned, Some("Super+K")), None);
+        assert_eq!(
+            receipt(PinOutcome::Unpinned, Some("Super+K")),
+            Some((
+                "Unpinned — still one Super+K away".to_owned(),
+                Tone::Neutral
+            ))
+        );
+        assert_eq!(
+            receipt(PinOutcome::Full, None),
+            Some((
+                format!("Tray is full ({TRAY_CAP}) — the halo is a pill, not a toolbar"),
+                Tone::NeedsYou
+            ))
+        );
+    }
 
     fn facts<'a>(app: Option<&'a DesktopApp>) -> WindowFacts<'a> {
         WindowFacts {
