@@ -2888,19 +2888,25 @@ impl State {
                     }
                     Stage::OverlaySurface { surface } => {
                         // A blocking overlay gets the pointer, so a click on it keeps keyboard
-                        // focus there rather than on the game behind it.
+                        // focus there rather than on the game behind it. An on-screen keyboard
+                        // leaves focus on the game it types into.
                         let offset = crate::dbus::game_mode::overlay_offset(surface, output);
-                        if let Some(grab) = shell.game_mode.input_grab.as_ref()
+                        if shell.game_mode.overlay_blocking
                             && surface
                                 .focus_under(
                                     global_pos.to_local(output).as_logical() - offset.to_f64(),
                                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                                 )
                                 .is_some()
-                            && let Some(target) =
-                                crate::dbus::game_mode::focus_target_for(shell, grab)
                         {
-                            return ControlFlow::Break(Ok(Some(target)));
+                            if shell.game_mode.overlay_keyboard {
+                                return ControlFlow::Break(Ok(None));
+                            }
+                            if let Some(target) =
+                                crate::dbus::game_mode::focus_target_for(shell, surface)
+                            {
+                                return ControlFlow::Break(Ok(Some(target)));
+                            }
                         }
                     }
                     Stage::StickyPopups(layout) => {
@@ -3121,7 +3127,7 @@ impl State {
                         // events and clicks fall through to the game behind it.
                         // A non-blocking overlay is passive and keeps falling through.
                         let offset = crate::dbus::game_mode::overlay_offset(surface, output);
-                        if shell.game_mode.input_grab.is_some()
+                        if shell.game_mode.overlay_blocking
                             && let Some((target, surface_offset)) = surface.focus_under(
                                 global_pos.to_local(output).as_logical() - offset.to_f64(),
                                 WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
