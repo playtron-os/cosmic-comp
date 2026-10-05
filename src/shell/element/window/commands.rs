@@ -164,16 +164,15 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         Some(enabled) => settings.shortcut("Ctrl+,").enabled(enabled),
         None => settings,
     });
-    if let Some(enabled) = facts.new_window() {
-        let neww = HaloCommand::new("neww", fl!("halo-new-window-row"), HaloCommandGroup::App)
-            .icon(icons::PLUS)
-            .enabled(enabled);
-        commands.push(if facts.handles("neww").is_some() {
-            neww.shortcut("Ctrl+N")
-        } else {
-            neww
-        });
-    }
+    // Always offered: an app that cannot open another window says so.
+    let neww = HaloCommand::new("neww", fl!("halo-new-window-row"), HaloCommandGroup::App)
+        .icon(icons::PLUS)
+        .enabled(facts.new_window().unwrap_or(true));
+    commands.push(if facts.handles("neww").is_some() {
+        neww.shortcut("Ctrl+N")
+    } else {
+        neww
+    });
     if let Some(enabled) = facts.handles("find") {
         commands.push(
             HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)

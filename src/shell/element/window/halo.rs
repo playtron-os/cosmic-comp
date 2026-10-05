@@ -198,6 +198,18 @@ fn run_command(
         Some(rest) if commands::desktop_action(app, id).is_none() => rest,
         _ => id,
     };
+    let can_open_another = app.is_some_and(|app| app.new_window.is_some())
+        || surface
+            .wl_surface()
+            .and_then(|wl| app_commands::committed(&wl))
+            .is_some_and(|catalog| catalog.handles.contains_key("neww"));
+    if id == "neww" && !can_open_another {
+        let name = app
+            .and_then(|app| app.name.clone())
+            .unwrap_or_else(|| surface.app_id());
+        notify(state, &name, fl!("halo-one-window", app = name.as_str()));
+        return;
+    }
     if let Some(message) = commands::message_for(id) {
         perform_action(
             state,
@@ -341,10 +353,7 @@ enum AppMenuRow {
 /// window, the app's own nominees (or its desktop entry's actions), Open
 /// Recent, then App info and Close all.
 fn app_menu_plan(facts: &commands::WindowFacts<'_>, close_all: bool) -> Vec<AppMenuRow> {
-    let mut top = vec![AppMenuRow::Settings];
-    if facts.new_window().is_some() {
-        top.push(AppMenuRow::NewWindow);
-    }
+    let top = vec![AppMenuRow::Settings, AppMenuRow::NewWindow];
     let own = match facts.catalog {
         Some(catalog) => commands::menu_nominees(catalog)
             .filter_map(|command| {
@@ -431,8 +440,7 @@ fn menu_items(
                         command.name.clone(),
                         &format!("{}{}", commands::APP_PREFIX, command.id),
                     )
-                    .disabled(!command.enabled)
-                    .toggled(command.active);
+                    .disabled(!command.enabled);
                     if command.keys.is_empty() {
                         row
                     } else {
@@ -813,15 +821,14 @@ mod tests {
         )
         .unwrap();
         let actions = app.actions.len();
-        let mut expected = vec![Settings];
-        if app.new_window.is_some() {
-            expected.push(NewWindow);
-        }
-        expected.push(Separator);
+        let mut expected = vec![Settings, NewWindow, Separator];
         expected.extend((0..actions).map(Action));
         expected.extend([Separator, Info, CloseAll]);
         assert_eq!(plan(Some(&app), None, true), expected);
-        assert_eq!(plan(None, None, false), [Settings, Separator, Info]);
+        assert_eq!(
+            plan(None, None, false),
+            [Settings, NewWindow, Separator, Info]
+        );
     }
 
     #[test]

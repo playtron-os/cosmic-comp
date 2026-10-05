@@ -69,6 +69,7 @@ halo-new-window-row = New window
 halo-find = Find in window
 halo-info = App info & provenance
 halo-info-toast = { $app } — standard command set, provenance on every capture
+halo-one-window = { $app } opens one window
 halo-park-window = Park window
 halo-fullscreen-toggle = Fullscreen / exit fullscreen
 halo-close-window = Close window
