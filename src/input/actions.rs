@@ -901,26 +901,22 @@ impl State {
             }
 
             Action::Minimize => {
-                let mut shell = self.common.shell.write();
                 if let Some(focused_window) = seat
                     .get_keyboard()
                     .unwrap()
                     .current_focus()
                     .and_then(|f| f.active_window())
                 {
-                    // Check if the focused window is embedded - if so, minimize parent
-                    if let Some(parent_surface_id) =
-                        crate::wayland::handlers::surface_embed::get_parent_surface_id(
-                            &focused_window,
-                        )
-                        && let Some(parent) = shell.element_for_surface_id(&parent_surface_id)
-                    {
-                        let parent_window = parent.active_window();
-                        shell.minimize_request(&parent_window);
-                        return;
-                    }
-                    shell.minimize_request(&focused_window);
-                    shell.settle_fullscreen_desktops(&mut self.common.workspace_state.update());
+                    // An embedded window parks its parent.
+                    let window = crate::wayland::handlers::surface_embed::get_parent_surface_id(
+                        &focused_window,
+                    )
+                    .and_then(|id| {
+                        let shell = self.common.shell.read();
+                        shell.element_for_surface_id(&id).map(|p| p.active_window())
+                    })
+                    .unwrap_or(focused_window);
+                    crate::shell::element::window::runs::park_window(self, &window);
                 }
             }
 

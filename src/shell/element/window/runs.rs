@@ -17,10 +17,10 @@ use calloop::{
     RegistrationToken,
     timer::{TimeoutAction, Timer},
 };
-use smithay::wayland::seat::WaylandFocus;
+use smithay::{utils::IsAlive, wayland::seat::WaylandFocus};
 
 use crate::{
-    dbus::notifications::Tone,
+    dbus::notifications::{Tone, plain},
     fl,
     shell::{Shell, element::CosmicSurface, focus::target::KeyboardFocusTarget},
     state::State,
@@ -315,6 +315,22 @@ pub fn park(state: &mut State, surface: &CosmicSurface) {
     shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
 }
 
+/// The Park command, from the Halo, the palette, the keyboard or a menu.
+pub fn park_window(state: &mut State, surface: &CosmicSurface) {
+    if !surface.alive() {
+        return;
+    }
+    {
+        let mut shell = state.common.shell.write();
+        shell.minimize_request(surface);
+        shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
+    }
+    state
+        .common
+        .dbus_state
+        .system_toast(fl!("halo-parked"), Tone::Neutral);
+}
+
 fn close(state: &State, surface: &CosmicSurface) {
     match state.common.shell.read().element_for_surface(surface) {
         // Marks it closing, so it stops anchoring the floating cascade.
@@ -394,12 +410,6 @@ pub fn chip_toast(state: &mut State, surface: &CosmicSurface) {
         };
         state.common.dbus_state.system_toast(run.toast(), tone);
     }
-}
-
-/// Fluent's bidi isolate marks around a number surface as tofu in the toast's
-/// Latin-only fonts.
-fn plain(text: String) -> String {
-    text.replace(['\u{2068}', '\u{2069}'], "")
 }
 
 #[cfg(test)]

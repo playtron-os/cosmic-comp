@@ -1012,6 +1012,7 @@ impl Drop for MoveGrab {
         let window_outputs = self.window_outputs.drain().collect::<HashSet<_>>();
         let previous = self.previous;
         let window = self.window.clone();
+        let tabs = self.window.windows().count();
         let is_touch_grab = matches!(self.start_data, GrabStartData::Touch(_));
         let cursor_output = self.cursor_output.clone();
         let _initial_window_location = self.initial_window_location;
@@ -1206,6 +1207,21 @@ impl Drop for MoveGrab {
             };
             // Everything below re-acquires the shell lock; the guard is not reentrant.
             drop(shell);
+
+            // Dropped onto a stack: the dragged windows are its tabs now.
+            if position
+                .as_ref()
+                .is_some_and(|(mapped, _)| mapped != &window)
+            {
+                let message = match tabs {
+                    1 => crate::fl!("halo-merged"),
+                    tabs => crate::fl!("halo-merged-tabs", tabs = tabs),
+                };
+                state
+                    .common
+                    .dbus_state
+                    .system_toast(message, crate::dbus::notifications::Tone::Neutral);
+            }
 
             // Move embedded children to follow the parent to the new output
             if position.is_some()

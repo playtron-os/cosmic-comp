@@ -275,14 +275,8 @@ pub fn window_items(
         Some(Item::Separator),
         Some(
             Item::new(fl!("window-menu-minimize"), move |handle| {
-                let mapped = minimize_clone.clone();
-                handle.insert_idle(move |state| {
-                    state
-                        .common
-                        .shell
-                        .write()
-                        .minimize_request(&mapped.active_window());
-                });
+                let window = minimize_clone.active_window();
+                handle.insert_idle(move |state| runs::park_window(state, &window));
             })
             .shortcut(config.shortcut_for_action(&Action::Minimize)),
         ),
@@ -595,11 +589,7 @@ pub fn fullscreen_items(window: &CosmicSurface, config: &Config) -> impl Iterato
         Some(
             Item::new(fl!("window-menu-minimize"), move |handle| {
                 let window = minimize_clone.clone();
-                handle.insert_idle(move |state| {
-                    let mut shell = state.common.shell.write();
-                    shell.minimize_request(&window);
-                    shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
-                });
+                handle.insert_idle(move |state| runs::park_window(state, &window));
             })
             .shortcut(config.shortcut_for_action(&Action::Minimize)),
         ),

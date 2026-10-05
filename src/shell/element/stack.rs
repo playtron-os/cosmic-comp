@@ -1359,13 +1359,9 @@ impl Program for CosmicStackInternal {
             }
             Message::Minimize => {
                 let active = self.active.load(Ordering::SeqCst);
-                if let Some(surface) = self.windows.lock().unwrap()[active]
-                    .wl_surface()
-                    .map(Cow::into_owned)
-                {
+                if let Some(surface) = self.windows.lock().unwrap().get(active).cloned() {
                     loop_handle.insert_idle(move |state| {
-                        let mut shell = state.common.shell.write();
-                        shell.minimize_request(&surface);
+                        crate::shell::element::window::runs::park_window(state, &surface);
                     });
                 }
             }

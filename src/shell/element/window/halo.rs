@@ -104,11 +104,7 @@ pub(super) fn perform_action(
             }
         }
         Message::Close => super::runs::close_window(state, surface),
-        Message::Minimize => {
-            let mut shell = state.common.shell.write();
-            shell.minimize_request(surface);
-            shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
-        }
+        Message::Minimize => super::runs::park_window(state, surface),
         Message::Maximize => {
             let mut shell = state.common.shell.write();
             let seat = seat
@@ -221,7 +217,7 @@ fn run_command(
         let name = app
             .and_then(|app| app.name.clone())
             .unwrap_or_else(|| surface.app_id());
-        notify(state, &name, fl!("halo-one-window", app = name.as_str()));
+        toast(state, fl!("halo-one-window", app = name.as_str()));
         return;
     }
     if let Some(message) = commands::message_for(id) {
@@ -241,7 +237,7 @@ fn run_command(
             .unwrap_or_else(|| surface.app_id());
         match id {
             "settings" => open_settings(state),
-            "info" => notify(state, &name, fl!("halo-info-toast", app = name.as_str())),
+            "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
             _ => {}
         }
     }
@@ -261,19 +257,11 @@ fn open_settings(state: &mut State) {
     }
 }
 
-/// A system toast about the window's app.
-fn notify(state: &State, app: &str, summary: String) {
+fn toast(state: &State, message: String) {
     state
         .common
         .dbus_state
-        .notify(crate::dbus::notifications::Notification {
-            app_name: app.to_owned(),
-            app_icon: String::new(),
-            summary,
-            body: String::new(),
-            expire_timeout: 5000,
-            transient: true,
-        });
+        .system_toast(message, crate::dbus::notifications::Tone::Neutral);
 }
 
 /// The design's compact age for a recent item: now, 5m, 3h, 2d, 4mo, 1y.

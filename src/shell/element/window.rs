@@ -1930,17 +1930,10 @@ impl Program for CosmicWindowInternal {
                     });
                 }
             }
-            Message::Minimize => {
-                if let Some(surface) = self.window.wl_surface().map(Cow::into_owned) {
-                    loop_handle.insert_idle(move |state| {
-                        let mut shell = state.common.shell.write();
-                        shell.minimize_request(&surface)
-                    });
-                }
-            }
-            Message::Close | Message::RunChip => {
+            Message::Minimize | Message::Close | Message::RunChip => {
                 let surface = self.window.clone();
                 loop_handle.insert_idle(move |state| match message {
+                    Message::Minimize => runs::park_window(state, &surface),
                     Message::Close => runs::close_window(state, &surface),
                     _ => runs::chip_toast(state, &surface),
                 });
