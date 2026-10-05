@@ -933,6 +933,7 @@ impl State {
         let async_executor = ThreadPool::builder().pool_size(1).create().unwrap();
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
         crate::dbus::workspaces::init(&handle, &async_executor);
+        crate::dbus::runs::init(&handle, &async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
         // live values to the game-mode `AppFrametimeNs` reader.
         shell.write().game_mode_frametime_ns = game_mode_bridge.frametime_handle();

@@ -52,9 +52,22 @@ halo-park = Park — restore it from its app in the bar
 halo-fill = Fill / restore
 halo-fullscreen = Fullscreen — gives it its own desktop
 halo-exit-fullscreen = Exit fullscreen — back to the desktop it came from
-halo-close = Close
+halo-close = Close — runs continue
 halo-app-actions = { $app } — from its desktop entry
 halo-app-actions-fallback = This application
 halo-pin-full = Header is full ({ $cap }) — it is a pill, not a toolbar
 halo-ask-chat = Ask Kora
 halo-ask-chat-hint = opens a new conversation
+
+halo-run-done = done ✓
+halo-run-queued = queued
+halo-run-untitled = working
+halo-closed-parked = { $parked } parked — work continues
+halo-closed = Closed { $closed ->
+    [one] 1 window
+   *[other] { $closed } windows
+}
+halo-closed-some-parked = Closed { $closed ->
+    [one] 1 window
+   *[other] { $closed } windows
+} · { $parked } parked — work continues
