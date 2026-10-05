@@ -62,6 +62,41 @@ fn laptop_function_row() {
     );
 }
 
+#[test]
+fn input_source_switch_uses_space_without_replacing_spotlight() {
+    let shortcuts = defaults();
+    assert_eq!(
+        action_for(&shortcuts, "Super+Shift+space"),
+        Action::System(System::InputSourceSwitch)
+    );
+    assert_eq!(
+        action_for(&shortcuts, "Super+space"),
+        Action::System(System::Spotlight)
+    );
+
+    let context = xkbcommon::xkb::Context::new(xkbcommon::xkb::CONTEXT_NO_FLAGS);
+    let keymap = xkbcommon::xkb::Keymap::new_from_names(
+        &context,
+        "",
+        "",
+        "us,jp",
+        ",",
+        None,
+        xkbcommon::xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+    .expect("US/Japanese keymap must compile");
+    let space = keymap.key_by_name("SPCE").expect("space key exists");
+    let binding = Binding::from_str_partial("Super+Shift+space").unwrap();
+    for layout in 0..keymap.num_layouts() {
+        assert!(
+            keymap
+                .key_get_syms_by_level(space, layout, 0)
+                .contains(&binding.key.unwrap()),
+            "input-source shortcut must match the same key in layout {layout}"
+        );
+    }
+}
+
 /// Taking Super+i/Super+l for the function row must not cost a focus direction.
 /// Which chord reaches a direction is free to move -- Super+arrows walk desktops
 /// and realms now, so the tiling focus moves live under Super+Ctrl -- but every
