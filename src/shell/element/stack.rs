@@ -177,6 +177,11 @@ impl CosmicStack {
         self.0.with_program(|p| p.tab_height())
     }
 
+    pub fn window_inset(&self) -> i32 {
+        self.0
+            .with_program(|p| p.theme.lock().unwrap().window_inset().round() as i32)
+    }
+
     pub fn new<I: Into<CosmicSurface>>(
         windows: impl Iterator<Item = I>,
         handle: LoopHandle<'static, crate::state::State>,

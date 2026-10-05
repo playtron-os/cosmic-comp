@@ -118,9 +118,9 @@ impl ResizeSurfaceGrab {
 
         // Use the non-exclusive zone (area excluding layer-shell panels) for edge snapping
         // so windows can't be resized behind panels.
-        let usable_zone = crate::shell::layout::floating::below_halo(
+        let usable_zone = crate::shell::layout::floating::window_zone(
             layer_map_for_output(&self.output).non_exclusive_zone(),
-            self.window.halo_clearance(),
+            self.window.window_room(),
         )
         .as_local();
 
@@ -696,9 +696,9 @@ impl ResizeSurfaceGrab {
         self.window.configure();
 
         // Update fills_output_zone based on the final resize geometry.
-        let zone = crate::shell::layout::floating::below_halo(
+        let zone = crate::shell::layout::floating::window_zone(
             layer_map_for_output(&self.output).non_exclusive_zone(),
-            self.window.halo_clearance(),
+            self.window.window_room(),
         )
         .as_local();
         let final_loc = ResizeData {

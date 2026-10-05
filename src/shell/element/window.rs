@@ -982,6 +982,11 @@ impl CosmicWindow {
         self.0.with_program(|p| p.halo_clearance())
     }
 
+    pub fn window_inset(&self) -> i32 {
+        self.0
+            .with_program(|p| p.theme.lock().unwrap().window_inset().round() as i32)
+    }
+
     pub fn focus_under(
         &self,
         mut relative_pos: Point<f64, Logical>,

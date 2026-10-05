@@ -3040,7 +3040,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#d1ea8e36ab1b36a198b4a988dcf9cd518a89b14b"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#1640a34e2dbda918c889652602c444ef36096619"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",

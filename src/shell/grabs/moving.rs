@@ -338,9 +338,9 @@ impl MoveGrabState {
             );
         }
 
-        let non_exclusive_geometry = crate::shell::layout::floating::below_halo(
+        let non_exclusive_geometry = crate::shell::layout::floating::window_zone(
             layer_map_for_output(output).non_exclusive_zone(),
-            self.window.halo_clearance(),
+            self.window.window_room(),
         );
 
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);

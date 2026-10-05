@@ -3064,20 +3064,20 @@ impl TilingLayout {
     fn update_positions(
         output: &Output,
         tree: &mut Tree<Data>,
-        gaps: (i32, i32),
+        gaps: (i32, i32, i32),
         skip_configure: bool,
     ) -> Option<TilingBlocker> {
         if let Some(root_id) = tree.root_node_id() {
             let mut configures = Vec::new();
 
-            let (outer, inner) = gaps;
+            let (outer, inner, inset) = gaps;
             // The layer map already reflects the animated exclusive zone during
             // slides (cached-state overrides + arrange happen before recalculate).
-            let mut geo = layer_map_for_output(output).non_exclusive_zone().as_local();
-            geo.loc.x += outer;
-            geo.loc.y += outer;
-            geo.size.w -= outer * 2;
-            geo.size.h -= outer * 2;
+            let geo = tiled_area(
+                layer_map_for_output(output).non_exclusive_zone().as_local(),
+                outer,
+                inset,
+            );
             let mut stack = vec![geo];
 
             for node_id in tree
@@ -4374,10 +4374,23 @@ impl TilingLayout {
         );
     }
 
-    fn gaps(&self) -> (i32, i32) {
+    fn gaps(&self) -> (i32, i32, i32) {
         let g = self.theme.gaps;
-        (g.0 as i32, g.1 as i32)
+        (
+            g.0 as i32,
+            g.1 as i32,
+            self.theme.window_inset().round() as i32,
+        )
     }
+}
+
+/// The area the tiles share: the zone less the outer gap, and the theme's inset beside and below.
+fn tiled_area(zone: Rectangle<i32, Local>, outer: i32, inset: i32) -> Rectangle<i32, Local> {
+    let side = outer + inset;
+    Rectangle::new(
+        (zone.loc.x + side, zone.loc.y + outer).into(),
+        (zone.size.w - side * 2, zone.size.h - outer * 2 - inset).into(),
+    )
 }
 
 /// A tile's `((left, top), (right, bottom))` insets; a Halo window keeps its clearance above it.
@@ -6116,7 +6129,8 @@ fn scale_to_center<C>(
 
 #[cfg(test)]
 mod halo_tests {
-    use super::tile_gaps;
+    use super::{tile_gaps, tiled_area};
+    use smithay::utils::Rectangle;
 
     #[test]
     fn a_halo_tile_keeps_its_room_above() {
@@ -6127,5 +6141,18 @@ mod halo_tests {
         );
         assert_eq!(tile_gaps([true; 4], 8, 0), ((4, 4), (4, 4)));
         assert_eq!(tile_gaps([false; 4], 48, 40), ((48, 48), (48, 48)));
+    }
+
+    #[test]
+    fn tiles_keep_the_theme_s_inset_beside_and_below() {
+        let zone = Rectangle::new((0, 0).into(), (1920, 1028).into());
+        assert_eq!(
+            tiled_area(zone, 4, 10),
+            Rectangle::new((14, 4).into(), (1892, 1010).into())
+        );
+        assert_eq!(
+            tiled_area(zone, 4, 0),
+            Rectangle::new((4, 4).into(), (1912, 1020).into())
+        );
     }
 }

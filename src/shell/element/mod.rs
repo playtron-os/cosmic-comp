@@ -1117,6 +1117,19 @@ impl CosmicMapped {
         }
     }
 
+    pub fn window_room(&self) -> crate::shell::layout::floating::Room {
+        let inset = match &self.element {
+            CosmicMappedInternal::Window(w) => w.window_inset(),
+            CosmicMappedInternal::Stack(s) => s.window_inset(),
+            _ => 0,
+        };
+        crate::shell::layout::floating::Room {
+            top: self.halo_clearance(),
+            side: inset,
+            bottom: inset,
+        }
+    }
+
     /// Check if this mapped element has server-side decorations (SSD header)
     pub fn has_ssd(&self) -> bool {
         match &self.element {

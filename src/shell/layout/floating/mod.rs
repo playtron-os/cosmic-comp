@@ -90,12 +90,33 @@ fn grabbable_position(
 
 pub(crate) const HALO_TILE_GAP: i32 = 10;
 
-/// Where a Halo window may sit: the zone less the room its Halo floats in.
-pub(crate) fn below_halo<C>(zone: Rectangle<i32, C>, clearance: i32) -> Rectangle<i32, C> {
-    let top = clearance.clamp(0, zone.size.h.max(0));
+/// What a window keeps clear of the zone's edges: its Halo's room above, the theme's inset
+/// beside and below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Room {
+    pub top: i32,
+    pub side: i32,
+    pub bottom: i32,
+}
+
+impl Room {
+    pub const fn above(top: i32) -> Self {
+        Self {
+            top,
+            side: 0,
+            bottom: 0,
+        }
+    }
+}
+
+pub(crate) fn window_zone<C>(zone: Rectangle<i32, C>, room: Room) -> Rectangle<i32, C> {
+    let (w, h) = (zone.size.w.max(0), zone.size.h.max(0));
+    let side = room.side.clamp(0, w / 2);
+    let top = room.top.clamp(0, h);
+    let bottom = room.bottom.clamp(0, h - top);
     Rectangle::new(
-        (zone.loc.x, zone.loc.y + top).into(),
-        (zone.size.w, zone.size.h - top).into(),
+        (zone.loc.x + side, zone.loc.y + top).into(),
+        (w - 2 * side, h - top - bottom).into(),
     )
 }
 
@@ -493,7 +514,7 @@ impl FloatingLayout {
         {
             let tiled_state = *mapped.floating_tiled.lock().unwrap();
             if let Some(tiled_state) = tiled_state {
-                let zone = below_halo(output_geometry, mapped.halo_clearance());
+                let zone = window_zone(output_geometry, mapped.window_room());
                 let geometry = tiled_state.tile(zone, self.gaps(), mapped.halo_clearance() > 0);
                 self.map_internal(
                     mapped,
@@ -796,7 +817,7 @@ impl FloatingLayout {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let target_geometry =
-            below_halo(layers.non_exclusive_zone(), mapped.halo_clearance()).as_local();
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
         mapped.set_tiled(true);
@@ -855,7 +876,7 @@ impl FloatingLayout {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let target_geometry =
-            below_halo(layers.non_exclusive_zone(), mapped.halo_clearance()).as_local();
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
 
@@ -961,7 +982,7 @@ impl FloatingLayout {
         // size and may be stale if the client hasn't resized to the zone yet.
         let current_geo = if let Some(output) = self.space.outputs().next() {
             let layers = layer_map_for_output(output);
-            below_halo(layers.non_exclusive_zone(), mapped.halo_clearance()).as_local()
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local()
         } else {
             self.space
                 .element_geometry(&mapped)
@@ -1134,7 +1155,7 @@ impl FloatingLayout {
 
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let output_geometry = below_halo(layers.non_exclusive_zone(), mapped.halo_clearance());
+        let output_geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room());
         mapped.set_bounds(output_geometry.size);
         let last_geometry = *mapped.last_geometry.lock().unwrap();
         let min_size = mapped.min_size().unwrap_or((320, 240).into());
@@ -1421,7 +1442,7 @@ impl FloatingLayout {
 
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let geometry = below_halo(layers.non_exclusive_zone(), mapped.halo_clearance()).as_local();
+        let geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
         mapped.set_bounds(geometry.size.as_logical());
         let window_size = mapped.geometry().size;
 
@@ -1470,7 +1491,7 @@ impl FloatingLayout {
                     previous_geometry: if window.is_maximized(false) {
                         let output = self.space.outputs().next().unwrap();
                         let layers = layer_map_for_output(output);
-                        below_halo(layers.non_exclusive_zone(), window.halo_clearance()).as_local()
+                        window_zone(layers.non_exclusive_zone(), window.window_room()).as_local()
                     } else {
                         mapped_geometry
                     },
@@ -1556,7 +1577,7 @@ impl FloatingLayout {
             && let Some(output) = self.space.outputs().next()
         {
             let layers = layer_map_for_output(output);
-            return Some(below_halo(layers.non_exclusive_zone(), elem.halo_clearance()).as_local());
+            return Some(window_zone(layers.non_exclusive_zone(), elem.window_room()).as_local());
         }
         self.space.element_geometry(elem).map(RectExt::as_local)
     }
@@ -2326,7 +2347,7 @@ impl FloatingLayout {
                 let output = self.space.outputs().next().unwrap().clone();
                 let layers = layer_map_for_output(&output);
                 let output_geometry =
-                    below_halo(layers.non_exclusive_zone(), element.halo_clearance());
+                    window_zone(layers.non_exclusive_zone(), element.window_room());
                 std::mem::drop(layers);
 
                 let current_geometry = self
@@ -2530,7 +2551,7 @@ impl FloatingLayout {
             .collect::<Vec<_>>()
             .into_iter()
         {
-            mapped.set_bounds(below_halo(zone, mapped.halo_clearance()).size.as_logical());
+            mapped.set_bounds(window_zone(zone, mapped.window_room()).size.as_logical());
             let resizing = matches!(
                 *mapped.resize_state.lock().unwrap(),
                 Some(ResizeState::Resizing(_))
@@ -2543,7 +2564,7 @@ impl FloatingLayout {
                 continue;
             }
             let prev = self.space.element_geometry(&mapped).map(RectExt::as_local);
-            let geometry = below_halo(zone, mapped.halo_clearance());
+            let geometry = window_zone(zone, mapped.window_room());
 
             let window_geometry = if mapped.is_maximized(true) {
                 self.pre_slide_positions.remove(&mapped);
@@ -3127,7 +3148,7 @@ impl FloatingLayout {
                         if !maximize {
                             let layers = layer_map_for_output(output);
                             let zone =
-                                below_halo(layers.non_exclusive_zone(), mapped.halo_clearance())
+                                window_zone(layers.non_exclusive_zone(), mapped.window_room())
                                     .as_local();
                             mapped.set_fills_output_zone(
                                 target_geometry.loc.x == zone.loc.x
@@ -3423,7 +3444,7 @@ impl FloatingLayout {
             .map(|(elem, _)| elem)
             .chain(self.space.elements().rev())
         {
-            let output_geometry = below_halo(output_geometry, elem.halo_clearance());
+            let output_geometry = window_zone(output_geometry, elem.window_room());
             // Check if this is an embedded window - if so, get the embed render info
             let embed_info = elem.windows().find_map(|(w, _)| {
                 crate::wayland::handlers::surface_embed::get_embed_render_info(&w)
@@ -3973,7 +3994,7 @@ impl FloatingLayout {
         let non_exclusive = layers.non_exclusive_zone();
         std::mem::drop(layers);
         corners.tile(
-            below_halo(non_exclusive, mapped.halo_clearance()),
+            window_zone(non_exclusive, mapped.window_room()),
             self.gaps(),
             mapped.halo_clearance() > 0,
         )
@@ -4007,24 +4028,51 @@ mod tests {
     }
 
     const HALO: i32 = 40;
+    /// The Halo's room and the design's `FILL_INSET` beside and below.
+    const KORA: Room = Room {
+        top: HALO,
+        side: 10,
+        bottom: 10,
+    };
 
     #[test]
     fn a_halo_window_keeps_its_overhang_free_above_it() {
         let zone = Rectangle::<i32, Local>::new(at(10, 0), size(1900, 1018));
         assert_eq!(
-            below_halo(zone, HALO),
+            window_zone(zone, Room::above(HALO)),
             Rectangle::new(at(10, 40), size(1900, 978))
         );
-        assert_eq!(below_halo(zone, 0), zone, "no Halo, nothing reserved");
+        assert_eq!(
+            window_zone(zone, Room::default()),
+            zone,
+            "no Halo, nothing reserved"
+        );
         let tiny = Rectangle::<i32, Local>::new(at(0, 0), size(100, 30));
-        assert_eq!(below_halo(tiny, HALO).size.h, 0, "never a negative height");
+        assert_eq!(window_zone(tiny, KORA).size.h, 0, "never a negative height");
+        assert_eq!(window_zone(tiny, KORA).size.w, 80);
+        let sliver = Rectangle::<i32, Local>::new(at(0, 0), size(15, 30));
+        assert_eq!(
+            window_zone(sliver, KORA).size.w,
+            1,
+            "never a negative width"
+        );
+    }
+
+    #[test]
+    fn fill_is_the_design_s_fill_rect() {
+        // 1920x1080 with a 52px dock band: x 10, y overhang, w W - 20, h H - overhang - 10 - band.
+        let zone = Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1028));
+        assert_eq!(
+            window_zone(zone, KORA),
+            Rectangle::new(at(10, HALO), size(1900, 1080 - HALO - 10 - 52))
+        );
     }
 
     #[test]
     fn a_drop_never_lifts_the_pill_off_the_screen() {
-        let zone = below_halo(
+        let zone = window_zone(
             Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1080)),
-            HALO,
+            Room::above(HALO),
         );
         assert_eq!(grabbable_position(at(300, -500), win(), zone).y, HALO);
         assert_eq!(grabbable_position(at(300, 39), win(), zone).y, HALO);
@@ -4033,12 +4081,16 @@ mod tests {
 
     #[test]
     fn halo_halves_are_the_design_s_half_snap_rects() {
-        let zone = Rectangle::<i32, Logical>::new((10, 0).into(), (1900, 1018).into());
-        let halo = below_halo(zone, HALO);
+        // halfSnapRect: width floor((W - 30) / 2), x 10 or W - 10 - width, bottom 10 above the band.
+        let zone = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1028).into());
+        let halo = window_zone(zone, KORA);
         let left = TiledCorners::Left.tile(halo, (4, 4), true);
         let right = TiledCorners::Right.tile(halo, (4, 4), true);
         assert_eq!(left, Rectangle::new(at(10, HALO), size(945, 978)));
-        assert_eq!(right, Rectangle::new(at(965, HALO), size(945, 978)));
+        assert_eq!(
+            right,
+            Rectangle::new(at(1920 - 10 - 945, HALO), size(945, 978))
+        );
         assert_eq!(right.loc.x - (left.loc.x + left.size.w), HALO_TILE_GAP);
         let top = TiledCorners::Top.tile(halo, (4, 4), true);
         assert_eq!(top.loc.y, HALO + 4);
