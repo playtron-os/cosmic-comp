@@ -833,7 +833,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
     assert!(internal.tooltip.report.is_none());
     assert_eq!(
         internal.tooltip.snapshots()[0].label,
-        "Close",
+        crate::fl!("halo-close"),
         "retain the outgoing chip after click suppression"
     );
     step(&mut internal, 600);

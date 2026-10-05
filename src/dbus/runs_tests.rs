@@ -88,10 +88,8 @@ impl PrivateBus {
             .chars()
             .filter(char::is_ascii_digit)
             .collect();
-        let dir = std::env::temp_dir().join(format!(
-            "cosmic-comp-runs-{}-{thread}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("cosmic-comp-runs-{}-{thread}", std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
         let config = dir.join("bus.conf");
         std::fs::write(
