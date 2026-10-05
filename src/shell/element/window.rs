@@ -176,6 +176,7 @@ pub struct CosmicWindowInternal {
     pointer_entered: AtomicU8,
     /// Whether any pointer is currently over the window (header, content, or resize borders).
     pointer_over_window: AtomicBool,
+    introduced: Mutex<Option<std::time::Instant>>,
     /// A header-only wrapper anchored to an output, not to the fullscreen client geometry.
     fullscreen_output: Option<Mutex<Output>>,
     last_title: Mutex<String>,
@@ -649,7 +650,15 @@ impl CosmicWindowInternal {
     }
 
     fn halo_revealed(&self) -> bool {
-        self.pointer_over_window.load(Ordering::SeqCst) || halo_overview()
+        self.pointer_over_window.load(Ordering::SeqCst)
+            || halo_overview()
+            || self
+                .introduced_for()
+                .is_some_and(|t| t < super::header_bar::HALO_INTRO_HOLD)
+    }
+
+    fn introduced_for(&self) -> Option<std::time::Duration> {
+        self.introduced.lock().unwrap().map(|at| at.elapsed())
     }
 
     fn header_origin(&self) -> Point<f64, Logical> {
@@ -865,6 +874,7 @@ impl CosmicWindow {
                 activated: AtomicBool::new(fullscreen_output.is_some()),
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
+                introduced: Mutex::new(None),
                 fullscreen_output: fullscreen_output.map(Mutex::new),
                 last_title: Mutex::new(last_title),
                 cached_icon: Mutex::new((app_id.clone(), None)),
@@ -1240,6 +1250,40 @@ impl CosmicWindow {
                 fullscreen.halo.0.force_update();
             }
         }
+    }
+
+    pub(crate) fn introduce_halo(
+        shell: &crate::shell::Shell,
+        surface: &CosmicSurface,
+        loop_handle: &LoopHandle<'static, State>,
+    ) {
+        let window = shell
+            .element_for_surface(surface)
+            .and_then(|mapped| match &mapped.element {
+                super::CosmicMappedInternal::Window(window) => Some(window.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                shell
+                    .workspaces()
+                    .spaces()
+                    .flat_map(|workspace| &workspace.fullscreen_surfaces)
+                    .find(|fullscreen| &fullscreen.surface == surface)
+                    .map(|fullscreen| fullscreen.halo.clone())
+            });
+        let Some(window) = window else { return };
+        if !window.0.with_program(|p| p.uses_halo_header()) {
+            return;
+        }
+        window.0.with_program(|p| {
+            *p.introduced.lock().unwrap() = Some(std::time::Instant::now());
+        });
+        window.0.force_update();
+        let timer = calloop::timer::Timer::from_duration(super::header_bar::HALO_INTRO_HOLD);
+        let _ = loop_handle.insert_source(timer, move |_, _, _| {
+            window.0.force_update();
+            calloop::timer::TimeoutAction::Drop
+        });
     }
 
     /// Rebuild every halo of `app_id`. Pins are per app, and a header only
@@ -1987,7 +2031,7 @@ impl Program for CosmicWindowInternal {
         theme: &crate::comp_theme::CompTheme,
     ) -> Option<crate::utils::iced::Visibility> {
         super::header_bar::uses_halo_header(theme).then(|| {
-            super::header_bar::halo_visibility(
+            let mut visibility = super::header_bar::halo_visibility(
                 theme,
                 super::header_bar::halo_is_visible(
                     self.fullscreen_output.is_some(),
@@ -1996,7 +2040,11 @@ impl Program for CosmicWindowInternal {
                     self.menu_open.load(Ordering::SeqCst)
                         || self.commands_open.load(Ordering::SeqCst),
                 ),
-            )
+            );
+            if !visibility.visible && self.introduced_for().is_some() {
+                visibility.duration = super::header_bar::HALO_INTRO_FADE;
+            }
+            visibility
         })
     }
 

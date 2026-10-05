@@ -37,6 +37,11 @@ impl ToplevelManagementHandler for State {
         self.unminimize(dh, window);
 
         let mut shell = self.common.shell.write();
+        crate::shell::element::window::CosmicWindow::introduce_halo(
+            &shell,
+            window,
+            &self.common.event_loop_handle,
+        );
         for output in shell.outputs().cloned().collect::<Vec<_>>().iter() {
             let maybe = shell
                 .workspaces()
