@@ -77,6 +77,7 @@ pub struct ToplevelInfoGlobalData {
 
 #[derive(Default)]
 pub(super) struct ToplevelStateInner {
+    identifier: Option<String>,
     foreign_handle: Option<ForeignToplevelHandle>,
     instances: Vec<(Weak<ZcosmicToplevelInfoV1>, ZcosmicToplevelHandleV1)>,
     outputs: Vec<Output>,
@@ -88,6 +89,7 @@ pub(super) type ToplevelState = Mutex<ToplevelStateInner>;
 impl ToplevelStateInner {
     fn from_foreign(foreign_handle: ForeignToplevelHandle) -> Mutex<Self> {
         Mutex::new(ToplevelStateInner {
+            identifier: Some(foreign_handle.identifier()),
             foreign_handle: Some(foreign_handle),
             ..Default::default()
         })
@@ -195,18 +197,7 @@ where
                 cosmic_toplevel,
                 foreign_toplevel,
             } => {
-                let toplevel_state = state.toplevel_info_state();
-                if let Some(window) = toplevel_state.toplevels.iter().find(|w| {
-                    w.user_data().get::<ToplevelState>().and_then(|inner| {
-                        inner
-                            .lock()
-                            .unwrap()
-                            .foreign_handle
-                            .as_ref()
-                            .map(|handle| handle.identifier())
-                    }) == ForeignToplevelHandle::from_resource(&foreign_toplevel)
-                        .map(|handle| handle.identifier())
-                }) {
+                if let Some(window) = window_from_ext_handle::<W, D>(state, &foreign_toplevel) {
                     let instance = data_init.init(
                         cosmic_toplevel,
                         ToplevelHandleStateInner::from_window(window),
@@ -293,6 +284,17 @@ pub fn foreign_toplevel_identifier(toplevel: &impl Window) -> Option<String> {
     guard.foreign_handle().map(|handle| handle.identifier())
 }
 
+/// The mapped lifetime's identifier, retained while its protocol presence is hidden.
+pub fn mapped_toplevel_identifier(toplevel: &impl Window) -> Option<String> {
+    toplevel
+        .user_data()
+        .get::<ToplevelState>()?
+        .lock()
+        .unwrap()
+        .identifier
+        .clone()
+}
+
 pub fn toplevel_enter_output(toplevel: &impl Window, output: &Output) {
     if let Some(state) = toplevel.user_data().get::<ToplevelState>() {
         state.lock().unwrap().outputs.push(output.clone());
@@ -354,19 +356,29 @@ where
         }
     }
 
-    pub fn new_toplevel(&mut self, toplevel: &W, workspace_state: &WorkspaceState<D>) {
-        let toplevel_handle = self
-            .foreign_toplevel_list
-            .new_toplevel::<D>(toplevel.title(), toplevel.app_id());
+    fn announce_foreign(&mut self, toplevel: &W) {
+        let toplevel_handle = match mapped_toplevel_identifier(toplevel) {
+            Some(identifier) => self
+                .foreign_toplevel_list
+                .new_toplevel_with_identifier::<D>(toplevel.title(), toplevel.app_id(), identifier),
+            None => self
+                .foreign_toplevel_list
+                .new_toplevel::<D>(toplevel.title(), toplevel.app_id()),
+        };
 
         if let Some(toplevel_state) = toplevel.user_data().get::<ToplevelState>() {
             let mut toplevel_state = toplevel_state.lock().unwrap();
+            toplevel_state.identifier = Some(toplevel_handle.identifier());
             toplevel_state.foreign_handle = Some(toplevel_handle);
         } else {
             toplevel
                 .user_data()
                 .insert_if_missing(move || ToplevelStateInner::from_foreign(toplevel_handle));
         }
+    }
+
+    pub fn new_toplevel(&mut self, toplevel: &W, workspace_state: &WorkspaceState<D>) {
+        self.announce_foreign(toplevel);
 
         for instance in &self.instances {
             send_toplevel_to_client::<D, W>(&self.dh, workspace_state, instance, toplevel);
@@ -396,25 +408,18 @@ where
             if let Some(handle) = state_inner.foreign_handle.take() {
                 self.foreign_toplevel_list.remove_toplevel(&handle);
             }
-            *state_inner = Default::default();
+            let identifier = state_inner.identifier.take();
+            *state_inner = ToplevelStateInner {
+                identifier,
+                ..Default::default()
+            };
             self.dirty = true;
         }
     }
 
     /// Advertise a toplevel to every bound client, as if it had just opened.
     fn advertise(&mut self, toplevel: &W, workspace_state: &WorkspaceState<D>) {
-        let toplevel_handle = self
-            .foreign_toplevel_list
-            .new_toplevel::<D>(toplevel.title(), toplevel.app_id());
-
-        if let Some(toplevel_state) = toplevel.user_data().get::<ToplevelState>() {
-            let mut toplevel_state = toplevel_state.lock().unwrap();
-            toplevel_state.foreign_handle = Some(toplevel_handle);
-        } else {
-            toplevel
-                .user_data()
-                .insert_if_missing(move || ToplevelStateInner::from_foreign(toplevel_handle));
-        }
+        self.announce_foreign(toplevel);
 
         for instance in &self.instances {
             send_toplevel_to_client::<D, W>(&self.dh, workspace_state, instance, toplevel);
@@ -491,6 +496,10 @@ where
             self.dirty = true;
         }
         self.toplevels.retain(|w| w != toplevel);
+    }
+
+    pub fn mapped_toplevels(&self) -> impl Iterator<Item = &W> {
+        self.toplevels.iter().chain(&self.hidden)
     }
 
     pub fn refresh(&mut self, workspace_state: &WorkspaceState<D>) {
@@ -798,6 +807,9 @@ pub fn window_from_ext<W: Window + 'static, D>(
 where
     D: ToplevelInfoHandler<Window = W>,
 {
+    if handle.is_closed() {
+        return None;
+    }
     state.toplevel_info_state().toplevels.iter().find(|w| {
         w.user_data().get::<ToplevelState>().and_then(|inner| {
             inner
@@ -817,6 +829,9 @@ pub fn window_from_ext_handle<'a, W: Window + 'static, D>(
 where
     D: ToplevelInfoHandler<Window = W>,
 {
+    if !foreign_toplevel.is_alive() {
+        return None;
+    }
     let handle = ForeignToplevelHandle::from_resource(foreign_toplevel)?;
     window_from_ext(state, handle)
 }
@@ -835,3 +850,7 @@ macro_rules! delegate_toplevel_info {
     };
 }
 pub(crate) use delegate_toplevel_info;
+
+#[cfg(test)]
+#[path = "toplevel_info_tests.rs"]
+mod tests;
