@@ -216,29 +216,40 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    // Overlay-level layer shell
-    // overlay is above everything (suppressed for an exclusive game).
-    if !game_mode_exclusive {
-        for (layer, popup, location, _alpha) in
-            layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
-        {
-            callback(Stage::LayerPopup {
-                layer,
-                popup: &popup,
-                location,
-                workspace_idx: current.1,
-            })?;
-        }
-        for (layer, location, alpha) in
-            layer_surfaces(output, Layer::Overlay, element_filter, &layer_visibility)
-        {
-            callback(Stage::LayerSurface {
-                layer,
-                location,
-                alpha,
-                workspace_idx: current.1,
-            })?;
-        }
+    // Overlay-level layer shell, above everything. An exclusive game hides it
+    // all but the launcher's own (its quick settings) and the OSD's volume and
+    // brightness indicator, which takes no input.
+    let launcher = game_mode_exclusive
+        .then(|| crate::dbus::game_mode::launcher_client(shell))
+        .flatten();
+    let over_game = |layer: &LayerSurface| {
+        !game_mode_exclusive
+            || launcher.is_some() && layer.wl_surface().client().as_ref() == launcher.as_ref()
+            || layer.namespace() == "osd"
+                && layer.cached_state().keyboard_interactivity
+                    == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
+    };
+    for (layer, popup, location, _alpha) in
+        layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
+            .filter(|(layer, ..)| over_game(layer))
+    {
+        callback(Stage::LayerPopup {
+            layer,
+            popup: &popup,
+            location,
+            workspace_idx: current.1,
+        })?;
+    }
+    for (layer, location, alpha) in
+        layer_surfaces(output, Layer::Overlay, element_filter, &layer_visibility)
+            .filter(|(layer, ..)| over_game(layer))
+    {
+        callback(Stage::LayerSurface {
+            layer,
+            location,
+            alpha,
+            workspace_idx: current.1,
+        })?;
     }
 
     // calculate a bunch of stuff for workspace transitions
@@ -302,7 +313,7 @@ fn render_input_order_internal<R: 'static>(
                 let (previous_alpha, current_alpha) = match start {
                     WorkspaceDelta::Crossfade(st) => {
                         let t = (Instant::now().duration_since(*st).as_secs_f32()
-                            / shell.theme().motion.slide_crossfade.as_secs_f32())
+                            / shell.theme().motion.game_crossfade.as_secs_f32())
                         .clamp(0.0, 1.0);
                         (1.0, ease(EaseInOutCubic, 0.0, 1.0, t))
                     }

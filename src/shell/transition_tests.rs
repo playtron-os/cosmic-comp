@@ -32,7 +32,7 @@ fn with_workspaces(
         None,
     );
     let mut theme = crate::comp_theme::CompTheme::default();
-    theme.motion.slide_crossfade = Duration::from_secs(60);
+    theme.motion.game_crossfade = Duration::from_secs(60);
     let mut set = WorkspaceSet::new(
         &mut state.update(),
         &output,

@@ -26,7 +26,7 @@ use smithay::desktop::space::SpaceElement as _;
 use smithay::desktop::utils::surface_primary_scanout_output;
 use smithay::output::Output;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{IsAlive, Rectangle, Size};
+use smithay::utils::{IsAlive, Logical, Point, Rectangle, Size};
 use smithay::wayland::alpha_modifier::AlphaModifierSurfaceCachedState;
 use smithay::wayland::compositor::{
     SurfaceAttributes, TraversalAction, with_states, with_surface_tree_downward,
@@ -88,6 +88,40 @@ pub const LAUNCHER_APP_ID: u32 = 769;
 /// working for a native-Wayland launcher (which can't carry `STEAM_GAME`).
 /// Add the launcher's `app_id` here if it ships under a different one.
 const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
+
+/// The launcher's quick-access menu in a window of its own: shown over the
+/// game at the output's right edge, rather than the launcher's whole window
+/// blended over it.
+const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
+
+/// How long a launch from the launcher keeps its loading screen up waiting
+/// for the game's first drawn frame. Long enough for a Proton game to clear
+/// its black window, short enough that one that never draws still shows.
+const FIRST_FRAME_WAIT: Duration = Duration::from_secs(20);
+
+/// How long game mode waits for a replacement once the game's window is gone,
+/// before giving the screen back to the launcher or the desktop.
+const REPLACEMENT_WAIT: Duration = Duration::from_secs(8);
+
+/// Whether `window` is the launcher's own.
+pub fn is_launcher_window(window: &CosmicSurface) -> bool {
+    LAUNCHER_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
+}
+
+/// Whether `window` is the launcher's quick-access menu.
+pub fn is_quick_access_window(window: &CosmicSurface) -> bool {
+    QUICK_ACCESS_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
+}
+
+/// Where the game-mode overlay sits on its output: the launcher covers it
+/// from the origin, the quick-access menu is anchored to the right edge.
+pub fn overlay_offset(surface: &CosmicSurface, output: &Output) -> Point<i32, Logical> {
+    if !is_quick_access_window(surface) {
+        return Point::default();
+    }
+    let width = output.geometry().size.w;
+    Point::from(((width - surface.geometry().size.w).max(0), 0))
+}
 
 /// Super in game mode. The launcher acts on release, so a tap is forwarded only once
 /// Super comes back up without having started a chord.
@@ -248,6 +282,9 @@ pub struct GameModeIo {
     /// Authorization verdict per unique bus name. dbus-daemon never reuses a
     /// unique name, so a verdict stays valid for the life of that connection.
     authorized: Mutex<std::collections::HashMap<String, bool>>,
+    /// The process a Kora workspace's bus bridge vouched for, per unique bus
+    /// name: from here every call on such a connection is the bridge's.
+    attested: Mutex<std::collections::HashMap<String, Arc<std::os::fd::OwnedFd>>>,
     /// Live recent frame time (ns) of the output showing the game, written by the
     /// KMS surface thread (via [`Shell`]) and read by `AppFrametimeNs` for Auto-TDP.
     /// 0 when no game is fullscreen.
@@ -342,7 +379,112 @@ fn client_binary_allowed(pid: u32) -> bool {
     })
 }
 
+/// The pid a pidfd names, or `None` once that process has exited.
+fn pid_of_pidfd(pidfd: &std::os::fd::OwnedFd) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd())).ok()?;
+    pid_in_fdinfo(&info)
+}
+
+/// A pidfd's fdinfo names its process, or `-1` once it has exited.
+fn pid_in_fdinfo(info: &str) -> Option<u32> {
+    info.lines()
+        .find_map(|line| line.strip_prefix("Pid:"))
+        .and_then(|pid| pid.trim().parse().ok())
+}
+
+fn uid_of(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The unit a cgroup file's process runs in: its innermost path segment.
+fn unit_of_cgroup(cgroup: &str) -> Option<&str> {
+    cgroup.lines().next()?.rsplit('/').next()
+}
+
+/// Whether `pid` is a Kora workspace's bus bridge, and if so which workspace's.
+///
+/// Inside a workspace every call reaches the session bus from the bridge, so
+/// only the bridge can say which app it relays. It is matched as the binary is
+/// in [`client_binary_allowed`], and must run as its workspace's bridge unit.
+fn workspace_of_bridge(pid: u32) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let exe = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+    let is_bridge = crate::utils::process::which("kora-ws-bridge")
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .any(|bridge| bridge.dev() == exe.dev() && bridge.ino() == exe.ino());
+    if !is_bridge {
+        return None;
+    }
+    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
+    let workspace = crate::workspace_tag::of_cgroup(&cgroup)?;
+    (unit_of_cgroup(&cgroup)? == format!("kora-ws-{workspace}-bridge.service")).then_some(workspace)
+}
+
+/// Check that the process behind `pidfd` may be vouched for by `bridge`: alive,
+/// in the bridge's workspace and owned by the same user. Its pid, if so.
+fn attested_pid(bridge: u32, pidfd: &std::os::fd::OwnedFd) -> Result<u32, &'static str> {
+    let workspace =
+        workspace_of_bridge(bridge).ok_or("the sender is not a workspace's bus bridge")?;
+    let pid = pid_of_pidfd(pidfd).ok_or("not a pidfd of a live process")?;
+    if crate::workspace_tag::of_pid(pid).as_deref() != Some(workspace.as_str()) {
+        return Err("the caller is not in the bridge's workspace");
+    }
+    if uid_of(pid).is_none() || uid_of(pid) != uid_of(bridge) {
+        return Err("the caller belongs to another user");
+    }
+    // Everything above was read through the pid; the pidfd says whether it
+    // still names the process it was handed over for.
+    if pid_of_pidfd(pidfd) != Some(pid) {
+        return Err("the caller exited");
+    }
+    Ok(pid)
+}
+
 impl GameModeIo {
+    /// Record the process a workspace's bus bridge vouches for on `sender`'s
+    /// connection, so its calls are judged by that process instead.
+    async fn attest(
+        self: &Arc<Self>,
+        sender: String,
+        pidfd: std::os::fd::OwnedFd,
+    ) -> Result<(), &'static str> {
+        let executor = self.executor.clone().ok_or("no executor")?;
+        let (done, verdict) = futures_channel::oneshot::channel();
+        let io = self.clone();
+        // Off this task, on a connection of its own: see `send_from`.
+        executor.spawn_ok(async move {
+            let bridge = async {
+                let conn = zbus::Connection::session().await.ok()?;
+                let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
+                let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
+                proxy.get_connection_unix_process_id(name).await.ok()
+            }
+            .await;
+            let result = bridge
+                .ok_or("the sender has no process")
+                .and_then(|bridge| attested_pid(bridge, &pidfd));
+            match result {
+                Ok(pid) => {
+                    info!(target: GAMING_TARGET, %sender, pid, "game-mode caller attested");
+                    io.authorized.lock().unwrap().remove(&sender);
+                    io.attested.lock().unwrap().insert(sender, Arc::new(pidfd));
+                }
+                Err(why) => warn!(target: GAMING_TARGET, %sender, why, "refused an attestation"),
+            }
+            let _ = done.send(result.map(|_| ()));
+        });
+        verdict.await.unwrap_or(Err("the attestation was dropped"))
+    }
+
     /// Forward a control request, but only from an authorized client.
     ///
     /// The caller is identified by the pid the BUS reports for its connection, so
@@ -365,14 +507,18 @@ impl GameModeIo {
             return;
         };
         let io = self.clone();
+        let attested = self.attested.lock().unwrap().get(&sender).cloned();
         executor.spawn_ok(async move {
-            let pid = async {
-                let conn = zbus::Connection::session().await.ok()?;
-                let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
-                let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
-                proxy.get_connection_unix_process_id(name).await.ok()
-            }
-            .await;
+            let pid = match attested {
+                Some(pidfd) => pid_of_pidfd(&pidfd),
+                None => async {
+                    let conn = zbus::Connection::session().await.ok()?;
+                    let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
+                    let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
+                    proxy.get_connection_unix_process_id(name).await.ok()
+                }
+                .await,
+            };
             let authorized = pid.is_some_and(client_binary_allowed);
             io.authorized
                 .lock()
@@ -614,6 +760,23 @@ impl GameModeInterface {
         self.io.send_from(GameModeCommand::Enter { app_id }, sender);
     }
 
+    /// Vouch for the process behind this connection: only a Kora workspace's
+    /// bus bridge may, for the app whose connection it relays.
+    async fn attest_peer(
+        &self,
+        pidfd: zbus::zvariant::OwnedFd,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header
+            .sender()
+            .ok_or_else(|| zbus::fdo::Error::AuthFailed("no sender".into()))?
+            .to_string();
+        self.io
+            .attest(sender, pidfd.into())
+            .await
+            .map_err(|why| zbus::fdo::Error::AccessDenied(why.into()))
+    }
+
     /// Leave game mode and return to the launcher.
     async fn exit_game_mode(&self, #[zbus(header)] header: zbus::message::Header<'_>) {
         let sender = header.sender().map(|name| name.to_string());
@@ -850,6 +1013,7 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) -> GameM
         cmd: Mutex::new(cmd_tx),
         executor: Some(executor.clone()),
         authorized: Mutex::new(std::collections::HashMap::new()),
+        attested: Mutex::new(std::collections::HashMap::new()),
         frametime_ns: Arc::new(AtomicU64::new(0)),
     });
 
@@ -1003,6 +1167,7 @@ impl State {
     /// Rebuild the game-mode snapshot (focus, display caps) from current
     /// compositor state and emit change notifications.
     pub fn refresh_game_mode_state(&mut self) {
+        self.follow_shown_desktop();
         let bridge = self.common.game_mode_bridge.clone();
         let shell = self.common.shell.read();
 
@@ -1110,10 +1275,10 @@ impl State {
             let shell = self.common.shell.read();
             let gm = &shell.game_mode;
             (gm.active
-                && gm
-                    .game_surface
-                    .as_ref()
-                    .is_some_and(|surface| !surface.alive() || !shell.is_surface_mapped(surface)))
+                && gm.game_surface.as_ref().is_some_and(|surface| {
+                    !surface.alive()
+                        || !(shell.is_surface_mapped(surface) || parked_in_realm(&shell, surface))
+                }))
             .then_some((gm.app_id, gm.pending_app_id))
         };
         if let Some((Some(app_id), pending)) = missing_app {
@@ -1128,7 +1293,28 @@ impl State {
                 self.exit_game_mode();
             } else if pending.is_none() {
                 info!(target: GAMING_TARGET, app_id, "waiting for the app's replacement window");
-                self.common.shell.write().game_mode.pending_app_id = Some(app_id);
+                let mut shell = self.common.shell.write();
+                shell.game_mode.pending_app_id = Some(app_id);
+                shell.game_mode.missing_since = Some(Instant::now());
+            } else if pending == Some(app_id)
+                && self
+                    .common
+                    .shell
+                    .read()
+                    .game_mode
+                    .missing_since
+                    .is_some_and(|since| since.elapsed() >= REPLACEMENT_WAIT)
+            {
+                // Nothing replaced it, and nothing said it ended: the app died,
+                // likely along with its controller. Its desktop is empty, so
+                // never leave it on screen.
+                if no_launcher() {
+                    info!(target: GAMING_TARGET, app_id, "app gone, not replaced, no launcher; leaving game mode");
+                    self.exit_game_mode();
+                } else {
+                    info!(target: GAMING_TARGET, app_id, "app gone, not replaced; back to the launcher");
+                    self.enter_game_mode(LAUNCHER_APP_ID);
+                }
             }
         }
         self.try_resolve_pending_game_mode();
@@ -1494,6 +1680,10 @@ impl State {
 
     /// Fullscreen the app on an exclusive workspace, deferring until it maps.
     pub fn enter_game_mode(&mut self, app_id: u32) {
+        self.enter_game_mode_by(app_id, Entry::Asked);
+    }
+
+    fn enter_game_mode_by(&mut self, app_id: u32, entry: Entry) {
         let loop_handle = self.common.event_loop_handle.clone();
         // Preserve any client overlay assertion across a cross-app rebuild (the
         // GameMode literal below would otherwise reset it via `..Default`).
@@ -1553,10 +1743,25 @@ impl State {
             find_game_surface(&shell, app_id)
         };
         let Some((game, source_ws, output, is_fullscreen)) = resolved else {
+            if entry != Entry::Asked {
+                return;
+            }
             self.common.shell.write().game_mode.pending_app_id = Some(app_id);
             info!(target: GAMING_TARGET, app_id, "game mode deferred: no window with this app id yet");
             return;
         };
+        if let Entry::Shown(shown) = entry
+            && (shown != source_ws || !is_fullscreen)
+        {
+            return;
+        }
+        // Leaving the launcher for a window the game has not drawn into yet
+        // fades its loading screen into black. Keep it showing until the game
+        // draws; the refresh tick asks again.
+        if entry == Entry::Asked && self.awaiting_first_frame(app_id, &game) {
+            self.common.shell.write().game_mode.pending_app_id = Some(app_id);
+            return;
+        }
         // Remember client intent before compositor-owned fullscreen changes the X11 state.
         if let Some(window) = game.x11_surface() {
             client_fullscreen(window);
@@ -1584,6 +1789,35 @@ impl State {
                 }
                 _ => (output, is_fullscreen, false),
             }
+        };
+
+        // Each game gets a desktop of its own. One that fullscreened itself did so
+        // on whatever desktop was showing, usually the launcher's, so it moves
+        // like a windowed game does.
+        let shared = is_fullscreen && app_id != LAUNCHER_APP_ID && {
+            let shell = self.common.shell.read();
+            shell
+                .workspaces()
+                .space_for_handle(&source_ws)
+                .is_some_and(|ws| {
+                    desktop_is_shared(
+                        app_id,
+                        ws.get_fullscreen_surfaces()
+                            .map(|f| app_id_of(&f.surface))
+                            .chain(
+                                ws.mapped()
+                                    .flat_map(|m| m.windows().map(|(w, _)| app_id_of(&w))),
+                            ),
+                    )
+                })
+        };
+        if shared {
+            info!(target: GAMING_TARGET, app_id, "app fullscreened on a shared desktop");
+        }
+        let (is_fullscreen, relocate_fullscreen) = if shared {
+            (false, true)
+        } else {
+            (is_fullscreen, relocate_fullscreen)
         };
 
         let seat = self.common.shell.read().seats.last_active().clone();
@@ -1661,7 +1895,8 @@ impl State {
             };
 
             let workspace = shell.active_space(&output).map(|ws| ws.handle);
-            if !first_entry {
+            // Already on screen when the user switched to it themselves.
+            if !first_entry && entry == Entry::Asked {
                 let crossfade = shell
                     .workspaces()
                     .active(&output)
@@ -1710,6 +1945,47 @@ impl State {
         // Give the game keyboard focus so it receives input immediately.
         if let Some(target) = focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, true);
+        }
+    }
+
+    /// Whether `game`, about to replace the launcher on screen, has yet to draw
+    /// anything. Only a launch from the launcher waits, and only for
+    /// [`FIRST_FRAME_WAIT`].
+    fn awaiting_first_frame(&mut self, app_id: u32, game: &CosmicSurface) -> bool {
+        if app_id == LAUNCHER_APP_ID {
+            return false;
+        }
+        let since = {
+            let mut shell = self.common.shell.write();
+            let gm = &mut shell.game_mode;
+            if !(gm.active && gm.app_id == Some(LAUNCHER_APP_ID)) {
+                return false;
+            }
+            gm.first_frame_surface = Some(game.clone());
+            *gm.first_frame_since.get_or_insert_with(|| {
+                info!(target: GAMING_TARGET, app_id, "waiting for the game's first frame");
+                Instant::now()
+            })
+        };
+        let waited = since.elapsed();
+        if waited >= FIRST_FRAME_WAIT {
+            info!(target: GAMING_TARGET, app_id, ?waited, "no first frame; showing the game anyway");
+            return false;
+        }
+        let Some(surface) = game.wl_surface().map(std::borrow::Cow::into_owned) else {
+            return true;
+        };
+        let size = game.geometry().size;
+        let drawn = crate::backend::render::first_frame::has_drawn(self, &surface, size);
+        debug!(target: GAMING_TARGET, app_id, ?drawn, ?size, "first frame sample");
+        match drawn {
+            Some(false) => true,
+            Some(true) => {
+                info!(target: GAMING_TARGET, app_id, ?waited, "first frame drawn; leaving the launcher");
+                false
+            }
+            // Unsampleable: show it rather than wait out the timeout blind.
+            None => false,
         }
     }
 
@@ -1767,7 +2043,11 @@ impl State {
             return;
         }
 
-        let game_mode = std::mem::take(&mut shell.game_mode);
+        let mut game_mode = std::mem::take(&mut shell.game_mode);
+        // Learned once per client and per root-window change, so the next game
+        // still needs them.
+        shell.game_mode.controller_pid = game_mode.controller_pid;
+        shell.game_mode.baselayer_appids = std::mem::take(&mut game_mode.baselayer_appids);
         // The scale-reject latch lives on Shell (not the GameMode struct that
         // mem::take just reset), so clear it here too — a fresh game must not
         // inherit the previous one's letterbox latch.
@@ -1910,6 +2190,18 @@ impl State {
         info!(target: GAMING_TARGET, "switched from the desktop back to game mode");
     }
 
+    /// Follow the user to another game-mode app's desktop, picked from a
+    /// workspace switcher rather than asked for by the controller, so that
+    /// app is the one game mode reports and gives input to.
+    pub fn follow_shown_desktop(&mut self) {
+        let Some((app_id, shown)) = shown_desktop_app(&self.common.shell.read()) else {
+            return;
+        };
+        info!(target: GAMING_TARGET, app_id, "switched to the app's desktop; game mode follows");
+        self.enter_game_mode_by(app_id, Entry::Shown(shown));
+        self.refresh_overlay_visible();
+    }
+
     /// Super+Esc: kill the running game, even behind the launcher, or the launcher when no
     /// game runs. Game mode then moves on as it does when any app exits.
     pub fn force_quit_game_mode_app(&mut self) {
@@ -1980,23 +2272,26 @@ impl State {
             let is_overlay_window = |w: &CosmicSurface| {
                 w.is_overlay() || LAUNCHER_APP_IDS.contains(&w.app_id().to_lowercase().as_str())
             };
-            let surface = (active && asserted)
-                .then(|| {
-                    shell.workspaces().spaces().find_map(|ws| {
-                        // Normal mapped windows first, then fullscreen surfaces: when
-                        // game mode has latched the launcher it is FULLSCREEN, so it
-                        // lives in `fullscreen_surfaces`, not `mapped()` — scanning
-                        // only `mapped()` here is why the QAM resolved to None.
-                        ws.mapped()
-                            .flat_map(|m| m.windows().map(|(s, _)| s))
-                            .find(|w| is_overlay_window(w))
-                            .or_else(|| {
-                                ws.get_fullscreen_surfaces()
-                                    .map(|f| f.surface.clone())
-                                    .find(|w| is_overlay_window(w))
-                            })
-                    })
+            let find = |wanted: &dyn Fn(&CosmicSurface) -> bool| {
+                shell.workspaces().spaces().find_map(|ws| {
+                    // Normal mapped windows first, then fullscreen surfaces: when
+                    // game mode has latched the launcher it is FULLSCREEN, so it
+                    // lives in `fullscreen_surfaces`, not `mapped()` — scanning
+                    // only `mapped()` here is why the QAM resolved to None.
+                    ws.mapped()
+                        .flat_map(|m| m.windows().map(|(s, _)| s))
+                        .find(|w| wanted(w))
+                        .or_else(|| {
+                            ws.get_fullscreen_surfaces()
+                                .map(|f| f.surface.clone())
+                                .find(|w| wanted(w))
+                        })
                 })
+            };
+            // The quick-access menu's own window while it is open, else the
+            // launcher; nothing when the menu is a layer surface.
+            let surface = (active && asserted && !launcher_has_overlay_layer(&shell))
+                .then(|| find(&is_quick_access_window).or_else(|| find(&is_overlay_window)))
                 .flatten();
             let surface_app_id = surface.as_ref().map(app_id_of);
             if surface != shell.game_mode.overlay_surface {
@@ -2050,6 +2345,21 @@ impl State {
                 "overlay visibility changed"
             );
             bridge.notify_focus_changed();
+        }
+        // The input grab follows the overlay onto the quick-access window, which
+        // maps after the launcher has already asserted a blocking overlay.
+        let regrab = {
+            let shell = self.common.shell.read();
+            match (
+                &shell.game_mode.input_grab,
+                &shell.game_mode.overlay_surface,
+            ) {
+                (Some(grab), Some(overlay)) => grab != overlay && is_quick_access_window(overlay),
+                _ => false,
+            }
+        };
+        if regrab {
+            self.grab_overlay_input();
         }
     }
 
@@ -2174,6 +2484,89 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
 
 fn is_game_surface(surface: &CosmicSurface) -> bool {
     surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// The client of the launcher's window. Its overlay-layer surface, quick
+/// settings, is the one layer surface drawn over a game.
+pub fn launcher_client(shell: &Shell) -> Option<smithay::reexports::wayland_server::Client> {
+    let (launcher, ..) = find_game_surface(shell, LAUNCHER_APP_ID)?;
+    launcher.wl_surface()?.client()
+}
+
+/// Whether the launcher has quick settings up on a layer surface of its own,
+/// hidden or sliding included. The layer stage draws that over the game, so
+/// there is no window of the launcher's to stack there.
+fn launcher_has_overlay_layer(shell: &Shell) -> bool {
+    let (Some(client), Some(output)) = (launcher_client(shell), shell.game_mode.output.as_ref())
+    else {
+        return false;
+    };
+    smithay::desktop::layer_map_for_output(output)
+        .layers_on(smithay::wayland::shell::wlr_layer::Layer::Overlay)
+        .any(|layer| layer.wl_surface().client().as_ref() == Some(&client))
+}
+
+/// Whether `surface` is still on game mode's desktop in a realm that is not
+/// showing. Switching away from that Kora workspace puts its windows away with
+/// it; game mode stays on them and is back on screen when the realm is.
+fn parked_in_realm(shell: &Shell, surface: &CosmicSurface) -> bool {
+    shell.game_mode.workspace.is_some_and(|handle| {
+        shell.workspaces().space_for_handle(&handle).is_none()
+            && shell
+                .space_for_handle_any_realm(&handle)
+                .is_some_and(|ws| ws.get_fullscreen_surfaces().any(|f| &f.surface == surface))
+    })
+}
+
+/// Whether a desktop holding windows of these app ids is not `app_id`'s own:
+/// any window of another app, the launcher included, makes it shared. The
+/// app's own dialogs and helpers carry its id and do not.
+fn desktop_is_shared(app_id: u32, windows: impl IntoIterator<Item = u32>) -> bool {
+    windows.into_iter().any(|window| window != app_id)
+}
+
+/// How an app comes to be the one game mode shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// The controller asked for it.
+    Asked,
+    /// The user already switched to its desktop, this one.
+    Shown(WorkspaceHandle),
+}
+
+/// The game-mode app the user switched to, and its desktop, when that is not
+/// the one game mode shows. Only within game mode's own Kora workspace.
+fn shown_desktop_app(shell: &Shell) -> Option<(u32, WorkspaceHandle)> {
+    let gm = &shell.game_mode;
+    if !gm.active || gm.pending_app_id.is_some() {
+        return None;
+    }
+    let own = gm.workspace?;
+    shell.workspaces().space_for_handle(&own)?;
+    let shown = shell.active_space(gm.output.as_ref()?)?;
+    if shown.handle == own {
+        return None;
+    }
+    let app_id = followed_app(
+        gm.app_id,
+        shown
+            .get_fullscreen_surfaces()
+            .filter(|f| f.surface.alive())
+            .map(|f| app_id_of(&f.surface)),
+    )?;
+    Some((app_id, shown.handle))
+}
+
+/// Which of a desktop's fullscreen apps game mode should follow to: the first
+/// game-mode one, unless it is already the one shown.
+fn followed_app(
+    shown_app_id: Option<u32>,
+    fullscreen: impl IntoIterator<Item = u32>,
+) -> Option<u32> {
+    fullscreen
+        .into_iter()
+        .find(|&app_id| app_id != 0)
+        .filter(|&app_id| Some(app_id) != shown_app_id)
 }
 
 /// A live game window anywhere, including one minimized or left behind the launcher.
@@ -2366,6 +2759,83 @@ pub(crate) fn focus_target_for(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_game_shares_a_desktop_with_any_other_app() {
+        assert!(
+            !desktop_is_shared(105_600, [105_600, 105_600]),
+            "its own dialogs"
+        );
+        assert!(
+            desktop_is_shared(105_600, [LAUNCHER_APP_ID, 105_600]),
+            "the launcher's"
+        );
+        assert!(
+            desktop_is_shared(105_600, [0, 105_600]),
+            "an untagged window"
+        );
+        assert!(!desktop_is_shared(105_600, []), "alone");
+    }
+
+    #[test]
+    fn game_mode_follows_to_another_app_s_desktop_only() {
+        assert_eq!(
+            followed_app(Some(105_600), [LAUNCHER_APP_ID]),
+            Some(LAUNCHER_APP_ID),
+            "the launcher's, from a game"
+        );
+        assert_eq!(
+            followed_app(Some(LAUNCHER_APP_ID), [105_600]),
+            Some(105_600),
+            "a game's, from the launcher"
+        );
+        assert_eq!(
+            followed_app(Some(105_600), [0, LAUNCHER_APP_ID]),
+            Some(LAUNCHER_APP_ID),
+            "past an untagged window"
+        );
+        assert_eq!(followed_app(Some(105_600), [105_600]), None, "the same app");
+        assert_eq!(followed_app(Some(105_600), [0]), None, "a desktop app's");
+        assert_eq!(followed_app(Some(105_600), []), None, "an empty desktop");
+    }
+
+    #[test]
+    fn a_pidfd_names_its_process_until_it_exits() {
+        assert_eq!(
+            pid_in_fdinfo("pos:\t0\nflags:\t02000002\nPid:\t4242\n"),
+            Some(4242)
+        );
+        assert_eq!(pid_in_fdinfo("pos:\t0\nPid:\t-1\n"), None, "exited");
+        assert_eq!(pid_in_fdinfo("pos:\t0\nflags:\t02\n"), None, "not a pidfd");
+    }
+
+    #[test]
+    fn a_pidfd_of_this_process_reads_back() {
+        let Ok(pidfd) = rustix::process::pidfd_open(
+            rustix::process::getpid(),
+            rustix::process::PidfdFlags::empty(),
+        ) else {
+            return;
+        };
+        assert_eq!(pid_of_pidfd(&pidfd), Some(std::process::id()));
+        assert_eq!(
+            uid_of(std::process::id()),
+            Some(rustix::process::getuid().as_raw())
+        );
+    }
+
+    #[test]
+    fn the_unit_is_the_innermost_cgroup() {
+        let bridge = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-gameframe.slice/kora-ws-gameframe-bridge.service\n";
+        assert_eq!(
+            unit_of_cgroup(bridge),
+            Some("kora-ws-gameframe-bridge.service")
+        );
+        assert_eq!(
+            crate::workspace_tag::of_cgroup(bridge).as_deref(),
+            Some("gameframe")
+        );
+    }
+
     /// `*` anywhere in the list opens it, including alongside real paths and
     /// with the whitespace a hand-written unit file tends to pick up.
     #[test]
@@ -2465,6 +2935,7 @@ mod tests {
             let io = Arc::new(GameModeIo {
                 executor: None,
                 authorized: Mutex::new(std::collections::HashMap::new()),
+                attested: Mutex::new(std::collections::HashMap::new()),
                 shared: Mutex::new(GameModeShared {
                     active: true,
                     active_app_id: 1234,

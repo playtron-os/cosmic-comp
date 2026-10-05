@@ -101,6 +101,7 @@ pub mod adaptive_foreground;
 pub mod animations;
 pub mod cursor;
 pub mod element;
+pub mod first_frame;
 pub mod gpu_profiler;
 pub mod perf_badge;
 pub mod shadow;
@@ -1841,14 +1842,16 @@ where
                 // frosted glass from `push_render_elements_from_surface_tree` above.
             }
             Stage::OverlaySurface { surface } => {
-                // Composite the game-mode overlay (launcher / client overlay) at
-                // the output origin, above the game. The surface carries its own
-                // per-pixel alpha; scanout is forced off so it blends over the
-                // game rather than being scanned out opaquely.
+                // Composite the game-mode overlay (launcher / client overlay)
+                // above the game, at the origin or, for the quick-access menu,
+                // the right edge. The surface carries its own per-pixel alpha;
+                // scanout is forced off so it blends over the game rather than
+                // being scanned out opaquely.
                 let mut n_elements = 0usize;
                 surface.push_render_elements(
                     renderer,
-                    Point::default(),
+                    crate::dbus::game_mode::overlay_offset(surface, output)
+                        .to_physical_precise_round(scale),
                     Scale::from(scale),
                     1.0,
                     Some(false),

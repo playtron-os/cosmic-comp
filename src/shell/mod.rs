@@ -425,6 +425,13 @@ pub struct GameMode {
     /// yet; resolved by `try_resolve_pending_game_mode` (the refresh tick and the
     /// `STEAM_GAME` property hook) once a matching window appears.
     pub pending_app_id: Option<u32>,
+    /// Since when a game launched from the launcher has been waiting to draw
+    /// its first frame, with the launcher still showing.
+    pub first_frame_since: Option<Instant>,
+    /// That game's window, driven at full frame rate while it is held back.
+    pub first_frame_surface: Option<CosmicSurface>,
+    /// Since when the game's window has been gone, waiting for a replacement.
+    pub missing_since: Option<Instant>,
     /// Whether a gaming overlay is currently up over the game — either a real
     /// overlay window (`STEAM_OVERLAY`/`GAMESCOPE_EXTERNAL_OVERLAY`) or a client
     /// `SetOverlay(true)` assertion. Maintained by `refresh_overlay_visible`;
@@ -1092,7 +1099,7 @@ impl WorkspaceSet {
                     (
                         Some((previous, delta @ WorkspaceDelta::Crossfade(start))),
                         WorkspaceDelta::Crossfade(_),
-                    ) if previous != idx && start.elapsed() < self.theme.motion.slide_crossfade => {
+                    ) if previous != idx && start.elapsed() < self.theme.motion.game_crossfade => {
                         // Replacement windows must keep the original outgoing scene.
                         Some((previous, delta))
                     }
@@ -1192,7 +1199,7 @@ impl WorkspaceSet {
                 }
                 WorkspaceDelta::Crossfade(st) => {
                     if Instant::now().duration_since(st).as_millis() as f32
-                        >= self.theme.motion.slide_crossfade.as_millis() as f32
+                        >= self.theme.motion.game_crossfade.as_millis() as f32
                     {
                         self.previously_active = None;
                     }
@@ -3407,6 +3414,40 @@ impl Shell {
             && self
                 .active_space(output)
                 .is_some_and(|ws| self.game_mode.workspace == Some(ws.handle))
+    }
+
+    /// The desktop the launcher's `window` belongs on while a game has the
+    /// screen: the one it is on, or an empty one, beside the game's. On the
+    /// game's desktop game mode hides it, leaving no desktop to switch back to.
+    pub fn launcher_desktop_beside_game(
+        &self,
+        window: &CosmicSurface,
+        output: &Output,
+    ) -> Option<WorkspaceHandle> {
+        let gm = &self.game_mode;
+        if !gm.active
+            || gm.app_id == Some(crate::dbus::game_mode::LAUNCHER_APP_ID)
+            || gm.output.as_ref() != Some(output)
+            || !crate::dbus::game_mode::is_launcher_window(window)
+        {
+            return None;
+        }
+        let game = gm.workspace?;
+        let mut desktops = self
+            .realm_for_handle(&game)?
+            .set_for(output)?
+            .workspaces
+            .iter()
+            .filter(|ws| ws.handle != game);
+        let holds = |ws: &&Workspace| {
+            ws.mapped().any(|m| m.windows().any(|(w, _)| &w == window))
+                || ws.get_fullscreen_surfaces().any(|f| &f.surface == window)
+        };
+        desktops
+            .clone()
+            .find(holds)
+            .or_else(|| desktops.find(|ws| ws.is_empty()))
+            .map(|ws| ws.handle)
     }
 
     /// Only the gaming controller can release its current fullscreen surface.
@@ -6021,6 +6062,11 @@ impl Shell {
                                 | layer_slide::SlideVisibility::Hidden
                         )
                 });
+                // A hide asked for before the surface mapped had no edge to
+                // slide to and plays as a close. Showing must end that close,
+                // or its end hides the surface again for good.
+                let was_closing = self.layer_closes.iter().any(|c| c.surface_id == surface_id);
+                self.layer_closes.retain(|c| c.surface_id != surface_id);
                 tracing::debug!(
                     ?surface_id,
                     ?edge,
@@ -6028,10 +6074,11 @@ impl Shell {
                     exclusive_zone,
                     was_hidden,
                     was_sliding_out,
+                    was_closing,
                     "set_surface_hidden(false): starting slide-in"
                 );
                 // Only start slide-in if the surface was actually hidden or sliding out
-                if was_hidden || was_sliding_out {
+                if was_hidden || was_sliding_out || was_closing {
                     if let Some(existing) = self
                         .layer_slides
                         .iter_mut()
@@ -7535,6 +7582,35 @@ impl Shell {
             .as_ref()
             .and(self.game_mode.workspace)
             .or(workspace_handle);
+        // The quick-access menu floats on the launcher's own desktop: it is drawn
+        // over the game from there, and the game's desktop stays as it is.
+        let quick_access =
+            self.game_mode.active && crate::dbus::game_mode::is_quick_access_window(&window);
+        let launcher_desktop = quick_access
+            .then(|| {
+                self.workspaces().spaces().find_map(|ws| {
+                    ws.get_fullscreen_surfaces()
+                        .any(|f| crate::dbus::game_mode::is_launcher_window(&f.surface))
+                        .then_some(ws.handle)
+                })
+            })
+            .flatten();
+        // The launcher coming back while a game is up maps beside it.
+        let launcher_beside_game = self
+            .game_mode
+            .output
+            .as_ref()
+            .and_then(|output| self.launcher_desktop_beside_game(&window, output));
+        let workspace_handle = launcher_desktop
+            .or(launcher_beside_game)
+            .or(workspace_handle);
+        let game_mode_output = game_mode_output.or_else(|| {
+            launcher_desktop
+                .or(launcher_beside_game)
+                .is_some()
+                .then(|| self.game_mode.output.clone())
+                .flatten()
+        });
         // For embedded windows, use the parent's output; otherwise use fullscreen output or active output
         let mut output = game_mode_output
             .or(output)
@@ -7621,6 +7697,7 @@ impl Shell {
         if let Some(FocusTarget::Window(focused)) = maybe_focused
             && let Some(stack) = focused.stack_ref()
             && !is_dialog
+            && !quick_access
             && !should_be_maximized
             && !(workspace.is_tiled(&focused.active_window()) && floating_exception)
         {
@@ -7644,7 +7721,7 @@ impl Shell {
         }
 
         let workspace_empty = workspace.mapped().next().is_none();
-        if is_dialog || floating_exception || !workspace.tiling_enabled {
+        if is_dialog || floating_exception || quick_access || !workspace.tiling_enabled {
             // For X11 transient children, use the X11 geometry as initial position
             // so they appear next to their parent (e.g. Android emulator side panel).
             let initial_position = window
@@ -7698,9 +7775,21 @@ impl Shell {
                         None
                     }
                 });
-            workspace
-                .floating_layer
-                .map(mapped.clone(), initial_position);
+            if quick_access {
+                // Full height at the width it asked for: game mode draws it down the
+                // output's right edge, not as a window the floating layer sizes.
+                let size = Size::from((window.geometry().size.w, output.geometry().size.h));
+                workspace.floating_layer.map_internal(
+                    mapped.clone(),
+                    initial_position,
+                    Some(size),
+                    None,
+                );
+            } else {
+                workspace
+                    .floating_layer
+                    .map(mapped.clone(), initial_position);
+            }
         } else {
             for mapped in workspace
                 .mapped()
@@ -7747,7 +7836,10 @@ impl Shell {
             window.force_configure();
         }
 
-        let new_target = if self.game_mode_hides(&window) {
+        // The quick-access menu takes the keyboard through game mode's input grab.
+        let new_target = if quick_access {
+            None
+        } else if self.game_mode_hides(&window) {
             // Game mode renders ONLY its controlled surface on that workspace, so a
             // window it will not draw must not take the keyboard either: focusing an
             // invisible window looks exactly like a hung game (keystrokes vanish
@@ -10289,6 +10381,7 @@ impl Shell {
                 loop_handle,
             );
         } else {
+            let beside_game = self.launcher_desktop_beside_game(&mapped.active_window(), &output);
             let workspace = self.space_for_mut(&mapped)?;
             if mapped.is_minimized() {
                 // TODO: Rewrite the `MinimizedWindow` to restore to fullscreen
@@ -10308,7 +10401,10 @@ impl Shell {
             toplevel_leave_output(&window, &workspace.output);
             toplevel_leave_workspace(&window, &workspace.handle);
 
-            let workspace = self.active_space_mut(&output).unwrap();
+            let workspace = match beside_game {
+                Some(desktop) => self.space_for_handle_any_realm_mut(&desktop).unwrap(),
+                None => self.active_space_mut(&output).unwrap(),
+            };
             toplevel_enter_output(&window, &output);
             toplevel_enter_workspace(&window, &workspace.handle);
 

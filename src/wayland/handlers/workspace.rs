@@ -22,23 +22,27 @@ impl WorkspaceHandler for State {
         for request in requests.into_iter() {
             match request {
                 Request::Activate(handle) => {
-                    let mut shell = self.common.shell.write();
-                    let maybe = shell.workspaces().iter().find_map(|(o, set)| {
-                        set.workspaces
-                            .iter()
-                            .position(|w| w.handle == handle)
-                            .map(|i| (o.clone(), i))
-                    });
+                    {
+                        let mut shell = self.common.shell.write();
+                        let maybe = shell.workspaces().iter().find_map(|(o, set)| {
+                            set.workspaces
+                                .iter()
+                                .position(|w| w.handle == handle)
+                                .map(|i| (o.clone(), i))
+                        });
 
-                    if let Some((output, idx)) = maybe {
-                        let _ = shell.activate(
-                            &output,
-                            idx,
-                            WorkspaceDelta::new_shortcut(),
-                            &mut self.common.workspace_state.update(),
-                        );
-                        // TODO: move cursor?
+                        if let Some((output, idx)) = maybe {
+                            let _ = shell.activate(
+                                &output,
+                                idx,
+                                WorkspaceDelta::new_shortcut(),
+                                &mut self.common.workspace_state.update(),
+                            );
+                            // TODO: move cursor?
+                        }
                     }
+                    // Picking another game-mode app's desktop switches to that app.
+                    self.refresh_game_mode_state();
                 }
                 Request::Create { in_group, .. } => {
                     let mut shell = self.common.shell.write();

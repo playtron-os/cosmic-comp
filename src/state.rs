@@ -1811,6 +1811,15 @@ impl Common {
             overlay.send_frame(output, time, throttle(overlay), should_send);
         }
 
+        // A game held back until it draws is not on screen, so the walk below
+        // would pace it at one frame a second, and a game that paces its loading
+        // by its frames would take that much longer to draw anything at all.
+        if shell.game_mode.output.as_ref() == Some(output)
+            && let Some(game) = shell.game_mode.first_frame_surface.as_ref()
+        {
+            game.send_frame(output, time, None, |_, _| Some(output.clone()));
+        }
+
         if let Some(active) = shell.active_space(output) {
             if let Some(fs) = active.get_fullscreen(shell.seats.last_active()) {
                 fs.surface
