@@ -1425,3 +1425,163 @@ fn a_compositor_outlined_pill_has_no_edge_of_its_own() {
         }
     }
 }
+
+fn halo_run(state: RunState, extra: usize) -> HaloRun {
+    HaloRun {
+        state,
+        verb: "Search the Web — 4 sources".to_owned(),
+        progress: Some(0.42),
+        extra,
+    }
+}
+
+/// Every `diameter` dot drawn in `color`: the chip's and the glyph's marks.
+fn run_dots(renderer: &mut Renderer, diameter: f32, color: Color) -> Vec<Rectangle> {
+    renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.quads)
+        .filter(|(quad, background)| {
+            quad.bounds.width == diameter
+                && quad.bounds.height == diameter
+                && *background == iced_core::Background::Color(color)
+        })
+        .map(|(quad, _)| quad.bounds)
+        .collect()
+}
+
+#[test]
+fn the_run_chip_follows_the_identity_in_its_state_colour() {
+    let theme = theme();
+    for (state, text) in [
+        (RunState::Running, "search the web · 42% +1"),
+        (RunState::Queued, "queued +1"),
+        (RunState::Done, "done ✓ +1"),
+    ] {
+        let (mut renderer, viewport, _cache) = render(&theme, 1200.0, 1.0, |header| {
+            everything(header)
+                .window_width(1200.0)
+                .run(Some(halo_run(state, 1)), ())
+        });
+        let color = run_color(state, &theme);
+        let drawn = drawn_text(&mut renderer);
+        let chip = drawn
+            .iter()
+            .find(|drawn| drawn.source == text)
+            .unwrap_or_else(|| panic!("{state:?}: no {text:?} in {drawn:?}"));
+        assert_eq!(chip.color, color, "{state:?}");
+        assert!(!chip.ellipsized, "{state:?}: the chip never gives way");
+        let dots = run_dots(&mut renderer, HALO_CHIP_DOT_PX, color);
+        assert_eq!(dots.len(), 1, "{state:?}");
+        let mark = control_icons(&mut renderer)[0];
+        let divider = dividers(&mut renderer, &theme)[0];
+        assert!(
+            dots[0].x > mark.x + mark.width && dots[0].x + dots[0].width < divider.x,
+            "{state:?}: the chip sits between the identity and the first divider"
+        );
+        assert!(
+            run_dots(&mut renderer, HALO_STATUS_DOT_PX, color).is_empty(),
+            "{state:?}: the glyph keeps its dot for the narrow tiers"
+        );
+        if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("halo-run-{state:?}.png").to_lowercase(),
+            );
+        }
+    }
+}
+
+#[test]
+fn the_chip_sheds_its_words_then_itself_and_the_glyph_takes_the_dot() {
+    let theme = theme();
+    let metrics = theme.halo_style();
+    let color = run_color(RunState::Running, &theme);
+    for (width, words, chip_dot, glyph_dot) in [
+        (600.0_f32, true, true, false),
+        (400.0, false, true, true),
+        (240.0, false, false, true),
+    ] {
+        let (mut renderer, viewport, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header)
+                .window_width(width)
+                .run(Some(halo_run(RunState::Running, 0)), ())
+        });
+        let texts = drawn_text(&mut renderer);
+        assert_eq!(
+            texts.iter().any(|drawn| drawn.color == color),
+            words,
+            "{width}px: the chip's words"
+        );
+        assert_eq!(
+            run_dots(&mut renderer, HALO_CHIP_DOT_PX, color).len(),
+            usize::from(chip_dot),
+            "{width}px: the chip"
+        );
+        let status = run_dots(&mut renderer, HALO_STATUS_DOT_PX, color);
+        assert_eq!(
+            status.len(),
+            usize::from(glyph_dot),
+            "{width}px: the glyph dot"
+        );
+        if let Some(dot) = status.first() {
+            let mark = control_icons(&mut renderer)[0];
+            let glyph_x = mark.center_x() - metrics.control_size / 2.0;
+            let glyph_y = mark.center_y() - metrics.control_size / 2.0;
+            assert_eq!(
+                (dot.x, dot.y),
+                (
+                    glyph_x + metrics.control_size - HALO_STATUS_DOT_PX + 1.0,
+                    glyph_y - 1.0
+                ),
+                "{width}px: 1px outside the glyph's top-right corner"
+            );
+        }
+        let bounds = pill(&mut renderer, &theme, width);
+        assert!(
+            bounds.x >= 0.0 && bounds.x + bounds.width <= width + 0.5,
+            "{width}px: the chip pushes the pill {bounds:?} out of the window"
+        );
+        if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("halo-run-tier-{width}.png"),
+            );
+        }
+    }
+    let (mut renderer, _, _cache) = render(&theme, 1200.0, 1.0, |header| {
+        everything(header)
+            .window_width(1200.0)
+            .panel(true)
+            .run(Some(halo_run(RunState::Queued, 0)), ())
+    });
+    assert_eq!(
+        run_dots(
+            &mut renderer,
+            HALO_STATUS_DOT_PX,
+            run_color(RunState::Queued, &theme)
+        )
+        .len(),
+        1,
+        "a panel is always tier 4, and still says what it runs"
+    );
+}
+
+#[test]
+fn a_window_with_no_run_draws_no_run_marks() {
+    let theme = theme();
+    for width in [1200.0_f32, 400.0, 240.0] {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header).window_width(width)
+        });
+        for state in [RunState::Running, RunState::Queued, RunState::Done] {
+            let color = run_color(state, &theme);
+            assert!(run_dots(&mut renderer, HALO_CHIP_DOT_PX, color).is_empty());
+            assert!(run_dots(&mut renderer, HALO_STATUS_DOT_PX, color).is_empty());
+        }
+    }
+}

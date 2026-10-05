@@ -20,6 +20,7 @@ use icetron_themes::{TextRole, WindowHeaderStyle};
 
 use crate::comp_theme::CompTheme;
 use crate::fl;
+pub use crate::shell::element::window::runs::{HaloRun, RunState};
 
 /// Fullscreen Halo sits 10 px inside the output in the prototype, excluding both
 /// the raster's shadow padding and the widget's own top inset.
@@ -271,6 +272,7 @@ pub struct HeaderBar<'a, Message> {
     panel: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
+    run: Option<(HaloRun, Message)>,
 }
 
 impl<'a, Message: Clone + 'static> Default for HeaderBar<'a, Message> {
@@ -305,6 +307,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             panel: false,
             theme: None,
             app_icon: None,
+            run: None,
         }
     }
 
@@ -418,6 +421,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn panel(mut self, panel: bool) -> Self {
         self.panel = panel;
+        self
+    }
+
+    /// The window's most urgent run, and what a press on its chip sends.
+    pub fn run(mut self, run: Option<HaloRun>, on_press: Message) -> Self {
+        self.run = run.map(|run| (run, on_press));
         self
     }
 
@@ -575,6 +584,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             self.commands_open,
             self.menu_open || self.commands_open,
             fl!("halo-commands-hint", app = name.as_str()),
+            self.run
+                .as_ref()
+                .filter(|_| tier >= 3)
+                .map(|(run, _)| run.state),
             theme,
         );
 
@@ -620,6 +633,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     ..iced_core::Padding::ZERO
                 }),
             );
+        }
+        if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
+            let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
+            identity = identity.push_rigid(chip);
         }
         let identity: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             identity.into_single().unwrap_or_else(Into::into);
@@ -857,13 +874,24 @@ fn halo_glyph<'a, Message: Clone + 'static>(
     active: bool,
     surface_open: bool,
     hint: String,
+    status: Option<RunState>,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     let size = theme.halo_style().control_size;
     let radius = theme.radii_max();
-    let content = container(mark)
+    let mut content = container(mark)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
+    if let Some(state) = status {
+        // The prototype's `.kora-halo__sdot`: 6px, 1px outside the glyph's corner.
+        let dot = run_dot(state, HALO_STATUS_DOT_PX, theme);
+        content = container(iced_widget::stack![
+            content.width(Length::Fill).height(Length::Fill),
+            iced_widget::pin(dot)
+                .x(size - HALO_STATUS_DOT_PX + 1.0)
+                .y(-1.0),
+        ]);
+    }
     let Some(message) = on_press else {
         return content
             .width(Length::Fixed(size))
@@ -905,6 +933,80 @@ fn halo_glyph<'a, Message: Clone + 'static>(
         .compositor_managed(true)
         .into()
 }
+
+/// The run chip of the prototype's `HaloBar.tsx`: a pulsing dot and the
+/// run's words; a bare dot at tier 3, where the verbs fold behind ⋯.
+fn halo_chip<'a, Message: Clone + 'static>(
+    run: &HaloRun,
+    on_press: Message,
+    bare: bool,
+    menu_open: bool,
+    theme: &'a CompTheme,
+) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let size = theme.halo_style().control_size;
+    let color = run_color(run.state, theme);
+    let dot = run_dot(run.state, HALO_CHIP_DOT_PX, theme);
+    let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if bare {
+        container(dot).center(Length::Fixed(size)).into()
+    } else {
+        let mut style = theme.text_styles().role(TextRole::Caption);
+        style.font_weight = 600;
+        container(
+            row![
+                dot,
+                styled_text(run.chip_text(), style, color)
+                    .wrapping(iced_widget::text::Wrapping::None),
+            ]
+            .spacing(HALO_CHIP_GAP)
+            .align_y(Alignment::Center),
+        )
+        .height(Length::Fixed(size))
+        .padding([0.0, theme.spacing_2()])
+        .align_y(Alignment::Center)
+        .into()
+    };
+    let chip = button(content)
+        .on_press(on_press)
+        .padding(0)
+        .height(Length::Fixed(size))
+        .style(|_, _| button::Style::default());
+    animated_tooltip(chip, run.tooltip(), &**theme)
+        .position(tooltip::Position::Bottom)
+        .enabled(!menu_open)
+        .animation_duration(std::time::Duration::ZERO)
+        .compositor_managed(true)
+        .into()
+}
+
+/// Violet while it runs, indigo while it waits its turn, green when done.
+fn run_color(state: RunState, theme: &CompTheme) -> iced_core::Color {
+    match state {
+        RunState::Running => theme.ai_strong(),
+        RunState::Queued => theme.color_queued(),
+        RunState::Done => theme.feedback_success_primary(),
+    }
+}
+
+/// A queued run's dot holds still: nothing is being spent on it yet.
+fn run_dot(
+    state: RunState,
+    diameter: f32,
+    theme: &CompTheme,
+) -> crate::utils::iced::pulse::PulsingDot {
+    crate::utils::iced::pulse::PulsingDot::new(
+        diameter,
+        run_color(state, theme),
+        0.0,
+        theme.motion.ease_standard_cp,
+    )
+    .period(HALO_RUN_PULSE)
+    .still(theme.reduced_motion || state == RunState::Queued)
+}
+
+const HALO_CHIP_DOT_PX: f32 = 4.0;
+const HALO_CHIP_GAP: f32 = 5.0;
+const HALO_STATUS_DOT_PX: f32 = 6.0;
+const HALO_RUN_PULSE: std::time::Duration = std::time::Duration::from_millis(1800);
 
 /// The glyph's hover ring, from the design's `1.5px` at 50% accent.
 const HALO_GLYPH_RING_WIDTH: f32 = 1.5;

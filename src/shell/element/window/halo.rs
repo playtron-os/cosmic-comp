@@ -99,7 +99,7 @@ pub(super) fn perform_action(
                 action.launch();
             }
         }
-        Message::Close => surface.close(),
+        Message::Close => super::runs::close_window(state, surface),
         Message::Minimize => state.common.shell.write().minimize_request(surface),
         Message::Maximize => {
             let mut shell = state.common.shell.write();
@@ -140,7 +140,11 @@ pub(super) fn perform_action(
         }
         // Routed through `perform_command`, which has the desktop entry to
         // resolve the id against; there is nothing to do with it here.
-        Message::Action(_) | Message::Menu | Message::Commands | Message::DragStart => {}
+        Message::Action(_)
+        | Message::Menu
+        | Message::Commands
+        | Message::DragStart
+        | Message::RunChip => {}
     }
 }
 
@@ -334,9 +338,7 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
             };
             // Snapshot before closing, outside the shell lock. Normal close
             // requests allow applications to ask about unsaved work.
-            for window in windows {
-                window.close();
-            }
+            super::runs::close_windows(state, &windows);
         });
     }))
 }
