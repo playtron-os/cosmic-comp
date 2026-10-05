@@ -422,6 +422,7 @@ fn render_input_order_internal<R: 'static>(
             .filter(|or| {
                 game_mode_allows_override(game_mode_controlled, shell.game_mode.app_id, or)
             })
+            .filter(|or| shell.x11_in_active_workspace(or))
             .map(|or| (or, or.last_configure().loc.as_global()))
         {
             callback(Stage::OverrideRedirect { surface, location })?;

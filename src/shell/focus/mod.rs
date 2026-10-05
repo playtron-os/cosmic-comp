@@ -305,7 +305,7 @@ impl Shell {
         let focused_transient_parents = focused_windows
             .iter()
             .filter_map(|window| window.active_window().transient_for())
-            .filter_map(|parent| self.element_for_x11_window_id(parent).cloned())
+            .filter_map(|parent| self.element_for_x11_window(parent).cloned())
             .collect::<Vec<_>>();
         let looks_active = |window: &CosmicMapped| {
             focused_windows.contains(window) || focused_transient_parents.contains(window)
@@ -540,7 +540,7 @@ fn raise_with_children(floating_layer: &mut FloatingLayout, focused: &CosmicMapp
         // within a couple of milliseconds, which blinks its decorations.
         floating_layer.space.raise_element(focused, false);
         // Get the focused window's X11 window ID for transient_for matching
-        let focused_x11_window_id = focused.active_window().x11_surface().map(|x| x.window_id());
+        let focused_x11_window = focused.active_window().x11_key();
         for element in floating_layer
             .space
             .elements()
@@ -561,12 +561,8 @@ fn raise_with_children(floating_layer: &mut FloatingLayout, focused: &CosmicMapp
                         .unwrap_or(false)
                 });
                 // Check X11 WM_TRANSIENT_FOR
-                let is_x11_child = focused_x11_window_id.is_some_and(|parent_id| {
-                    elem.active_window()
-                        .x11_surface()
-                        .and_then(|x| x.is_transient_for())
-                        .is_some_and(|tid| tid == parent_id)
-                });
+                let is_x11_child = focused_x11_window
+                    .is_some_and(|parent| elem.active_window().transient_for() == Some(parent));
                 is_wayland_child || is_x11_child
             })
             .cloned()

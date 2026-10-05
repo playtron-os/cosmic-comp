@@ -109,7 +109,7 @@ pub mod layout;
 mod seats;
 mod workspace;
 pub mod zoom;
-pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface};
+pub use self::element::{CosmicMapped, CosmicMappedRenderElement, CosmicSurface, X11Key};
 pub use self::seats::*;
 pub use self::workspace::*;
 use self::zoom::{OutputZoomState, ZoomState};
@@ -261,7 +261,7 @@ impl ResizeMode {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ActivationKey {
     Wayland(WlSurface),
-    X11(u32),
+    X11(X11Key),
 }
 
 impl From<&CosmicSurface> for ActivationKey {
@@ -270,7 +270,7 @@ impl From<&CosmicSurface> for ActivationKey {
             WindowSurface::Wayland(toplevel) => {
                 ActivationKey::Wayland(toplevel.wl_surface().clone())
             }
-            WindowSurface::X11(s) => ActivationKey::X11(s.window_id()),
+            WindowSurface::X11(s) => ActivationKey::X11(X11Key::of(s)),
         }
     }
 }
@@ -726,7 +726,7 @@ pub struct Shell {
 
     /// Original X11 geometry at map time (before compositor configuration).
     /// Used to compute correct relative offsets for transient children.
-    original_x11_positions: HashMap<u32, Rectangle<i32, Logical>>,
+    original_x11_positions: HashMap<X11Key, Rectangle<i32, Logical>>,
 
     #[cfg(feature = "debug")]
     pub debug_active: bool,
@@ -2983,12 +2983,19 @@ impl Shell {
 
     /// The workspace a window's client was launched into, if any.
     pub fn client_workspace(&self, window: &CosmicSurface) -> Option<String> {
-        window
-            .wl_surface()?
-            .client()?
-            .get_data::<crate::state::ClientState>()?
-            .workspace
-            .clone()
+        if let Some(x11) = window.x11_surface() {
+            return crate::workspace_tag::of_x11(x11);
+        }
+        crate::workspace_tag::of_client(&window.wl_surface()?.client()?)
+    }
+
+    /// Is an X11 window's server visible in the workspace on screen? A
+    /// workspace's menus and tooltips are drawn, and take input, there only.
+    pub fn x11_in_active_workspace(&self, surface: &X11Surface) -> bool {
+        crate::workspace_tag::visible_in(
+            crate::workspace_tag::of_x11(surface).as_deref(),
+            self.active_workspace(),
+        )
     }
 
     /// Is this surface's client visible in the workspace on screen?
@@ -2997,12 +3004,10 @@ impl Shell {
     /// panel, dock, launcher) have no workspace and stay visible everywhere;
     /// with no registry running nothing is hidden at all.
     pub fn surface_in_active_workspace(&self, surface: &WlSurface) -> bool {
-        let client = surface.client();
-        let workspace = client
-            .as_ref()
-            .and_then(|c| c.get_data::<crate::state::ClientState>())
-            .and_then(|data| data.workspace.as_deref());
-        crate::workspace_tag::visible_in(workspace, self.active_workspace())
+        let workspace = surface
+            .client()
+            .and_then(|client| crate::workspace_tag::of_client(&client));
+        crate::workspace_tag::visible_in(workspace.as_deref(), self.active_workspace())
     }
 
     /// Is this window listed while the realm on screen is showing?
@@ -3804,22 +3809,19 @@ impl Shell {
         })
     }
 
-    pub fn element_for_x11_window_id(&self, x11_window_id: u32) -> Option<&CosmicMapped> {
+    pub fn element_for_x11_window(&self, window: X11Key) -> Option<&CosmicMapped> {
         self.workspaces().sets.values().find_map(|set| {
             set.minimized_windows
                 .iter()
                 .find(|w| {
-                    w.windows().any(|s| {
-                        s.x11_surface()
-                            .is_some_and(|x11| x11.window_id() == x11_window_id)
-                    })
+                    w.windows()
+                        .any(|s| s.x11_surface().is_some_and(|x11| X11Key::of(x11) == window))
                 })
                 .and_then(|w| w.mapped())
                 .or_else(|| {
                     set.sticky_layer.mapped().find(|w| {
                         w.windows().any(|(s, _)| {
-                            s.x11_surface()
-                                .is_some_and(|x11| x11.window_id() == x11_window_id)
+                            s.x11_surface().is_some_and(|x11| X11Key::of(x11) == window)
                         })
                     })
                 })
@@ -3827,8 +3829,7 @@ impl Shell {
                     set.workspaces.iter().find_map(|w| {
                         w.mapped().find(|m| {
                             m.windows().any(|(s, _)| {
-                                s.x11_surface()
-                                    .is_some_and(|x11| x11.window_id() == x11_window_id)
+                                s.x11_surface().is_some_and(|x11| X11Key::of(x11) == window)
                             })
                         })
                     })
@@ -7460,14 +7461,13 @@ impl Shell {
         // This is the app-requested position, needed for correct transient positioning.
         if let Some(x11) = window.x11_surface() {
             self.original_x11_positions
-                .insert(x11.window_id(), x11.geometry());
+                .insert(X11Key::of(x11), x11.geometry());
         }
 
-        let transient_for_id = window
+        let transient_parent = window
             .x11_surface()
-            .and_then(|surface| surface.is_transient_for());
-        let transient_parent = transient_for_id
-            .and_then(|parent_window_id| self.element_for_x11_window_id(parent_window_id))
+            .and_then(X11Key::parent_of)
+            .and_then(|parent| self.element_for_x11_window(parent))
             .cloned();
 
         let transient_parent_output = transient_parent.as_ref().and_then(|parent| {
@@ -7652,12 +7652,12 @@ impl Shell {
                 .filter(|x| x.is_transient_for().is_some())
                 .and_then(|x| {
                     let geo = x.geometry();
-                    let parent_id = x.is_transient_for()?;
+                    let parent_id = X11Key::parent_of(x)?;
                     // Find the parent element's position in the workspace
                     let parent_elem = workspace.mapped().find(|m| {
                         m.active_window()
                             .x11_surface()
-                            .is_some_and(|px| px.window_id() == parent_id)
+                            .is_some_and(|px| X11Key::of(px) == parent_id)
                     });
                     let parent_geo = parent_elem.and_then(|p| workspace.element_geometry(p));
                     // Position relative to parent if we found it
@@ -7670,7 +7670,7 @@ impl Shell {
                             .find(|m| {
                                 m.active_window()
                                     .x11_surface()
-                                    .is_some_and(|px| px.window_id() == parent_id)
+                                    .is_some_and(|px| X11Key::of(px) == parent_id)
                             })
                             .and_then(|m| m.active_window().x11_surface().map(|px| px.geometry()));
                         // Get parent's SSD offset (element_geometry includes SSD,
@@ -7789,8 +7789,11 @@ impl Shell {
         // transient children of this window that mapped before their parent.
         // If so, move them to the same output/workspace and make them floating.
         if let Some(x11_surface) = window.x11_surface() {
-            let parent_window_id = x11_surface.window_id();
-            self.reparent_orphaned_transient_children(parent_window_id, &output, workspace_handle);
+            self.reparent_orphaned_transient_children(
+                X11Key::of(x11_surface),
+                &output,
+                workspace_handle,
+            );
         }
 
         new_target
@@ -7801,7 +7804,7 @@ impl Shell {
     /// Also moves children to the parent's output/workspace if needed.
     fn reparent_orphaned_transient_children(
         &mut self,
-        parent_window_id: u32,
+        parent_window: X11Key,
         _parent_output: &Output,
         parent_workspace_handle: WorkspaceHandle,
     ) {
@@ -7819,8 +7822,8 @@ impl Shell {
             .filter(|m| {
                 m.active_window()
                     .x11_surface()
-                    .and_then(|x| x.is_transient_for())
-                    .is_some_and(|tid| tid == parent_window_id)
+                    .and_then(X11Key::parent_of)
+                    .is_some_and(|parent| parent == parent_window)
             })
             .cloned()
             .collect();
@@ -7874,7 +7877,7 @@ impl Shell {
         let parent_elem = workspace.mapped().find(|m| {
             m.active_window()
                 .x11_surface()
-                .is_some_and(|px| px.window_id() == parent_window_id)
+                .is_some_and(|px| X11Key::of(px) == parent_window)
         });
         let parent_geo = parent_elem.and_then(|p| workspace.element_geometry(p));
         let parent_ssd_offset = parent_elem
@@ -7882,12 +7885,12 @@ impl Shell {
             .unwrap_or_default();
 
         // Use stored original X11 geometry (app-requested, not compositor-configured)
-        let parent_orig_x11_geo = self.original_x11_positions.get(&parent_window_id).copied();
+        let parent_orig_x11_geo = self.original_x11_positions.get(&parent_window).copied();
 
         let (Some(parent_geo), Some(parent_orig_x11_geo)) = (parent_geo, parent_orig_x11_geo)
         else {
             tracing::warn!(
-                parent_window_id = parent_window_id,
+                parent_window_id = parent_window.window,
                 has_parent_geo = parent_geo.is_some(),
                 has_parent_orig_x11 = parent_orig_x11_geo.is_some(),
                 "reparent_orphaned_transient_children: could not find parent geometry"
@@ -7899,10 +7902,7 @@ impl Shell {
         let orphan_positions: Vec<_> = orphans
             .iter()
             .filter_map(|orphan| {
-                let child_x11_id = orphan
-                    .active_window()
-                    .x11_surface()
-                    .map(|x| x.window_id())?;
+                let child_x11_id = orphan.active_window().x11_key()?;
                 let child_orig_x11_geo = self.original_x11_positions.get(&child_x11_id).copied()?;
 
                 // Compute relative offset using ORIGINAL X11 positions
@@ -7952,7 +7952,7 @@ impl Shell {
         parent: &CosmicMapped,
         parent_global_pos: Point<i32, Global>,
     ) -> Vec<(CosmicMapped, Point<i32, Logical>)> {
-        let parent_x11_id = match parent.active_window().x11_surface().map(|x| x.window_id()) {
+        let parent_x11_id = match parent.active_window().x11_key() {
             Some(id) => id,
             None => return Vec::new(),
         };
@@ -7965,9 +7965,8 @@ impl Shell {
                 w.mapped()
                     .filter(|m| {
                         m.active_window()
-                            .x11_surface()
-                            .and_then(|x| x.is_transient_for())
-                            .is_some_and(|tid| tid == parent_x11_id)
+                            .transient_for()
+                            .is_some_and(|parent| parent == parent_x11_id)
                     })
                     .filter_map(|m| {
                         let child_geo = w.element_geometry(m)?;
@@ -8080,11 +8079,12 @@ impl Shell {
         // A workspace client's layer surfaces belong to its workspace, no
         // request needed and none honoured; an assignment made before the
         // map (a machine-plane client's) stands.
-        if let Some(workspace) = pending.surface.wl_surface().client().and_then(|client| {
-            client
-                .get_data::<crate::state::ClientState>()
-                .and_then(|state| state.workspace.clone())
-        }) {
+        if let Some(workspace) = pending
+            .surface
+            .wl_surface()
+            .client()
+            .and_then(|client| crate::workspace_tag::of_client(&client))
+        {
             self.layer_realms
                 .entry(surface_id.clone())
                 .or_insert(workspace);
@@ -10560,6 +10560,22 @@ impl Shell {
         }
 
         output_presentation_feedback
+    }
+
+    /// Every mapped element in every realm, not only the one on screen.
+    pub fn mapped_everywhere(&self) -> impl Iterator<Item = &CosmicMapped> {
+        self.realms
+            .values()
+            .flat_map(|realm| realm.iter())
+            .flat_map(|(_, set)| {
+                set.sticky_layer
+                    .mapped()
+                    .chain(set.minimized_windows.iter().flat_map(|m| m.mapped()))
+                    .chain(set.workspaces.iter().flat_map(|w| {
+                        w.mapped()
+                            .chain(w.minimized_windows.iter().flat_map(|m| m.mapped()))
+                    }))
+            })
     }
 
     pub fn mapped(&self) -> impl Iterator<Item = &CosmicMapped> {

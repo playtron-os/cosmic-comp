@@ -34,6 +34,29 @@ pub fn of_stream(stream: &UnixStream) -> Option<String> {
     of_pid(peer_pid(stream)?)
 }
 
+/// The workspace a connected client belongs to, or `None` for machine-plane:
+/// what its socket said at connect, or for an Xwayland, the workspace it serves.
+pub fn of_client(client: &smithay::reexports::wayland_server::Client) -> Option<String> {
+    if let Some(state) = client.get_data::<crate::state::ClientState>() {
+        return state.workspace.clone();
+    }
+    client
+        .get_data::<smithay::xwayland::XWaylandClientData>()?
+        .user_data()
+        .get::<crate::xwayland::XwaylandRealm>()
+        .map(|realm| realm.0.clone())
+}
+
+/// The workspace an X11 window belongs to: its server's, tagged when the window
+/// was made, so it holds before the window has a surface.
+pub fn of_x11(surface: &smithay::xwayland::X11Surface) -> Option<String> {
+    use smithay::reexports::wayland_server::Resource;
+    if let Some(realm) = surface.user_data().get::<crate::xwayland::XwaylandRealm>() {
+        return Some(realm.0.clone());
+    }
+    of_client(&surface.wl_surface()?.client()?)
+}
+
 /// The workspace a pid belongs to, or `None` for machine-plane.
 pub fn of_pid(pid: u32) -> Option<String> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
