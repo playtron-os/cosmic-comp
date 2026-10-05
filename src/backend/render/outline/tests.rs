@@ -361,3 +361,92 @@ fn gles_outline_focus_reveals_bidirectionally_and_lands_on_the_static_pixels() -
     }
     Ok(())
 }
+
+/// Run with `LIBGL_ALWAYS_SOFTWARE=1 cargo test gles_dashed -- --ignored --nocapture`.
+#[test]
+#[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
+fn gles_dashed_outline_alternates_equal_dashes_and_gaps() -> anyhow::Result<()> {
+    use crate::backend::render::IndicatorShader;
+    use iced_core::Color;
+    use smithay::{
+        backend::{
+            allocator::Fourcc,
+            egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+            renderer::{
+                Bind, ExportMem, Offscreen, TextureMapping, damage::OutputDamageTracker,
+                element::Id, gles::GlesRenderbuffer, glow::GlowRenderer,
+            },
+        },
+        utils::{Size, Transform},
+    };
+    use std::borrow::BorrowMut;
+
+    // SAFETY: as in the test above.
+    let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
+    let context = EGLContext::new(&display)?;
+    let mut renderer = unsafe { GlowRenderer::new(context)? };
+    let program = IndicatorShader::compile(renderer.borrow_mut())?;
+    let gles: &mut smithay::backend::renderer::gles::GlesRenderer = renderer.borrow_mut();
+    crate::backend::render::thread_user_data(gles).insert_if_missing(|| IndicatorShader(program));
+    let output_size: Size<i32, Physical> = (256, 192).into();
+    for scale in [1.0, 1.5, 2.0] {
+        let shape = Rectangle::new((10.0, 10.0).into(), (110.0, 80.0).into());
+        let element = IndicatorShader::dashed_outline(
+            &renderer,
+            Id::new(),
+            shape,
+            2.0,
+            14.0,
+            scale,
+            Color::from_rgb(1.0, 0.0, 0.0),
+            6.0,
+        );
+        let mut buffer = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+            &mut renderer,
+            Fourcc::Abgr8888,
+            (256, 192).into(),
+        )?;
+        let mut fb = renderer.bind(&mut buffer)?;
+        let mut tracker = OutputDamageTracker::new(output_size, scale, Transform::Normal);
+        tracker.render_output(&mut renderer, &mut fb, 0, &[element], [0.0; 4])?;
+        let mapping = renderer.copy_framebuffer(
+            &fb,
+            Rectangle::from_size((256, 192).into()),
+            Fourcc::Abgr8888,
+        )?;
+        let flipped = mapping.flipped();
+        let bytes = renderer.map_texture(&mapping)?;
+        let red = |x: usize, y: usize| {
+            let y = if flipped { y } else { 191 - y };
+            f64::from(bytes[(y * 256 + x) * 4]) / 255.0
+        };
+        // The top stroke's centre row, between the corner arcs.
+        let y = (11.0 * scale) as usize;
+        let xs = ((26.0 * scale) as usize)..((104.0 * scale) as usize);
+        let lit: Vec<bool> = xs.clone().map(|x| red(x, y) > 0.5).collect();
+        let share = lit.iter().filter(|&&on| on).count() as f64 / lit.len() as f64;
+        assert!(
+            (0.4..=0.6).contains(&share),
+            "scale {scale}: {share:.2} of the edge is dash"
+        );
+        let mut runs = vec![1usize];
+        for pair in lit.windows(2) {
+            if pair[0] == pair[1] {
+                *runs.last_mut().unwrap() += 1;
+            } else {
+                runs.push(1);
+            }
+        }
+        let inner = &runs[1..runs.len() - 1];
+        assert!(inner.len() >= 8, "scale {scale}: dashes {runs:?}");
+        for &run in inner {
+            assert!(
+                (run as f64 - 6.0 * scale).abs() <= 1.5,
+                "scale {scale}: a dash or gap of {run}px in {runs:?}"
+            );
+        }
+        let (cx, cy) = ((65.0 * scale) as usize, (50.0 * scale) as usize);
+        assert_eq!(red(cx, cy), 0.0, "the inside stays clear");
+    }
+    Ok(())
+}

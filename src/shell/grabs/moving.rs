@@ -346,7 +346,41 @@ impl MoveGrabState {
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);
         let thickness = self.indicator_thickness.max(1);
 
+        let halo = self.window.halo_clearance() > 0;
         if let Some(t) = &self.snapping_zone
+            && &self.cursor_output == output
+            && halo
+        {
+            // WINDOW-CHROME: a dashed atmosphere half, 12% filled, nothing dimmed.
+            let geometry = t.overlay_geometry(non_exclusive_geometry, gaps, true);
+            let accent = theme.halo_accent();
+            let radius = theme.radius_window()[0];
+            let key = Key::Window(Usage::SnappingIndicator, self.window.key());
+            push(
+                IndicatorShader::dashed_outline(
+                    renderer,
+                    key.clone(),
+                    geometry.to_f64(),
+                    2.0,
+                    radius,
+                    output_scale.x,
+                    accent,
+                    6.0,
+                )
+                .into(),
+            );
+            push(
+                BackdropShader::element(
+                    renderer,
+                    key,
+                    geometry,
+                    [radius; 4],
+                    0.12,
+                    [accent.r, accent.g, accent.b],
+                )
+                .into(),
+            );
+        } else if let Some(t) = &self.snapping_zone
             && &self.cursor_output == output
         {
             let base_color = theme.neutral_color();
@@ -424,8 +458,25 @@ pub enum SnappingZone {
 const SNAP_RANGE: i32 = 32;
 const SNAP_RANGE_MAXIMIZE: i32 = 22;
 const SNAP_RANGE_TOP: i32 = 16;
+const HALO_SNAP_RANGE: i32 = 24;
 
 impl SnappingZone {
+    /// WINDOW-CHROME: a Halo window snaps to a side only, within 24px of it.
+    pub fn halo_side(
+        point: Point<i32, Local>,
+        output_geometry: Rectangle<i32, Local>,
+    ) -> Option<Self> {
+        if !output_geometry.contains(point) {
+            None
+        } else if point.x < output_geometry.loc.x + HALO_SNAP_RANGE {
+            Some(SnappingZone::Left)
+        } else if point.x >= output_geometry.loc.x + output_geometry.size.w - HALO_SNAP_RANGE {
+            Some(SnappingZone::Right)
+        } else {
+            None
+        }
+    }
+
     pub fn contains(
         &self,
         point: Point<i32, Local>,
@@ -610,28 +661,28 @@ impl MoveGrab {
             // Check for overlapping with zones
             if grab_state.previous == ManagedLayer::Floating {
                 let output_geometry = current_output.geometry().to_local(&current_output);
-                grab_state.snapping_zone = [
-                    SnappingZone::Maximize,
-                    SnappingZone::Top,
-                    SnappingZone::TopLeft,
-                    SnappingZone::Left,
-                    SnappingZone::BottomLeft,
-                    SnappingZone::Bottom,
-                    SnappingZone::BottomRight,
-                    SnappingZone::Right,
-                    SnappingZone::TopRight,
-                ]
-                .iter()
-                .find(|&x| {
-                    x.contains(
-                        location
-                            .as_global()
-                            .to_local(&current_output)
-                            .to_i32_floor(),
-                        output_geometry,
-                    )
-                })
-                .cloned();
+                let point = location
+                    .as_global()
+                    .to_local(&current_output)
+                    .to_i32_floor();
+                grab_state.snapping_zone = if self.window.halo_clearance() > 0 {
+                    SnappingZone::halo_side(point, output_geometry)
+                } else {
+                    [
+                        SnappingZone::Maximize,
+                        SnappingZone::Top,
+                        SnappingZone::TopLeft,
+                        SnappingZone::Left,
+                        SnappingZone::BottomLeft,
+                        SnappingZone::Bottom,
+                        SnappingZone::BottomRight,
+                        SnappingZone::Right,
+                        SnappingZone::TopRight,
+                    ]
+                    .iter()
+                    .find(|&x| x.contains(point, output_geometry))
+                    .cloned()
+                };
             }
         }
         drop(borrow);
@@ -1273,5 +1324,26 @@ impl Drop for MoveGrab {
                 )
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SnappingZone;
+    use crate::utils::prelude::Local;
+    use smithay::utils::{Point, Rectangle};
+
+    #[test]
+    fn a_halo_window_snaps_to_a_side_only_within_24px() {
+        let output = Rectangle::<i32, Local>::new((0, 0).into(), (1920, 1080).into());
+        let at = |x, y| Point::<i32, Local>::from((x, y));
+        let side = |x, y| SnappingZone::halo_side(at(x, y), output);
+        assert_eq!(side(23, 500), Some(SnappingZone::Left));
+        assert_eq!(side(24, 500), None);
+        assert_eq!(side(1896, 500), Some(SnappingZone::Right));
+        assert_eq!(side(1895, 500), None);
+        assert_eq!(side(960, 2), None, "the top edge does not fill");
+        assert_eq!(side(5, 5), Some(SnappingZone::Left), "a corner is its side");
+        assert_eq!(side(-1, 500), None);
     }
 }

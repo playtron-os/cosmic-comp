@@ -297,6 +297,7 @@ struct IndicatorSettings {
     geometry: outline::Geometry,
     scale: f64,
     focus: Option<OutlineFocus>,
+    dash: f32,
 }
 
 impl IndicatorSettings {
@@ -333,6 +334,7 @@ impl IndicatorSettings {
             Uniform::new("draw_size", self.geometry.draw_size),
             Uniform::new("shape_origin", self.geometry.shape_origin),
             Uniform::new("shape_size", self.geometry.shape_size),
+            Uniform::new("dash", self.dash),
         ]
     }
 }
@@ -357,6 +359,7 @@ impl IndicatorShader {
                 UniformName::new("draw_size", UniformType::_2f),
                 UniformName::new("shape_origin", UniformType::_2f),
                 UniformName::new("shape_size", UniformType::_2f),
+                UniformName::new("dash", UniformType::_1f),
             ],
         )
     }
@@ -498,18 +501,62 @@ impl IndicatorShader {
         bottom_border: bool,
     ) -> PixelShaderElement {
         let rgba = |color: iced_core::Color| [color.r, color.g, color.b, color.a];
-        let settings = IndicatorSettings {
-            thickness,
-            bottom_border,
-            outer_radius,
-            alpha,
-            scale,
-            color: rgba(color),
-            ring_width,
-            ring_color: rgba(ring_color),
-            geometry: outline::Geometry::new(geo, ring_width, scale),
-            focus,
-        };
+        Self::outline_element(
+            renderer,
+            key,
+            IndicatorSettings {
+                thickness,
+                bottom_border,
+                outer_radius,
+                alpha,
+                scale,
+                color: rgba(color),
+                ring_width,
+                ring_color: rgba(ring_color),
+                geometry: outline::Geometry::new(geo, ring_width, scale),
+                focus,
+                dash: 0.0,
+            },
+        )
+    }
+
+    /// A `dash`-dashed outline inside `geo`, as CSS draws `border: dashed`.
+    pub fn dashed_outline<R: AsGlowRenderer>(
+        renderer: &R,
+        key: impl Into<Key>,
+        geo: Rectangle<f64, Local>,
+        thickness: f32,
+        radius: f32,
+        scale: f64,
+        color: iced_core::Color,
+        dash: f32,
+    ) -> PixelShaderElement {
+        let rgba = [color.r, color.g, color.b, color.a];
+        Self::outline_element(
+            renderer,
+            key,
+            IndicatorSettings {
+                thickness,
+                bottom_border: true,
+                outer_radius: [radius; 4],
+                alpha: 1.0,
+                scale,
+                color: rgba,
+                ring_width: 0.0,
+                ring_color: [0.0; 4],
+                geometry: outline::Geometry::new(geo, 0.0, scale),
+                focus: None,
+                dash,
+            },
+        )
+    }
+
+    fn outline_element<R: AsGlowRenderer>(
+        renderer: &R,
+        key: impl Into<Key>,
+        settings: IndicatorSettings,
+    ) -> PixelShaderElement {
+        let alpha = settings.alpha;
 
         let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
 
