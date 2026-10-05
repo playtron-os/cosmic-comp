@@ -171,14 +171,47 @@ fn the_next_redraw_is_when_the_soonest_flash_ends() {
 }
 
 #[test]
-fn park_receipts_read_as_the_prototype_writes_them() {
-    assert_eq!(
-        plain(fl!("halo-closed-parked", parked = 1)),
-        "1 parked — work continues"
+fn a_close_parks_what_owes_work_and_acts_on_each_window_once() {
+    let mut acted = Vec::new();
+    let closed = close_each(
+        &[1, 2, 1, 3],
+        |window| *window == 2,
+        |window, outcome| acted.push((*window, outcome)),
     );
-    assert_eq!(plain(fl!("halo-closed", closed = 1)), "Closed 1 window");
     assert_eq!(
-        plain(fl!("halo-closed-some-parked", closed = 2, parked = 1)),
-        "Closed 2 windows · 1 parked — work continues"
+        closed,
+        Closed {
+            closed: 2,
+            parked: 1
+        }
+    );
+    assert_eq!(
+        acted,
+        [
+            (1, Outcome::Closed),
+            (2, Outcome::Parked),
+            (3, Outcome::Closed)
+        ]
+    );
+}
+
+#[test]
+fn close_receipts_read_as_the_prototype_writes_them() {
+    let receipt = |closed, parked| Closed { closed, parked }.receipt();
+    assert_eq!(receipt(0, 0), None);
+    assert_eq!(
+        receipt(0, 1),
+        Some(("1 parked — work continues".to_owned(), Tone::Ai))
+    );
+    assert_eq!(
+        receipt(1, 0),
+        Some(("Closed 1 window".to_owned(), Tone::Neutral))
+    );
+    assert_eq!(
+        receipt(2, 1),
+        Some((
+            "Closed 2 windows · 1 parked — work continues".to_owned(),
+            Tone::Ai
+        ))
     );
 }

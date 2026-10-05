@@ -1244,8 +1244,10 @@ impl Program for CosmicStackInternal {
                 }
             }
             Message::Close(idx) => {
-                if let Some(val) = self.windows.lock().unwrap().get(idx) {
-                    val.close()
+                if let Some(surface) = self.windows.lock().unwrap().get(idx).cloned() {
+                    loop_handle.insert_idle(move |state| {
+                        crate::shell::element::window::runs::close_window(state, &surface);
+                    });
                 }
             }
             Message::Scrolled => {

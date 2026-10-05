@@ -9,7 +9,7 @@ use crate::{
     fl,
     shell::{
         CosmicSurface, PointGlobalExt, Shell,
-        element::{CosmicMapped, CosmicWindow},
+        element::{CosmicMapped, CosmicWindow, window::runs},
         grabs::ReleaseMode,
     },
     state::State,
@@ -215,8 +215,9 @@ pub fn tab_items(
             handle.insert_idle(move |state| screenshot_window(state, &tab));
         }),
         Item::Separator,
-        Item::new(fl!("window-menu-close"), move |_handle| {
-            close_clone.close();
+        Item::new(fl!("window-menu-close"), move |handle| {
+            let tab = close_clone.clone();
+            handle.insert_idle(move |state| runs::close_window(state, &tab));
         })
         .shortcut(config.shortcut_for_action(&Action::Close)),
     ]
@@ -560,15 +561,18 @@ pub fn window_items(
         ),
         Some(Item::Separator),
         if is_stacked {
-            Some(Item::new(fl!("window-menu-close-all"), move |_handle| {
-                for (window, _) in close_clone.windows() {
-                    window.close();
-                }
+            Some(Item::new(fl!("window-menu-close-all"), move |handle| {
+                let windows = close_clone
+                    .windows()
+                    .map(|(window, _)| window)
+                    .collect::<Vec<_>>();
+                handle.insert_idle(move |state| runs::close_windows(state, &windows));
             }))
         } else {
             Some(
-                Item::new(fl!("window-menu-close"), move |_handle| {
-                    close_clone.send_close();
+                Item::new(fl!("window-menu-close"), move |handle| {
+                    let window = close_clone.active_window();
+                    handle.insert_idle(move |state| runs::close_window(state, &window));
                 })
                 .shortcut(config.shortcut_for_action(&Action::Close)),
             )
@@ -686,8 +690,9 @@ pub fn fullscreen_items(window: &CosmicSurface, config: &Config) -> impl Iterato
         },
         Some(Item::Separator),
         Some(
-            Item::new(fl!("window-menu-close"), move |_handle| {
-                close_clone.close();
+            Item::new(fl!("window-menu-close"), move |handle| {
+                let window = close_clone.clone();
+                handle.insert_idle(move |state| runs::close_window(state, &window));
             })
             .shortcut(config.shortcut_for_action(&Action::Close)),
         ),

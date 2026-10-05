@@ -9793,6 +9793,61 @@ impl Shell {
         }
     }
 
+    /// Give a stacked tab a window of its own where its stack is, so parking it
+    /// leaves the other tabs on screen.
+    pub fn unstack_in_place(
+        &mut self,
+        surface: &CosmicSurface,
+        loop_handle: &LoopHandle<'static, State>,
+    ) {
+        let Some(stack) = self
+            .element_for_surface(surface)
+            .filter(|mapped| mapped.stack_ref().is_some_and(|stack| stack.len() > 1))
+            .cloned()
+        else {
+            return;
+        };
+        let theme = self.theme.clone();
+        let appearance = self.appearance_conf;
+        let sticky = self
+            .workspaces()
+            .sets
+            .values()
+            .any(|set| set.sticky_layer.mapped().any(|m| m == &stack));
+        let (layer, geometry) = if sticky {
+            let Some(layer) = self
+                .workspaces_mut()
+                .sets
+                .values_mut()
+                .map(|set| &mut set.sticky_layer)
+                .find(|layer| layer.mapped().any(|m| m == &stack))
+            else {
+                return;
+            };
+            let Some(geometry) = layer.element_geometry(&stack) else {
+                return;
+            };
+            (layer, geometry)
+        } else {
+            let Some(workspace) = self.space_for_mut(&stack) else {
+                return;
+            };
+            let Some(geometry) = workspace.element_geometry(&stack) else {
+                return;
+            };
+            (&mut workspace.floating_layer, geometry)
+        };
+        let Some(tab) = stack
+            .stack_ref()
+            .and_then(|tabs| tabs.surfaces().position(|s| &s == surface))
+            .and_then(|idx| stack.stack_ref()?.remove_idx(idx))
+        else {
+            return;
+        };
+        let window = CosmicWindow::new(tab, loop_handle.clone(), theme, appearance);
+        layer.map(window, geometry.loc);
+    }
+
     pub fn minimize_request<S>(&mut self, surface: &S)
     where
         CosmicSurface: PartialEq<S>,

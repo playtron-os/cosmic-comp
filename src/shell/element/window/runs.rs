@@ -22,10 +22,10 @@ use smithay::wayland::seat::WaylandFocus;
 use crate::{
     dbus::notifications::Tone,
     fl,
-    shell::{element::CosmicSurface, focus::target::KeyboardFocusTarget},
+    shell::{Shell, element::CosmicSurface, focus::target::KeyboardFocusTarget},
     state::State,
     wayland::{
-        handlers::surface_embed::is_surface_embedded,
+        handlers::surface_embed::get_parent_surface_id,
         protocols::toplevel_info::mapped_toplevel_identifier,
     },
 };
@@ -255,66 +255,129 @@ fn schedule_expiry(state: &mut State) {
     *EXPIRY.lock().unwrap() = token.ok();
 }
 
-/// Close a window, or park it while a run it asked for is running or queued:
-/// closing a window is a statement about the screen, not about the work.
-fn close_or_park(state: &mut State, surface: &CosmicSurface) -> bool {
-    if has_live_work(surface) {
-        let mut shell = state.common.shell.write();
-        shell.minimize_request(surface);
-        // A fullscreen window parks from its own desktop, which goes home.
-        shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
-        true
-    } else {
-        surface.close();
-        false
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Closed,
+    Parked,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Closed {
+    pub closed: usize,
+    pub parked: usize,
+}
+
+impl Closed {
+    pub fn receipt(self) -> Option<(String, Tone)> {
+        let text = match (self.closed, self.parked) {
+            (0, 0) => return None,
+            (0, parked) => fl!("halo-closed-parked", parked = parked),
+            (closed, 0) => fl!("halo-closed", closed = closed),
+            (closed, parked) => fl!("halo-closed-some-parked", closed = closed, parked = parked),
+        };
+        let tone = if self.parked > 0 {
+            Tone::Ai
+        } else {
+            Tone::Neutral
+        };
+        Some((plain(text), tone))
     }
+}
+
+/// Closing a window is a statement about the screen, not about the work.
+pub fn close_each<T: PartialEq>(
+    windows: &[T],
+    owes_work: impl Fn(&T) -> bool,
+    mut act: impl FnMut(&T, Outcome),
+) -> Closed {
+    let mut done = Closed::default();
+    for (idx, window) in windows.iter().enumerate() {
+        if windows[..idx].contains(window) {
+            continue;
+        }
+        if owes_work(window) {
+            act(window, Outcome::Parked);
+            done.parked += 1;
+        } else {
+            act(window, Outcome::Closed);
+            done.closed += 1;
+        }
+    }
+    done
+}
+
+/// Park a window. A tab leaves its stack first, so the other tabs stay up.
+pub fn park(state: &mut State, surface: &CosmicSurface) {
+    let mut shell = state.common.shell.write();
+    shell.unstack_in_place(surface, &state.common.event_loop_handle);
+    shell.minimize_request(surface);
+    // A fullscreen window parks from its own desktop, which goes home.
+    shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
+}
+
+fn close(state: &State, surface: &CosmicSurface) {
+    match state.common.shell.read().element_for_surface(surface) {
+        // Marks it closing, so it stops anchoring the floating cascade.
+        Some(mapped) if mapped.is_window() => mapped.send_close(),
+        _ => surface.close(),
+    }
+}
+
+fn close_or_park(state: &mut State, surfaces: &[CosmicSurface]) -> Closed {
+    close_each(surfaces, has_live_work, |surface, outcome| match outcome {
+        Outcome::Parked => park(state, surface),
+        Outcome::Closed => close(state, surface),
+    })
 }
 
 pub fn close_window(state: &mut State, surface: &CosmicSurface) {
-    if close_or_park(state, surface) {
-        let parked = fl!("halo-closed-parked", parked = 1);
-        state
-            .common
-            .dbus_state
-            .system_toast(plain(parked), Tone::Ai);
+    let closed = close_or_park(state, std::slice::from_ref(surface));
+    // A lone close leaves no receipt: the app may still answer it with a dialog.
+    if closed.parked > 0 {
+        receipt(state, closed);
     }
 }
 
-/// Close several windows of one app, with one receipt for all of them.
+/// Close several windows, with one receipt for all of them.
 pub fn close_windows(state: &mut State, surfaces: &[CosmicSurface]) {
-    if surfaces.is_empty() {
-        return;
+    let closed = close_or_park(state, surfaces);
+    receipt(state, closed);
+}
+
+fn receipt(state: &State, closed: Closed) {
+    if let Some((text, tone)) = closed.receipt() {
+        state.common.dbus_state.system_toast(text, tone);
     }
-    let (mut closed, mut parked) = (0, 0);
-    for surface in surfaces {
-        if close_or_park(state, surface) {
-            parked += 1;
-        } else {
-            closed += 1;
+}
+
+/// The window the keyboard's Close acts on: an embedded one closes its parent.
+fn close_target(shell: &Shell, target: &KeyboardFocusTarget) -> Option<CosmicSurface> {
+    let parent = |surface: &CosmicSurface| {
+        get_parent_surface_id(surface)
+            .and_then(|id| shell.element_for_surface_id(&id))
+            .map(|parent| parent.active_window())
+    };
+    match target {
+        KeyboardFocusTarget::Fullscreen(surface) => {
+            Some(parent(surface).unwrap_or_else(|| surface.clone()))
+        }
+        KeyboardFocusTarget::Group(_) => None,
+        target => {
+            let mapped = shell.focused_element(target)?;
+            Some(
+                mapped
+                    .windows()
+                    .find_map(|(surface, _)| parent(&surface))
+                    .unwrap_or_else(|| mapped.active_window()),
+            )
         }
     }
-    let summary = match (closed, parked) {
-        (0, parked) => fl!("halo-closed-parked", parked = parked),
-        (closed, 0) => fl!("halo-closed", closed = closed),
-        (closed, parked) => fl!("halo-closed-some-parked", closed = closed, parked = parked),
-    };
-    let tone = if parked > 0 { Tone::Ai } else { Tone::Neutral };
-    state.common.dbus_state.system_toast(plain(summary), tone);
 }
 
 /// The keyboard's Close: the focused window, parked instead when it owes work.
 pub fn close_focused(state: &mut State, target: &KeyboardFocusTarget) {
-    let surface = {
-        let shell = state.common.shell.read();
-        match target {
-            KeyboardFocusTarget::Fullscreen(surface) => Some(surface.clone()),
-            KeyboardFocusTarget::Group(_) => None,
-            target => shell
-                .focused_element(target)
-                .map(|mapped| mapped.active_window()),
-        }
-    };
-    match surface.filter(|surface| !is_surface_embedded(surface) && has_live_work(surface)) {
+    let surface = close_target(&state.common.shell.read(), target);
+    match surface.filter(has_live_work) {
         Some(surface) => close_window(state, &surface),
         None => state.common.shell.read().close_focused(target),
     }
