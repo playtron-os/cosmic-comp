@@ -169,3 +169,16 @@ fn the_next_redraw_is_when_the_soonest_flash_ends() {
     assert_eq!(next_expiry(&runs, NOW), Some(NOW + 1000));
     assert_eq!(next_expiry(&runs[2..], NOW), None);
 }
+
+#[test]
+fn park_receipts_read_as_the_prototype_writes_them() {
+    assert_eq!(
+        plain(fl!("halo-closed-parked", parked = 1)),
+        "1 parked — work continues"
+    );
+    assert_eq!(plain(fl!("halo-closed", closed = 1)), "Closed 1 window");
+    assert_eq!(
+        plain(fl!("halo-closed-some-parked", closed = 2, parked = 1)),
+        "Closed 2 windows · 1 parked — work continues"
+    );
+}

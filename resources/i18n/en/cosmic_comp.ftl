@@ -62,8 +62,6 @@ halo-ask-chat-hint = opens a new conversation
 halo-run-done = done ✓
 halo-run-queued = queued
 halo-run-untitled = working
-halo-run-app-name = Inference
-halo-park-app-name = Windows
 halo-closed-parked = { $parked } parked — work continues
 halo-closed = Closed { $closed ->
     [one] 1 window

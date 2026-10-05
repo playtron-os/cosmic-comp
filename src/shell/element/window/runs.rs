@@ -20,7 +20,7 @@ use calloop::{
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::{
-    dbus::notifications::Notification,
+    dbus::notifications::Tone,
     fl,
     shell::{element::CosmicSurface, focus::target::KeyboardFocusTarget},
     state::State,
@@ -32,9 +32,6 @@ use crate::{
 
 /// How long a finished run keeps its green flash, from when it ended.
 pub const DONE_FLASH_MS: u64 = 4000;
-
-/// The prototype's system toast lifetime.
-const TOAST_MS: i32 = 3200;
 
 /// Most urgent first: the order is the reduction's ranking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -272,20 +269,19 @@ fn close_or_park(state: &mut State, surface: &CosmicSurface) -> bool {
 
 pub fn close_window(state: &mut State, surface: &CosmicSurface) {
     if close_or_park(state, surface) {
-        toast(
-            state,
-            surface,
-            fl!("halo-park-app-name"),
-            fl!("halo-closed-parked", parked = 1),
-        );
+        let parked = fl!("halo-closed-parked", parked = 1);
+        state
+            .common
+            .dbus_state
+            .system_toast(plain(parked), Tone::Ai);
     }
 }
 
 /// Close several windows of one app, with one receipt for all of them.
 pub fn close_windows(state: &mut State, surfaces: &[CosmicSurface]) {
-    let Some(first) = surfaces.first() else {
+    if surfaces.is_empty() {
         return;
-    };
+    }
     let (mut closed, mut parked) = (0, 0);
     for surface in surfaces {
         if close_or_park(state, surface) {
@@ -299,7 +295,8 @@ pub fn close_windows(state: &mut State, surfaces: &[CosmicSurface]) {
         (closed, 0) => fl!("halo-closed", closed = closed),
         (closed, parked) => fl!("halo-closed-some-parked", closed = closed, parked = parked),
     };
-    toast(state, first, fl!("halo-park-app-name"), summary);
+    let tone = if parked > 0 { Tone::Ai } else { Tone::Neutral };
+    state.common.dbus_state.system_toast(plain(summary), tone);
 }
 
 /// The keyboard's Close: the focused window, parked instead when it owes work.
@@ -320,21 +317,23 @@ pub fn close_focused(state: &mut State, target: &KeyboardFocusTarget) {
     }
 }
 
+/// The prototype's receipt for a press on the chip: neutral for queued work,
+/// which nothing is being spent on yet.
 pub fn chip_toast(state: &mut State, surface: &CosmicSurface) {
     if let Some(run) = halo_run(surface) {
-        toast(state, surface, fl!("halo-run-app-name"), run.toast());
+        let tone = if run.state == RunState::Queued {
+            Tone::Neutral
+        } else {
+            Tone::Ai
+        };
+        state.common.dbus_state.system_toast(run.toast(), tone);
     }
 }
 
-fn toast(state: &State, surface: &CosmicSurface, app_name: String, summary: String) {
-    state.common.dbus_state.notify(Notification {
-        app_name,
-        app_icon: surface.app_id(),
-        summary,
-        body: String::new(),
-        expire_timeout: TOAST_MS,
-        transient: true,
-    });
+/// Fluent's bidi isolate marks around a number surface as tofu in the toast's
+/// Latin-only fonts.
+fn plain(text: String) -> String {
+    text.replace(['\u{2068}', '\u{2069}'], "")
 }
 
 #[cfg(test)]
