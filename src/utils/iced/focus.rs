@@ -105,6 +105,10 @@ mod tests {
         tokens.duration_slower = 0.0;
         let theme = CompTheme::new(std::sync::Arc::new(tokens), true);
         assert!(!halo_focus_outline(&theme, true, false).animate);
+        let mut tokens = icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(true);
+        tokens.window_focus_sweep = 0.0;
+        let theme = CompTheme::new(std::sync::Arc::new(tokens), true);
+        assert!(!halo_focus_outline(&theme, true, false).animate, "no sweep");
     }
 
     #[test]

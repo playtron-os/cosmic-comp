@@ -200,7 +200,8 @@ impl CompTheme {
     }
 
     pub fn halo_accent(&self) -> Color {
-        self.workspace_accent.unwrap_or_else(|| self.primary())
+        self.workspace_accent
+            .unwrap_or_else(|| self.theme.atmosphere())
     }
 
     /// WindowFrame's Halo focus treatment; other chrome styles keep their border.
@@ -397,15 +398,21 @@ mod focus_border_tests {
     }
 
     #[test]
-    fn absent_workspace_accent_uses_brand_and_bar_chrome_stays_unchanged() {
+    fn absent_workspace_accent_uses_the_atmosphere_and_bar_chrome_stays_unchanged() {
         let theme = theme(WindowHeaderStyle::Halo);
         assert_eq!(
+            theme.halo_accent(),
+            theme.primary(),
+            "the default atmosphere"
+        );
+        let mut tokens = DEFAULT_THEME_PAIR.load(true);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        let jade = Color::from_rgb(0.27, 0.73, 0.51);
+        tokens.atmosphere = Some(jade);
+        let theme = CompTheme::new(Arc::new(tokens), true);
+        assert_eq!(
             theme.focused_window_border(true),
-            mix_border_accent(
-                theme.window_border_color(),
-                theme.primary(),
-                FRAME_FOCUS_WEIGHT
-            )
+            mix_border_accent(theme.window_border_color(), jade, FRAME_FOCUS_WEIGHT)
         );
         let bar = super::focus_border_tests::theme(WindowHeaderStyle::Bar);
         assert_eq!(bar.focused_window_border(true), bar.window_border_color());

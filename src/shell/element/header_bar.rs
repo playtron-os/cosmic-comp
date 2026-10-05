@@ -56,10 +56,8 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
     }
 }
 
-/// WindowFrame's focus draw uses Kora's --duration-slow (420ms) and
-/// --ease-standard, shared with the Halo fill. Icetron's similarly named
-/// tokens currently mean 500ms and a different ease-out curve; do not
-/// substitute them here. A zero-duration theme still disables the sweep.
+/// WindowFrame's focus draw on --ease-standard, over the theme's sweep; a theme
+/// with no sweep, or zero durations, draws the outline at once.
 pub(crate) fn halo_focus_outline(
     theme: &CompTheme,
     focused: bool,
@@ -68,8 +66,10 @@ pub(crate) fn halo_focus_outline(
     crate::utils::iced::FocusOutline {
         focused,
         bottom_border: true,
-        animate: !fullscreen && theme.duration_slower() > 0.0,
-        duration: std::time::Duration::from_millis(420),
+        animate: !fullscreen && theme.duration_slower() > 0.0 && theme.window_focus_sweep() > 0.0,
+        duration: std::time::Duration::from_millis(
+            theme.window_focus_sweep().max(0.0).round() as u64
+        ),
         curve: halo_visibility(theme, true).opacity_curve,
     }
 }
