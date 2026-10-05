@@ -31,7 +31,7 @@ window-menu-resize-edge-right = Right
 window-menu-resize-edge-bottom = Bottom
 
 screenshot-app-name = Screenshot
-screenshot-saved-to = Screenshot saved to:
+screenshot-saved = Screenshot saved
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
 
 window-menu-record = Record window
@@ -50,9 +50,9 @@ halo-all-commands = All commands
 halo-new-window = New { $app } window
 halo-park = Park — restore it from its app in the bar
 halo-fill = Fill / restore
-halo-fullscreen = Fullscreen
-halo-exit-fullscreen = Exit fullscreen
-halo-close = Close
+halo-fullscreen = Fullscreen — gives it its own desktop
+halo-exit-fullscreen = Exit fullscreen — back to the desktop it came from
+halo-close = Close — runs continue
 halo-pin-full = Tray is full ({ $cap }) — the halo is a pill, not a toolbar
 halo-ask-chat = Ask Kora
 halo-ask-chat-hint = opens a new conversation
@@ -74,3 +74,16 @@ halo-park-window = Park window
 halo-fullscreen-toggle = Fullscreen / exit fullscreen
 halo-close-window = Close window
 halo-open-recent = Open Recent
+
+halo-run-done = done ✓
+halo-run-queued = queued
+halo-run-untitled = working
+halo-closed-parked = { $parked } parked — work continues
+halo-closed = Closed { $closed ->
+    [one] 1 window
+   *[other] { $closed } windows
+}
+halo-closed-some-parked = Closed { $closed ->
+    [one] 1 window
+   *[other] { $closed } windows
+} · { $parked } parked — work continues

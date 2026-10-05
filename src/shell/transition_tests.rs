@@ -56,7 +56,7 @@ fn replacement_windows_keep_the_original_scene_after_empty_workspaces_are_pruned
             .unwrap();
         set.activate(3, WorkspaceDelta::new_crossfade(), &mut state.update())
             .unwrap();
-        set.ensure_last_empty(&mut state.update(), activation);
+        set.ensure_last_empty(&mut state.update(), activation, &[]);
 
         let (previous, _) = set.previously_active.unwrap();
         assert_eq!(set.workspaces[previous].handle, outgoing);
@@ -71,7 +71,7 @@ fn an_empty_outgoing_workspace_survives_until_the_fade_finishes() {
         set.activate(1, WorkspaceDelta::new_crossfade(), &mut state.update())
             .unwrap();
         let incoming = set.workspaces[1].handle;
-        set.ensure_last_empty(&mut state.update(), activation);
+        set.ensure_last_empty(&mut state.update(), activation, &[]);
         assert_eq!(set.workspaces.len(), 2);
 
         set.previously_active = Some((
@@ -79,7 +79,7 @@ fn an_empty_outgoing_workspace_survives_until_the_fade_finishes() {
             WorkspaceDelta::Crossfade(Instant::now() - Duration::from_secs(61)),
         ));
         set.refresh();
-        set.ensure_last_empty(&mut state.update(), activation);
+        set.ensure_last_empty(&mut state.update(), activation, &[]);
         assert_eq!(set.workspaces.len(), 1);
         assert_eq!(set.workspaces[set.active].handle, incoming);
         assert!(set.previously_active.is_none());

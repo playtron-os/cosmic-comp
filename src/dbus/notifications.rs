@@ -30,6 +30,25 @@ trait Notifications {
     ) -> zbus::Result<u32>;
 }
 
+/// The shell's system toasts: a one-line confirmation of something the user
+/// just did, never a notification (no history, no unread, no sound).
+#[zbus::proxy(
+    interface = "one.playtron.AgentOS.Notifications1",
+    default_service = "one.playtron.AgentOS.Notifications1",
+    default_path = "/one/playtron/AgentOS/Notifications1"
+)]
+trait SystemToasts {
+    fn toast(&self, message: &str, tone: &str) -> zbus::Result<()>;
+}
+
+/// The colour grammar a system toast's dot carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Neutral,
+    /// Work the machine is doing for you.
+    Ai,
+}
+
 /// One toast. `app_icon` is a freedesktop icon name.
 #[derive(Debug, Clone)]
 pub struct Notification {
@@ -50,6 +69,29 @@ impl DBusState {
         self.spawn(async move {
             if let Err(err) = send(&state, &notification).await {
                 warn!(?err, summary = %notification.summary, "Failed to send notification");
+            }
+        });
+    }
+}
+
+impl DBusState {
+    /// Show a system toast, fire and forget. A missing daemon is only logged.
+    pub fn system_toast(&self, message: String, tone: Tone) {
+        let state = self.clone();
+        self.spawn(async move {
+            let tone = match tone {
+                Tone::Neutral => "neutral",
+                Tone::Ai => "ai",
+            };
+            let sent = async {
+                let conn = state.session_conn().await?;
+                SystemToastsProxy::new(conn)
+                    .await?
+                    .toast(&message, tone)
+                    .await
+            };
+            if let Err(err) = sent.await {
+                warn!(?err, %message, "Failed to show a system toast");
             }
         });
     }

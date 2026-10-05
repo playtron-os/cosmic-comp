@@ -72,6 +72,7 @@ use crate::utils::desktop_action::{DesktopApp, NewWindowAction, glob_match};
 
 pub(crate) mod commands;
 mod halo;
+pub(crate) mod runs;
 
 pub const RESIZE_BORDER: i32 = 10;
 
@@ -1328,7 +1329,7 @@ impl CosmicWindow {
         }
     }
 
-    pub(super) fn loop_handle(&self) -> LoopHandle<'static, crate::state::State> {
+    pub(crate) fn loop_handle(&self) -> LoopHandle<'static, crate::state::State> {
         self.0.loop_handle()
     }
 
@@ -1825,6 +1826,8 @@ pub enum Message {
     Record,
     Fullscreen,
     NewWindow,
+    /// The run chip: a receipt of the window's most urgent run.
+    RunChip,
 }
 
 /// Window-relative x range a painted Halo body takes input in. Rounded out so
@@ -1935,7 +1938,13 @@ impl Program for CosmicWindowInternal {
                     });
                 }
             }
-            Message::Close => self.window.close(),
+            Message::Close | Message::RunChip => {
+                let surface = self.window.clone();
+                loop_handle.insert_idle(move |state| match message {
+                    Message::Close => runs::close_window(state, &surface),
+                    _ => runs::chip_toast(state, &surface),
+                });
+            }
             Message::Action(ref id) => {
                 let surface = self.window.clone();
                 let app = self.desktop_app.lock().unwrap().clone();
@@ -2165,6 +2174,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .square_top(win.squares_top_corners())
             .window_width(win.window.geometry().size.w as f32)
             .panel(win.window.has_parent())
+            .run(runs::halo_run(&win.window), Message::RunChip)
             .theme(theme);
         let app = win.desktop_app.lock().unwrap().clone();
         if let Some(app) = app.as_ref() {

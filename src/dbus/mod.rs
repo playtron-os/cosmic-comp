@@ -22,6 +22,7 @@ pub mod logind;
 mod name_owners;
 pub mod notifications;
 mod power;
+pub mod runs;
 
 #[derive(Clone, Debug)]
 pub struct DBusState(Rc<DBusStateInner>);

@@ -188,7 +188,7 @@ impl State {
 
             Action::Close => {
                 if let Some(focus_target) = seat.get_keyboard().unwrap().current_focus() {
-                    self.common.shell.read().close_focused(&focus_target);
+                    crate::shell::element::window::runs::close_focused(self, &focus_target);
                 }
             }
 
@@ -920,6 +920,7 @@ impl State {
                         return;
                     }
                     shell.minimize_request(&focused_window);
+                    shell.settle_fullscreen_desktops(&mut self.common.workspace_state.update());
                 }
             }
 
@@ -973,11 +974,13 @@ impl State {
                                     tracing::debug!(
                                         "Fullscreen: found parent window, requesting fullscreen"
                                     );
-                                    if let Some(target) = shell.fullscreen_request(
+                                    let target = shell.fullscreen_on_own_desktop(
                                         &parent_window,
                                         focused_output.clone(),
                                         &self.common.event_loop_handle,
-                                    ) {
+                                        &mut self.common.workspace_state.update(),
+                                    );
+                                    if let Some(target) = target {
                                         std::mem::drop(shell);
                                         Shell::set_focus(
                                             self,
@@ -996,11 +999,13 @@ impl State {
                                 }
                             }
                         }
-                        if let Some(target) = shell.fullscreen_request(
+                        let target = shell.fullscreen_on_own_desktop(
                             &window.active_window(),
                             focused_output,
                             &self.common.event_loop_handle,
-                        ) {
+                            &mut self.common.workspace_state.update(),
+                        );
+                        if let Some(target) = target {
                             std::mem::drop(shell);
                             Shell::set_focus(self, Some(&target), seat, Some(serial), true);
                         }
@@ -1016,6 +1021,9 @@ impl State {
                                 &parent_surface,
                                 &self.common.event_loop_handle,
                             ) {
+                                shell.settle_fullscreen_desktops(
+                                    &mut self.common.workspace_state.update(),
+                                );
                                 std::mem::drop(shell);
                                 Shell::set_focus(self, Some(&target), seat, Some(serial), true);
                             }
@@ -1024,6 +1032,9 @@ impl State {
                         if let Some(target) =
                             shell.unfullscreen_request(&surface, &self.common.event_loop_handle)
                         {
+                            shell.settle_fullscreen_desktops(
+                                &mut self.common.workspace_state.update(),
+                            );
                             std::mem::drop(shell);
                             Shell::set_focus(self, Some(&target), seat, Some(serial), true);
                         }

@@ -45,6 +45,7 @@ pub struct PulsingDot {
     color: Color,
     glow: f32,
     easing: [f32; 4],
+    period: Duration,
     /// Reduced motion: hold still at full opacity, ask for no frames.
     still: bool,
 }
@@ -63,8 +64,15 @@ impl PulsingDot {
             color,
             glow,
             easing,
+            period: PERIOD,
             still: false,
         }
+    }
+
+    /// One breath lasts `period`; the run chip's is 1.8s.
+    pub fn period(mut self, period: Duration) -> Self {
+        self.period = period;
+        self
     }
 
     /// Hold still at full opacity, the prototype's reduced-motion rule.
@@ -78,7 +86,7 @@ impl PulsingDot {
             return 1.0;
         }
         match (state.epoch, state.now) {
-            (Some(epoch), Some(now)) => breath(now - epoch, PERIOD, FLOOR, self.easing),
+            (Some(epoch), Some(now)) => breath(now - epoch, self.period, FLOOR, self.easing),
             _ => 1.0,
         }
     }

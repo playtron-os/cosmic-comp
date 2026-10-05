@@ -103,8 +103,12 @@ pub(super) fn perform_action(
                 action.launch();
             }
         }
-        Message::Close => surface.close(),
-        Message::Minimize => state.common.shell.write().minimize_request(surface),
+        Message::Close => super::runs::close_window(state, surface),
+        Message::Minimize => {
+            let mut shell = state.common.shell.write();
+            shell.minimize_request(surface);
+            shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
+        }
         Message::Maximize => {
             let mut shell = state.common.shell.write();
             let seat = seat
@@ -113,6 +117,7 @@ pub(super) fn perform_action(
             // Fullscreen surfaces are no longer in the normal mapped-window list.
             // Restore that state first, including its saved output/workspace and size.
             let restored = shell.unfullscreen_request(surface, &state.common.event_loop_handle);
+            shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
             if restored.is_none()
                 && let Some(mapped) = shell.element_for_surface(surface).cloned()
             {
@@ -128,15 +133,20 @@ pub(super) fn perform_action(
             let seat = seat
                 .cloned()
                 .unwrap_or_else(|| shell.seats.last_active().clone());
+            let mut workspace_state = state.common.workspace_state.update();
             let target = if surface.is_fullscreen(false) {
-                shell.unfullscreen_request(surface, &state.common.event_loop_handle)
+                let target = shell.unfullscreen_request(surface, &state.common.event_loop_handle);
+                shell.settle_fullscreen_desktops(&mut workspace_state);
+                target
             } else {
-                shell.fullscreen_request(
+                shell.fullscreen_on_own_desktop(
                     surface,
                     seat.active_output(),
                     &state.common.event_loop_handle,
+                    &mut workspace_state,
                 )
             };
+            drop(workspace_state);
             drop(shell);
             if let Some(target) = target {
                 Shell::set_focus(state, Some(&target), &seat, None, false);
@@ -144,7 +154,11 @@ pub(super) fn perform_action(
         }
         // Routed through `perform_command`, which has the desktop entry to
         // resolve the id against; there is nothing to do with it here.
-        Message::Action(_) | Message::Menu | Message::Commands | Message::DragStart => {}
+        Message::Action(_)
+        | Message::Menu
+        | Message::Commands
+        | Message::DragStart
+        | Message::RunChip => {}
     }
 }
 
@@ -553,7 +567,7 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
     let app_id = origin.app_id();
     let realm = shell.active_realm().to_owned();
     let windows = app_windows(shell, &app_id, &realm);
-    if !has_multiple_app_windows(&windows, origin) {
+    if !offers_close_all(&windows, origin) {
         return None;
     }
     Some(Item::new(fl!("window-menu-close-all"), move |handle| {
@@ -566,15 +580,15 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
             };
             // Snapshot before closing, outside the shell lock. Normal close
             // requests allow applications to ask about unsaved work.
-            for window in windows {
-                window.close();
-            }
+            super::runs::close_windows(state, &windows);
         });
     }))
 }
 
-fn has_multiple_app_windows<T: PartialEq>(windows: &[T], origin: &T) -> bool {
-    windows.len() > 1 && windows.contains(origin)
+/// The prototype's app menu offers Close all windows for every app with a
+/// window open, a lone one included.
+fn offers_close_all<T: PartialEq>(windows: &[T], origin: &T) -> bool {
+    windows.contains(origin)
 }
 
 /// The compact app menu — the `⌄`, or a right-click.
@@ -963,10 +977,13 @@ mod tests {
             candidates.into_iter().map(|(id, app)| (id, app.to_owned())),
         );
         assert_eq!(windows, [1, 2]);
-        assert!(has_multiple_app_windows(&windows, &1));
-        assert!(!has_multiple_app_windows(&windows, &3));
-        assert!(!has_multiple_app_windows(&[1], &1));
-        assert!(!has_multiple_app_windows::<u32>(&[], &1));
+        assert!(offers_close_all(&windows, &1));
+        assert!(!offers_close_all(&windows, &3));
+        assert!(
+            offers_close_all(&[1], &1),
+            "a lone window is offered it too"
+        );
+        assert!(!offers_close_all::<u32>(&[], &1));
     }
 
     #[test]
