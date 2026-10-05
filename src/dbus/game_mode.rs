@@ -574,6 +574,8 @@ pub enum GameModeCommand {
         visible: bool,
         blocking: bool,
     },
+    /// The overlay up is an on-screen keyboard typing into the game.
+    SetOverlayKeyboard(bool),
 }
 
 /// Compositor-side handle: mutate the snapshot and emit signals. Stored on
@@ -865,6 +867,19 @@ impl GameModeInterface {
             .send_from(GameModeCommand::SetOverlay { visible, blocking }, sender);
     }
 
+    /// Whether the overlay up is an on-screen keyboard typing into the game:
+    /// it takes the pointer as a blocking overlay does, but the game keeps
+    /// keyboard focus, so the keys it injects reach the game.
+    async fn set_overlay_keyboard(
+        &self,
+        on: bool,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) {
+        let sender = header.sender().map(|name| name.to_string());
+        self.io
+            .send_from(GameModeCommand::SetOverlayKeyboard(on), sender);
+    }
+
     // ── state ──
     #[zbus(property)]
     async fn active(&self) -> bool {
@@ -1150,16 +1165,34 @@ impl State {
             GameModeCommand::SetOverlay { visible, blocking } => {
                 // The native QAM can't set the X11 overlay marker, so it asserts
                 // visibility over D-Bus; OR'd with real overlay-window presence.
-                self.common.shell.write().game_mode.overlay_asserted = visible;
+                {
+                    let mut shell = self.common.shell.write();
+                    shell.game_mode.overlay_asserted = visible;
+                    shell.game_mode.overlay_blocking = visible && blocking;
+                }
                 self.refresh_overlay_visible();
                 // `blocking` routes input to the QAM over the game (best-effort:
                 // grab a present overlay/launcher window; restore on release).
-                if visible && blocking {
+                if visible && blocking && !self.common.shell.read().game_mode.overlay_keyboard {
                     self.grab_overlay_input();
                 } else {
                     self.release_game_mode_input_grab();
                 }
                 debug!(target: GAMING_TARGET, visible, blocking, "cmd: set overlay");
+            }
+            GameModeCommand::SetOverlayKeyboard(on) => {
+                let blocking = {
+                    let mut shell = self.common.shell.write();
+                    shell.game_mode.overlay_keyboard = on;
+                    shell.game_mode.overlay_blocking
+                };
+                // The game takes the keyboard back for the keys the board injects.
+                if on {
+                    self.release_game_mode_input_grab();
+                } else if blocking {
+                    self.grab_overlay_input();
+                }
+                debug!(target: GAMING_TARGET, on, "cmd: set overlay keyboard");
             }
         }
     }
@@ -1168,6 +1201,11 @@ impl State {
     /// compositor state and emit change notifications.
     pub fn refresh_game_mode_state(&mut self) {
         self.follow_shown_desktop();
+        // What the overlay composites changes without a new assertion, as when
+        // the launcher's quick-settings layer goes away under a raised keyboard.
+        if self.common.shell.read().game_mode.overlay_asserted {
+            self.refresh_overlay_visible();
+        }
         let bridge = self.common.game_mode_bridge.clone();
         let shell = self.common.shell.read();
 
@@ -1687,7 +1725,14 @@ impl State {
         let loop_handle = self.common.event_loop_handle.clone();
         // Preserve any client overlay assertion across a cross-app rebuild (the
         // GameMode literal below would otherwise reset it via `..Default`).
-        let prev_overlay_asserted = self.common.shell.read().game_mode.overlay_asserted;
+        let (prev_overlay_asserted, prev_overlay_blocking, prev_overlay_keyboard) = {
+            let gm = &self.common.shell.read().game_mode;
+            (
+                gm.overlay_asserted,
+                gm.overlay_blocking,
+                gm.overlay_keyboard,
+            )
+        };
 
         // Already active on this app id AND still tracking a LIVE, correctly-tagged
         // surface for it — clear any pending marker and return. The liveness check
@@ -1923,6 +1968,8 @@ impl State {
                 home_workspace,
                 pending_app_id: None,
                 overlay_asserted: prev_overlay_asserted,
+                overlay_blocking: prev_overlay_blocking,
+                overlay_keyboard: prev_overlay_keyboard,
                 ..Default::default()
             };
 
@@ -2348,12 +2395,14 @@ impl State {
         }
         // The input grab follows the overlay onto the quick-access window, which
         // maps after the launcher has already asserted a blocking overlay.
+        // So does a blocking overlay whose surface resolves late: the launcher's
+        // window, once its quick-settings layer has slid away.
         let regrab = {
-            let shell = self.common.shell.read();
-            match (
-                &shell.game_mode.input_grab,
-                &shell.game_mode.overlay_surface,
-            ) {
+            let gm = &self.common.shell.read().game_mode;
+            match (&gm.input_grab, &gm.overlay_surface) {
+                (grab, Some(overlay)) if gm.overlay_blocking && !gm.overlay_keyboard => {
+                    grab.as_ref() != Some(overlay)
+                }
                 (Some(grab), Some(overlay)) => grab != overlay && is_quick_access_window(overlay),
                 _ => false,
             }

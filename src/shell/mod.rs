@@ -442,6 +442,13 @@ pub struct GameMode {
     /// QAM, which can't set the X11 overlay marker). OR'd with real overlay
     /// presence into `overlay_active`.
     pub overlay_asserted: bool,
+    /// Whether that assertion takes input (`SetOverlay(_, blocking)`): the
+    /// overlay gets the pointer and the keyboard, not the game behind it.
+    pub overlay_blocking: bool,
+    /// Whether that overlay is an on-screen keyboard typing into the game
+    /// (`SetOverlayKeyboard`): it still gets the pointer, but the game keeps
+    /// keyboard focus.
+    pub overlay_keyboard: bool,
     /// The window currently holding the input grab over the game (via
     /// `STEAM_INPUT_FOCUS` or `SetOverlay(blocking)`), so it can be released
     /// cleanly. Reset by `GameMode::default()` on exit.
