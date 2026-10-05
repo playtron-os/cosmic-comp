@@ -31,7 +31,7 @@ window-menu-resize-edge-right = Right
 window-menu-resize-edge-bottom = Bottom
 
 screenshot-app-name = Screenshot
-screenshot-saved-to = Screenshot saved to:
+screenshot-saved = Screenshot saved
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
 
 window-menu-record = Record window
@@ -50,8 +50,8 @@ halo-all-commands = All commands
 halo-new-window = New { $app } window
 halo-park = Park — restore it from its app in the bar
 halo-fill = Fill / restore
-halo-fullscreen = Fullscreen
-halo-exit-fullscreen = Exit fullscreen
+halo-fullscreen = Fullscreen — gives it its own desktop
+halo-exit-fullscreen = Exit fullscreen — back to the desktop it came from
 halo-close = Close — runs continue
 halo-app-actions = { $app } — from its desktop entry
 halo-app-actions-fallback = This application
