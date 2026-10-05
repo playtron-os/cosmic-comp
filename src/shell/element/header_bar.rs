@@ -687,7 +687,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 trailing = trailing.push(halo_button(
                     icons::CHEVRON_DOWN,
                     Some(message),
-                    fl!("halo-window-menu"),
+                    fl!("halo-app-menu", app = name.as_str()),
                     HaloButtonRole::Menu,
                     self.menu_open,
                     theme,

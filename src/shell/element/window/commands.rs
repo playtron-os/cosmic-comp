@@ -1,4 +1,5 @@
-//! Every verb a window offers, from the compositor and from its desktop entry.
+//! Every verb a window offers: the compositor's, the ones the app publishes
+//! over `kora_app_commands_v1`, and its desktop entry's.
 //!
 //! The header, its menu and its command palette are three views of this one
 //! list, so a verb cannot be pinnable in one and missing from another.
@@ -8,11 +9,12 @@ use std::sync::{Mutex, OnceLock};
 
 use cosmic_settings_config::shortcuts;
 use icetron_p::prelude::{HaloCommand, HaloCommandGroup, PinOutcome};
-use icetron_themes::icons;
+use icetron_themes::{Icon, icons};
 
 use crate::fl;
 use crate::state::State;
 use crate::utils::desktop_action::DesktopApp;
+use crate::wayland::protocols::app_commands::catalog::{Catalog, MENU, STATEFUL};
 
 use super::Message;
 
@@ -21,9 +23,33 @@ use super::Message;
 /// action called `close` cannot shadow the window verb.
 pub const ACTION_PREFIX: &str = "action:";
 
+/// Prefix for a command the app published itself, for the same reason.
+pub const APP_PREFIX: &str = "app:";
+
+/// The shell shows at most this many of an app's menu nominees.
+pub const MENU_NOMINEE_CAP: usize = 6;
+
 /// Pinned out of the box. The capture pair is the one worth a click: both are
 /// about what is on screen *now*, on *this* window, without disturbing it.
 const DEFAULT_PINS: [&str; 2] = ["shot", "record"];
+
+/// The edit verbs a window may answer itself, with the chords apps bind them to.
+fn edit_verbs() -> [(&'static str, String, &'static str, Icon); 7] {
+    [
+        ("undo", fl!("halo-undo"), "Ctrl+Z", icons::UNDO_2),
+        ("redo", fl!("halo-redo"), "Ctrl+Shift+Z", icons::REDO_2),
+        ("cut", fl!("halo-cut"), "Ctrl+X", icons::SCISSORS),
+        ("copy", fl!("halo-copy"), "Ctrl+C", icons::COPY),
+        ("paste", fl!("halo-paste"), "Ctrl+V", icons::CLIPBOARD_PASTE),
+        (
+            "selall",
+            fl!("halo-select-all"),
+            "Ctrl+A",
+            icons::TEXT_SELECT,
+        ),
+        ("markv", fl!("halo-mark-version"), "Ctrl+S", icons::BOOKMARK),
+    ]
+}
 
 /// What the window can currently do, as the compositor sees it.
 pub struct WindowFacts<'a> {
@@ -38,6 +64,64 @@ pub struct WindowFacts<'a> {
     /// Another window of this app is open, so closing them all means something.
     pub close_all: bool,
     pub app: Option<&'a DesktopApp>,
+    /// What the window published, when its app speaks `kora_app_commands_v1`.
+    pub catalog: Option<&'a Catalog>,
+}
+
+impl WindowFacts<'_> {
+    /// Whether the window answers standard verb `id` itself, and can right now.
+    pub fn handles(&self, id: &str) -> Option<bool> {
+        self.catalog
+            .and_then(|catalog| catalog.handles.get(id).copied())
+    }
+
+    /// A second window comes from the app, or from its desktop entry.
+    pub fn new_window(&self) -> Option<bool> {
+        self.handles("neww").or(self
+            .app
+            .and_then(|app| app.new_window.as_ref())
+            .map(|_| true))
+    }
+}
+
+/// The glyph for a symbolic icon name an app gave. Names are a closed set the
+/// compositor embeds; anything else wears the generic command mark.
+pub fn app_icon(name: &str) -> Icon {
+    match name {
+        "plus" => icons::PLUS,
+        "x" => icons::X,
+        "trash" | "trash-2" => icons::TRASH_2,
+        "search" => icons::SEARCH,
+        "settings" => icons::SETTINGS,
+        "zoom-in" => icons::ZOOM_IN,
+        "zoom-out" => icons::ZOOM_OUT,
+        "refresh-cw" => icons::REFRESH_CW,
+        "rotate-cw" => icons::ROTATE_CW,
+        "share" | "share-2" => icons::SHARE_2,
+        "download" => icons::DOWNLOAD,
+        "upload" => icons::UPLOAD,
+        "file-plus" => icons::FILE_PLUS,
+        "folder-open" => icons::FOLDER_OPEN,
+        "message-square-plus" => icons::MESSAGE_SQUARE_PLUS,
+        "pencil" => icons::PENCIL,
+        "eraser" => icons::ERASER,
+        "arrow-up" => icons::ARROW_UP,
+        "arrow-down" => icons::ARROW_DOWN,
+        "chevron-left" => icons::CHEVRON_LEFT,
+        "chevron-right" => icons::CHEVRON_RIGHT,
+        "panel-left" => icons::PANEL_LEFT,
+        "printer" => icons::PRINTER,
+        "star" => icons::STAR,
+        "pin" => icons::PIN,
+        "send" => icons::SEND,
+        "sparkles" => icons::SPARKLES,
+        "external-link" => icons::EXTERNAL_LINK,
+        "link" => icons::LINK,
+        "copy" => icons::COPY,
+        "history" => icons::HISTORY,
+        "info" => icons::INFO,
+        _ => icons::COMMAND,
+    }
 }
 
 /// The window's verbs, in the fixed group order every window shares.
@@ -62,38 +146,46 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         .stateful(facts.recording),
     ];
 
-    if facts.app.is_some_and(|app| app.new_window.is_some()) {
-        commands.push(
-            HaloCommand::new("neww", fl!("window-menu-new-window"), HaloCommandGroup::App)
-                .icon(icons::PLUS),
-        );
-    }
-
-    // The app's own verbs, from the `[Desktop Action …]` groups it declares.
-    // The desktop already has a way for an application to say what it can do
-    // outside itself; the header offers that rather than a parallel set only
-    // apps built for this compositor could answer.
-    if let Some(app) = facts.app {
-        let section = app
-            .name
-            .clone()
-            .unwrap_or_else(|| fl!("halo-app-actions-fallback"));
-        for action in &app.actions {
+    // Edit is the window's own: only the verbs it says it answers.
+    for (id, label, keys, icon) in edit_verbs() {
+        if let Some(enabled) = facts.handles(id) {
             commands.push(
-                HaloCommand::new(
-                    format!("{ACTION_PREFIX}{}", action.id),
-                    action.name.clone(),
-                    HaloCommandGroup::App,
-                )
-                // An entry's `Icon` key is a runtime name, not one of the marks
-                // this widget set embeds, so these wear the generic command
-                // glyph rather than a wrong one.
-                .icon(icons::COMMAND)
-                .section(fl!("halo-app-actions", app = section.clone())),
+                HaloCommand::new(id, label, HaloCommandGroup::Edit)
+                    .icon(icon)
+                    .shortcut(keys)
+                    .enabled(enabled),
             );
         }
     }
 
+    let settings = HaloCommand::new("settings", fl!("halo-settings"), HaloCommandGroup::App)
+        .icon(icons::SETTINGS);
+    commands.push(match facts.handles("settings") {
+        Some(enabled) => settings.shortcut("Ctrl+,").enabled(enabled),
+        None => settings,
+    });
+    // Always offered: an app that cannot open another window says so.
+    let neww = HaloCommand::new("neww", fl!("halo-new-window-row"), HaloCommandGroup::App)
+        .icon(icons::PLUS)
+        .enabled(facts.new_window().unwrap_or(true));
+    commands.push(if facts.handles("neww").is_some() {
+        neww.shortcut("Ctrl+N")
+    } else {
+        neww
+    });
+    if let Some(enabled) = facts.handles("find") {
+        commands.push(
+            HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
+                .icon(icons::SEARCH)
+                .shortcut("Ctrl+F")
+                .enabled(enabled),
+        );
+    }
+    commands.push(
+        HaloCommand::new("info", fl!("halo-info"), HaloCommandGroup::App)
+            .icon(icons::INFO)
+            .enabled(facts.handles("info").unwrap_or(true)),
+    );
     if facts.close_all {
         commands.push(
             HaloCommand::new(
@@ -109,37 +201,20 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     commands.push(
         HaloCommand::new(
             "minimize",
-            fl!("window-menu-minimize"),
+            fl!("halo-park-window"),
             HaloCommandGroup::Window,
         )
         .icon(icons::MINUS),
     );
-    let restore = facts.maximized || facts.fullscreen;
     commands.push(
-        HaloCommand::new(
-            "maximize",
-            if restore {
-                fl!("window-menu-restore")
-            } else {
-                fl!("window-menu-maximize")
-            },
-            HaloCommandGroup::Window,
-        )
-        .icon(if restore {
-            icons::MINIMIZE_2
-        } else {
-            icons::MAXIMIZE_2
-        })
-        .enabled(facts.resizable || restore),
+        HaloCommand::new("maximize", fl!("halo-fill"), HaloCommandGroup::Window)
+            .icon(icons::MAXIMIZE_2)
+            .enabled(facts.resizable || facts.maximized || facts.fullscreen),
     );
     commands.push(
         HaloCommand::new(
             "fullscreen",
-            if facts.fullscreen {
-                fl!("window-menu-leave-fullscreen")
-            } else {
-                fl!("window-menu-fullscreen")
-            },
+            fl!("halo-fullscreen-toggle"),
             HaloCommandGroup::Window,
         )
         .icon(if facts.fullscreen {
@@ -152,15 +227,64 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     commands.push(
         // Never pinnable: Close is the one control the pill never sheds, so a
         // pin would only ever be a second copy of a button already there.
-        HaloCommand::new("close", fl!("window-menu-close"), HaloCommandGroup::Window)
+        HaloCommand::new("close", fl!("halo-close-window"), HaloCommandGroup::Window)
             .icon(icons::X)
             .pinnable(false),
     );
+
+    // The app's own block. A window that publishes nothing keeps its desktop
+    // entry's actions there instead.
+    if let Some(catalog) = facts.catalog {
+        for command in &catalog.commands {
+            let mut row = HaloCommand::new(
+                format!("{APP_PREFIX}{}", command.id),
+                command.name.clone(),
+                HaloCommandGroup::Own,
+            )
+            .icon(app_icon(&command.icon))
+            .enabled(command.enabled);
+            if !command.keys.is_empty() {
+                row = row.shortcut(command.keys.clone());
+            }
+            if !command.section.is_empty() {
+                row = row.section(command.section.clone());
+            }
+            if command.flags & STATEFUL != 0 {
+                row = row.stateful(command.active);
+            }
+            commands.push(row);
+        }
+    } else if let Some(app) = facts.app {
+        for action in &app.actions {
+            commands.push(
+                HaloCommand::new(
+                    format!("{ACTION_PREFIX}{}", action.id),
+                    action.name.clone(),
+                    HaloCommandGroup::Own,
+                )
+                // An entry's `Icon` key is a runtime name, not one of the marks
+                // this widget set embeds, so these wear the generic command
+                // glyph rather than a wrong one.
+                .icon(icons::COMMAND),
+            );
+        }
+    }
     commands
 }
 
+/// The commands an app put forward for its `⌄` menu, in its order, capped.
+pub fn menu_nominees(
+    catalog: &Catalog,
+) -> impl Iterator<Item = &crate::wayland::protocols::app_commands::catalog::Command> {
+    catalog
+        .commands
+        .iter()
+        .filter(|command| command.flags & MENU != 0)
+        .take(MENU_NOMINEE_CAP)
+}
+
 /// The compositor message a command id stands for, or `None` when the id names
-/// one of the window's own desktop-entry actions.
+/// one of the window's own commands or desktop-entry actions.
 pub fn message_for(id: &str) -> Option<Message> {
     Some(match id {
         "shot" => Message::Screenshot,
@@ -276,6 +400,7 @@ mod tests {
             resizable: true,
             close_all: false,
             app,
+            catalog: None,
         }
     }
 
@@ -306,6 +431,7 @@ mod tests {
         );
     }
 
+    /// Its block is headed by the app's name, as an app's own commands are.
     #[test]
     fn a_desktop_entry_contributes_its_own_actions_under_the_app_name() {
         let app = app(
@@ -318,8 +444,8 @@ mod tests {
             .find(|c| c.id == format!("{ACTION_PREFIX}compose"))
             .expect("the entry's action is offered");
         assert_eq!(action.label, "Compose");
-        assert_eq!(action.group, HaloCommandGroup::App);
-        assert!(action.section.is_some());
+        assert_eq!(action.group, HaloCommandGroup::Own);
+        assert!(action.section.is_none());
         assert!(desktop_action(Some(&app), &action.id).is_some());
         // Namespaced, so an entry cannot shadow a window verb.
         assert!(message_for(&action.id).is_none());
@@ -345,5 +471,130 @@ mod tests {
         assert_eq!(pins("pins-test-a").len(), TRAY_CAP);
         assert_eq!(toggle_pin("pins-test-a", "fullscreen"), PinOutcome::Full);
         assert_eq!(pins("pins-test-a").len(), TRAY_CAP);
+    }
+
+    fn catalog() -> Catalog {
+        use crate::wayland::protocols::app_commands::catalog::{BOUND, Command};
+        let mut catalog = Catalog::default();
+        catalog.handle("copy".into(), 0).unwrap();
+        catalog.handle("neww".into(), 1).unwrap();
+        for (index, flags) in [
+            MENU,
+            0,
+            MENU | STATEFUL,
+            MENU,
+            MENU,
+            MENU,
+            MENU,
+            MENU | BOUND,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            catalog
+                .add(Command {
+                    id: format!("slate.c{index}"),
+                    name: format!("Command {index}"),
+                    keys: String::new(),
+                    section: if index < 4 {
+                        "File".into()
+                    } else {
+                        String::new()
+                    },
+                    icon: "zoom-in".into(),
+                    flags,
+                    enabled: true,
+                    active: false,
+                })
+                .unwrap();
+        }
+        catalog.set_state("slate.c2", 1).unwrap();
+        catalog
+    }
+
+    /// Edit lists only the verbs the window says it answers, as it can now.
+    #[test]
+    fn a_window_s_edit_group_is_the_verbs_it_handles() {
+        let catalog = catalog();
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let listed = commands(&facts);
+        let edit: Vec<_> = listed
+            .iter()
+            .filter(|c| c.group == HaloCommandGroup::Edit)
+            .collect();
+        assert_eq!(edit.len(), 1);
+        assert_eq!(edit[0].id, "copy");
+        assert!(!edit[0].enabled);
+        assert_eq!(edit[0].shortcut.as_deref(), Some("Ctrl+C"));
+        assert!(listed.iter().any(|c| c.id == "neww" && c.enabled));
+        assert!(
+            commands(&self::facts(None))
+                .iter()
+                .all(|c| c.group != HaloCommandGroup::Edit)
+        );
+    }
+
+    /// The app's own commands make the last block, apart from the shell's ids.
+    #[test]
+    fn a_window_s_own_commands_follow_the_system_groups() {
+        let catalog = catalog();
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let commands = commands(&facts);
+        let own: Vec<_> = commands
+            .iter()
+            .filter(|c| c.group == HaloCommandGroup::Own)
+            .collect();
+        assert_eq!(own.len(), 8);
+        assert_eq!(own[0].id, format!("{APP_PREFIX}slate.c0"));
+        assert_eq!(own[0].section.as_deref(), Some("File"));
+        assert_eq!(own[0].icon, Some(icons::ZOOM_IN));
+        assert!(own[2].stateful && own[2].on);
+        assert_eq!(commands.last().unwrap().group, HaloCommandGroup::Own);
+        assert!(message_for(&own[0].id).is_none());
+    }
+
+    /// An app that publishes its own commands no longer gets its desktop entry's.
+    #[test]
+    fn desktop_entry_actions_stand_in_only_for_a_silent_window() {
+        let app = app(
+            "[Desktop Entry]\nType=Application\nName=Example\nActions=compose;\n\
+             [Desktop Action compose]\nName=Compose\nExec=example --compose\n",
+        );
+        let silent = commands(&facts(Some(&app)));
+        assert!(
+            silent
+                .iter()
+                .any(|c| c.id == format!("{ACTION_PREFIX}compose")
+                    && c.group == HaloCommandGroup::Own)
+        );
+        let catalog = catalog();
+        let mut facts = facts(Some(&app));
+        facts.catalog = Some(&catalog);
+        assert!(
+            commands(&facts)
+                .iter()
+                .all(|c| !c.id.starts_with(ACTION_PREFIX))
+        );
+    }
+
+    #[test]
+    fn the_menu_takes_the_first_six_nominees_in_order() {
+        let catalog = catalog();
+        let nominees: Vec<_> = menu_nominees(&catalog).map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            nominees,
+            [
+                "slate.c0", "slate.c2", "slate.c3", "slate.c4", "slate.c5", "slate.c6"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_icon_name_wears_the_generic_mark() {
+        assert_eq!(app_icon("zoom-in"), icons::ZOOM_IN);
+        assert_eq!(app_icon("../../etc/passwd"), icons::COMMAND);
+        assert_eq!(app_icon(""), icons::COMMAND);
     }
 }

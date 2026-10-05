@@ -21,8 +21,13 @@ use iced_widget::{self, Column, Row, Space, button, container, svg::Svg};
 const ARROW_RIGHT_S_LINE: &[u8] = icetron_themes::icons::CHEVRON_RIGHT.bytes;
 const CHECK_LINE: &[u8] = icetron_themes::icons::CHECK.bytes;
 
+use icetron_p::components::{
+    dropdown::DropdownVariant,
+    menu_card::{self, SubmenuRow},
+};
 use icetron_p::prelude::styled_text;
 use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown, halo_ask_footer, matching};
+use icetron_themes::Icon;
 use smithay::{
     backend::{
         input::{ButtonState, KeyState, Keycode, TouchSlot},
@@ -209,6 +214,7 @@ pub enum Item {
     Submenu {
         title: String,
         items: Vec<Item>,
+        icon: Option<Icon>,
     },
     Entry {
         title: String,
@@ -217,6 +223,10 @@ pub enum Item {
         toggled: bool,
         submenu: bool,
         disabled: bool,
+        /// A second line under the title. Drawn by Halo menus only.
+        subtitle: Option<String>,
+        /// A glyph before the title. Drawn by Halo menus only.
+        icon: Option<Icon>,
     },
 }
 
@@ -224,7 +234,7 @@ impl fmt::Debug for Item {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Separator => write!(f, "Separator"),
-            Self::Submenu { title, items } => f
+            Self::Submenu { title, items, .. } => f
                 .debug_struct("Submenu")
                 .field("title", title)
                 .field("items", items)
@@ -236,6 +246,7 @@ impl fmt::Debug for Item {
                 toggled,
                 submenu,
                 disabled,
+                ..
             } => f
                 .debug_struct("Entry")
                 .field("title", title)
@@ -261,6 +272,8 @@ impl Item {
             toggled: false,
             submenu: false,
             disabled: false,
+            subtitle: None,
+            icon: None,
         }
     }
 
@@ -268,7 +281,29 @@ impl Item {
         Item::Submenu {
             title: title.into(),
             items,
+            icon: None,
         }
+    }
+
+    pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        if let Item::Entry {
+            subtitle: ref mut s,
+            ..
+        } = self
+        {
+            *s = Some(subtitle.into());
+        }
+        self
+    }
+
+    pub fn icon(mut self, glyph: Icon) -> Self {
+        match self {
+            Item::Entry { ref mut icon, .. } | Item::Submenu { ref mut icon, .. } => {
+                *icon = Some(glyph);
+            }
+            Item::Separator => {}
+        }
+        self
     }
 
     pub fn shortcut(mut self, shortcut: impl Into<Option<String>>) -> Self {
@@ -360,6 +395,10 @@ pub struct ContextMenu {
     /// dispatches messages synchronously.
     keep_open: AtomicBool,
     closing: AtomicBool,
+    /// The Halo menu row whose fly-out is open.
+    flyout: Mutex<Option<usize>>,
+    /// Whether the pointer is on that row.
+    on_flyout_row: AtomicBool,
 }
 
 impl ContextMenu {
@@ -372,7 +411,62 @@ impl ContextMenu {
             palette: None,
             keep_open: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            flyout: Mutex::new(None),
+            on_flyout_row: AtomicBool::new(false),
         }
+    }
+
+    /// The Halo menu's rows as the menu card draws them, and the pointer
+    /// reports every row makes so a fly-out opens and closes as it moves.
+    fn halo_sections(&self) -> (Vec<DropdownSection<'_, Message>>, Vec<SubmenuRow<Message>>) {
+        let open = *self.flyout.lock().unwrap();
+        let mut rows = Vec::new();
+        let sections = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| {
+                let (icon, item) = match item {
+                    Item::Separator => return DropdownSection::Divider,
+                    Item::Entry {
+                        title,
+                        shortcut,
+                        disabled,
+                        toggled,
+                        subtitle,
+                        icon,
+                        ..
+                    } => {
+                        let mut row = DropdownItem::new(title, Message::ItemPressed(idx))
+                            .disabled(*disabled)
+                            .active(*toggled);
+                        if let Some(shortcut) = shortcut {
+                            row = row.shortcut(shortcut);
+                        }
+                        if let Some(subtitle) = subtitle {
+                            row = row.subtitle(subtitle);
+                        }
+                        (icon, row)
+                    }
+                    Item::Submenu { title, icon, .. } => (
+                        icon,
+                        DropdownItem::new(title, Message::RowEntered(idx))
+                            .submenu()
+                            .active(open == Some(idx)),
+                    ),
+                };
+                rows.push(SubmenuRow {
+                    section: idx,
+                    on_enter: Message::RowEntered(idx),
+                    on_exit: Message::RowLeft(idx),
+                });
+                DropdownSection::Item(match icon {
+                    Some(icon) => item.icon((*icon).into()),
+                    None => item,
+                })
+            })
+            .collect();
+        (sections, rows)
     }
 
     pub fn set_row_width(&self, width: f32) {
@@ -395,6 +489,10 @@ pub enum Message {
     Submit,
     /// The Ask row: open chat with the query.
     AskChat,
+    /// The pointer reached a Halo menu row: open its fly-out, or close another's.
+    RowEntered(usize),
+    /// The pointer left a Halo menu row.
+    RowLeft(usize),
 }
 
 impl item::CursorEvents for Message {
@@ -490,6 +588,45 @@ impl Program for ContextMenu {
                         crate::shell::element::window::commands::open_chat(state, &query);
                     });
                     self.selected.store(true, Ordering::SeqCst);
+                }
+            }
+            Message::RowEntered(idx) => {
+                let submenu = match self.items.get(idx) {
+                    Some(Item::Submenu { items, .. }) => Some(items.clone()),
+                    _ => None,
+                };
+                self.on_flyout_row
+                    .store(submenu.is_some(), Ordering::SeqCst);
+                let mut flyout = self.flyout.lock().unwrap();
+                if *flyout == Some(idx) {
+                    return Task::none();
+                }
+                let had = flyout.is_some();
+                *flyout = submenu.is_some().then_some(idx);
+                drop(flyout);
+                if (had || submenu.is_some())
+                    && let Some((seat, _)) = last_seat.cloned()
+                {
+                    loop_handle.insert_idle(move |_| {
+                        show_flyout(&seat, submenu.map(|items| (idx, items)));
+                    });
+                }
+            }
+            Message::RowLeft(idx) => {
+                self.on_flyout_row.store(false, Ordering::SeqCst);
+                if *self.flyout.lock().unwrap() == Some(idx)
+                    && let Some((seat, _)) = last_seat.cloned()
+                {
+                    // A grace period, so the pointer can cross into the fly-out.
+                    loop_handle.insert_idle(move |state| {
+                        let _ = state.common.event_loop_handle.insert_source(
+                            calloop::timer::Timer::from_duration(menu_card::grace_delay()),
+                            move |_, _, _| {
+                                settle_flyout(&seat, idx);
+                                calloop::timer::TimeoutAction::Drop
+                            },
+                        );
+                    });
                 }
             }
             Message::ItemEntered(idx, bounds) => {
@@ -664,33 +801,12 @@ impl Program for ContextMenu {
             return container(card).padding(palette_padding(theme)).into();
         }
         if self.halo {
-            let sections = self
-                .items
-                .iter()
-                .enumerate()
-                .map(|(idx, item)| match item {
-                    Item::Separator => DropdownSection::Divider,
-                    Item::Entry {
-                        title,
-                        shortcut,
-                        disabled,
-                        toggled,
-                        ..
-                    } => {
-                        let mut item = DropdownItem::new(title, Message::ItemPressed(idx))
-                            .disabled(*disabled)
-                            .active(*toggled);
-                        if let Some(shortcut) = shortcut {
-                            item = item.shortcut(shortcut);
-                        }
-                        DropdownSection::Item(item)
-                    }
-                    Item::Submenu { title, .. } => DropdownSection::Label(title.clone()),
-                })
-                .collect();
+            let (sections, rows) = self.halo_sections();
             return container(
-                container(dropdown(&**theme).shadow(true).sections(sections))
-                    .width(Length::Fixed(theme.halo_style().menu_width)),
+                dropdown(&**theme)
+                    .variant(DropdownVariant::Menu)
+                    .shadow(true)
+                    .sections_with_submenus(sections, rows),
             )
             .padding(halo_menu_padding(theme))
             .into();
@@ -900,7 +1016,7 @@ impl Program for ContextMenu {
             let (padding, radius) = if self.palette.is_some() {
                 (palette_padding(theme), theme.radii_xl())
             } else {
-                (halo_menu_padding(theme), theme.dropdown_radius())
+                (halo_menu_padding(theme), theme.radii_md())
             };
             Some((
                 IcedRectangle {
@@ -920,8 +1036,92 @@ impl Program for ContextMenu {
     }
 }
 
+/// The Halo menu is the design's menu card, which wears the elevated shadow.
 fn halo_menu_padding(theme: &CompTheme) -> iced_core::Padding {
-    shadow_padding(&theme.dropdown_shadow())
+    shadow_padding(&theme.shadow_elevated())
+}
+
+/// Replace the Halo menu's fly-out with `flyout`'s rows beside row `idx`, or close it.
+fn show_flyout(seat: &Seat<State>, flyout: Option<(usize, Vec<Item>)>) {
+    let grab_state = seat
+        .user_data()
+        .get::<SeatMenuGrabState>()
+        .unwrap()
+        .lock()
+        .unwrap();
+    let Some(grab_state) = &*grab_state else {
+        return;
+    };
+    let mut elements = grab_state.elements.lock().unwrap();
+    elements.truncate(1);
+    let Some(root) = elements.first() else {
+        return;
+    };
+    root.iced.force_update();
+    let Some((idx, items)) = flyout else {
+        return;
+    };
+    let theme = root.iced.with_theme(|theme| theme.clone());
+    let Some(span) = root.iced.with_program(|menu| {
+        let (sections, _) = menu.halo_sections();
+        menu_card::row_span(&sections, idx, &*theme)
+    }) else {
+        return;
+    };
+    let mut menu = ContextMenu::new(items);
+    menu.halo = true;
+    let element = IcedElement::new(
+        menu,
+        Size::default(),
+        root.iced.loop_handle(),
+        theme.clone(),
+    );
+    let size = element.minimum_size();
+    element.resize(size);
+    // Both cards sit the same shadow padding inside their surfaces.
+    let origin = menu_card::flyout_origin(span, &*theme);
+    let position = root.position + Point::from((origin.x.round() as i32, origin.y.round() as i32));
+    element.output_enter(&seat.active_output(), element.bbox());
+    element.set_additional_scale(*grab_state.scale.lock().unwrap());
+    elements.push(Element {
+        iced: element,
+        position,
+        pointer_entered: false,
+        touch_entered: None,
+    });
+}
+
+/// After the grace period: keep the fly-out only if the pointer went into it.
+fn settle_flyout(seat: &Seat<State>, idx: usize) {
+    let grab_state = seat
+        .user_data()
+        .get::<SeatMenuGrabState>()
+        .unwrap()
+        .lock()
+        .unwrap();
+    let Some(grab_state) = &*grab_state else {
+        return;
+    };
+    let mut elements = grab_state.elements.lock().unwrap();
+    let in_flyout = elements.get(1).is_some_and(|flyout| flyout.pointer_entered);
+    let Some(root) = elements.first() else {
+        return;
+    };
+    let still_open = root.iced.with_program(|menu| {
+        let mut flyout = menu.flyout.lock().unwrap();
+        let open = *flyout == Some(idx);
+        if open && !in_flyout && !menu.on_flyout_row.load(Ordering::SeqCst) {
+            *flyout = None;
+            return false;
+        }
+        open
+    });
+    if !still_open {
+        elements.truncate(1);
+        if let Some(root) = elements.first() {
+            root.iced.force_update();
+        }
+    }
 }
 
 /// The palette's card wears the popover shadow, not the dropdown's.

@@ -21,6 +21,7 @@ use crate::{
         protocols::{
             a11y::A11yState,
             animated_resize::AnimatedResizeState,
+            app_commands::AppCommandsState,
             backdrop_color::BackdropColorState,
             corner_radius::CornerRadiusState,
             drm::WlDrmState,
@@ -362,6 +363,7 @@ pub struct Common {
 
     // wayland state
     pub animated_resize_state: AnimatedResizeState,
+    pub app_commands_state: AppCommandsState,
     pub backdrop_color_state: BackdropColorState,
     pub compositor_state: CompositorState,
     pub corner_radius_state: CornerRadiusState,
@@ -797,6 +799,7 @@ impl State {
         let config = Config::load(&handle);
         let reduced_motion = config.cosmic_conf.reduced_motion;
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
+        let app_commands_state = AppCommandsState::new(dh);
         let backdrop_color_state = BackdropColorState::new::<Self>(dh);
         let compositor_state = CompositorState::new::<Self>(dh);
         let corner_radius_state = CornerRadiusState::new::<Self>(dh);
@@ -966,6 +969,7 @@ impl State {
                 },
 
                 animated_resize_state,
+                app_commands_state,
                 backdrop_color_state,
                 compositor_state,
                 corner_radius_state,
