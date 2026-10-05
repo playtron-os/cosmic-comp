@@ -1908,6 +1908,23 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
     fn unset(&mut self, _data: &mut State) {}
 }
 
+/// Close an open palette from outside it (Super+K pressed again).
+pub(crate) fn close_palette(seat: &Seat<State>, state: &mut State) {
+    let palette = seat
+        .get_keyboard()
+        .and_then(|keyboard| keyboard.with_grab(|_, grab| grab.is::<PaletteKeyboardGrab>()));
+    if palette != Some(true) {
+        return;
+    }
+    release_palette_keyboard(seat, state);
+    if let Some(pointer) = seat.get_pointer()
+        && pointer.is_grabbed()
+    {
+        let time = state.common.clock.now().as_millis();
+        pointer.unset_grab(state, smithay::utils::SERIAL_COUNTER.next_serial(), time);
+    }
+}
+
 /// The palette's keyboard grab lives and dies with its pointer grab.
 fn release_palette_keyboard(seat: &Seat<State>, data: &mut State) {
     if let Some(keyboard) = seat.get_keyboard()

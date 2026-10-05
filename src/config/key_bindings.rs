@@ -109,6 +109,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn super_k_opens_the_window_palette() {
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (combo, want) in [
+            ("Super+k", shortcuts::Action::WindowCommands),
+            (
+                "Super+Ctrl+Up",
+                shortcuts::Action::Focus(shortcuts::action::FocusDirection::Up),
+            ),
+        ] {
+            let binding = shortcuts::Binding::from_str(combo).unwrap();
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+        }
+    }
+
     /// Super+Tab is the workspace switch, not a second Alt+Tab.
     #[test]
     fn super_tab_switches_workspaces() {

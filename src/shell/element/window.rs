@@ -119,6 +119,17 @@ static POINTER_HOVERED_WINDOW: std::sync::LazyLock<Mutex<Option<CosmicWindow>>> 
 static POINTER_HOVER_UPDATED: std::sync::LazyLock<AtomicBool> =
     std::sync::LazyLock::new(|| AtomicBool::new(false));
 
+/// Super held: every window shows its Halo (HALO-SPEC "⌘ held", the overview).
+static HALO_OVERVIEW: AtomicBool = AtomicBool::new(false);
+
+pub fn halo_overview() -> bool {
+    HALO_OVERVIEW.load(Ordering::SeqCst)
+}
+
+pub(crate) fn set_halo_overview(on: bool) -> bool {
+    HALO_OVERVIEW.swap(on, Ordering::SeqCst) != on
+}
+
 /// Whether hover tracking is active for the current motion cycle.
 /// When false, focus_under() skips all hover state updates.
 static HOVER_TRACKING_ACTIVE: std::sync::LazyLock<AtomicBool> =
@@ -637,6 +648,10 @@ impl CosmicWindowInternal {
         super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
     }
 
+    fn halo_revealed(&self) -> bool {
+        self.pointer_over_window.load(Ordering::SeqCst) || halo_overview()
+    }
+
     fn header_origin(&self) -> Point<f64, Logical> {
         if self.fullscreen_output.is_some() {
             (
@@ -955,7 +970,7 @@ impl CosmicWindow {
                 p.uses_halo_header() && p.has_ssd(false) && !is_surface_embedded(&p.window),
                 super::header_bar::halo_is_visible(
                     p.fullscreen_output.is_some(),
-                    p.pointer_over_window.load(Ordering::SeqCst),
+                    p.halo_revealed(),
                     p.activated.load(Ordering::SeqCst),
                     p.menu_open.load(Ordering::SeqCst) || p.commands_open.load(Ordering::SeqCst),
                 ),
@@ -1092,6 +1107,39 @@ impl CosmicWindow {
 
     /// Set whether the pointer is currently over this window.
     /// Called from PointerFocusTarget enter/leave to track hover state.
+    fn commands_open(&self) -> bool {
+        self.0
+            .with_program(|p| p.commands_open.load(Ordering::SeqCst))
+    }
+
+    /// Super+K: open the palette under the pill, or close it if it is up.
+    pub fn toggle_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if !self.0.with_program(|p| p.uses_halo_header()) {
+            return;
+        }
+        if self.commands_open() {
+            let seat = seat.clone();
+            loop_handle.insert_idle(move |state| crate::shell::grabs::close_palette(&seat, state));
+        } else {
+            self.open_commands(seat, loop_handle);
+        }
+    }
+
+    fn open_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let query_input = halo::menu_input_query(seat.clone(), serial);
+        let surface = self.surface();
+        let app = self
+            .0
+            .with_program(|p| p.desktop_app.lock().unwrap().clone());
+        let seat = seat.clone();
+        loop_handle.insert_idle(move |state| {
+            if let Some((start, position)) = query_input() {
+                halo::open_commands(state, &surface, &seat, serial, start, position, app);
+            }
+        });
+    }
+
     pub fn set_pointer_over_window(&self, value: bool) {
         self.0.with_program(|p| {
             p.pointer_over_window.store(value, Ordering::SeqCst);
@@ -1180,6 +1228,17 @@ impl CosmicWindow {
             .find(|fullscreen| &fullscreen.surface == surface)
         {
             fullscreen.halo.0.force_update();
+        }
+    }
+
+    pub(crate) fn refresh_all_halos(shell: &crate::shell::Shell) {
+        for mapped in shell.mapped() {
+            mapped.force_update();
+        }
+        for workspace in shell.workspaces().spaces() {
+            for fullscreen in &workspace.fullscreen_surfaces {
+                fullscreen.halo.0.force_update();
+            }
         }
     }
 
@@ -1932,7 +1991,7 @@ impl Program for CosmicWindowInternal {
                 theme,
                 super::header_bar::halo_is_visible(
                     self.fullscreen_output.is_some(),
-                    self.pointer_over_window.load(Ordering::SeqCst),
+                    self.halo_revealed(),
                     self.activated.load(Ordering::SeqCst),
                     self.menu_open.load(Ordering::SeqCst)
                         || self.commands_open.load(Ordering::SeqCst),

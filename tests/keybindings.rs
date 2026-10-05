@@ -87,16 +87,19 @@ fn every_focus_direction_is_reachable() {
         );
     }
 
-    // Super+l is the lock screen, so Focus(Right) has no vim-key chord and the
-    // arrow is the only way there; the rest of the vim keys still have to work.
+    // Super+l is the lock screen and Super+k the window palette, so Right and
+    // Up are reached by their arrows; the rest of the vim keys still have to work.
     assert_eq!(
         action_for(&shortcuts, "Super+Ctrl+Right"),
         Action::Focus(FocusDirection::Right)
     );
+    assert_eq!(
+        action_for(&shortcuts, "Super+Ctrl+Up"),
+        Action::Focus(FocusDirection::Up)
+    );
     for (binding, direction) in [
         ("Super+h", FocusDirection::Left),
         ("Super+j", FocusDirection::Down),
-        ("Super+k", FocusDirection::Up),
         ("Super+u", FocusDirection::Out),
         ("Super+Shift+u", FocusDirection::In),
     ] {
