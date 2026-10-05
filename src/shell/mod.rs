@@ -2979,6 +2979,12 @@ impl Shell {
         self.workspaces_mut().set_theme(theme);
     }
 
+    pub fn set_halo_overview(&self, on: bool) {
+        if element::window::set_halo_overview(on) {
+            element::window::CosmicWindow::refresh_all_halos(self);
+        }
+    }
+
     /// Returns true exactly once, for adoption of the login workspace.
     pub fn take_initial_realm_activation(&mut self) -> bool {
         !std::mem::replace(&mut self.realm_initialized, true)

@@ -1106,6 +1106,35 @@ impl State {
                 }
             }
 
+            Action::WindowCommands => {
+                if !crate::shell::element::header_bar::uses_halo_header(
+                    self.common.shell.read().theme(),
+                ) {
+                    let up = Action::Focus(FocusDirection::Up);
+                    return self.handle_shortcut_action(
+                        up, seat, serial, time, pattern, direction, propagate,
+                    );
+                }
+                let shell = self.common.shell.read();
+                let handle = &self.common.event_loop_handle;
+                match seat.get_keyboard().unwrap().current_focus() {
+                    Some(KeyboardFocusTarget::Element(mapped)) => {
+                        mapped.toggle_commands(seat, handle)
+                    }
+                    Some(KeyboardFocusTarget::Fullscreen(surface)) => {
+                        if let Some(fullscreen) = shell
+                            .workspaces()
+                            .spaces()
+                            .flat_map(|workspace| &workspace.fullscreen_surfaces)
+                            .find(|fullscreen| fullscreen.surface == surface)
+                        {
+                            fullscreen.halo.toggle_commands(seat, handle);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
             Action::ToggleWindowFloating => {
                 if self.common.config.cosmic_conf.tiling_enabled {
                     let Some(output) = seat.focused_output() else {

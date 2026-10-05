@@ -12,7 +12,8 @@
     (modifiers: [Super, Ctrl], key: "Down"): Focus(Down),
     (modifiers: [Super], key: "h"): Focus(Left),
     (modifiers: [Super], key: "j"): Focus(Down),
-    (modifiers: [Super], key: "k"): Focus(Up),
+    // Super+K: the window's palette in Halo themes, focus up in bar themes.
+    (modifiers: [Super], key: "k"): WindowCommands,
     (modifiers: [Super], key: "u"): Focus(Out),
     (modifiers: [Super, Shift], key: "u"): Focus(In),
     (modifiers: [Super, Shift], key: "Left"): Move(Left),

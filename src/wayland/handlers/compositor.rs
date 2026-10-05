@@ -562,10 +562,7 @@ impl State {
                     && !crate::wayland::handlers::surface_embed::is_surface_embedded(
                         &pending.surface,
                     ) {
-                    crate::shell::element::header_bar::ssd_header_height_for(
-                        shell.theme(),
-                        !crate::wayland::protocols::halo_header::allows_overlay(surface),
-                    ) as i32
+                    crate::shell::element::header_bar::ssd_top_reserve(shell.theme())
                 } else {
                     0
                 };
@@ -588,12 +585,19 @@ impl State {
                     // For floating windows, set bounds so the client picks a
                     // size that won't be further reduced by map_internal().
                     // map_internal() caps windows without a max_size to 2/3 of
-                    // the non-exclusive zone. Subtract SSD height from the
-                    // height so that content + SSD header fits within the cap.
+                    // the zone a window may occupy; a Halo's room comes out of the zone first.
                     let active_output = shell.seats.last_active().active_output();
                     let zone = layer_map_for_output(&active_output).non_exclusive_zone();
-                    let bounds =
-                        Size::from((zone.size.w / 3 * 2, (zone.size.h / 3 * 2 - ssd_h).max(1)));
+                    let (above, inside) =
+                        if crate::shell::element::header_bar::uses_halo_header(shell.theme()) {
+                            (ssd_h, 0)
+                        } else {
+                            (0, ssd_h)
+                        };
+                    let bounds = Size::from((
+                        zone.size.w / 3 * 2,
+                        ((zone.size.h - above) / 3 * 2 - inside).max(1),
+                    ));
                     toplevel.with_pending_state(|state| {
                         state.bounds = Some(bounds);
                     });

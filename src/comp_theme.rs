@@ -15,10 +15,12 @@ use std::ops::Deref;
 use std::sync::Arc;
 use tracing::info;
 
-/// CSS `color-mix(in oklch, accent 45%, border)` premultiplies L/C but not hue.
-fn mix_border_accent(border: Color, accent: Color) -> Color {
+const FRAME_FOCUS_WEIGHT: f32 = 0.60;
+const FRAME_RING_ALPHA: f32 = 0.30;
+
+/// CSS `color-mix(in oklch, ...)` premultiplies L and C but not hue.
+fn mix_border_accent(border: Color, accent: Color, weight: f32) -> Color {
     use palette::{FromColor, Mix, Oklch, Srgb};
-    let weight = 0.45;
     let alpha = border.a * (1.0 - weight) + accent.a * weight;
     if alpha <= f32::EPSILON {
         return Color::TRANSPARENT;
@@ -198,30 +200,33 @@ impl CompTheme {
     }
 
     pub fn halo_accent(&self) -> Color {
-        self.workspace_accent.unwrap_or_else(|| self.primary())
-    }
-
-    pub fn halo_accent_background(&self) -> Color {
-        let mut accent = self.halo_accent();
-        accent.a = self.primary_lighter().a;
-        accent
+        self.workspace_accent
+            .unwrap_or_else(|| self.theme.atmosphere())
     }
 
     /// WindowFrame's Halo focus treatment; other chrome styles keep their border.
     pub(crate) fn focused_window_border(&self, focused: bool) -> Color {
         let border = self.window_border_color();
         if focused && self.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
-            mix_border_accent(border, self.halo_accent())
+            mix_border_accent(border, self.halo_accent(), FRAME_FOCUS_WEIGHT)
         } else {
             border
         }
+    }
+
+    pub(crate) fn halo_pill_border(&self) -> Color {
+        mix_border_accent(
+            self.window_border_color(),
+            self.halo_accent(),
+            icetron_p::prelude::HALO_ACCENT_BORDER_WEIGHT,
+        )
     }
 
     pub(crate) fn focused_window_ring(&self, focused: bool) -> Option<Color> {
         (focused && self.window_header_style() == icetron_themes::WindowHeaderStyle::Halo).then(
             || {
                 let mut accent = self.halo_accent();
-                accent.a *= 0.22;
+                accent.a *= FRAME_RING_ALPHA;
                 accent
             },
         )
@@ -380,11 +385,11 @@ mod focus_border_tests {
         let blue = Color::from_rgb(0.0, 0.4, 1.0);
         theme.workspace_accent = Some(blue);
         let focused = theme.focused_window_border(true);
-        assert!((focused.a - (0.45 + 0.55 * neutral.a)).abs() < 0.00001);
+        assert!((focused.a - (0.60 + 0.40 * neutral.a)).abs() < 0.00001);
         assert_ne!(focused, neutral);
         assert_eq!(
             theme.focused_window_ring(true),
-            Some(Color { a: 0.22, ..blue })
+            Some(Color { a: 0.30, ..blue })
         );
         assert_eq!(theme.focused_window_ring(false), None);
         theme.workspace_accent = Some(Color::from_rgb(1.0, 0.3, 0.0));
@@ -393,11 +398,21 @@ mod focus_border_tests {
     }
 
     #[test]
-    fn absent_workspace_accent_uses_brand_and_bar_chrome_stays_unchanged() {
+    fn absent_workspace_accent_uses_the_atmosphere_and_bar_chrome_stays_unchanged() {
         let theme = theme(WindowHeaderStyle::Halo);
         assert_eq!(
+            theme.halo_accent(),
+            theme.primary(),
+            "the default atmosphere"
+        );
+        let mut tokens = DEFAULT_THEME_PAIR.load(true);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        let jade = Color::from_rgb(0.27, 0.73, 0.51);
+        tokens.atmosphere = Some(jade);
+        let theme = CompTheme::new(Arc::new(tokens), true);
+        assert_eq!(
             theme.focused_window_border(true),
-            mix_border_accent(theme.window_border_color(), theme.primary())
+            mix_border_accent(theme.window_border_color(), jade, FRAME_FOCUS_WEIGHT)
         );
         let bar = super::focus_border_tests::theme(WindowHeaderStyle::Bar);
         assert_eq!(bar.focused_window_border(true), bar.window_border_color());
@@ -407,7 +422,7 @@ mod focus_border_tests {
     #[test]
     fn transparent_border_does_not_darken_the_accent() {
         let accent = Color::from_rgb(0.2, 0.5, 0.8);
-        let color = mix_border_accent(Color::TRANSPARENT, accent);
+        let color = mix_border_accent(Color::TRANSPARENT, accent, 0.45);
         for (actual, expected) in [
             (color.r, accent.r),
             (color.g, accent.g),
@@ -417,7 +432,7 @@ mod focus_border_tests {
         }
         assert!((color.a - 0.45).abs() < 0.00001);
         assert_eq!(
-            mix_border_accent(Color::TRANSPARENT, Color::TRANSPARENT),
+            mix_border_accent(Color::TRANSPARENT, Color::TRANSPARENT, 0.45),
             Color::TRANSPARENT
         );
     }

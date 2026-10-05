@@ -35,6 +35,7 @@ impl Program for Header {
 fn theme() -> CompTheme {
     let mut theme = DEFAULT_THEME_PAIR.load(true);
     theme.window_header_style = WindowHeaderStyle::Halo;
+    theme.halo_style = crate::shell::element::header_bar::design_halo_style();
     // Isolate status propagation from interpolation in the input regression.
     theme.duration_fast = 0.0;
     CompTheme::new(Arc::new(theme), true)
@@ -264,7 +265,9 @@ fn header_hover_paints_on_entry_and_clears_on_exit() {
             .layers()
             .iter()
             .flat_map(|layer| &layer.quads)
-            .any(|(_, fill)| *fill == iced_core::Background::Color(theme.feedback_error_primary()))
+            .any(|(_, fill)| {
+                *fill == iced_core::Background::Color(icetron_p::prelude::halo_close_hover(&*theme))
+            })
     };
     assert!(!has_close_fill(&mut internal));
     internal.cursor_pos = Some((close.x as f64, close.y as f64).into());
@@ -796,7 +799,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
         "widget supplies the request, not a second fade"
     );
     let first = internal.tooltip.snapshots()[0].clone();
-    assert_eq!(first.label, crate::fl!("window-menu-close"));
+    assert_eq!(first.label, crate::fl!("halo-close"));
     assert_eq!(first.opacity, 0.0);
     assert!(
         first.bounds.y > pill.y,
@@ -1112,7 +1115,9 @@ fn halo_buttons_follow_the_slide_under_a_stationary_pointer() {
             .layers()
             .iter()
             .flat_map(|layer| &layer.quads)
-            .any(|(_, fill)| *fill == iced_core::Background::Color(theme.feedback_error_primary()))
+            .any(|(_, fill)| {
+                *fill == iced_core::Background::Color(icetron_p::prelude::halo_close_hover(&*theme))
+            })
     };
     internal
         .event_queue

@@ -2002,11 +2002,9 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                     frame.radii.map(|r| r as f32 * zoom as f32),
                     alpha,
                     output_scale.x,
-                    theme.focused_window_border(true),
+                    theme.halo_pill_border(),
                     theme.window_border_width() * zoom as f32,
-                    theme
-                        .focused_window_ring(true)
-                        .unwrap_or(Color::TRANSPARENT),
+                    Color::TRANSPARENT,
                     Some(OutlineFocus {
                         progress: frame.progress,
                         tip: 0.0,

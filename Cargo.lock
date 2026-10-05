@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "cosmic-settings-config"
 version = "0.1.0"
-source = "git+https://github.com/playtron-os/cosmic-settings-daemon#5c15ff07d497353b7af4fd8decfdc51a0fd2e7f4"
+source = "git+https://github.com/playtron-os/cosmic-settings-daemon#841b7148c9e2f7a29d0b322223a47f254a60cf13"
 dependencies = [
  "cosmic-config",
  "ron 0.11.0",
@@ -3009,7 +3009,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#db81254c6e754e97f261c7f2a2b74bc5cf7cfa1c"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#96e9023f7d4644a2514dd2a77992a7c01c052f5c"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -3041,7 +3041,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#d1ea8e36ab1b36a198b4a988dcf9cd518a89b14b"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#e432c931c6cb3f98023c5358fa570baeba1bca52"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",

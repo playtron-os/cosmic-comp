@@ -19,6 +19,7 @@ uniform float scale;
 uniform vec2 draw_size;
 uniform vec2 shape_origin;
 uniform vec2 shape_size;
+uniform float dash;
 
 float coverage(vec2 p, vec2 extent, vec4 corners) {
     if (extent.x <= 0.0 || extent.y <= 0.0) return 0.0;
@@ -32,6 +33,34 @@ float coverage(vec2 p, vec2 extent, vec4 corners) {
     float distance = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
     // Linear pixel coverage preserves stroke weight as an edge crosses pixels.
     return clamp(0.5 - distance * scale, 0.0, 1.0);
+}
+
+// Arc length along a rounded rect's edge, clockwise from the top edge's left end.
+float perimeter_at(vec2 p, vec2 size, float r) {
+    float top = max(size.x - 2.0 * r, 0.0);
+    float side = max(size.y - 2.0 * r, 0.0);
+    float q = 1.57079632679 * r;
+    vec2 far = size - vec2(r);
+    if (p.x >= far.x && p.y <= r) return top + r * atan(p.x - far.x, r - p.y);
+    if (p.x >= far.x && p.y >= far.y) return top + q + side + r * atan(p.y - far.y, p.x - far.x);
+    if (p.x <= r && p.y >= far.y) return 2.0 * top + 2.0 * q + side + r * atan(r - p.x, p.y - far.y);
+    if (p.x <= r && p.y <= r) return 2.0 * top + 3.0 * q + 2.0 * side + r * atan(r - p.y, r - p.x);
+    float edge = min(min(p.y, size.x - p.x), min(size.y - p.y, p.x));
+    if (edge == p.y) return p.x - r;
+    if (edge == size.x - p.x) return top + q + p.y - r;
+    if (edge == size.y - p.y) return top + 2.0 * q + side + far.x - p.x;
+    return 2.0 * top + 3.0 * q + side + far.y - p.y;
+}
+
+// CSS `dashed`: dashes and gaps of `dash`, stretched so a whole number fit.
+float dash_mask(vec2 location) {
+    float inset = thickness * 0.5;
+    vec2 size = shape_size - vec2(thickness);
+    float r = clamp(radius.x - inset, 0.0, min(size.x, size.y) * 0.5);
+    float length = 2.0 * (size.x + size.y) - (8.0 - 6.28318530718) * r;
+    float period = length / max(floor(length / (2.0 * dash) + 0.5), 1.0);
+    float m = mod(perimeter_at(location - vec2(inset), size, r), period);
+    return clamp(min(m, period * 0.5 - m) * scale + 0.5, 0.0, 1.0);
 }
 
 // Normalized SVG stroke reveal from WindowFrame: mirrored paths run from
@@ -113,6 +142,7 @@ void main() {
     // These regions are disjoint parts of the same pixel. Add their premultiplied
     // contributions; separate over-blends would darken the shared antialiased edge.
     float border_coverage = max(body - inner, 0.0);
+    if (dash > 0.0 && border_coverage > 0.0) border_coverage *= dash_mask(location);
     float ring_coverage = max(outer - body, 0.0);
     // Skip path math for the transparent interior and for settled outlines.
     float border_reveal = border_coverage > 0.0 ? focus_mask(location, thickness * 0.5) : 0.0;

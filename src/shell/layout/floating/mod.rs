@@ -88,6 +88,38 @@ fn grabbable_position(
     ))
 }
 
+pub(crate) const HALO_TILE_GAP: i32 = 10;
+
+/// What a window keeps clear of the zone's edges: its Halo's room above, the theme's inset
+/// beside and below.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Room {
+    pub top: i32,
+    pub side: i32,
+    pub bottom: i32,
+}
+
+impl Room {
+    pub const fn above(top: i32) -> Self {
+        Self {
+            top,
+            side: 0,
+            bottom: 0,
+        }
+    }
+}
+
+pub(crate) fn window_zone<C>(zone: Rectangle<i32, C>, room: Room) -> Rectangle<i32, C> {
+    let (w, h) = (zone.size.w.max(0), zone.size.h.max(0));
+    let side = room.side.clamp(0, w / 2);
+    let top = room.top.clamp(0, h);
+    let bottom = room.bottom.clamp(0, h - top);
+    Rectangle::new(
+        (zone.loc.x + side, zone.loc.y + top).into(),
+        (w - 2 * side, h - top - bottom).into(),
+    )
+}
+
 /// How `map_internal` bounds an incoming position.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClampPolicy {
@@ -275,6 +307,7 @@ impl Animation {
         current_geometry: Rectangle<i32, Local>,
         tiled_state: Option<&TiledCorners>,
         gaps: (i32, i32),
+        halo: bool,
         motion: crate::backend::render::animations::motion::Motion,
     ) -> Rectangle<i32, Local> {
         let (duration, target_rect) = match self {
@@ -291,7 +324,7 @@ impl Animation {
             }
             Animation::Tiled { .. } => {
                 let target_geometry = if let Some(target_rect) =
-                    tiled_state.map(|state| state.relative_geometry(output_geometry, gaps))
+                    tiled_state.map(|state| state.tile(output_geometry, gaps, halo))
                 {
                     target_rect
                 } else {
@@ -332,6 +365,26 @@ pub enum TiledCorners {
 }
 
 impl TiledCorners {
+    /// A Halo window's halves are the design's `halfSnapRect`; other tiles keep COSMIC's.
+    pub fn tile(
+        &self,
+        zone: Rectangle<i32, Logical>,
+        gaps: (i32, i32),
+        halo: bool,
+    ) -> Rectangle<i32, Local> {
+        match self {
+            TiledCorners::Left | TiledCorners::Right if halo => {
+                let width = (zone.size.w - HALO_TILE_GAP) / 2;
+                let x = match self {
+                    TiledCorners::Right => zone.loc.x + zone.size.w - width,
+                    _ => zone.loc.x,
+                };
+                Rectangle::new((x, zone.loc.y).into(), (width, zone.size.h).into())
+            }
+            _ => self.relative_geometry(zone, gaps),
+        }
+    }
+
     pub fn relative_geometry(
         &self,
         output_geometry: Rectangle<i32, Logical>,
@@ -461,7 +514,8 @@ impl FloatingLayout {
         {
             let tiled_state = *mapped.floating_tiled.lock().unwrap();
             if let Some(tiled_state) = tiled_state {
-                let geometry = tiled_state.relative_geometry(output_geometry, self.gaps());
+                let zone = window_zone(output_geometry, mapped.window_room());
+                let geometry = tiled_state.tile(zone, self.gaps(), mapped.halo_clearance() > 0);
                 self.map_internal(
                     mapped,
                     Some(geometry.loc),
@@ -762,7 +816,8 @@ impl FloatingLayout {
     ) {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let target_geometry = layers.non_exclusive_zone().as_local();
+        let target_geometry =
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
         mapped.set_tiled(true);
@@ -820,7 +875,8 @@ impl FloatingLayout {
     ) {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let target_geometry = layers.non_exclusive_zone().as_local();
+        let target_geometry =
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
 
@@ -926,7 +982,7 @@ impl FloatingLayout {
         // size and may be stale if the client hasn't resized to the zone yet.
         let current_geo = if let Some(output) = self.space.outputs().next() {
             let layers = layer_map_for_output(output);
-            layers.non_exclusive_zone().as_local()
+            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local()
         } else {
             self.space
                 .element_geometry(&mapped)
@@ -1099,7 +1155,7 @@ impl FloatingLayout {
 
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let output_geometry = layers.non_exclusive_zone();
+        let output_geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room());
         mapped.set_bounds(output_geometry.size);
         let last_geometry = *mapped.last_geometry.lock().unwrap();
         let min_size = mapped.min_size().unwrap_or((320, 240).into());
@@ -1386,7 +1442,7 @@ impl FloatingLayout {
 
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let geometry = layers.non_exclusive_zone().as_local();
+        let geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
         mapped.set_bounds(geometry.size.as_logical());
         let window_size = mapped.geometry().size;
 
@@ -1435,7 +1491,7 @@ impl FloatingLayout {
                     previous_geometry: if window.is_maximized(false) {
                         let output = self.space.outputs().next().unwrap();
                         let layers = layer_map_for_output(output);
-                        layers.non_exclusive_zone().as_local()
+                        window_zone(layers.non_exclusive_zone(), window.window_room()).as_local()
                     } else {
                         mapped_geometry
                     },
@@ -1521,7 +1577,7 @@ impl FloatingLayout {
             && let Some(output) = self.space.outputs().next()
         {
             let layers = layer_map_for_output(output);
-            return Some(layers.non_exclusive_zone().as_local());
+            return Some(window_zone(layers.non_exclusive_zone(), elem.window_room()).as_local());
         }
         self.space.element_geometry(elem).map(RectExt::as_local)
     }
@@ -2290,7 +2346,8 @@ impl FloatingLayout {
 
                 let output = self.space.outputs().next().unwrap().clone();
                 let layers = layer_map_for_output(&output);
-                let output_geometry = layers.non_exclusive_zone();
+                let output_geometry =
+                    window_zone(layers.non_exclusive_zone(), element.window_room());
                 std::mem::drop(layers);
 
                 let current_geometry = self
@@ -2305,6 +2362,7 @@ impl FloatingLayout {
                         current_geometry,
                         tiled_state.as_ref(),
                         self.gaps(),
+                        element.halo_clearance() > 0,
                         self.theme.motion,
                     )
                 } else {
@@ -2386,7 +2444,8 @@ impl FloatingLayout {
                     (Direction::Left, _) => TiledCorners::Left,
                 };
 
-                let new_geo = new_state.relative_geometry(output_geometry, self.gaps());
+                let new_geo =
+                    new_state.tile(output_geometry, self.gaps(), element.halo_clearance() > 0);
                 let (new_pos, new_size) = (new_geo.loc, new_geo.size);
                 element.set_tiled(true); // TODO: More fine grained?
                 element.set_maximized(false);
@@ -2480,7 +2539,7 @@ impl FloatingLayout {
 
         // The layer map already reflects the animated exclusive zone during
         // slides (cached-state overrides + arrange happen before recalculate).
-        let geometry = layer_map_for_output(&output)
+        let zone = layer_map_for_output(&output)
             .non_exclusive_zone()
             .as_local();
 
@@ -2492,7 +2551,7 @@ impl FloatingLayout {
             .collect::<Vec<_>>()
             .into_iter()
         {
-            mapped.set_bounds(geometry.size.as_logical());
+            mapped.set_bounds(window_zone(zone, mapped.window_room()).size.as_logical());
             let resizing = matches!(
                 *mapped.resize_state.lock().unwrap(),
                 Some(ResizeState::Resizing(_))
@@ -2505,6 +2564,7 @@ impl FloatingLayout {
                 continue;
             }
             let prev = self.space.element_geometry(&mapped).map(RectExt::as_local);
+            let geometry = window_zone(zone, mapped.window_room());
 
             let window_geometry = if mapped.is_maximized(true) {
                 self.pre_slide_positions.remove(&mapped);
@@ -3087,7 +3147,9 @@ impl FloatingLayout {
                         mapped.set_tiled(maximize);
                         if !maximize {
                             let layers = layer_map_for_output(output);
-                            let zone = layers.non_exclusive_zone().as_local();
+                            let zone =
+                                window_zone(layers.non_exclusive_zone(), mapped.window_room())
+                                    .as_local();
                             mapped.set_fills_output_zone(
                                 target_geometry.loc.x == zone.loc.x
                                     && target_geometry.loc.y == zone.loc.y
@@ -3382,6 +3444,7 @@ impl FloatingLayout {
             .map(|(elem, _)| elem)
             .chain(self.space.elements().rev())
         {
+            let output_geometry = window_zone(output_geometry, elem.window_room());
             // Check if this is an embedded window - if so, get the embed render info
             let embed_info = elem.windows().find_map(|(w, _)| {
                 crate::wayland::handlers::surface_embed::get_embed_render_info(&w)
@@ -3502,6 +3565,7 @@ impl FloatingLayout {
                             .unwrap_or(geometry),
                         elem.floating_tiled.lock().unwrap().as_ref(),
                         self.gaps(),
+                        elem.halo_clearance() > 0,
                         self.theme.motion,
                     ),
                 ),
@@ -3519,6 +3583,7 @@ impl FloatingLayout {
                             .unwrap_or(geometry),
                         elem.floating_tiled.lock().unwrap().as_ref(),
                         self.gaps(),
+                        elem.halo_clearance() > 0,
                         self.theme.motion,
                     );
 
@@ -3551,7 +3616,7 @@ impl FloatingLayout {
             if let Some(wl_surface) = elem.active_window().wl_surface()
                 && let Some(color) = get_surface_backdrop_color(&wl_surface)
             {
-                let backdrop_geo = elem.backdrop_geometry(tiled_anim_geometry.unwrap_or(geometry));
+                let backdrop_geo = tiled_anim_geometry.unwrap_or(geometry);
                 let corner_radius = elem
                     .corner_radius(backdrop_geo.size.as_logical(), indicator_thickness)
                     .map(|r| r as f32);
@@ -3585,6 +3650,7 @@ impl FloatingLayout {
                                     .unwrap_or(geometry),
                                 elem.floating_tiled.lock().unwrap().as_ref(),
                                 self.gaps(),
+                                elem.halo_clearance() > 0,
                                 self.theme.motion,
                             );
 
@@ -3626,6 +3692,7 @@ impl FloatingLayout {
                                     .unwrap_or(geometry),
                                 elem.floating_tiled.lock().unwrap().as_ref(),
                                 self.gaps(),
+                                elem.halo_clearance() > 0,
                                 self.theme.motion,
                             );
 
@@ -3852,7 +3919,8 @@ impl FloatingLayout {
                     );
                 }
 
-                if indicator_thickness > 0 {
+                // A Halo window's own frame draws its focus.
+                if indicator_thickness > 0 && elem.halo_clearance() == 0 {
                     let element = IndicatorShader::focus_element(
                         renderer,
                         Key::Window(Usage::FocusIndicator, elem.key()),
@@ -3910,18 +3978,26 @@ impl FloatingLayout {
     pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
         *mapped.floating_tiled.lock().unwrap() = Some(*corners);
         mapped.set_tiled(true);
-        let snapped_geo = self.snapped_geometry(corners);
+        let snapped_geo = self.snapped_geometry(mapped, corners);
         let output = self.space.outputs().next().unwrap();
         mapped.set_geometry(snapped_geo.to_global(output));
         mapped.configure();
     }
 
-    fn snapped_geometry(&self, corners: &TiledCorners) -> Rectangle<i32, Local> {
+    fn snapped_geometry(
+        &self,
+        mapped: &CosmicMapped,
+        corners: &TiledCorners,
+    ) -> Rectangle<i32, Local> {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let non_exclusive = layers.non_exclusive_zone();
         std::mem::drop(layers);
-        corners.relative_geometry(non_exclusive, self.gaps())
+        corners.tile(
+            window_zone(non_exclusive, mapped.window_room()),
+            self.gaps(),
+            mapped.halo_clearance() > 0,
+        )
     }
 
     fn gaps(&self) -> (i32, i32) {
@@ -3949,6 +4025,79 @@ mod tests {
 
     fn win() -> Size<i32, Local> {
         size(800, 600)
+    }
+
+    const HALO: i32 = 40;
+    /// The Halo's room and the design's `FILL_INSET` beside and below.
+    const KORA: Room = Room {
+        top: HALO,
+        side: 10,
+        bottom: 10,
+    };
+
+    #[test]
+    fn a_halo_window_keeps_its_overhang_free_above_it() {
+        let zone = Rectangle::<i32, Local>::new(at(10, 0), size(1900, 1018));
+        assert_eq!(
+            window_zone(zone, Room::above(HALO)),
+            Rectangle::new(at(10, 40), size(1900, 978))
+        );
+        assert_eq!(
+            window_zone(zone, Room::default()),
+            zone,
+            "no Halo, nothing reserved"
+        );
+        let tiny = Rectangle::<i32, Local>::new(at(0, 0), size(100, 30));
+        assert_eq!(window_zone(tiny, KORA).size.h, 0, "never a negative height");
+        assert_eq!(window_zone(tiny, KORA).size.w, 80);
+        let sliver = Rectangle::<i32, Local>::new(at(0, 0), size(15, 30));
+        assert_eq!(
+            window_zone(sliver, KORA).size.w,
+            1,
+            "never a negative width"
+        );
+    }
+
+    #[test]
+    fn fill_is_the_design_s_fill_rect() {
+        // 1920x1080 with a 52px dock band: x 10, y overhang, w W - 20, h H - overhang - 10 - band.
+        let zone = Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1028));
+        assert_eq!(
+            window_zone(zone, KORA),
+            Rectangle::new(at(10, HALO), size(1900, 1080 - HALO - 10 - 52))
+        );
+    }
+
+    #[test]
+    fn a_drop_never_lifts_the_pill_off_the_screen() {
+        let zone = window_zone(
+            Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1080)),
+            Room::above(HALO),
+        );
+        assert_eq!(grabbable_position(at(300, -500), win(), zone).y, HALO);
+        assert_eq!(grabbable_position(at(300, 39), win(), zone).y, HALO);
+        assert_eq!(grabbable_position(at(300, 41), win(), zone).y, 41);
+    }
+
+    #[test]
+    fn halo_halves_are_the_design_s_half_snap_rects() {
+        // halfSnapRect: width floor((W - 30) / 2), x 10 or W - 10 - width, bottom 10 above the band.
+        let zone = Rectangle::<i32, Logical>::new((0, 0).into(), (1920, 1028).into());
+        let halo = window_zone(zone, KORA);
+        let left = TiledCorners::Left.tile(halo, (4, 4), true);
+        let right = TiledCorners::Right.tile(halo, (4, 4), true);
+        assert_eq!(left, Rectangle::new(at(10, HALO), size(945, 978)));
+        assert_eq!(
+            right,
+            Rectangle::new(at(1920 - 10 - 945, HALO), size(945, 978))
+        );
+        assert_eq!(right.loc.x - (left.loc.x + left.size.w), HALO_TILE_GAP);
+        let top = TiledCorners::Top.tile(halo, (4, 4), true);
+        assert_eq!(top.loc.y, HALO + 4);
+        assert_eq!(
+            TiledCorners::Left.tile(zone, (4, 4), false),
+            TiledCorners::Left.relative_geometry(zone, (4, 4))
+        );
     }
 
     #[test]

@@ -1107,16 +1107,34 @@ impl CosmicMapped {
         }
     }
 
-    pub fn backdrop_geometry(&self, outer: Rectangle<i32, Local>) -> Rectangle<i32, Local> {
+    // MERGE: dropped `blur_corner_radius`, `has_blur` and the `HasBlur` impl — our
+    // KDE-blur pipeline is replaced by upstream's frosted-glass (blur_effect) work.
+
+    pub fn halo_clearance(&self) -> i32 {
         match &self.element {
-            CosmicMappedInternal::Window(w) => w.backdrop_geometry(outer),
-            CosmicMappedInternal::Stack(_) => outer,
-            _ => unreachable!(),
+            CosmicMappedInternal::Window(w) => w.halo_clearance(),
+            _ => 0,
         }
     }
 
-    // MERGE: dropped `blur_corner_radius`, `has_blur` and the `HasBlur` impl — our
-    // KDE-blur pipeline is replaced by upstream's frosted-glass (blur_effect) work.
+    pub fn toggle_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if let CosmicMappedInternal::Window(w) = &self.element {
+            w.toggle_commands(seat, loop_handle);
+        }
+    }
+
+    pub fn window_room(&self) -> crate::shell::layout::floating::Room {
+        let inset = match &self.element {
+            CosmicMappedInternal::Window(w) => w.window_inset(),
+            CosmicMappedInternal::Stack(s) => s.window_inset(),
+            _ => 0,
+        };
+        crate::shell::layout::floating::Room {
+            top: self.halo_clearance(),
+            side: inset,
+            bottom: inset,
+        }
+    }
 
     /// Check if this mapped element has server-side decorations (SSD header)
     pub fn has_ssd(&self) -> bool {

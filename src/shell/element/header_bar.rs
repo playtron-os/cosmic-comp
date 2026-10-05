@@ -8,15 +8,15 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::prelude::{
-    animated_opacity, animated_tooltip, app_header, header_height_for, header_render_height_for,
-    styled_text,
+    animated_opacity, animated_tooltip, app_header, halo_close_hover, header_height_for,
+    header_render_height_for, measure_text_width, styled_text,
 };
 use icetron_p::{
     animation::transition::ButtonTransition,
     components::{draggable::draggable, icons::icon_svg_inherit},
 };
-use icetron_themes::WindowHeaderStyle;
 use icetron_themes::icons;
+use icetron_themes::{TextRole, WindowHeaderStyle};
 
 use crate::comp_theme::CompTheme;
 use crate::fl;
@@ -56,24 +56,8 @@ pub(crate) fn halo_visibility(theme: &CompTheme, visible: bool) -> crate::utils:
     }
 }
 
-/// Visibility of a window's Halo, joined to the window or overlapping it.
-pub(crate) fn window_halo_visibility(
-    theme: &CompTheme,
-    visible: bool,
-    joined: bool,
-) -> crate::utils::iced::Visibility {
-    let mut visibility = halo_visibility(theme, visible);
-    if joined {
-        // An attached Halo fades in place.
-        visibility.hidden_offset = iced_core::Vector::ZERO;
-    }
-    visibility
-}
-
-/// WindowFrame's focus draw uses Kora's --duration-slow (420ms) and
-/// --ease-standard, shared with the Halo fill. Icetron's similarly named
-/// tokens currently mean 500ms and a different ease-out curve; do not
-/// substitute them here. A zero-duration theme still disables the sweep.
+/// WindowFrame's focus draw on --ease-standard, over the theme's sweep; a theme
+/// with no sweep, or zero durations, draws the outline at once.
 pub(crate) fn halo_focus_outline(
     theme: &CompTheme,
     focused: bool,
@@ -82,13 +66,15 @@ pub(crate) fn halo_focus_outline(
     crate::utils::iced::FocusOutline {
         focused,
         bottom_border: true,
-        animate: !fullscreen && theme.duration_slower() > 0.0,
-        duration: std::time::Duration::from_millis(420),
+        animate: !fullscreen && theme.duration_slower() > 0.0 && theme.window_focus_sweep() > 0.0,
+        duration: std::time::Duration::from_millis(
+            theme.window_focus_sweep().max(0.0).round() as u64
+        ),
         curve: halo_visibility(theme, true).opacity_curve,
     }
 }
 
-/// Baseline decoration space; overlay Halo reserves none.
+/// A Halo floats above the window and reserves nothing inside it.
 pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     let style = theme.window_header_style();
     if style == WindowHeaderStyle::Halo {
@@ -98,12 +84,11 @@ pub fn ssd_header_height(theme: &CompTheme) -> u32 {
     }
 }
 
-/// Joined Halo is real decoration space; protocol opt-in Halo stays an overlay.
-pub(crate) fn ssd_header_height_for(theme: &CompTheme, joined: bool) -> u32 {
-    if uses_halo_header(theme) && joined {
-        theme.halo_style().pill_height().ceil() as u32
+pub fn ssd_top_reserve(theme: &CompTheme) -> i32 {
+    if uses_halo_header(theme) {
+        halo_clearance(theme)
     } else {
-        ssd_header_height(theme)
+        ssd_header_height(theme) as i32
     }
 }
 
@@ -113,7 +98,6 @@ pub fn ssd_header_render_height(theme: &CompTheme) -> u32 {
     ssd_header_input_height(theme) + padding.top as u32 + padding.bottom as u32
 }
 
-/// Height routed to compositor chrome and its drag region.
 pub fn ssd_header_input_height(theme: &CompTheme) -> u32 {
     header_render_height_for(&**theme, theme.window_header_style()) as u32
 }
@@ -122,16 +106,11 @@ pub fn ssd_header_input_height(theme: &CompTheme) -> u32 {
 fn halo_shadow_padding(theme: &CompTheme) -> iced_core::Padding {
     let mut padding = iced_core::Padding::ZERO;
     if uses_halo_header(theme) {
-        for shadow in theme
-            .shadow_popover()
-            .iter()
-            .filter(|s| !s.inset && s.color.a > 0.0)
-        {
-            // A CSS blur reaches three sigmas, 1.5x its radius, as iced draws it.
-            let reach = 1.5 * shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
-            padding.top = padding.top.max((reach - shadow.offset.y).ceil());
-            padding.bottom = padding.bottom.max((reach + shadow.offset.y).ceil());
-        }
+        let shadow = icetron_p::prelude::halo_shadow();
+        // A CSS blur reaches three sigmas, 1.5x its radius, as iced draws it.
+        let reach = 1.5 * shadow.blur_radius.max(0.0) + shadow.spread_radius.max(0.0);
+        padding.top = (reach - shadow.offset.y).ceil().max(0.0);
+        padding.bottom = (reach + shadow.offset.y).ceil().max(0.0);
     }
     padding
 }
@@ -142,20 +121,6 @@ fn rigid_width(content: f32, items: u32, gap: f32) -> f32 {
     content + gap * items.saturating_sub(1) as f32
 }
 
-/// Side margin the Halo pill keeps clear so it never reaches the curve of the
-/// window's own top corners, where the two roundings would leave a notch.
-///
-/// A window that squares its top corners has no curve to clear, so the pill is
-/// free to use the full width — the margin follows the radius actually in
-/// effect rather than a constant.
-fn halo_corner_margin(theme: &CompTheme, square_top: bool) -> f32 {
-    if square_top || !uses_halo_header(theme) {
-        return 0.0;
-    }
-    let radii = theme.radius_window();
-    radii[0].max(radii[1]).max(0.0)
-}
-
 /// Offset of the raster buffer, including shadow padding, above the client.
 pub fn ssd_header_render_overhang(theme: &CompTheme) -> u32 {
     ssd_header_overhang(theme) + halo_shadow_padding(theme).top as u32
@@ -164,10 +129,15 @@ pub fn ssd_header_render_overhang(theme: &CompTheme) -> u32 {
 /// Distance Halo chrome renders above the client surface.
 pub fn ssd_header_overhang(theme: &CompTheme) -> u32 {
     if uses_halo_header(theme) {
-        theme.halo_style().overhang as u32
+        theme.halo_style().overhang.ceil() as u32
     } else {
         0
     }
+}
+
+/// Room kept free above a Halo window: 4 above the pill, the 32px pill, 4 below.
+pub fn halo_clearance(theme: &CompTheme) -> i32 {
+    ssd_header_overhang(theme) as i32
 }
 
 /// Whether the active theme selects Halo chrome.
@@ -175,33 +145,48 @@ pub fn uses_halo_header(theme: &CompTheme) -> bool {
     theme.window_header_style() == WindowHeaderStyle::Halo
 }
 
-/// Extra lift for clients that have not opted into an overlapping Halo.
-/// The pill's bottom edge sits flush against the top of the client.
-pub(crate) fn halo_header_lift(theme: &CompTheme, allows_overlay: bool) -> i32 {
-    if !uses_halo_header(theme) || allows_overlay {
-        return 0;
-    }
+pub(crate) fn halo_pill_rows(theme: &CompTheme) -> (i32, i32) {
     let metrics = theme.halo_style();
-    (metrics.top_inset + metrics.pill_height() - ssd_header_overhang(theme) as f32)
-        .ceil()
-        .max(0.0) as i32
+    let overhang = ssd_header_overhang(theme) as i32;
+    (
+        metrics.top_inset.floor() as i32 - overhang,
+        (metrics.top_inset + metrics.pill_height()).ceil() as i32 - overhang,
+    )
 }
 
-/// Position relative to the outer window, whose joined header is above the client.
-pub(crate) fn halo_header_offset(theme: &CompTheme, joined: bool) -> i32 {
-    if uses_halo_header(theme) {
-        halo_header_lift(theme, !joined) - ssd_header_height_for(theme, joined) as i32
-    } else {
-        0
-    }
+pub(crate) fn halo_pill_bottom(theme: &CompTheme) -> i32 {
+    halo_pill_rows(theme).1
 }
 
-/// The pill's bottom edge, relative to the top of the window it decorates.
-pub(crate) fn halo_pill_bottom(theme: &CompTheme, joined: bool) -> i32 {
-    let metrics = theme.halo_style();
-    (metrics.top_inset + metrics.pill_height()).ceil() as i32
-        - ssd_header_overhang(theme) as i32
-        - halo_header_offset(theme, joined)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HaloBand {
+    pub pill: Option<(i32, i32)>,
+    pub rows: (i32, i32),
+    pub strip: i32,
+}
+
+impl HaloBand {
+    pub(crate) fn new(theme: &CompTheme, pill: Option<(i32, i32)>, overlay: bool) -> Self {
+        Self {
+            pill,
+            rows: halo_pill_rows(theme),
+            strip: if overlay {
+                theme.halo_style().hot_zone_height.ceil() as i32
+            } else {
+                0
+            },
+        }
+    }
+
+    /// The pill, a full-width bridge in the gap below it, and an overlay client's drag strip.
+    pub(crate) fn hit(&self, width: i32, x: i32, y: i32) -> bool {
+        let (top, bottom) = self.rows;
+        let on_pill = self
+            .pill
+            .is_some_and(|(left, right)| (left..right).contains(&x))
+            && (top..bottom).contains(&y);
+        on_pill || ((0..width).contains(&x) && (bottom.min(0)..self.strip).contains(&y))
+    }
 }
 
 /// A fullscreen window's pill hangs from the output's top edge instead.
@@ -210,6 +195,20 @@ pub(crate) fn fullscreen_pill_bottom(theme: &CompTheme) -> i32 {
     let pill_top = fullscreen_header_offset(theme)
         + f64::from(halo_shadow_padding(theme).top + metrics.top_inset);
     (pill_top + f64::from(metrics.pill_height())).ceil() as i32
+}
+
+pub(crate) fn halo_tier(width: f32, panel: bool) -> u8 {
+    if panel {
+        4
+    } else if width >= 680.0 {
+        1
+    } else if width >= 480.0 {
+        2
+    } else if width >= 280.0 {
+        3
+    } else {
+        4
+    }
 }
 
 /// Application icon for the SSD header — leaked static SVG bytes or a raster image handle.
@@ -265,13 +264,11 @@ pub struct HeaderBar<'a, Message> {
     focused: bool,
     hovered: bool,
     maximized: bool,
-    /// Whether the top corners sit in SCREEN corners, so the header must square
-    /// them. Distinct from `maximized`: a maximized window laid out into an
-    /// inset non-exclusive zone is still maximized (and still shows the restore
-    /// button) while no longer touching the top edge.
+    /// Screen corners, not maximized: a maximized window in an inset zone keeps them.
     square_top: bool,
     compositor_outline: bool,
-    joined_to_window: bool,
+    window_width: Option<f32>,
+    panel: bool,
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
 }
@@ -304,7 +301,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             maximized: false,
             square_top: false,
             compositor_outline: false,
-            joined_to_window: false,
+            window_width: None,
+            panel: false,
             theme: None,
             app_icon: None,
         }
@@ -345,7 +343,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// Pressing the app glyph. Without it the glyph is a plain mark.
     pub fn on_commands(mut self, msg: Message) -> Self {
         self.on_commands = Some(msg);
         self
@@ -389,8 +386,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// Square the header's top corners. Must agree with the frame drawn around
-    /// it — see `CosmicWindowInternal::squares_top_corners`.
     pub fn square_top(mut self, square_top: bool) -> Self {
         self.square_top = square_top;
         self
@@ -416,92 +411,48 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    pub(crate) fn joined_to_window(mut self, joined: bool) -> Self {
-        self.joined_to_window = joined;
+    pub fn window_width(mut self, width: f32) -> Self {
+        self.window_width = Some(width);
         self
     }
 
-    /// Natural widths of the pill's two control groups, before anything is
-    /// dropped: the tray (divider, capture pair, chevron, new window) and the
-    /// window controls. The identity keeps room for them so it gives way
-    /// first, and the tray keeps room for the controls for the same reason.
-    fn halo_control_widths(&self, theme: &CompTheme) -> (f32, f32) {
-        let metrics = theme.halo_style();
-        let pinned = self.tray.len() as f32;
-        // The divider only exists to separate the identity from the pins, so a
-        // header with nothing pinned pays for neither.
-        let mut tray = if self.tray.is_empty() {
-            0.0
-        } else {
-            metrics.border_width
-                + pinned * metrics.control_size
-                + (pinned - 1.0) * theme.spacing_0_5()
-        };
-        // Two, not one: the divider and the run of pins are separate items in
-        // the tray row, so they are separated by a gap of their own.
-        let mut tray_items = if self.tray.is_empty() { 0 } else { 2 };
-        for present in [self.on_right_click.is_some(), self.on_new_window.is_some()] {
-            if present {
-                tray += metrics.control_size;
-                tray_items += 1;
-            }
+    pub fn panel(mut self, panel: bool) -> Self {
+        self.panel = panel;
+        self
+    }
+
+    fn tier(&self) -> u8 {
+        halo_tier(self.window_width.unwrap_or(f32::INFINITY), self.panel)
+    }
+
+    fn identity(&self) -> (&str, Option<&str>) {
+        match self.app_name.as_deref().filter(|name| !name.is_empty()) {
+            Some(name) => (
+                name,
+                Some(self.title.as_str()).filter(|title| !title.is_empty() && *title != name),
+            ),
+            None => (self.title.as_str(), None),
         }
-        let mut actions = 0.0_f32;
-        let mut action_items = 0_u32;
-        for present in [
-            self.on_minimize.is_some(),
-            self.on_maximize.is_some(),
-            self.on_fullscreen.is_some(),
-            self.on_close.is_some(),
-        ] {
-            if present {
-                actions += metrics.control_size;
-                action_items += 1;
-            }
-        }
-        (
-            rigid_width(tray, tray_items, metrics.gap),
-            rigid_width(actions, action_items, metrics.gap),
-        )
     }
 
     /// Convert to an iced Element using icetron's app_header.
     pub fn into_element(self) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let theme = self.theme.expect("HeaderBar requires .theme()");
+        if uses_halo_header(theme) {
+            return self.into_halo_element(theme);
+        }
         let window_header_style = theme.window_header_style();
-        let halo = uses_halo_header(theme);
 
-        let chrome_theme = if self.compositor_outline && uses_halo_header(theme) {
-            theme.halo_chrome_theme()
-        } else {
-            &**theme
-        };
-        let mut header = app_header(chrome_theme)
-            .joined_to_window(self.joined_to_window)
+        let mut header = app_header(&**theme)
             .window_header_style(window_header_style)
             .title(Some(&self.title))
             .focused(self.focused)
-            // Halo visibility is composited with its blur by IcedElement.
-            .hovered(uses_halo_header(theme) || self.hovered || self.focused)
+            .hovered(self.hovered || self.focused)
             .is_windowed(!self.maximized)
-            .backdrop_blur(uses_halo_header(theme))
+            .backdrop_blur(false)
             .opaque(true)
             .show_border(true);
-        if self.compositor_outline && halo {
-            // The outline shader draws the pill's edge. Icetron mixes its own from
-            // the border AND the accent, so blanking the border alone leaves a
-            // hairline, and at 2x that hairline streaks straight past the corner.
-            header = header.accent(iced_core::Color::TRANSPARENT);
-        }
-        // A Halo pill lays its own identity out — see `title_row` below — so
-        // the app name is rendered here, not handed to icetron, which would
-        // otherwise append it in a plain row that starves it of width. Icetron
-        // hides a name that adds nothing; mirror that rule rather than move it.
-        let subtitle = self
-            .app_name
-            .as_deref()
-            .filter(|name| halo && !name.is_empty() && *name != self.title);
-        if !halo && let Some(name) = self.app_name.as_deref() {
+        if let Some(name) = self.app_name.as_deref() {
             header = header.app_name(name.to_owned());
         }
 
@@ -509,306 +460,33 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         // We wrap in animated_opacity to replicate app_header's title fade behavior
         // (0.8 when unfocused, animates to 1.0 on hover/focus).
         {
-            let (title_style, title_color, title_gap, icon_size, glyph_size) = if halo {
-                let mut style = theme.text_styles().caption();
-                let metrics = theme.halo_style();
-                style.font_weight = metrics.title_font_weight;
-                (
-                    style,
-                    theme.text_primary(),
-                    metrics.gap,
-                    metrics.control_size,
-                    metrics.glyph_icon_size,
-                )
-            } else {
-                (
-                    theme.header_title_text_style(),
-                    theme.header_title_color(),
-                    theme.header_title_gap(),
-                    theme.ui_size_icon_sm(),
-                    theme.ui_size_icon_sm(),
-                )
-            };
-
+            let title_style = theme.header_title_text_style();
+            let title_color = theme.header_title_color();
+            let icon_size = theme.ui_size_icon_sm();
             let text_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 styled_text(&self.title, title_style, title_color)
                     .wrapping(iced_widget::text::Wrapping::None)
                     .ellipsis(iced_widget::text::Ellipsis::End)
                     .into();
-
-            // A window whose mark never resolved still needs the button: the
-            // glyph is the route to its commands, so it falls back to a generic
-            // one rather than leaving the pill with nothing to press.
-            let app_icon = self.app_icon.clone().or_else(|| {
-                halo.then_some(AppIcon::Svg {
-                    bytes: icons::APP_WINDOW.bytes,
-                    symbolic: true,
-                })
-            });
-            let icon_element: Option<
-                Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
-            > = app_icon.as_ref().map(|icon| {
-                let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                    match icon {
-                        AppIcon::Svg { bytes, symbolic } => {
-                            let handle = iced_core::svg::Handle::from_memory(*bytes);
-                            // A fully transparent tint is this iced fork's
-                            // opt-out from the colour filter. `None` does *not*
-                            // mean "leave the artwork alone" here — the fork
-                            // reads it as "inherit the parent's text colour",
-                            // which is what painted full-colour app marks flat
-                            // title-grey. Only a symbolic glyph is recoloured.
-                            let icon_tint = if *symbolic {
-                                if uses_halo_header(theme) {
-                                    theme.halo_accent()
-                                } else {
-                                    title_color
-                                }
-                            } else {
-                                iced_core::Color::TRANSPARENT
-                            };
-                            Svg::new(handle)
-                                .width(glyph_size)
-                                .height(glyph_size)
-                                .style(move |_theme, _status| svg::Style {
-                                    color: Some(icon_tint),
-                                })
-                                .into()
-                        }
-                        AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
-                            .width(glyph_size)
-                            .height(glyph_size)
-                            .into(),
-                    };
-                let icon_element: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                    if halo {
-                        halo_glyph_disc(
-                            icon_element,
-                            icon_size,
-                            self.on_commands.clone(),
-                            self.commands_open,
-                            self.menu_open || self.commands_open,
-                            theme,
-                        )
-                    } else {
-                        icon_element
-                    };
-                icon_element
-            });
-
-            // The Halo pill shrinks to its identity, so a long title otherwise
-            // takes every pixel iced offers it and leaves the app name none.
-            // `ElasticRow` shares the shortfall instead: the icon keeps its
-            // size, and the two labels ellipsize by max-min fairness.
             let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                if halo {
-                    let metrics = theme.halo_style();
-                    let (tray_natural, actions_natural) = self.halo_control_widths(theme);
-                    // Only the siblings iced does not already account for: the
-                    // divider is Fixed and every gap is taken off the limit
-                    // before this row is measured, so reserving them again
-                    // would shrink the pill while it still fits.
-                    let after = tray_natural + actions_natural;
-                    let mut identity = crate::utils::iced::ElasticRow::new()
-                        .spacing(title_gap)
-                        .reserve(after)
-                        // Close never leaves, so its room outranks the floor.
-                        .reserve_min(
-                            metrics.control_size + metrics.border_width + 2.0 * metrics.gap,
-                        )
-                        // Keep the name readable before anything else goes: a
-                        // title cut to two letters is no use, so controls give
-                        // way first and the title only shrinks past this once
-                        // they have. Roughly ten characters at this size.
-                        .floor(title_style.font_size * 6.0);
-                    if let Some(icon) = icon_element {
-                        identity = identity.push_rigid(icon);
-                    }
-                    identity = identity.push_elastic(text_element);
-                    if let Some(name) = subtitle {
-                        // Icetron's Halo subtitle: the regular body face, with
-                        // only the size and line height of the micro role.
-                        let mut style = theme.text_styles().body();
-                        let micro = theme.text_styles().micro();
-                        style.font_size = micro.font_size;
-                        style.line_height = micro.line_height;
-                        // First to go: it ellipsizes while that still helps,
-                        // then leaves rather than sit there as an ellipsis.
-                        identity = identity.push_elastic_droppable(
-                            1,
-                            styled_text(name, style, theme.text_quaternary())
-                                .wrapping(iced_widget::text::Wrapping::None)
-                                .ellipsis(iced_widget::text::Ellipsis::End),
-                        );
-                    }
-                    identity.into_single().unwrap_or_else(Into::into)
-                } else if let Some(icon) = icon_element {
-                    row![icon, text_element]
-                        .spacing(title_gap)
+                match self.app_icon.as_ref() {
+                    Some(icon) => row![app_mark(icon, icon_size, title_color), text_element]
+                        .spacing(theme.header_title_gap())
                         .align_y(Alignment::Center)
-                        .into()
-                } else {
+                        .into(),
                     // No icon yet (async resolution pending) — show title only
-                    text_element
+                    None => text_element,
                 };
-
-            // The Halo animates as one pill; bar headers animate just the title.
-            let target_opacity = if halo || self.hovered || self.focused {
-                1.0
-            } else {
-                0.8
-            };
             let title_content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                if target_opacity == 1.0 {
+                if self.hovered || self.focused {
                     title_row
                 } else {
-                    animated_opacity(title_row, &**theme, target_opacity).into()
+                    animated_opacity(title_row, &**theme, 0.8).into()
                 };
-
             header = header.title_content(title_content);
         }
 
-        if halo {
-            let metrics = theme.halo_style();
-            let (_, actions_natural) = self.halo_control_widths(theme);
-            let mut tray = crate::utils::iced::ElasticRow::new()
-                .spacing(metrics.gap)
-                // The tray's own buttons rank below every window control, so it
-                // keeps the whole control row's width — not just the close
-                // button's — and sheds completely before one of them goes.
-                // Anything less and the tray starves the controls at one width
-                // and hands them back at a narrower one.
-                .reserve(actions_natural)
-                .reserve_min(actions_natural);
-            if !self.tray.is_empty() {
-                let pinned = row(self.tray.iter().map(|entry| {
-                    halo_button(
-                        entry.icon,
-                        Some(entry.message.clone()),
-                        entry.label.clone(),
-                        HaloButtonRole::Tray { on: entry.on },
-                        self.menu_open,
-                        theme,
-                    )
-                }))
-                .spacing(theme.spacing_0_5());
-                let divider = container(iced_widget::Space::new())
-                    .width(metrics.border_width)
-                    .height(metrics.divider_height)
-                    .style(move |_| container::Style {
-                        background: Some(iced_core::Background::Color(theme.stroke_subtle())),
-                        ..Default::default()
-                    });
-                // The divider only separates the title from the tray, so it
-                // goes with the pins rather than lingering as a stray hairline.
-                tray = tray.push_droppable(
-                    4,
-                    row![divider, pinned]
-                        .spacing(metrics.gap)
-                        .align_y(Alignment::Center),
-                );
-            }
-            if let Some(message) = self.on_right_click.clone() {
-                tray = tray.push_droppable(
-                    2,
-                    halo_button(
-                        icons::CHEVRON_DOWN,
-                        Some(message),
-                        fl!("halo-window-menu"),
-                        HaloButtonRole::Menu,
-                        self.menu_open,
-                        theme,
-                    ),
-                );
-            }
-            if let Some(message) = self.on_new_window.clone() {
-                tray = tray.push_droppable(
-                    3,
-                    halo_button(
-                        icons::PLUS,
-                        Some(message),
-                        fl!("window-menu-new-window"),
-                        HaloButtonRole::Window,
-                        self.menu_open,
-                        theme,
-                    ),
-                );
-            }
-            // Close is the one control that never leaves; the rest go in this
-            // order as the pill runs out of room.
-            let mut actions = crate::utils::iced::ElasticRow::new().spacing(metrics.gap);
-            let restore = self.maximized || self.fullscreen;
-            for (icon, message, label, destructive, rank) in [
-                (
-                    icons::MINUS,
-                    self.on_minimize.clone(),
-                    fl!("window-menu-minimize"),
-                    false,
-                    Some(1),
-                ),
-                (
-                    if restore {
-                        icons::MINIMIZE_2
-                    } else {
-                        icons::MAXIMIZE_2
-                    },
-                    self.on_maximize.clone(),
-                    if restore {
-                        fl!("window-menu-restore")
-                    } else {
-                        fl!("window-menu-maximize")
-                    },
-                    false,
-                    Some(3),
-                ),
-                (
-                    if self.fullscreen {
-                        icons::SHRINK
-                    } else {
-                        icons::FULLSCREEN
-                    },
-                    self.on_fullscreen.clone(),
-                    if self.fullscreen {
-                        fl!("window-menu-leave-fullscreen")
-                    } else {
-                        fl!("window-menu-fullscreen")
-                    },
-                    false,
-                    Some(2),
-                ),
-                (
-                    icons::X,
-                    self.on_close.clone(),
-                    fl!("window-menu-close"),
-                    true,
-                    None,
-                ),
-            ] {
-                if let Some(message) = message {
-                    let button = halo_button(
-                        icon,
-                        Some(message),
-                        label,
-                        if destructive {
-                            HaloButtonRole::Close
-                        } else {
-                            HaloButtonRole::Window
-                        },
-                        self.menu_open,
-                        theme,
-                    );
-                    actions = match rank {
-                        Some(rank) => actions.push_droppable(rank, button),
-                        None => actions.push_rigid(button),
-                    };
-                }
-            }
-            header = header
-                .trailing(tray)
-                .action_buttons(actions)
-                .menu_open(self.menu_open);
-        }
-        if !halo && let Some(msg) = self.on_drag.clone() {
+        if let Some(msg) = self.on_drag.clone() {
             header = header.on_drag(msg);
         }
         if let Some(msg) = self.on_close {
@@ -818,10 +496,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             header = header.on_minimize(msg);
         }
         // app_header uses on_toggle_window for maximize/unmaximize
-        if !halo && let Some(msg) = self.on_maximize.clone() {
+        if let Some(msg) = self.on_maximize.clone() {
             header = header.on_toggle_window(msg);
         }
-        if !halo && let Some(msg) = self.on_right_click.clone() {
+        if let Some(msg) = self.on_right_click.clone() {
             header = header.on_right_click(msg);
         }
 
@@ -836,34 +514,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         };
         let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             header.into();
-        if uses_halo_header(theme) {
-            // Own all gestures beside the custom controls. Do not also wire
-            // AppHeader's inner drag area, which would consume these events.
-            let mut gestures = draggable(header_elem);
-            if let Some(message) = self.on_drag {
-                gestures = gestures.on_drag(message);
-            }
-            if let Some(message) = self.on_maximize {
-                gestures = gestures.on_double_click(message);
-            }
-            if let Some(message) = self.on_right_click {
-                gestures = gestures.on_right_click(message);
-            }
-            let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
-                gestures.into();
-            // Hold the pill inside the window's rounded top corners. Capping the
-            // space it is offered, rather than its own width, keeps it a Shrink
-            // pill that still hugs a short title — and needs no window width.
-            let mut padding = halo_shadow_padding(theme);
-            let margin = halo_corner_margin(theme, self.square_top);
-            padding.left = padding.left.max(margin);
-            padding.right = padding.right.max(margin);
-            return container(header_elem)
-                .width(Length::Fill)
-                .height(Length::Fixed(ssd_header_render_height(theme) as f32))
-                .padding(padding)
-                .into();
-        }
         container(header_elem)
             .width(Length::Fill)
             .height(Length::Fixed(header_render_height))
@@ -882,7 +532,277 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             })
             .into()
     }
+
+    fn into_halo_element(
+        self,
+        theme: &'a CompTheme,
+    ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+        let metrics = theme.halo_style();
+        let tier = self.tier();
+        let chrome_theme = if self.compositor_outline {
+            theme.halo_chrome_theme()
+        } else {
+            &**theme
+        };
+        let mut header = app_header(chrome_theme)
+            .window_header_style(WindowHeaderStyle::Halo)
+            .title(Some(&self.title))
+            .focused(self.focused)
+            .hovered(true)
+            .is_windowed(!self.maximized)
+            .backdrop_blur(true)
+            .opaque(true)
+            .show_border(true)
+            .halo_divider(tier < 4)
+            .menu_open(self.menu_open);
+        if self.compositor_outline {
+            // Icetron mixes the edge from border and accent, so the accent goes too.
+            header = header.accent(iced_core::Color::TRANSPARENT);
+        }
+
+        let (name, selection) = self.identity();
+        let name = name.to_owned();
+        let selection = selection.map(str::to_owned);
+
+        // The glyph is the route to the commands, so a missing mark falls back.
+        let app_icon = self.app_icon.clone().unwrap_or(AppIcon::Svg {
+            bytes: icons::APP_WINDOW.bytes,
+            symbolic: true,
+        });
+        let glyph = halo_glyph(
+            app_mark(&app_icon, metrics.glyph_icon_size, theme.halo_accent()),
+            self.on_commands.clone(),
+            self.commands_open,
+            self.menu_open || self.commands_open,
+            fl!("halo-commands-hint", app = name.as_str()),
+            theme,
+        );
+
+        let mut name_style = theme.text_styles().role(TextRole::Label);
+        name_style.font_weight = metrics.title_font_weight;
+        let name_text = container(
+            styled_text(name.clone(), name_style, theme.text_primary())
+                .wrapping(iced_widget::text::Wrapping::None)
+                .ellipsis(iced_widget::text::Ellipsis::End),
+        )
+        .max_width(HALO_NAME_MAX);
+        let identity_gap = theme.spacing_2();
+        let mut identity = crate::utils::iced::ElasticRow::new()
+            .spacing(metrics.gap)
+            .reserve(self.halo_trailing_width(theme, tier))
+            .reserve_min(2.0 * metrics.control_size + metrics.border_width + 3.0 * metrics.gap)
+            .floor(name_style.font_size * 6.0)
+            .push_rigid(glyph);
+        identity = if tier == 4 {
+            identity.push_elastic(name_text)
+        } else {
+            identity.push_rigid(name_text)
+        };
+        let name_width = measure_text_width(&name, &name_style)
+            .ceil()
+            .min(HALO_NAME_MAX);
+        let selection_max = HALO_SELECTION_MAX.min(HALO_IDENTITY_MAX - identity_gap - name_width);
+        if let Some(selection) = selection.as_deref().filter(|_| selection_max > 0.0) {
+            identity = identity.push_elastic_droppable(
+                1,
+                container(
+                    styled_text(
+                        selection.to_owned(),
+                        theme.text_styles().role(TextRole::Caption),
+                        theme.text_secondary(),
+                    )
+                    .wrapping(iced_widget::text::Wrapping::None)
+                    .ellipsis(iced_widget::text::Ellipsis::End),
+                )
+                .max_width(selection_max + identity_gap - metrics.gap)
+                .padding(iced_core::Padding {
+                    left: identity_gap - metrics.gap,
+                    ..iced_core::Padding::ZERO
+                }),
+            );
+        }
+        let identity: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+            identity.into_single().unwrap_or_else(Into::into);
+        let identity_tip = match selection.as_deref() {
+            Some(selection) => format!("{name} — {selection}"),
+            None => name.clone(),
+        };
+        let identity = animated_tooltip(identity, identity_tip, &**theme)
+            .position(tooltip::Position::Bottom)
+            .enabled(!(self.menu_open || self.commands_open))
+            .animation_duration(std::time::Duration::ZERO)
+            .compositor_managed(true);
+        header = header.title_content(identity);
+
+        let mut trailing = row![].spacing(metrics.gap).align_y(Alignment::Center);
+        let pins: Vec<_> = self
+            .tray
+            .iter()
+            .filter(|entry| tier == 1 || entry.on)
+            .collect();
+        if !pins.is_empty() {
+            let pinned = row(pins.into_iter().map(|entry| {
+                halo_button(
+                    entry.icon,
+                    Some(entry.message.clone()),
+                    entry.label.clone(),
+                    HaloButtonRole::Tray { on: entry.on },
+                    self.menu_open,
+                    theme,
+                )
+            }))
+            .spacing(theme.spacing_0_5());
+            if tier == 1 {
+                trailing = trailing.push(halo_divider(theme));
+            }
+            trailing = trailing.push(pinned);
+        }
+        if tier <= 2 {
+            if let Some(message) = self.on_right_click.clone() {
+                trailing = trailing.push(halo_button(
+                    icons::CHEVRON_DOWN,
+                    Some(message),
+                    fl!("halo-window-menu"),
+                    HaloButtonRole::Menu,
+                    self.menu_open,
+                    theme,
+                ));
+            }
+            if let Some(message) = self.on_new_window.clone() {
+                trailing = trailing.push(halo_button(
+                    icons::PLUS,
+                    Some(message),
+                    fl!("halo-new-window", app = name.as_str()),
+                    HaloButtonRole::Window,
+                    self.menu_open,
+                    theme,
+                ));
+            }
+        }
+        header = header.trailing(trailing);
+
+        let mut actions = row![].spacing(metrics.gap).align_y(Alignment::Center);
+        if tier >= 3 {
+            if let Some(message) = self.on_commands.clone() {
+                actions = actions.push(halo_button(
+                    icons::MORE_HORIZONTAL,
+                    Some(message),
+                    fl!("halo-all-commands"),
+                    HaloButtonRole::Window,
+                    self.menu_open,
+                    theme,
+                ));
+            }
+        } else {
+            for (icon, message, label) in [
+                (icons::MINUS, self.on_minimize.clone(), fl!("halo-park")),
+                (
+                    icons::MAXIMIZE_2,
+                    self.on_maximize.clone(),
+                    fl!("halo-fill"),
+                ),
+                (
+                    if self.fullscreen {
+                        icons::SHRINK
+                    } else {
+                        icons::FULLSCREEN
+                    },
+                    self.on_fullscreen.clone(),
+                    if self.fullscreen {
+                        fl!("halo-exit-fullscreen")
+                    } else {
+                        fl!("halo-fullscreen")
+                    },
+                ),
+            ] {
+                if let Some(message) = message {
+                    actions = actions.push(halo_button(
+                        icon,
+                        Some(message),
+                        label,
+                        HaloButtonRole::Window,
+                        self.menu_open,
+                        theme,
+                    ));
+                }
+            }
+        }
+        if let Some(message) = self.on_close.clone() {
+            actions = actions.push(halo_button(
+                icons::X,
+                Some(message),
+                fl!("halo-close"),
+                HaloButtonRole::Close,
+                self.menu_open,
+                theme,
+            ));
+        }
+        header = header.action_buttons(actions);
+
+        // Own every gesture here; AppHeader's drag area would consume them.
+        let header_elem: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
+            header.into();
+        let mut gestures = draggable(header_elem);
+        if let Some(message) = self.on_drag {
+            gestures = gestures.on_drag(message);
+        }
+        if let Some(message) = self.on_maximize {
+            gestures = gestures.on_double_click(message);
+        }
+        if let Some(message) = self.on_right_click {
+            gestures = gestures.on_right_click(message);
+        }
+        container(gestures)
+            .width(Length::Fill)
+            .height(Length::Fixed(ssd_header_render_height(theme) as f32))
+            .padding(halo_shadow_padding(theme))
+            .into()
+    }
+
+    fn halo_trailing_width(&self, theme: &CompTheme, tier: u8) -> f32 {
+        let metrics = theme.halo_style();
+        let pins = self
+            .tray
+            .iter()
+            .filter(|entry| tier == 1 || entry.on)
+            .count() as f32;
+        let mut items = 0_u32;
+        let mut width = 0.0_f32;
+        if pins > 0.0 {
+            width += pins * metrics.control_size + (pins - 1.0) * theme.spacing_0_5();
+            items += 1;
+            if tier == 1 {
+                width += metrics.border_width;
+                items += 1;
+            }
+        }
+        let mut controls = |present: bool| {
+            if present {
+                width += metrics.control_size;
+                items += 1;
+            }
+        };
+        if tier <= 2 {
+            controls(self.on_right_click.is_some());
+            controls(self.on_new_window.is_some());
+            controls(self.on_minimize.is_some());
+            controls(self.on_maximize.is_some());
+            controls(self.on_fullscreen.is_some());
+        } else {
+            controls(self.on_commands.is_some());
+        }
+        controls(self.on_close.is_some());
+        if tier < 4 {
+            width += metrics.border_width;
+            items += 1;
+        }
+        rigid_width(width, items, metrics.gap)
+    }
 }
+
+const HALO_NAME_MAX: f32 = 144.0;
+const HALO_SELECTION_MAX: f32 = 128.0;
+const HALO_IDENTITY_MAX: f32 = 192.0;
 
 /// The prototype's "on" mark (`.kora-halo__tray-item--on::after` in
 /// `halo.css`): a 5px dot 1px in from the corner, glowing 5px. No token
@@ -890,17 +810,56 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 const RECORD_DOT_PX: f32 = 5.0;
 const RECORD_DOT_INSET_PX: f32 = 1.0;
 
-/// The app glyph's accent disc, and the button around it when the window has
-/// commands to offer.
-fn halo_glyph_disc<'a, Message: Clone + 'static>(
-    mark: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
+fn app_mark<'a, Message: 'a>(
+    icon: &AppIcon,
     size: f32,
+    tint: iced_core::Color,
+) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    match icon {
+        AppIcon::Svg { bytes, symbolic } => {
+            // A transparent tint opts out of the colour filter; None would inherit the text colour.
+            let tint = if *symbolic {
+                tint
+            } else {
+                iced_core::Color::TRANSPARENT
+            };
+            Svg::new(iced_core::svg::Handle::from_memory(*bytes))
+                .width(size)
+                .height(size)
+                .style(move |_theme, _status| svg::Style { color: Some(tint) })
+                .into()
+        }
+        AppIcon::Image(handle) => iced_widget::image::Image::new(handle.clone())
+            .width(size)
+            .height(size)
+            .into(),
+    }
+}
+
+fn halo_divider<'a, Message: 'a>(
+    theme: &'a CompTheme,
+) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let metrics = theme.halo_style();
+    let color = theme.stroke_subtler();
+    container(iced_widget::Space::new())
+        .width(metrics.border_width)
+        .height(metrics.divider_height)
+        .style(move |_| container::Style {
+            background: Some(iced_core::Background::Color(color)),
+            ..Default::default()
+        })
+        .into()
+}
+
+fn halo_glyph<'a, Message: Clone + 'static>(
+    mark: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
     on_press: Option<Message>,
     active: bool,
     surface_open: bool,
+    hint: String,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
-    let bg = theme.halo_accent_background();
+    let size = theme.halo_style().control_size;
     let radius = theme.radii_max();
     let content = container(mark)
         .align_x(Alignment::Center)
@@ -909,15 +868,8 @@ fn halo_glyph_disc<'a, Message: Clone + 'static>(
         return content
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
-            .style(move |_theme| container::Style {
-                background: Some(iced_core::Background::Color(bg)),
-                border: iced_core::Border::default().rounded(radius),
-                ..Default::default()
-            })
             .into();
     };
-    // The design's `0 0 0 1.5px color-mix(--ws-accent 50%, transparent)` hover
-    // ring, drawn as a border because the disc's mark is far smaller than it.
     let ring = {
         let mut ring = theme.halo_accent();
         ring.a *= HALO_GLYPH_RING_ACCENT;
@@ -932,7 +884,7 @@ fn halo_glyph_disc<'a, Message: Clone + 'static>(
         .style(move |_, status| {
             let lit = active || matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
-                background: Some(iced_core::Background::Color(bg)),
+                background: None,
                 border: iced_core::Border {
                     color: if lit {
                         ring
@@ -946,7 +898,7 @@ fn halo_glyph_disc<'a, Message: Clone + 'static>(
                 ..Default::default()
             }
         });
-    animated_tooltip(button, fl!("halo-commands-hint"), &**theme)
+    animated_tooltip(button, hint, &**theme)
         .position(tooltip::Position::Bottom)
         .enabled(!surface_open)
         .animation_duration(std::time::Duration::ZERO)
@@ -987,8 +939,9 @@ fn halo_button<'a, Message: Clone + 'static>(
     // A stateful command that is on wears the destructive colour, hovered
     // or not: the tint says "capturing", and hovering is how it is stopped.
     let on = matches!(role, HaloButtonRole::Tray { on: true });
-    let text_color = theme.text_tertiary();
+    let text_color = theme.text_secondary();
     let background = theme.overlay_5();
+    let close_hover = halo_close_hover(&**theme);
     let disabled = theme.text_quaternary();
     let glyph = container(icon_svg_inherit(icon, icon_size))
         .center_x(Length::Fill)
@@ -1034,7 +987,7 @@ fn halo_button<'a, Message: Clone + 'static>(
                 },
                 background: (hovered || active).then_some(iced_core::Background::Color(
                     if destructive && hovered {
-                        theme.feedback_error_primary()
+                        close_hover
                     } else {
                         background
                     },
@@ -1093,78 +1046,143 @@ pub(crate) fn capture_tray(recording: bool) -> Vec<TrayEntry<()>> {
 mod snapshot_tests;
 
 #[cfg(test)]
+pub(crate) fn design_halo_style() -> icetron_themes::HaloStyle {
+    icetron_themes::HaloStyle {
+        overhang: 40.0,
+        hot_zone_height: 16.0,
+        top_inset: 4.0,
+        horizontal_overhang: 0.0,
+        padding_horizontal: 3.0,
+        padding_vertical: 1.5,
+        gap: 4.0,
+        control_size: 28.0,
+        control_icon_size: 14.0,
+        menu_icon_size: 12.0,
+        glyph_icon_size: 14.0,
+        title_font_weight: 500,
+        divider_height: 12.0,
+        border_width: 0.5,
+        ..icetron_themes::HaloStyle::default()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
     use std::sync::Arc;
 
-    #[test]
-    fn overlay_halo_does_not_reserve_client_layout_space() {
+    fn halo_theme() -> CompTheme {
         let mut theme = DEFAULT_THEME_PAIR.load(false);
         theme.window_header_style = WindowHeaderStyle::Halo;
-        let theme = CompTheme::new(Arc::new(theme), false);
+        theme.halo_style = design_halo_style();
+        CompTheme::new(Arc::new(theme), false)
+    }
 
+    #[test]
+    fn every_halo_floats_its_pill_4px_above_the_window() {
+        let theme = halo_theme();
+        assert_eq!(halo_pill_rows(&theme), (-36, -4));
+        assert_eq!(halo_pill_bottom(&theme), -4);
+        assert_eq!(halo_clearance(&theme), 40);
+        assert_eq!(ssd_header_overhang(&theme), 40);
+        assert_eq!(ssd_top_reserve(&theme), 40);
         assert_eq!(ssd_header_height(&theme), 0);
-        assert_eq!(ssd_header_height_for(&theme, false), 0);
-        assert_eq!(ssd_header_overhang(&theme), 18);
+        assert_eq!(ssd_header_input_height(&theme), 56);
         let padding = halo_shadow_padding(&theme);
-        assert_eq!(
-            ssd_header_render_height(&theme),
-            34 + padding.top as u32 + padding.bottom as u32
-        );
-        assert_eq!(ssd_header_input_height(&theme), 34);
+        assert_eq!((padding.top, padding.bottom), (17.0, 25.0));
+        assert_eq!(ssd_header_render_overhang(&theme), 57);
+        assert_eq!(ssd_header_render_height(&theme), 56 + 17 + 25);
     }
 
     #[test]
-    fn joined_halo_reserves_only_the_visible_header() {
+    fn a_bar_keeps_its_band_inside_the_window() {
         let mut tokens = DEFAULT_THEME_PAIR.load(false);
-        tokens.window_header_style = WindowHeaderStyle::Halo;
+        tokens.window_header_style = WindowHeaderStyle::Bar;
         let theme = CompTheme::new(Arc::new(tokens), false);
-        let reserved = ssd_header_height_for(&theme, true) as i32;
-        assert_eq!(reserved, 31);
-        let overhang = ssd_header_overhang(&theme) as i32 + halo_header_offset(&theme, true);
-        assert_eq!(
-            overhang, 3,
-            "only the widget's invisible top inset lies outside the frame"
-        );
-        assert_eq!(ssd_header_input_height(&theme) as i32 - overhang, reserved);
-        assert!(reserved < ssd_header_render_height(&theme) as i32);
-        assert_eq!(halo_header_offset(&theme, false), 0);
+        assert!(ssd_header_height(&theme) > 0);
+        assert_eq!(ssd_top_reserve(&theme), ssd_header_height(&theme) as i32);
+        assert_eq!(halo_clearance(&theme), 0);
     }
 
-    /// The palette hangs from the pill: 16px into a floating window, at the
-    /// foot of a joined one's reserved band, and under a fullscreen inset.
     #[test]
-    fn the_pill_bottom_follows_where_the_halo_sits() {
-        let mut theme = DEFAULT_THEME_PAIR.load(false);
-        theme.window_header_style = WindowHeaderStyle::Halo;
-        let theme = CompTheme::new(Arc::new(theme), false);
-        assert_eq!(halo_pill_bottom(&theme, false), 16);
-        assert_eq!(halo_pill_bottom(&theme, true), 31);
-        assert_eq!(fullscreen_pill_bottom(&theme), 41);
+    fn the_band_takes_input_on_the_pill_the_bridge_and_an_overlay_strip() {
+        let theme = halo_theme();
+        let width = 800;
+        let pill = Some((300, 500));
+        for overlay in [false, true] {
+            let band = HaloBand::new(&theme, pill, overlay);
+            let hit = |x, y| band.hit(width, x, y);
+            let case = format!("overlay={overlay}");
+            for (x, y) in [(300, -36), (499, -36), (400, -20), (300, -5)] {
+                assert!(hit(x, y), "pill at ({x}, {y}) {case}");
+            }
+            for (x, y) in [
+                (299, -20),
+                (500, -20),
+                (0, -36),
+                (799, -10),
+                (400, -37),
+                (400, -40),
+            ] {
+                assert!(!hit(x, y), "see-through at ({x}, {y}) {case}");
+            }
+            for x in [0, 150, 799] {
+                assert!(hit(x, -4) && hit(x, -1), "bridge at {x} {case}");
+            }
+            assert!(
+                !hit(-1, -2) && !hit(800, -2),
+                "the bridge ends at the window {case}"
+            );
+            assert_eq!(hit(10, 0), overlay, "{case}");
+            assert_eq!(hit(10, 15), overlay, "{case}");
+            assert!(!hit(10, 16), "{case}");
+        }
+        let band = HaloBand::new(&theme, None, false);
+        assert!(!band.hit(width, 400, -20));
+        assert!(band.hit(width, 400, -2));
     }
 
-    /// A joined Halo slid 3px as it hid; only overlay and fullscreen chrome move.
     #[test]
-    fn joined_halo_fades_without_sliding() {
-        let mut tokens = DEFAULT_THEME_PAIR.load(false);
-        tokens.window_header_style = WindowHeaderStyle::Halo;
-        let theme = CompTheme::new(Arc::new(tokens), false);
-        for visible in [false, true] {
-            let joined = window_halo_visibility(&theme, visible, true);
-            assert_eq!(joined.hidden_offset, iced_core::Vector::ZERO);
-            assert_eq!(
-                joined.hidden_scale, 1.0,
-                "scale would move it around its centre"
-            );
-            assert_eq!(
-                window_halo_visibility(&theme, visible, false),
-                halo_visibility(&theme, visible)
-            );
+    fn the_overflow_tier_follows_the_design_thresholds() {
+        for (width, tier) in [
+            (2400.0, 1),
+            (680.0, 1),
+            (679.9, 2),
+            (480.0, 2),
+            (479.0, 3),
+            (280.0, 3),
+            (279.0, 4),
+            (0.0, 4),
+        ] {
+            assert_eq!(halo_tier(width, false), tier, "{width}px");
         }
         assert_eq!(
-            halo_visibility(&theme, false).hidden_offset,
-            iced_core::Vector::new(0.0, 3.0)
+            halo_tier(2400.0, true),
+            4,
+            "a secondary panel is always tier 4"
         );
+    }
+
+    #[test]
+    fn a_fullscreen_pill_hangs_10px_inside_the_output() {
+        let theme = halo_theme();
+        let padding = halo_shadow_padding(&theme);
+        assert_eq!(
+            fullscreen_header_offset(&theme)
+                + f64::from(padding.top + theme.halo_style().top_inset),
+            10.0
+        );
+        assert_eq!(fullscreen_pill_bottom(&theme), 42);
+    }
+
+    #[test]
+    fn a_hidden_halo_rests_3px_low() {
+        let theme = halo_theme();
+        for visible in [false, true] {
+            let visibility = halo_visibility(&theme, visible);
+            assert_eq!(visibility.hidden_offset, iced_core::Vector::new(0.0, 3.0));
+            assert_eq!(visibility.hidden_scale, 1.0);
+        }
     }
 }

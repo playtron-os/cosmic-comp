@@ -119,6 +119,17 @@ static POINTER_HOVERED_WINDOW: std::sync::LazyLock<Mutex<Option<CosmicWindow>>> 
 static POINTER_HOVER_UPDATED: std::sync::LazyLock<AtomicBool> =
     std::sync::LazyLock::new(|| AtomicBool::new(false));
 
+/// Super held: every window shows its Halo (HALO-SPEC "⌘ held", the overview).
+static HALO_OVERVIEW: AtomicBool = AtomicBool::new(false);
+
+pub fn halo_overview() -> bool {
+    HALO_OVERVIEW.load(Ordering::SeqCst)
+}
+
+pub(crate) fn set_halo_overview(on: bool) -> bool {
+    HALO_OVERVIEW.swap(on, Ordering::SeqCst) != on
+}
+
 /// Whether hover tracking is active for the current motion cycle.
 /// When false, focus_under() skips all hover state updates.
 static HOVER_TRACKING_ACTIVE: std::sync::LazyLock<AtomicBool> =
@@ -209,60 +220,52 @@ pub enum Focus {
     ResizeBottomLeft,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderBand {
+    Bar(i32),
+    Halo(super::header_bar::HaloBand),
+}
+
 impl Focus {
     pub fn under(
         surface: &CosmicSurface,
-        header_height: i32,
-        header_input_height: i32,
-        header_offset: i32,
-        pill: Option<(i32, i32)>,
+        band: HeaderBand,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
-        Self::under_geometry(
-            surface.geometry(),
-            header_height,
-            header_input_height,
-            header_offset,
-            pill,
-            location,
-        )
+        Self::under_geometry(surface.geometry(), band, location)
     }
 
-    /// `pill` is the Halo body's window-relative x range. A floating Halo only
-    /// takes input where it is painted: the rest of its band is see-through and
-    /// belongs to whatever is behind the window, so the resize borders hug the
-    /// client's own edges instead of the band's.
+    /// A Halo takes input only where its band hits, so resize borders hug the client.
     pub(super) fn under_geometry(
         geo: Rectangle<i32, Logical>,
-        header_height: i32,
-        header_input_height: i32,
-        header_offset: i32,
-        pill: Option<(i32, i32)>,
+        band: HeaderBand,
         location: Point<f64, Logical>,
     ) -> Option<Focus> {
         let loc = location.to_i32_floor::<i32>() - geo.loc;
-        let on_header = match pill {
-            Some((left, right)) => loc.x >= left && loc.x < right,
-            None => loc.x >= 0 && loc.x < geo.size.w,
+        let bar = match band {
+            HeaderBand::Halo(halo) => {
+                if halo.hit(geo.size.w, loc.x, loc.y) {
+                    return Some(Focus::Header);
+                }
+                if !(loc.x >= -RESIZE_BORDER
+                    && loc.x < geo.size.w + RESIZE_BORDER
+                    && loc.y >= -RESIZE_BORDER
+                    && loc.y < geo.size.h + RESIZE_BORDER)
+                {
+                    return None;
+                }
+                0
+            }
+            HeaderBand::Bar(height) => {
+                if loc.x >= 0 && loc.x < geo.size.w && loc.y >= 0 && loc.y < height {
+                    return Some(Focus::Header);
+                }
+                height
+            }
         };
-        if on_header && loc.y >= header_offset && loc.y < header_offset + header_input_height {
-            return Some(Focus::Header);
-        }
 
-        let floating = pill.is_some();
-        let top = if floating { header_height } else { 0 };
-        let bottom = header_height + geo.size.h;
-        if floating
-            && !(loc.x >= -RESIZE_BORDER
-                && loc.x < geo.size.w + RESIZE_BORDER
-                && loc.y >= top - RESIZE_BORDER
-                && loc.y < bottom + RESIZE_BORDER)
-        {
-            return None;
-        }
-
-        let above = loc.y < top;
-        let below = loc.y >= bottom;
+        let above = loc.y < 0;
+        let below = loc.y >= bar + geo.size.h;
         let left = loc.x < 0;
         let right = loc.x >= geo.size.w;
         match (above, below, left, right) {
@@ -611,43 +614,42 @@ impl CosmicWindowInternal {
             .and_then(|app| app.new_window.clone())
     }
 
-    /// Space the active theme reserves above the client surface.
     fn ssd_height(&self) -> i32 {
-        super::header_bar::ssd_header_height_for(&self.theme.lock().unwrap(), self.joined_halo())
-            as i32
+        super::header_bar::ssd_header_height(&self.theme.lock().unwrap()) as i32
     }
 
     fn ssd_render_height(&self) -> i32 {
         super::header_bar::ssd_header_render_height(&self.theme.lock().unwrap()) as i32
     }
 
-    fn ssd_input_height(&self) -> i32 {
-        super::header_bar::ssd_header_input_height(&self.theme.lock().unwrap()) as i32
-    }
-
-    fn ssd_overhang(&self) -> i32 {
-        let offset = self.halo_offset();
-        super::header_bar::ssd_header_overhang(&self.theme.lock().unwrap()) as i32 + offset
-    }
-
     fn ssd_render_overhang(&self) -> i32 {
-        let offset = self.halo_offset();
-        super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32 + offset
+        super::header_bar::ssd_header_render_overhang(&self.theme.lock().unwrap()) as i32
     }
 
-    fn halo_offset(&self) -> i32 {
-        super::header_bar::halo_header_offset(&self.theme.lock().unwrap(), self.joined_halo())
+    fn halo_overlay(&self) -> bool {
+        self.window
+            .wl_surface()
+            .is_some_and(|surface| crate::wayland::protocols::halo_header::allows_overlay(&surface))
     }
 
-    fn joined_halo(&self) -> bool {
-        let allows_overlay = self.window.wl_surface().is_some_and(|surface| {
-            crate::wayland::protocols::halo_header::allows_overlay(&surface)
-        });
-        self.fullscreen_output.is_none() && !is_surface_embedded(&self.window) && !allows_overlay
+    fn halo_clearance(&self) -> i32 {
+        if self.uses_halo_header()
+            && self.has_ssd(true)
+            && self.fullscreen_output.is_none()
+            && !is_surface_embedded(&self.window)
+        {
+            super::header_bar::halo_clearance(&self.theme.lock().unwrap())
+        } else {
+            0
+        }
     }
 
     fn uses_halo_header(&self) -> bool {
         super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
+    }
+
+    fn halo_revealed(&self) -> bool {
+        self.pointer_over_window.load(Ordering::SeqCst) || halo_overview()
     }
 
     fn header_origin(&self) -> Point<f64, Logical> {
@@ -961,21 +963,43 @@ impl CosmicWindow {
         self.0.with_program(|p| p.window.clone())
     }
 
-    /// The Halo body's window-relative x range, or `None` when the whole band
-    /// is this window's to take input in. Reads the painted pill, so it must
-    /// be called outside `with_program`.
-    ///
-    /// Only a *joined* Halo needs the range. Its band is reserved above the
-    /// client, so beside the pill it is see-through onto whatever is behind
-    /// the window. An overlay Halo's band lies over the client's own top
-    /// strip, which the client leaves empty for exactly this: the compositor
-    /// drags and maximizes from all of it, as a title bar does.
-    fn halo_pill(&self) -> Option<(i32, i32)> {
-        self.0
-            .with_program(|p| p.uses_halo_header() && p.has_ssd(false) && p.joined_halo())
+    /// Reads the painted pill, so call it outside `with_program`.
+    fn header_band(&self) -> HeaderBand {
+        let (halo, shown) = self.0.with_program(|p| {
+            (
+                p.uses_halo_header() && p.has_ssd(false) && !is_surface_embedded(&p.window),
+                super::header_bar::halo_is_visible(
+                    p.fullscreen_output.is_some(),
+                    p.halo_revealed(),
+                    p.activated.load(Ordering::SeqCst),
+                    p.menu_open.load(Ordering::SeqCst) || p.commands_open.load(Ordering::SeqCst),
+                ),
+            )
+        });
+        if !halo {
+            return HeaderBand::Bar(self.0.with_program(|p| p.ssd_height()));
+        }
+        // A hidden pill is not there to press; the bridge still reveals it.
+        let pill = shown
             .then(|| self.0.backdrop_input_bounds())
             .flatten()
-            .map(|rect| halo_pill_span(rect.loc.x, rect.size.w))
+            .map(|rect| halo_pill_span(rect.loc.x, rect.size.w));
+        self.0.with_program(|p| {
+            HeaderBand::Halo(super::header_bar::HaloBand::new(
+                &p.theme.lock().unwrap(),
+                pill,
+                p.halo_overlay(),
+            ))
+        })
+    }
+
+    pub fn halo_clearance(&self) -> i32 {
+        self.0.with_program(|p| p.halo_clearance())
+    }
+
+    pub fn window_inset(&self) -> i32 {
+        self.0
+            .with_program(|p| p.theme.lock().unwrap().window_inset().round() as i32)
     }
 
     pub fn focus_under(
@@ -1000,7 +1024,7 @@ impl CosmicWindow {
             .with_program(|p| p.fullscreen_output.is_some())
             .then(|| self.0.backdrop_bounds())
             .flatten();
-        let pill = self.halo_pill();
+        let band = self.header_band();
         let result = self.0.with_program(|p| {
             if let Some(output) = &p.fullscreen_output {
                 let output = output.lock().unwrap();
@@ -1036,46 +1060,8 @@ impl CosmicWindow {
                 && !is_embedded
                 && surface_type.contains(WindowSurfaceType::TOPLEVEL)
             {
-                let geo = p.window.geometry();
-
-                let point_i32 = relative_pos.to_i32_floor::<i32>();
-                let ssd_height = if has_ssd { p.ssd_height() } else { 0 };
-
-                let x = point_i32.x - geo.loc.x;
-                let y = point_i32.y - geo.loc.y;
-                // A floating Halo's band is empty above the client, so its
-                // resize borders follow the client's own top edge and the band
-                // is left to whatever is painted behind the window.
-                let top = if pill.is_some() { ssd_height } else { 0 };
-                let bottom = geo.size.h + ssd_height;
-                let within_reach = pill.is_none()
-                    || (x >= -RESIZE_BORDER
-                        && x < geo.size.w + RESIZE_BORDER
-                        && y >= top - RESIZE_BORDER
-                        && y < bottom + RESIZE_BORDER);
-                if within_reach
-                    && ((-RESIZE_BORDER..0).contains(&x)
-                        || (top - RESIZE_BORDER..top).contains(&y)
-                        || (geo.size.w..geo.size.w + RESIZE_BORDER).contains(&x)
-                        || (bottom..bottom + RESIZE_BORDER).contains(&y))
-                {
-                    window_ui = Some((
-                        PointerFocusTarget::WindowUI(self.clone()),
-                        Point::from((0., 0.)),
-                    ));
-                }
-
-                let on_header = match pill {
-                    Some((left, right)) => x >= left && x < right,
-                    None => x >= 0 && x < geo.size.w,
-                };
-                let in_header = if p.uses_halo_header() {
-                    let band = -p.ssd_overhang();
-                    on_header && y >= band && y < band + p.ssd_input_height()
-                } else {
-                    y < p.ssd_input_height()
-                };
-                if has_ssd && in_header {
+                let band = if has_ssd { band } else { HeaderBand::Bar(0) };
+                if Focus::under_geometry(p.window.geometry(), band, relative_pos).is_some() {
                     window_ui = Some((
                         PointerFocusTarget::WindowUI(self.clone()),
                         Point::from((0., 0.)),
@@ -1121,6 +1107,39 @@ impl CosmicWindow {
 
     /// Set whether the pointer is currently over this window.
     /// Called from PointerFocusTarget enter/leave to track hover state.
+    fn commands_open(&self) -> bool {
+        self.0
+            .with_program(|p| p.commands_open.load(Ordering::SeqCst))
+    }
+
+    /// Super+K: open the palette under the pill, or close it if it is up.
+    pub fn toggle_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if !self.0.with_program(|p| p.uses_halo_header()) {
+            return;
+        }
+        if self.commands_open() {
+            let seat = seat.clone();
+            loop_handle.insert_idle(move |state| crate::shell::grabs::close_palette(&seat, state));
+        } else {
+            self.open_commands(seat, loop_handle);
+        }
+    }
+
+    fn open_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let query_input = halo::menu_input_query(seat.clone(), serial);
+        let surface = self.surface();
+        let app = self
+            .0
+            .with_program(|p| p.desktop_app.lock().unwrap().clone());
+        let seat = seat.clone();
+        loop_handle.insert_idle(move |state| {
+            if let Some((start, position)) = query_input() {
+                halo::open_commands(state, &surface, &seat, serial, start, position, app);
+            }
+        });
+    }
+
     pub fn set_pointer_over_window(&self, value: bool) {
         self.0.with_program(|p| {
             p.pointer_over_window.store(value, Ordering::SeqCst);
@@ -1209,6 +1228,17 @@ impl CosmicWindow {
             .find(|fullscreen| &fullscreen.surface == surface)
         {
             fullscreen.halo.0.force_update();
+        }
+    }
+
+    pub(crate) fn refresh_all_halos(shell: &crate::shell::Shell) {
+        for mapped in shell.mapped() {
+            mapped.force_update();
+        }
+        for workspace in shell.workspaces().spaces() {
+            for fullscreen in &workspace.fullscreen_surfaces {
+                fullscreen.halo.0.force_update();
+            }
         }
     }
 
@@ -1725,31 +1755,6 @@ impl CosmicWindow {
     pub fn has_ssd(&self) -> bool {
         self.0.with_program(|p| p.has_ssd(false))
     }
-
-    /// Where a client's backdrop colour goes within the outer rect.
-    pub fn backdrop_geometry(&self, outer: Rectangle<i32, Local>) -> Rectangle<i32, Local> {
-        self.0.with_program(|p| {
-            // Only the pill paints a joined Halo's band; a bar paints its own.
-            let band = if p.has_ssd(false) && p.uses_halo_header() {
-                p.ssd_height()
-            } else {
-                0
-            };
-            below_band(outer, band, SpaceElement::geometry(&p.window).size.h + band)
-        })
-    }
-}
-
-/// `outer` less the top `band` of a `height`-tall window, scaled as `outer` is.
-fn below_band(outer: Rectangle<i32, Local>, band: i32, height: i32) -> Rectangle<i32, Local> {
-    if band <= 0 || height <= 0 {
-        return outer;
-    }
-    let band = (f64::from(band) * f64::from(outer.size.h) / f64::from(height)).round() as i32;
-    Rectangle::new(
-        (outer.loc.x, outer.loc.y + band).into(),
-        (outer.size.w, (outer.size.h - band).max(0)).into(),
-    )
 }
 
 // Not `Copy`: a desktop-entry action carries its group id.
@@ -1982,16 +1987,15 @@ impl Program for CosmicWindowInternal {
         theme: &crate::comp_theme::CompTheme,
     ) -> Option<crate::utils::iced::Visibility> {
         super::header_bar::uses_halo_header(theme).then(|| {
-            super::header_bar::window_halo_visibility(
+            super::header_bar::halo_visibility(
                 theme,
                 super::header_bar::halo_is_visible(
                     self.fullscreen_output.is_some(),
-                    self.pointer_over_window.load(Ordering::SeqCst),
+                    self.halo_revealed(),
                     self.activated.load(Ordering::SeqCst),
                     self.menu_open.load(Ordering::SeqCst)
                         || self.commands_open.load(Ordering::SeqCst),
                 ),
-                self.joined_halo(),
             )
         })
     }
@@ -2026,13 +2030,11 @@ impl Program for CosmicWindowInternal {
     ) -> Option<crate::utils::iced::FocusOutline> {
         (super::header_bar::uses_halo_header(theme) && !is_surface_embedded(&self.window)).then(
             || {
-                let mut outline = super::header_bar::halo_focus_outline(
+                super::header_bar::halo_focus_outline(
                     theme,
                     self.activated.load(Ordering::SeqCst),
                     self.fullscreen_output.is_some() || self.window.is_fullscreen(true),
-                );
-                outline.bottom_border = !self.joined_halo();
-                outline
+                )
             },
         )
     }
@@ -2076,7 +2078,6 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         let focused = win.activated.load(Ordering::SeqCst);
 
         let mut header = super::header_bar::header_bar()
-            .joined_to_window(win.joined_halo())
             .compositor_outline(!is_surface_embedded(&win.window))
             .title(title)
             .on_drag(Message::DragStart)
@@ -2100,6 +2101,8 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             // window actually reaches the top of the screen. With a reserved
             // margin those differ, and only the second decides the radius.
             .square_top(win.squares_top_corners())
+            .window_width(win.window.geometry().size.w as f32)
+            .panel(win.window.has_parent())
             .theme(theme);
         let app = win.desktop_app.lock().unwrap().clone();
         if let Some(app) = app.as_ref() {
@@ -2353,7 +2356,7 @@ impl KeyboardTarget<State> for CosmicWindow {
 impl PointerTarget<State> for CosmicWindow {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
-        let pill = self.halo_pill();
+        let band = self.header_band();
         let is_header = self.0.with_program(|p| {
             if p.fullscreen_output.is_some() {
                 p.swap_focus(Some(Focus::Header));
@@ -2366,14 +2369,8 @@ impl PointerTarget<State> for CosmicWindow {
             let has_ssd = p.has_ssd(false);
             let has_blur = p.window.has_blur();
             if has_ssd || p.has_tiled_state() || has_blur {
-                let Some(next) = Focus::under(
-                    &p.window,
-                    if has_ssd { p.ssd_height() } else { 0 },
-                    if has_ssd { p.ssd_input_height() } else { 0 },
-                    if has_ssd { -p.ssd_overhang() } else { 0 },
-                    pill,
-                    event.location,
-                ) else {
+                let band = if has_ssd { band } else { HeaderBand::Bar(0) };
+                let Some(next) = Focus::under(&p.window, band, event.location) else {
                     return false;
                 };
 
@@ -2410,7 +2407,7 @@ impl PointerTarget<State> for CosmicWindow {
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         let mut event = event.clone();
-        let pill = self.halo_pill();
+        let band = self.header_band();
         let is_header = self.0.with_program(|p| {
             if p.fullscreen_output.is_some() {
                 p.swap_focus(Some(Focus::Header));
@@ -2423,14 +2420,8 @@ impl PointerTarget<State> for CosmicWindow {
             let has_ssd = p.has_ssd(false);
             let has_blur = p.window.has_blur();
             if has_ssd || p.has_tiled_state() || has_blur {
-                let Some(next) = Focus::under(
-                    &p.window,
-                    if has_ssd { p.ssd_height() } else { 0 },
-                    if has_ssd { p.ssd_input_height() } else { 0 },
-                    if has_ssd { -p.ssd_overhang() } else { 0 },
-                    pill,
-                    event.location,
-                ) else {
+                let band = if has_ssd { band } else { HeaderBand::Bar(0) };
+                let Some(next) = Focus::under(&p.window, band, event.location) else {
                     return false;
                 };
                 let _previous = p.swap_focus(Some(next));
@@ -2890,131 +2881,62 @@ where
 mod tests {
     use super::*;
 
-    /// Joined Halo geometry: 31px reserved above the client, a 34px band
-    /// starting 3px above the window, and a pill capped away from the corners.
-    const JOINED: (i32, i32, i32) = (31, 34, -3);
+    use crate::shell::element::header_bar::HaloBand;
 
-    fn joined_hit(pill: Option<(i32, i32)>) -> impl Fn(f64, f64) -> Option<Focus> {
+    fn halo_hit(overlay: bool) -> impl Fn(f64, f64) -> Option<Focus> {
         let geo = Rectangle::new((7, 9).into(), (800, 600).into());
-        let (height, input, offset) = JOINED;
-        move |x, y| {
-            Focus::under_geometry(geo, height, input, offset, pill, (x + 7.0, y + 9.0).into())
-        }
+        let band = HeaderBand::Halo(HaloBand {
+            pill: Some((300, 500)),
+            rows: (-36, -4),
+            strip: if overlay { 16 } else { 0 },
+        });
+        move |x, y| Focus::under_geometry(geo, band, (x + 7.0, y + 9.0).into())
     }
 
     #[test]
-    fn joined_halo_routes_input_above_its_reserved_client_origin() {
-        let hit = joined_hit(Some((20, 780)));
-        assert_eq!(hit(100.0, 0.0), Some(Focus::Header));
-        assert_eq!(hit(100.0, 30.9), Some(Focus::Header));
-        assert_eq!(hit(100.0, 31.0), None);
-        assert_eq!(hit(100.0, 40.0), None);
-        assert_eq!(hit(-1.0, 40.0), Some(Focus::ResizeLeft));
-        assert_eq!(hit(100.0, 630.9), None);
-        assert_eq!(hit(100.0, 631.0), Some(Focus::ResizeBottom));
-    }
-
-    /// The band beside the pill is see-through, so it must not take the click
-    /// that belongs to the window painted behind it.
-    #[test]
-    fn halo_band_beside_the_pill_falls_through() {
-        let hit = joined_hit(Some((20, 780)));
-        for x in [-9.0, 0.0, 10.0, 19.9, 780.0, 799.0, 808.0] {
-            for y in [-3.0, 0.0, 15.0, 20.9] {
-                assert_eq!(hit(x, y), None, "band at ({x}, {y}) swallowed the pointer");
-            }
+    fn a_floating_halo_takes_input_only_where_the_design_draws_it() {
+        for overlay in [false, true] {
+            let hit = halo_hit(overlay);
+            assert_eq!(hit(400.0, -36.0), Some(Focus::Header));
+            assert_eq!(hit(400.0, -5.0), Some(Focus::Header));
+            assert_eq!(hit(299.0, -20.0), None, "beside the pill");
+            assert_eq!(hit(600.0, -11.0), None, "above the resize border");
+            assert_eq!(hit(10.0, -3.0), Some(Focus::Header), "the bridge");
+            assert_eq!(hit(10.0, -1.0), Some(Focus::Header), "the bridge");
+            assert_eq!(hit(10.0, 15.9), overlay.then_some(Focus::Header));
+            assert_eq!(hit(10.0, 16.0), None);
+            assert_eq!(hit(100.0, 300.0), None, "the client's own content");
         }
-        assert_eq!(hit(20.0, -3.0), Some(Focus::Header));
-        assert_eq!(hit(779.9, 20.9), Some(Focus::Header));
-        // Without the pill the whole band is chrome, as it is for a title bar.
-        let full = joined_hit(None);
-        assert_eq!(full(10.0, 0.0), Some(Focus::Header));
-        assert_eq!(full(790.0, 15.0), Some(Focus::Header));
     }
 
-    /// Resizing a floating Halo starts at the window's own edge, not at the
-    /// top of the empty band the pill hangs in.
     #[test]
     fn halo_resize_borders_hug_the_client_edges() {
-        let hit = joined_hit(Some((20, 780)));
-        assert_eq!(hit(10.0, 21.0), Some(Focus::ResizeTop));
-        assert_eq!(hit(10.0, 30.9), Some(Focus::ResizeTop));
-        assert_eq!(hit(790.0, 25.0), Some(Focus::ResizeTop));
-        assert_eq!(hit(10.0, 20.9), None);
-        // The pill keeps its own span; the border runs either side of it.
-        assert_eq!(hit(400.0, 25.0), Some(Focus::Header));
-        assert_eq!(hit(-1.0, 21.0), Some(Focus::ResizeTopLeft));
-        assert_eq!(hit(-10.0, 30.9), Some(Focus::ResizeTopLeft));
-        assert_eq!(hit(800.0, 21.0), Some(Focus::ResizeTopRight));
-        assert_eq!(hit(809.9, 25.0), Some(Focus::ResizeTopRight));
-        assert_eq!(hit(-1.0, 20.9), None);
-        assert_eq!(hit(800.0, 20.9), None);
-        assert_eq!(hit(-1.0, 630.9), Some(Focus::ResizeLeft));
-        assert_eq!(hit(-1.0, 631.0), Some(Focus::ResizeBottomLeft));
-        assert_eq!(hit(-11.0, 400.0), None);
-        assert_eq!(hit(400.0, 641.0), None);
-        // A title bar keeps its unbounded borders above the outer rect.
-        let full = joined_hit(None);
-        assert_eq!(full(400.0, -4.0), Some(Focus::ResizeTop));
-        assert_eq!(full(-1.0, -50.0), Some(Focus::ResizeTopLeft));
-    }
-
-    /// An overlay Halo reserves nothing: its band lies over the client's own
-    /// top strip, which the client leaves empty for it. The compositor takes
-    /// all of that strip — dragging and double-click-to-maximize work across
-    /// the whole width, as on a title bar — so these windows get no pill range
-    /// at all (`halo_pill` returns `None` for them).
-    #[test]
-    fn an_overlay_halo_keeps_its_whole_strip_draggable() {
-        let geo = Rectangle::new((0, 0).into(), (800, 600).into());
-        let hit = |x, y| Focus::under_geometry(geo, 0, 34, -10, None, Point::from((x, y)));
-        // Every column of the strip drags the window, not just the pill's.
-        for x in [0.0, 10.0, 399.0, 700.0, 799.0] {
-            for y in [-10.0, -5.0, 0.0, 23.9] {
-                assert_eq!(
-                    hit(x, y),
-                    Some(Focus::Header),
-                    "the spacer at ({x}, {y}) must drag the window"
-                );
-            }
+        for overlay in [false, true] {
+            let hit = halo_hit(overlay);
+            assert_eq!(hit(10.0, -6.0), Some(Focus::ResizeTop));
+            assert_eq!(hit(10.0, -10.0), Some(Focus::ResizeTop));
+            assert_eq!(hit(10.0, -10.1), None);
+            assert_eq!(hit(-1.0, -6.0), Some(Focus::ResizeTopLeft));
+            assert_eq!(hit(800.0, -6.0), Some(Focus::ResizeTopRight));
+            assert_eq!(hit(-1.0, 300.0), Some(Focus::ResizeLeft));
+            assert_eq!(hit(800.0, 300.0), Some(Focus::ResizeRight));
+            assert_eq!(hit(400.0, 600.0), Some(Focus::ResizeBottom));
+            assert_eq!(hit(-1.0, 600.0), Some(Focus::ResizeBottomLeft));
+            assert_eq!(hit(-11.0, 300.0), None);
+            assert_eq!(hit(400.0, 610.0), None);
         }
-        // Below the strip is the client's own content again.
-        assert_eq!(hit(100.0, 24.0), None);
-        assert_eq!(hit(10.0, 100.0), None);
-        // And the window still resizes from its edges.
-        assert_eq!(hit(-1.0, 100.0), Some(Focus::ResizeLeft));
-        assert_eq!(hit(800.0, 100.0), Some(Focus::ResizeRight));
-        assert_eq!(hit(-1.0, -11.0), Some(Focus::ResizeTopLeft));
-        assert_eq!(hit(400.0, -11.0), Some(Focus::ResizeTop));
-        assert_eq!(hit(400.0, 600.0), Some(Focus::ResizeBottom));
     }
 
-    /// A backdrop colour over the whole outer rect painted the band beside the pill.
     #[test]
-    fn backdrop_leaves_the_joined_halo_band_see_through() {
-        use icetron_themes::{WindowHeaderStyle, dynamic::DEFAULT_THEME_PAIR};
-        let mut tokens = DEFAULT_THEME_PAIR.load(false);
-        tokens.window_header_style = WindowHeaderStyle::Halo;
-        let theme = crate::comp_theme::CompTheme::new(Arc::new(tokens), false);
-        let joined = crate::shell::element::header_bar::ssd_header_height_for(&theme, true) as i32;
-        let overlay =
-            crate::shell::element::header_bar::ssd_header_height_for(&theme, false) as i32;
-        let outer = Rectangle::new((7, 9).into(), (800, 600 + joined).into());
-
-        assert_eq!(
-            below_band(outer, joined, outer.size.h),
-            Rectangle::new((7, 9 + joined).into(), (800, 600).into())
-        );
-        // Animations scale the outer rect, so the band scales with it.
-        assert_eq!(
-            below_band(
-                Rectangle::new((7, 9).into(), (400, 315).into()),
-                joined,
-                outer.size.h
-            ),
-            Rectangle::new((7, 24).into(), (400, 300).into())
-        );
-        assert_eq!(below_band(outer, overlay, outer.size.h), outer);
+    fn a_bar_header_routes_its_band_and_resizes_around_it() {
+        let geo = Rectangle::new((0, 0).into(), (800, 600).into());
+        let hit = |x, y| Focus::under_geometry(geo, HeaderBand::Bar(40), Point::from((x, y)));
+        assert_eq!(hit(10.0, 0.0), Some(Focus::Header));
+        assert_eq!(hit(799.0, 39.0), Some(Focus::Header));
+        assert_eq!(hit(10.0, 40.0), None);
+        assert_eq!(hit(400.0, -1.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(400.0, 640.0), Some(Focus::ResizeBottom));
+        assert_eq!(hit(400.0, 639.0), None);
     }
 
     #[test]

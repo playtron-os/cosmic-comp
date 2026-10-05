@@ -151,6 +151,43 @@ impl SupressedButtons {
     }
 }
 
+#[derive(Default)]
+struct HaloOverviewHold(RefCell<Option<RegistrationToken>>);
+
+fn is_super_only(modifiers: &shortcuts::Modifiers) -> bool {
+    modifiers.logo && !(modifiers.ctrl || modifiers.alt || modifiers.shift)
+}
+
+impl State {
+    /// A bare Super still held after the tap threshold shows every Halo, and
+    /// its release no longer fires the Super binding.
+    fn arm_halo_overview(&self, seat: &Seat<State>, binding: shortcuts::Binding) {
+        seat.user_data()
+            .insert_if_missing(HaloOverviewHold::default);
+        let hold = seat.user_data().get::<HaloOverviewHold>().unwrap();
+        if let Some(token) = hold.0.borrow_mut().take() {
+            self.common.event_loop_handle.remove(token);
+        }
+        let held = seat.clone();
+        let timer =
+            Timer::from_duration(crate::wayland::protocols::special_action::PRESS_THRESHOLD);
+        let token = self
+            .common
+            .event_loop_handle
+            .insert_source(timer, move |_, _, state| {
+                if let Some(hold) = held.user_data().get::<HaloOverviewHold>() {
+                    hold.0.borrow_mut().take();
+                }
+                if held.modifiers_shortcut_queue().take(&binding) {
+                    state.common.shell.read().set_halo_overview(true);
+                }
+                TimeoutAction::Drop
+            })
+            .ok();
+        *hold.0.borrow_mut() = token;
+    }
+}
+
 impl ModifiersShortcutQueue {
     pub fn set(&self, binding: shortcuts::Binding) {
         let mut set = self.0.borrow_mut();
@@ -2039,6 +2076,9 @@ impl State {
         };
 
         let mut shell = self.common.shell.write();
+        if !modifiers.logo {
+            shell.set_halo_overview(false);
+        }
 
         let keyboard = seat.get_keyboard().unwrap();
         let pointer = seat.get_pointer().unwrap();
@@ -2615,7 +2655,11 @@ impl State {
         let mut clear_queue = true;
         if !shortcuts_inhibited {
             let modifiers_queue = seat.modifiers_shortcut_queue();
-            let workspaces_live = self.common.shell.read().workspaces_live();
+            let (workspaces_live, halo) = {
+                let shell = self.common.shell.read();
+                let halo = crate::shell::element::header_bar::uses_halo_header(shell.theme());
+                (shell.workspaces_live(), halo)
+            };
 
             for (binding, action) in self.common.config.shortcuts.iter() {
                 if *action == shortcuts::Action::Disable {
@@ -2654,6 +2698,9 @@ impl State {
                 {
                     modifiers_queue.set(binding.clone());
                     clear_queue = false;
+                    if halo && is_super_only(&binding.modifiers) {
+                        self.arm_halo_overview(seat, binding.clone());
+                    }
                 }
 
                 // is this a normal binding?
