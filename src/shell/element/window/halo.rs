@@ -32,6 +32,8 @@ use crate::{
 
 use super::commands;
 use crate::shell::element::header_bar;
+use crate::wayland::protocols::app_commands::{self, Selection, catalog::Catalog};
+use cosmic_settings_config::shortcuts;
 use icetron_p::prelude::{PALETTE_TOP_OFFSET, PALETTE_WIDTH};
 
 /// The prototype keeps the palette this far inside the output's edges.
@@ -95,7 +97,9 @@ pub(super) fn perform_action(
         Message::Screenshot => crate::utils::screenshot::screenshot_window(state, surface),
         Message::Record => crate::utils::recording::toggle(state, surface),
         Message::NewWindow => {
-            if let Some(action) = new_window {
+            if !invoke_own(surface, "neww", None)
+                && let Some(action) = new_window
+            {
                 action.launch();
             }
         }
@@ -144,8 +148,31 @@ pub(super) fn perform_action(
     }
 }
 
-/// Run a command by id: a window verb, or one of the actions the window's
-/// desktop entry declares.
+/// Hand standard verb or app command `id` to the window, if it answers it.
+/// `generation` is the catalog the selection was made from; `None` takes the
+/// current one, for controls redrawn whenever it changes.
+fn invoke_own(surface: &CosmicSurface, id: &str, generation: Option<u32>) -> bool {
+    let Some(wl) = surface.wl_surface() else {
+        return false;
+    };
+    let Some(catalog) = app_commands::committed(&wl) else {
+        return false;
+    };
+    let own = id.strip_prefix(commands::APP_PREFIX);
+    if own.is_none() && !catalog.handles.contains_key(id) {
+        return false;
+    }
+    app_commands::invoke(
+        &wl,
+        &Selection::Command(own.unwrap_or(id).to_owned()),
+        generation.unwrap_or(catalog.generation),
+        smithay::utils::SERIAL_COUNTER.next_serial(),
+    );
+    true
+}
+
+/// Run a command by id: a window verb, the window's own, or one of the actions
+/// its desktop entry declares.
 pub(super) fn perform_command(
     state: &mut State,
     surface: &CosmicSurface,
@@ -153,6 +180,24 @@ pub(super) fn perform_command(
     id: &str,
     app: Option<&DesktopApp>,
 ) {
+    run_command(state, surface, seat, id, app, None);
+}
+
+/// [`perform_command`], picked from a menu or palette built from catalog `generation`.
+fn run_command(
+    state: &mut State,
+    surface: &CosmicSurface,
+    seat: Option<&Seat<State>>,
+    id: &str,
+    app: Option<&DesktopApp>,
+    generation: Option<u32>,
+) {
+    // The tray hands every verb that is not the compositor's over as a desktop
+    // action; the window's own come back out here.
+    let id = match id.strip_prefix(commands::ACTION_PREFIX) {
+        Some(rest) if commands::desktop_action(app, id).is_none() => rest,
+        _ => id,
+    };
     if let Some(message) = commands::message_for(id) {
         perform_action(
             state,
@@ -163,6 +208,61 @@ pub(super) fn perform_command(
         );
     } else if let Some(action) = commands::desktop_action(app, id) {
         action.launch();
+    } else if !invoke_own(surface, id, generation) {
+        // What the shell answers for a window that does not.
+        let name = app
+            .and_then(|app| app.name.clone())
+            .unwrap_or_else(|| surface.app_id());
+        match id {
+            "settings" => open_settings(state),
+            "info" => notify(state, &name, fl!("halo-info-toast", app = name.as_str())),
+            _ => {}
+        }
+    }
+}
+
+/// Settings… for an app without its own: System Settings, as the design does.
+fn open_settings(state: &mut State) {
+    let command = state
+        .common
+        .config
+        .system_actions
+        .get(&cosmic_settings_config::shortcuts::action::System::Settings)
+        .cloned();
+    match command {
+        Some(command) => state.spawn_command(command),
+        None => tracing::warn!("no Settings system action is configured"),
+    }
+}
+
+/// A system toast about the window's app.
+fn notify(state: &State, app: &str, summary: String) {
+    state
+        .common
+        .dbus_state
+        .notify(crate::dbus::notifications::Notification {
+            app_name: app.to_owned(),
+            app_icon: String::new(),
+            summary,
+            body: String::new(),
+            expire_timeout: 5000,
+            transient: true,
+        });
+}
+
+/// The design's compact age for a recent item: now, 5m, 3h, 2d, 4mo, 1y.
+pub(super) fn relative_age(at_ms: u64, now_ms: u64) -> String {
+    const MINUTE: u64 = 60_000;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    let delta = now_ms.saturating_sub(at_ms);
+    match delta {
+        d if d < MINUTE => "now".to_owned(),
+        d if d < HOUR => format!("{}m", d / MINUTE),
+        d if d < DAY => format!("{}h", d / HOUR),
+        d if d / DAY < 30 => format!("{}d", d / DAY),
+        d if d / DAY / 30 < 12 => format!("{}mo", d / DAY / 30),
+        d => format!("{}y", d / DAY / 365),
     }
 }
 
@@ -199,69 +299,193 @@ fn app_action_items(
         .collect()
 }
 
+/// A menu row that runs command `id` on the window, as of catalog `generation`.
+fn command_item(
+    surface: &CosmicSurface,
+    seat: &Seat<State>,
+    app: Option<&DesktopApp>,
+    title: String,
+    id: String,
+    generation: Option<u32>,
+) -> Item {
+    let surface = surface.clone();
+    let seat = seat.clone();
+    let app = app.cloned();
+    Item::new(title, move |handle| {
+        let surface = surface.clone();
+        let seat = seat.clone();
+        let app = app.clone();
+        let id = id.clone();
+        handle.insert_idle(move |state| {
+            run_command(state, &surface, Some(&seat), &id, app.as_ref(), generation);
+        });
+    })
+}
+
+/// One row of the app menu, before it is bound to the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppMenuRow {
+    Settings,
+    NewWindow,
+    /// The app's menu nominee at this index of its catalog's commands.
+    Own(usize),
+    /// The desktop entry's action at this index.
+    Action(usize),
+    Recents,
+    Info,
+    CloseAll,
+    Separator,
+}
+
+/// The app menu, as the design lays it out: the app's Settings and a new
+/// window, the app's own nominees (or its desktop entry's actions), Open
+/// Recent, then App info and Close all.
+fn app_menu_plan(facts: &commands::WindowFacts<'_>, close_all: bool) -> Vec<AppMenuRow> {
+    let mut top = vec![AppMenuRow::Settings];
+    if facts.new_window().is_some() {
+        top.push(AppMenuRow::NewWindow);
+    }
+    let own = match facts.catalog {
+        Some(catalog) => commands::menu_nominees(catalog)
+            .filter_map(|command| {
+                catalog
+                    .commands
+                    .iter()
+                    .position(|candidate| candidate.id == command.id)
+            })
+            .map(AppMenuRow::Own)
+            .collect(),
+        None => (0..facts.app.map_or(0, |app| app.actions.len()))
+            .map(AppMenuRow::Action)
+            .collect(),
+    };
+    let recents = if facts
+        .catalog
+        .is_some_and(|catalog| !catalog.recents.is_empty())
+    {
+        vec![AppMenuRow::Recents]
+    } else {
+        Vec::new()
+    };
+    let mut bottom = vec![AppMenuRow::Info];
+    if close_all {
+        bottom.push(AppMenuRow::CloseAll);
+    }
+    let mut rows = Vec::new();
+    for section in [top, own, recents, bottom] {
+        if section.is_empty() {
+            continue;
+        }
+        if !rows.is_empty() {
+            rows.push(AppMenuRow::Separator);
+        }
+        rows.extend(section);
+    }
+    rows
+}
+
 fn menu_items(
     surface: &CosmicSurface,
     seat: &Seat<State>,
-    action: Option<NewWindowAction>,
-    app_actions: Vec<Item>,
+    app: Option<&DesktopApp>,
+    catalog: Option<&Catalog>,
     close_all: Option<Item>,
 ) -> Vec<Item> {
-    let item = |title: String, message: Message| {
-        let surface = surface.clone();
-        let seat = seat.clone();
-        let action = action.clone();
-        Item::new(title, move |handle| {
-            let surface = surface.clone();
-            let seat = seat.clone();
-            let action = action.clone();
-            let message = message.clone();
-            handle.insert_idle(move |state| {
-                perform_action(state, &surface, Some(&seat), message, action.as_ref())
-            });
-        })
+    let facts = commands::WindowFacts {
+        recording: false,
+        maximized: false,
+        fullscreen: false,
+        resizable: true,
+        close_all: false,
+        app,
+        catalog,
     };
-    let mut items = Vec::new();
-    if action.is_some() {
-        items.push(item(fl!("window-menu-new-window"), Message::NewWindow));
-        items.push(Item::Separator);
-    }
-    if !app_actions.is_empty() {
-        items.extend(app_actions);
-        items.push(Item::Separator);
-    }
-    items.extend([
-        item(fl!("window-menu-screenshot"), Message::Screenshot),
-        item(
-            if surface.is_recording() {
-                fl!("window-menu-stop-recording")
+    let generation = catalog.map(|catalog| catalog.generation);
+    let name = app
+        .and_then(|app| app.name.clone())
+        .unwrap_or_else(|| surface.app_id());
+    let item = |title: String, id: &str| {
+        command_item(surface, seat, app, title, id.to_owned(), generation)
+    };
+    let handled = |item: Item, id: &str, keys: &str| match facts.handles(id) {
+        Some(enabled) => item.shortcut(keys.to_owned()).disabled(!enabled),
+        None => item,
+    };
+    let actions = app_action_items(surface, seat, app);
+    app_menu_plan(&facts, close_all.is_some())
+        .into_iter()
+        .filter_map(|row| {
+            Some(match row {
+                AppMenuRow::Settings => handled(
+                    item(fl!("halo-app-settings", app = name.as_str()), "settings"),
+                    "settings",
+                    "Ctrl+,",
+                ),
+                AppMenuRow::NewWindow => {
+                    handled(item(fl!("halo-new-window-row"), "neww"), "neww", "Ctrl+N")
+                        .disabled(facts.new_window() == Some(false))
+                }
+                AppMenuRow::Own(index) => {
+                    let command = catalog?.commands.get(index)?;
+                    let row = item(
+                        command.name.clone(),
+                        &format!("{}{}", commands::APP_PREFIX, command.id),
+                    )
+                    .disabled(!command.enabled)
+                    .toggled(command.active);
+                    if command.keys.is_empty() {
+                        row
+                    } else {
+                        row.shortcut(command.keys.clone())
+                    }
+                }
+                AppMenuRow::Action(index) => actions.get(index)?.clone(),
+                AppMenuRow::Recents => recent_items(surface, catalog?),
+                AppMenuRow::Info => {
+                    item(fl!("halo-info"), "info").disabled(facts.handles("info") == Some(false))
+                }
+                AppMenuRow::CloseAll => close_all.clone()?,
+                AppMenuRow::Separator => Item::Separator,
+            })
+        })
+        .collect()
+}
+
+/// Open Recent, newest first, each row with how long ago it was touched.
+fn recent_items(surface: &CosmicSurface, catalog: &Catalog) -> Item {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis() as u64);
+    let rows = catalog
+        .recent_items()
+        .into_iter()
+        .map(|recent| {
+            let surface = surface.clone();
+            let id = recent.id.clone();
+            let generation = catalog.generation;
+            let row = Item::new(recent.label.clone(), move |handle| {
+                let surface = surface.clone();
+                let id = id.clone();
+                handle.insert_idle(move |_| {
+                    if let Some(wl) = surface.wl_surface() {
+                        app_commands::invoke(
+                            &wl,
+                            &Selection::Recent(id),
+                            generation,
+                            smithay::utils::SERIAL_COUNTER.next_serial(),
+                        );
+                    }
+                });
+            })
+            .shortcut(relative_age(recent.timestamp, now));
+            if recent.sublabel.is_empty() {
+                row
             } else {
-                fl!("window-menu-record")
-            },
-            Message::Record,
-        ),
-        Item::Separator,
-        item(fl!("window-menu-minimize"), Message::Minimize),
-        item(
-            if surface.is_maximized(false) || surface.is_fullscreen(false) {
-                fl!("window-menu-restore")
-            } else {
-                fl!("window-menu-maximize")
-            },
-            Message::Maximize,
-        ),
-        item(
-            if surface.is_fullscreen(false) {
-                fl!("window-menu-leave-fullscreen")
-            } else {
-                fl!("window-menu-fullscreen")
-            },
-            Message::Fullscreen,
-        ),
-        Item::Separator,
-        item(fl!("window-menu-close"), Message::Close),
-    ]);
-    items.extend(close_all);
-    items
+                row.subtitle(recent.sublabel.clone())
+            }
+        })
+        .collect();
+    Item::new_submenu(fl!("halo-open-recent"), rows).icon(icetron_themes::icons::HISTORY)
 }
 
 fn select_app_windows<T: Clone + Eq + std::hash::Hash>(
@@ -436,7 +660,10 @@ fn open_surface(
         !(min.is_some() && min == surface.max_size_without_ssd())
     };
     drop(shell);
-    let action = app.as_ref().and_then(|app| app.new_window.clone());
+    let catalog = surface
+        .wl_surface()
+        .and_then(|surface| app_commands::committed(&surface));
+    let generation = catalog.as_ref().map(|catalog| catalog.generation);
     let place: Box<dyn FnOnce(Size<i32, Logical>) -> Point<i32, Global>> = match anchor {
         Some((window, pill_bottom, output)) => {
             let theme = theme.clone();
@@ -452,25 +679,34 @@ fn open_surface(
             resizable,
             close_all: close_all.is_some(),
             app: app.as_ref(),
+            catalog: catalog.as_ref(),
         };
-        let list = commands::commands(&facts);
+        let mut list = commands::commands(&facts);
+        for command in &mut list {
+            let action = match command.id.as_str() {
+                "minimize" => shortcuts::Action::Minimize,
+                "maximize" => shortcuts::Action::Maximize,
+                "fullscreen" => shortcuts::Action::Fullscreen,
+                "close" => shortcuts::Action::Close,
+                _ => continue,
+            };
+            command.shortcut = state.common.config.shortcut_for_action(&action);
+        }
         // Index-aligned with the command list: a row press is the same
         // callback the menu row would have run.
-        let items = list.iter().map(|command| {
-            let surface = surface.clone();
-            let seat = seat.clone();
-            let app = app.clone();
-            let id = command.id.clone();
-            Item::new(command.label.clone(), move |handle| {
-                let surface = surface.clone();
-                let seat = seat.clone();
-                let app = app.clone();
-                let id = id.clone();
-                handle.insert_idle(move |state| {
-                    perform_command(state, &surface, Some(&seat), &id, app.as_ref());
-                });
-            })
-        });
+        let items = list
+            .iter()
+            .map(|command| match (&command.id[..], &close_all) {
+                ("closeall", Some(close_all)) => close_all.clone(),
+                _ => command_item(
+                    surface,
+                    seat,
+                    app.as_ref(),
+                    command.label.clone(),
+                    command.id.clone(),
+                    generation,
+                ),
+            });
         let scope = app
             .as_ref()
             .and_then(|app| app.name.clone())
@@ -489,8 +725,7 @@ fn open_surface(
             palette,
         )
     } else {
-        let app_actions = app_action_items(surface, seat, app.as_ref());
-        let items = menu_items(surface, seat, action, app_actions, close_all);
+        let items = menu_items(surface, seat, app.as_ref(), catalog.as_ref(), close_all);
         open.store(true, Ordering::SeqCst);
         crate::frametrace::mark(format_args!("menu opened ({})", surface.app_id()));
         ui.force_update();
@@ -529,6 +764,122 @@ fn open_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_recent_item_s_age_reads_as_the_design_writes_it() {
+        let minute = 60_000;
+        let now = 1_000 * 24 * 60 * minute;
+        for (ago, expected) in [
+            (0, "now"),
+            (59_999, "now"),
+            (minute, "1m"),
+            (59 * minute, "59m"),
+            (3 * 60 * minute, "3h"),
+            (2 * 24 * 60 * minute, "2d"),
+            (45 * 24 * 60 * minute, "1mo"),
+            (400 * 24 * 60 * minute, "1y"),
+        ] {
+            assert_eq!(relative_age(now - ago, now), expected, "{ago}");
+        }
+        assert_eq!(relative_age(now + minute, now), "now");
+    }
+
+    fn plan(
+        app: Option<&DesktopApp>,
+        catalog: Option<&Catalog>,
+        close_all: bool,
+    ) -> Vec<AppMenuRow> {
+        let facts = commands::WindowFacts {
+            recording: false,
+            maximized: false,
+            fullscreen: false,
+            resizable: true,
+            close_all: false,
+            app,
+            catalog,
+        };
+        app_menu_plan(&facts, close_all)
+    }
+
+    /// A window that publishes nothing keeps its desktop entry's actions there.
+    #[test]
+    fn a_silent_window_s_app_menu_is_the_design_s_with_its_entry_s_actions() {
+        use AppMenuRow::*;
+        let app = DesktopApp::from_content(
+            std::path::Path::new("/apps/example.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Example\nActions=new-window;compose;\n\
+             [Desktop Action new-window]\nName=New Window\nExec=example --new\n\
+             [Desktop Action compose]\nName=Compose\nExec=example --compose\n",
+        )
+        .unwrap();
+        let actions = app.actions.len();
+        let mut expected = vec![Settings];
+        if app.new_window.is_some() {
+            expected.push(NewWindow);
+        }
+        expected.push(Separator);
+        expected.extend((0..actions).map(Action));
+        expected.extend([Separator, Info, CloseAll]);
+        assert_eq!(plan(Some(&app), None, true), expected);
+        assert_eq!(plan(None, None, false), [Settings, Separator, Info]);
+    }
+
+    #[test]
+    fn a_publishing_window_s_app_menu_has_its_nominees_and_open_recent() {
+        use crate::wayland::protocols::app_commands::catalog::{Command, MENU, Recent};
+        use AppMenuRow::*;
+        let mut catalog = Catalog::default();
+        catalog.handle("neww".into(), 1).unwrap();
+        for (id, flags) in [("a.one", MENU), ("a.two", 0), ("a.three", MENU)] {
+            catalog
+                .add(Command {
+                    id: id.into(),
+                    name: id.into(),
+                    keys: String::new(),
+                    section: String::new(),
+                    icon: String::new(),
+                    flags,
+                    enabled: true,
+                    active: false,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            plan(None, Some(&catalog), false),
+            [
+                Settings,
+                NewWindow,
+                Separator,
+                Own(0),
+                Own(2),
+                Separator,
+                Info
+            ]
+        );
+        catalog
+            .add_recent(Recent {
+                id: "doc".into(),
+                label: "Rooftop fight".into(),
+                sublabel: String::new(),
+                timestamp: 1,
+            })
+            .unwrap();
+        assert_eq!(
+            plan(None, Some(&catalog), true),
+            [
+                Settings,
+                NewWindow,
+                Separator,
+                Own(0),
+                Own(2),
+                Separator,
+                Recents,
+                Separator,
+                Info,
+                CloseAll
+            ]
+        );
+    }
     use smithay::input::SeatState;
 
     /// The palette is the window's: centred on it, hanging under its pill, and

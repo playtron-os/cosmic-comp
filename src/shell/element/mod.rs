@@ -1123,6 +1123,12 @@ impl CosmicMapped {
         }
     }
 
+    pub fn show_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if let CosmicMappedInternal::Window(w) = &self.element {
+            w.show_commands(seat, loop_handle);
+        }
+    }
+
     pub fn window_room(&self) -> crate::shell::layout::floating::Room {
         let inset = match &self.element {
             CosmicMappedInternal::Window(w) => w.window_inset(),

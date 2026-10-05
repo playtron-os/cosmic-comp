@@ -1135,6 +1135,13 @@ impl CosmicWindow {
         }
     }
 
+    /// The palette the window itself asked for: opened, never toggled shut.
+    pub fn show_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if self.0.with_program(|p| p.uses_halo_header()) && !self.commands_open() {
+            self.open_commands(seat, loop_handle);
+        }
+    }
+
     fn open_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let query_input = halo::menu_input_query(seat.clone(), serial);
@@ -2173,6 +2180,10 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         // a pin outlives the window that made it, and an app that stops
         // offering a verb must not leave a glyph that fires into nothing.
         let min = win.window.min_size_without_ssd();
+        let catalog = win
+            .window
+            .wl_surface()
+            .and_then(|surface| crate::wayland::protocols::app_commands::committed(&surface));
         let facts = commands::WindowFacts {
             recording: win.window.is_recording(),
             maximized: win.window.is_maximized(false)
@@ -2182,7 +2193,13 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             // Only the shell knows, and it is not pinnable anyway.
             close_all: false,
             app: app.as_ref(),
+            catalog: catalog.as_ref(),
         };
+        if app.as_ref().is_none_or(|app| app.new_window.is_none())
+            && facts.handles("neww") == Some(true)
+        {
+            header = header.on_new_window(Message::NewWindow);
+        }
         let available = commands::commands(&facts);
         let pins = commands::pins(&win.window.app_id());
         header = header.tray(

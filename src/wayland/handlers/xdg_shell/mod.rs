@@ -338,6 +338,7 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        crate::wayland::protocols::app_commands::toplevel_destroyed(surface.wl_surface());
         for (popup, _) in smithay::desktop::PopupManager::popups_for_surface(surface.wl_surface()) {
             if let smithay::desktop::PopupKind::Xdg(ref xdg_popup) = popup {
                 xdg_popup.send_popup_done();

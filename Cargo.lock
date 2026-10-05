@@ -1118,7 +1118,7 @@ dependencies = [
 [[package]]
 name = "cosmic-protocols"
 version = "0.2.0"
-source = "git+https://github.com/playtron-os/cosmic-protocols?branch=main#40e5fd10f568f38d1d172db1864951a741e45cbc"
+source = "git+https://github.com/playtron-os/cosmic-protocols?branch=main#3a42592ab2d74c972545a3e0ad16533db954cd69"
 dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
@@ -3009,7 +3009,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#96e9023f7d4644a2514dd2a77992a7c01c052f5c"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#fce10ac77d244fe07c0b42ab2dd43f80a8b4fda8"
 dependencies = [
  "bytemuck",
  "bytes",

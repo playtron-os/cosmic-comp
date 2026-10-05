@@ -3,6 +3,7 @@
 pub mod a11y;
 pub mod adaptive_foreground;
 pub mod animated_resize;
+pub mod app_commands;
 pub mod backdrop_color;
 pub mod background_effect;
 pub mod blur;
