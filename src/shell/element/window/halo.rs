@@ -100,7 +100,11 @@ pub(super) fn perform_action(
             }
         }
         Message::Close => surface.close(),
-        Message::Minimize => state.common.shell.write().minimize_request(surface),
+        Message::Minimize => {
+            let mut shell = state.common.shell.write();
+            shell.minimize_request(surface);
+            shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
+        }
         Message::Maximize => {
             let mut shell = state.common.shell.write();
             let seat = seat
@@ -109,6 +113,7 @@ pub(super) fn perform_action(
             // Fullscreen surfaces are no longer in the normal mapped-window list.
             // Restore that state first, including its saved output/workspace and size.
             let restored = shell.unfullscreen_request(surface, &state.common.event_loop_handle);
+            shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
             if restored.is_none()
                 && let Some(mapped) = shell.element_for_surface(surface).cloned()
             {
@@ -124,15 +129,20 @@ pub(super) fn perform_action(
             let seat = seat
                 .cloned()
                 .unwrap_or_else(|| shell.seats.last_active().clone());
+            let mut workspace_state = state.common.workspace_state.update();
             let target = if surface.is_fullscreen(false) {
-                shell.unfullscreen_request(surface, &state.common.event_loop_handle)
+                let target = shell.unfullscreen_request(surface, &state.common.event_loop_handle);
+                shell.settle_fullscreen_desktops(&mut workspace_state);
+                target
             } else {
-                shell.fullscreen_request(
+                shell.fullscreen_on_own_desktop(
                     surface,
                     seat.active_output(),
                     &state.common.event_loop_handle,
+                    &mut workspace_state,
                 )
             };
+            drop(workspace_state);
             drop(shell);
             if let Some(target) = target {
                 Shell::set_focus(state, Some(&target), &seat, None, false);

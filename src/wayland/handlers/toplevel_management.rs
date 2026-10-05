@@ -290,9 +290,13 @@ impl ToplevelManagementHandler for State {
                     .and_then(|surface| shell.visible_output_for_surface(&surface).cloned())
             })
             .unwrap_or_else(|| seat.focused_or_active_output());
-        if let Some(target) =
-            shell.fullscreen_request(window, output, &self.common.event_loop_handle)
-        {
+        let target = shell.fullscreen_on_own_desktop(
+            window,
+            output,
+            &self.common.event_loop_handle,
+            &mut self.common.workspace_state.update(),
+        );
+        if let Some(target) = target {
             std::mem::drop(shell);
             Shell::set_focus(self, Some(&target), &seat, None, true);
         }
@@ -305,6 +309,7 @@ impl ToplevelManagementHandler for State {
     ) {
         let mut shell = self.common.shell.write();
         let _ = shell.unfullscreen_request(window, &self.common.event_loop_handle);
+        shell.settle_fullscreen_desktops(&mut self.common.workspace_state.update());
         // don't switch focus because of a programmatic action.
         // If the toplevel-management client intends to focus the now unfullscreened toplevel, it can send an `activate`-request.
     }
@@ -327,6 +332,7 @@ impl ToplevelManagementHandler for State {
     fn minimize(&mut self, _dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {
         let mut shell = self.common.shell.write();
         shell.minimize_request(window);
+        shell.settle_fullscreen_desktops(&mut self.common.workspace_state.update());
     }
 
     fn unminimize(&mut self, _dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {
