@@ -325,7 +325,7 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
     let app_id = origin.app_id();
     let realm = shell.active_realm().to_owned();
     let windows = app_windows(shell, &app_id, &realm);
-    if !has_multiple_app_windows(&windows, origin) {
+    if !offers_close_all(&windows, origin) {
         return None;
     }
     Some(Item::new(fl!("window-menu-close-all"), move |handle| {
@@ -343,8 +343,10 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
     }))
 }
 
-fn has_multiple_app_windows<T: PartialEq>(windows: &[T], origin: &T) -> bool {
-    windows.len() > 1 && windows.contains(origin)
+/// The prototype's app menu offers Close all windows for every app with a
+/// window open, a lone one included.
+fn offers_close_all<T: PartialEq>(windows: &[T], origin: &T) -> bool {
+    windows.contains(origin)
 }
 
 /// The compact app menu — the `⌄`, or a right-click.
@@ -607,10 +609,10 @@ mod tests {
             candidates.into_iter().map(|(id, app)| (id, app.to_owned())),
         );
         assert_eq!(windows, [1, 2]);
-        assert!(has_multiple_app_windows(&windows, &1));
-        assert!(!has_multiple_app_windows(&windows, &3));
-        assert!(!has_multiple_app_windows(&[1], &1));
-        assert!(!has_multiple_app_windows::<u32>(&[], &1));
+        assert!(offers_close_all(&windows, &1));
+        assert!(!offers_close_all(&windows, &3));
+        assert!(offers_close_all(&[1], &1), "a lone window is offered it too");
+        assert!(!offers_close_all::<u32>(&[], &1));
     }
 
     #[test]
