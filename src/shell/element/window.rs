@@ -1321,7 +1321,7 @@ impl CosmicWindow {
         }
     }
 
-    pub(super) fn loop_handle(&self) -> LoopHandle<'static, crate::state::State> {
+    pub(crate) fn loop_handle(&self) -> LoopHandle<'static, crate::state::State> {
         self.0.loop_handle()
     }
 

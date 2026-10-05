@@ -289,7 +289,13 @@ impl XdgShellHandler for State {
             })
             .unwrap_or_else(|| seat.focused_or_active_output());
 
-        match shell.fullscreen_request(&surface, output.clone(), &self.common.event_loop_handle) {
+        let target = shell.fullscreen_on_own_desktop(
+            &surface,
+            output.clone(),
+            &self.common.event_loop_handle,
+            &mut self.common.workspace_state.update(),
+        );
+        match target {
             Some(target) => {
                 std::mem::drop(shell);
                 Shell::set_focus(self, Some(&target), &seat, None, true);
@@ -324,6 +330,7 @@ impl XdgShellHandler for State {
             });
 
         if let Some(target) = shell.unfullscreen_request(&surface, &self.common.event_loop_handle) {
+            shell.settle_fullscreen_desktops(&mut self.common.workspace_state.update());
             std::mem::drop(shell);
             if should_focus {
                 Shell::set_focus(self, Some(&target), &seat, None, true);

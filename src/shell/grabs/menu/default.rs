@@ -304,11 +304,13 @@ pub fn window_items(
                     let mut shell = state.common.shell.write();
                     let seat = shell.seats.last_active().clone();
                     let output = seat.active_output();
-                    if let Some(target) = shell.fullscreen_request(
+                    let target = shell.fullscreen_on_own_desktop(
                         &mapped.active_window(),
                         output,
                         &state.common.event_loop_handle,
-                    ) {
+                        &mut state.common.workspace_state.update(),
+                    );
+                    if let Some(target) = target {
                         std::mem::drop(shell);
                         Shell::set_focus(state, Some(&target), &seat, None, false);
                     }
@@ -590,7 +592,9 @@ pub fn fullscreen_items(window: &CosmicSurface, config: &Config) -> impl Iterato
             Item::new(fl!("window-menu-minimize"), move |handle| {
                 let window = minimize_clone.clone();
                 handle.insert_idle(move |state| {
-                    state.common.shell.write().minimize_request(&window);
+                    let mut shell = state.common.shell.write();
+                    shell.minimize_request(&window);
+                    shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
                 });
             })
             .shortcut(config.shortcut_for_action(&Action::Minimize)),
@@ -603,6 +607,8 @@ pub fn fullscreen_items(window: &CosmicSurface, config: &Config) -> impl Iterato
                     if let Some(target) =
                         shell.unfullscreen_request(&window, &state.common.event_loop_handle)
                     {
+                        shell
+                            .settle_fullscreen_desktops(&mut state.common.workspace_state.update());
                         let seat = shell.seats.last_active().clone();
                         std::mem::drop(shell);
                         Shell::set_focus(state, Some(&target), &seat, None, true);

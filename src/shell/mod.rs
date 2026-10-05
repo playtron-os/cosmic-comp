@@ -978,6 +978,50 @@ fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
     capabilities
 }
 
+/// What a fullscreen desktop's set looks like, for [`fullscreen_desktop_step`].
+#[derive(Debug, Clone, Copy)]
+struct FullscreenDesktopFacts {
+    /// Its window is alive and still fullscreen on it.
+    owner_here: bool,
+    /// A window on it is still animating out of fullscreen.
+    leaving: bool,
+    desktop: usize,
+    home: Option<usize>,
+    /// How many desktops its set has.
+    len: usize,
+    active: usize,
+    previously_active: Option<usize>,
+    /// Its realm is the one on screen.
+    on_screen: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FullscreenDesktopStep {
+    Keep,
+    /// Switch to the desktop at this index.
+    Show(usize),
+    /// Let an animation finish first.
+    Wait,
+    /// Remove it, its windows going to the desktop at this index when the home is gone.
+    Fold(usize),
+}
+
+fn fullscreen_desktop_step(facts: FullscreenDesktopFacts) -> FullscreenDesktopStep {
+    let neighbour = facts.desktop.saturating_sub(1);
+    if facts.owner_here {
+        FullscreenDesktopStep::Keep
+    } else if facts.on_screen && facts.active == facts.desktop && facts.len > 1 {
+        let home = facts
+            .home
+            .unwrap_or(if facts.desktop == 0 { 1 } else { neighbour });
+        FullscreenDesktopStep::Show(home)
+    } else if facts.leaving || facts.previously_active == Some(facts.desktop) {
+        FullscreenDesktopStep::Wait
+    } else {
+        FullscreenDesktopStep::Fold(neighbour)
+    }
+}
+
 /// Fold `workspace` into `into`, moving every window across and dropping the now-empty
 /// workspace from the protocol.
 ///
@@ -1239,10 +1283,40 @@ impl WorkspaceSet {
         self.workspaces.push(workspace);
     }
 
+    /// A new desktop named `name` at `idx`, the desktops after it moving along one.
+    fn insert_workspace(
+        &mut self,
+        idx: usize,
+        name: String,
+        state: &mut WorkspaceUpdateGuard<State>,
+    ) -> WorkspaceHandle {
+        let mut workspace = create_workspace(
+            state,
+            &self.output,
+            &self.group,
+            false,
+            self.tiling_enabled,
+            self.theme.clone(),
+            self.appearance,
+        );
+        workspace.name = Some(name);
+        let handle = workspace.handle;
+        let idx = idx.min(self.workspaces.len());
+        self.workspaces.insert(idx, workspace);
+        let shift = |i: usize| if i >= idx { i + 1 } else { i };
+        self.active = shift(self.active);
+        self.previously_active = self
+            .previously_active
+            .map(|(previous, delta)| (shift(previous), delta));
+        self.update_workspace_idxs(state);
+        handle
+    }
+
     fn ensure_last_empty(
         &mut self,
         state: &mut WorkspaceUpdateGuard<State>,
         xdg_activation_state: &XdgActivationState,
+        held: &[WorkspaceHandle],
     ) {
         // add empty at the end, if necessary
         if self
@@ -1265,7 +1339,10 @@ impl WorkspaceSet {
                         .workspaces
                         .get(i - 1)
                         .is_some_and(|w| w.is_empty() && !w.pinned);
-                let keep = if workspace.can_auto_remove(xdg_activation_state) {
+                // A fullscreen window's home waits for it, empty or not.
+                let keep = if workspace.can_auto_remove(xdg_activation_state)
+                    && !held.contains(&workspace.handle)
+                {
                     // Keep empty workspace if it's active, or it's the last workspace,
                     // and the previous worspace is not both active and empty.
                     i == self.active
@@ -1451,6 +1528,17 @@ pub struct Workspaces {
     /// Whether desktops come and go on their own — a spare kept at the end,
     /// empties pruned — or only through the user.
     dynamic: bool,
+    /// The desktops fullscreen windows were given, and where each came from.
+    pub fullscreen_desktops: Vec<FullscreenDesktop>,
+}
+
+/// A fullscreen window's own desktop, minted beside the one it left.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FullscreenDesktop {
+    pub window: CosmicSurface,
+    pub desktop: WorkspaceHandle,
+    /// Where the window goes back to, and where its desktop's other windows go.
+    pub home: WorkspaceHandle,
 }
 
 /// Whether desktops come and go on their own. `COSMIC_STATIC_WORKSPACES=1` in
@@ -1478,6 +1566,7 @@ impl Workspaces {
             appearance: config.cosmic_conf.appearance_settings,
             persisted_workspaces: config.cosmic_conf.pinned_workspaces.clone(),
             dynamic: dynamic_desktops(),
+            fullscreen_desktops: Vec::new(),
         }
     }
 
@@ -1501,6 +1590,7 @@ impl Workspaces {
             appearance: self.appearance,
             persisted_workspaces: Vec::new(),
             dynamic: self.dynamic,
+            fullscreen_desktops: Vec::new(),
         }
     }
 
@@ -1994,8 +2084,10 @@ impl Workspaces {
                 }
             }
             WorkspaceMode::OutputBound if self.dynamic => {
+                let held: Vec<WorkspaceHandle> =
+                    self.fullscreen_desktops.iter().map(|f| f.home).collect();
                 for set in self.sets.values_mut() {
-                    set.ensure_last_empty(workspace_state, xdg_activation_state);
+                    set.ensure_last_empty(workspace_state, xdg_activation_state, &held);
                 }
             }
             WorkspaceMode::OutputBound => {}
@@ -7115,9 +7207,14 @@ impl Shell {
                 let len = set.workspaces.len();
                 for (i, workspace) in set.workspaces.iter().enumerate() {
                     let spare = realm.dynamic && i + 1 == len && workspace.is_empty();
+                    // Leaving fullscreen is how a fullscreen desktop goes.
+                    let fullscreen = realm
+                        .fullscreen_desktops
+                        .iter()
+                        .any(|f| f.desktop == workspace.handle);
                     workspace_state.set_workspace_capabilities(
                         &workspace.handle,
-                        desktop_capabilities(len > 1 && !spare),
+                        desktop_capabilities(len > 1 && !spare && !fullscreen),
                     );
                 }
             }
@@ -7177,6 +7274,7 @@ impl Shell {
             }
         }
 
+        self.settle_fullscreen_desktops(workspace_state);
         self.workspaces_mut()
             .refresh(workspace_state, xdg_activation_state);
         self.refresh_removable(workspace_state);
@@ -9699,6 +9797,10 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
+        // Parking from a fullscreen desktop takes the window home first, windowed.
+        if let Some(loop_handle) = self.fullscreen_desktop_loop(surface) {
+            let _ = self.unfullscreen_request(surface, &loop_handle);
+        }
         if let Some((set, mapped)) = self.workspaces_mut().sets.values_mut().find_map(|set| {
             let mapped = set
                 .sticky_layer
@@ -10314,6 +10416,20 @@ impl Shell {
     where
         CosmicSurface: PartialEq<S>,
     {
+        self.fullscreen_request_on(surface, output, loop_handle, None)
+    }
+
+    /// Fullscreen `surface` on `desktop`, or on the active desktop of `output`.
+    fn fullscreen_request_on<S>(
+        &mut self,
+        surface: &S,
+        output: Output,
+        loop_handle: &LoopHandle<'static, State>,
+        desktop: Option<WorkspaceHandle>,
+    ) -> Option<KeyboardFocusTarget>
+    where
+        CosmicSurface: PartialEq<S>,
+    {
         let mapped = self.element_for_surface(surface).cloned()?;
 
         // Don't allow fullscreening embedded windows
@@ -10372,11 +10488,15 @@ impl Shell {
 
             toplevel_leave_output(&window, old_output);
             let old_output = old_output.downgrade();
-            let workspace_handle = self.active_space(&output).unwrap().handle;
+            let workspace_handle =
+                desktop.unwrap_or_else(|| self.active_space(&output).unwrap().handle);
             toplevel_enter_output(&window, &output);
             toplevel_enter_workspace(&window, &workspace_handle);
 
-            let workspace = self.active_space_mut(&output).unwrap();
+            let workspace = self
+                .workspaces_mut()
+                .space_for_handle_mut(&workspace_handle)
+                .unwrap();
             workspace.map_fullscreen(
                 &window,
                 &seat,
@@ -10414,7 +10534,7 @@ impl Shell {
             toplevel_leave_output(&window, &workspace.output);
             toplevel_leave_workspace(&window, &workspace.handle);
 
-            let workspace = match beside_game {
+            let workspace = match beside_game.or(desktop) {
                 Some(desktop) => self.space_for_handle_any_realm_mut(&desktop).unwrap(),
                 None => self.active_space_mut(&output).unwrap(),
             };
@@ -10482,6 +10602,191 @@ impl Shell {
         } else {
             None
         }
+    }
+
+    /// Fullscreen `surface` on a desktop of its own, minted right after the one
+    /// on screen and named after the window. Leaving fullscreen, parking or
+    /// closing brings it home ([`Self::settle_fullscreen_desktops`]). Where
+    /// that cannot apply, fullscreen stays in place.
+    #[must_use]
+    pub fn fullscreen_on_own_desktop<S>(
+        &mut self,
+        surface: &S,
+        output: Output,
+        loop_handle: &LoopHandle<'static, State>,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> Option<KeyboardFocusTarget>
+    where
+        CosmicSurface: PartialEq<S>,
+    {
+        let Some((window, home)) = self.fullscreen_home(surface, &output) else {
+            return self.fullscreen_request(surface, output, loop_handle);
+        };
+        let set = self.workspaces_mut().sets.get_mut(&output)?;
+        let idx = set.active + 1;
+        let desktop = set.insert_workspace(idx, window.title(), workspace_state);
+        let Some(target) =
+            self.fullscreen_request_on(surface, output.clone(), loop_handle, Some(desktop))
+        else {
+            self.remove_desktop(&desktop, workspace_state);
+            return None;
+        };
+        let _ = self.activate(
+            &output,
+            idx,
+            WorkspaceDelta::new_shortcut(),
+            workspace_state,
+        );
+        self.workspaces_mut()
+            .fullscreen_desktops
+            .push(FullscreenDesktop {
+                window,
+                desktop,
+                home,
+            });
+        self.refresh_removable(workspace_state);
+        Some(target)
+    }
+
+    /// The window and its home, when fullscreen may give it a desktop: an
+    /// ordinary window on `output`, with per-output desktops and no game there.
+    fn fullscreen_home<S>(
+        &self,
+        surface: &S,
+        output: &Output,
+    ) -> Option<(CosmicSurface, WorkspaceHandle)>
+    where
+        CosmicSurface: PartialEq<S>,
+    {
+        let realm = self.workspaces();
+        if realm.mode != WorkspaceMode::OutputBound
+            || (self.game_mode.active && self.game_mode.output.as_ref() == Some(output))
+        {
+            return None;
+        }
+        let set = realm.sets.get(output)?;
+        let mapped = self.element_for_surface(surface)?;
+        let (window, _) = mapped.windows().find(|(w, _)| w == surface)?;
+        if mapped.is_minimized()
+            || mapped
+                .windows()
+                .any(|(w, _)| crate::wayland::handlers::surface_embed::is_surface_embedded(&w))
+        {
+            return None;
+        }
+        // A sticky window has no desktop of its own; it goes back to the one on screen.
+        let home = match self.space_for(mapped) {
+            Some(workspace) => workspace.handle,
+            None if set.sticky_layer.mapped().any(|m| m == mapped) => {
+                set.workspaces.get(set.active)?.handle
+            }
+            None => return None,
+        };
+        set.workspaces
+            .iter()
+            .any(|w| w.handle == home)
+            .then_some((window, home))
+    }
+
+    /// Bring fullscreen desktops whose window left back to where they came
+    /// from: show the home while one is on screen, then fold it — and any
+    /// window opened on it — into the home and drop it.
+    pub fn settle_fullscreen_desktops(
+        &mut self,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) {
+        let seats: Vec<Seat<State>> = self.seats.iter().cloned().collect();
+        let mut show = Vec::new();
+        for (realm_id, realm) in self.realms.iter_mut() {
+            let on_screen = *realm_id == self.active_realm;
+            let entries = std::mem::take(&mut realm.fullscreen_desktops);
+            for entry in entries {
+                let found = realm.sets.iter_mut().find_map(|(output, set)| {
+                    let idx = set
+                        .workspaces
+                        .iter()
+                        .position(|w| w.handle == entry.desktop)?;
+                    Some((output.clone(), set, idx))
+                });
+                let Some((output, set, idx)) = found else {
+                    continue;
+                };
+                let workspace = &set.workspaces[idx];
+                let step = fullscreen_desktop_step(FullscreenDesktopFacts {
+                    owner_here: entry.window.alive()
+                        && workspace
+                            .get_fullscreen_surfaces()
+                            .any(|f| f.surface == entry.window),
+                    leaving: workspace
+                        .fullscreen_surfaces
+                        .iter()
+                        .any(|f| f.ended_at.is_some()),
+                    desktop: idx,
+                    home: set.workspaces.iter().position(|w| w.handle == entry.home),
+                    len: set.workspaces.len(),
+                    active: set.active,
+                    previously_active: set.previously_active.map(|(previous, _)| previous),
+                    on_screen,
+                });
+                match step {
+                    FullscreenDesktopStep::Keep | FullscreenDesktopStep::Wait => {
+                        realm.fullscreen_desktops.push(entry);
+                    }
+                    FullscreenDesktopStep::Show(home) => {
+                        show.push((output, home));
+                        realm.fullscreen_desktops.push(entry);
+                    }
+                    FullscreenDesktopStep::Fold(into) => {
+                        let Some(workspace) = set.remove_workspace(workspace_state, &entry.desktop)
+                        else {
+                            continue;
+                        };
+                        let into = set
+                            .workspaces
+                            .iter()
+                            .position(|w| w.handle == entry.home)
+                            .unwrap_or(into.min(set.workspaces.len() - 1));
+                        if workspace.is_empty() {
+                            workspace_state.remove_workspace(workspace.handle);
+                        } else {
+                            merge_workspaces(
+                                workspace,
+                                &mut set.workspaces[into],
+                                workspace_state,
+                                &seats,
+                            );
+                            set.workspaces[into].refresh();
+                        }
+                    }
+                }
+            }
+        }
+        for (output, idx) in show {
+            let _ = self.activate(
+                &output,
+                idx,
+                WorkspaceDelta::new_shortcut(),
+                workspace_state,
+            );
+        }
+    }
+
+    /// Whether `surface` is fullscreen on a desktop of its own, with a handle to
+    /// the loop that rebuilds its window when it comes home.
+    fn fullscreen_desktop_loop<S>(&self, surface: &S) -> Option<LoopHandle<'static, State>>
+    where
+        CosmicSurface: PartialEq<S>,
+    {
+        let realm = self.workspaces();
+        let entry = realm
+            .fullscreen_desktops
+            .iter()
+            .find(|entry| &entry.window == surface)?;
+        realm
+            .space_for_handle(&entry.desktop)?
+            .get_fullscreen_surfaces()
+            .find(|f| &f.surface == surface)
+            .map(|f| f.halo.loop_handle())
     }
 
     pub fn update_toolkit(
@@ -10755,6 +11060,9 @@ pub fn check_grab_preconditions(
 
 #[cfg(test)]
 mod transition_tests;
+
+#[cfg(test)]
+mod fullscreen_desktop_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {
