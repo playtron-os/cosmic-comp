@@ -139,7 +139,7 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
 fn deliver(state: &mut State, seat: &Seat<State>, encoded: Encoded) {
     crate::clipboard::set_compositor_clipboard(state, seat, PNG_MIME.to_owned(), encoded.png);
     let (summary, body) = match &encoded.saved {
-        Some(path) => (fl!("screenshot-saved-to"), path.display().to_string()),
+        Some(_) => (fl!("screenshot-saved"), String::new()),
         None => (fl!("screenshot-saved-to-clipboard"), String::new()),
     };
     state.common.dbus_state.notify(Notification {
