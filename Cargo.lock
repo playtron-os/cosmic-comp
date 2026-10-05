@@ -2817,7 +2817,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#5f05d77fcdbeae9cef6af237be5b6df8151a0fb1"
+source = "git+https://github.com/playtron-os/iced.git#ee6bc9d0eb915b84a2809ad70584ed16d01b0ec1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -3041,7 +3041,7 @@ source = "git+https://github.com/playtron-os/icetron-paths.git?rev=2c8bf4051a24a
 [[package]]
 name = "icetron-themes"
 version = "1.26.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#e432c931c6cb3f98023c5358fa570baeba1bca52"
+source = "git+ssh://git@github.com/playtron-os/icetron-themes.git#e7fdee7ed743ad03c8c1c7f288d237ca24e48cbc"
 dependencies = [
  "dirs 6.0.0",
  "iced_core 0.15.0-dev",

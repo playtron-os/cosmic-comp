@@ -27,9 +27,13 @@ pub(crate) fn fullscreen_header_offset(theme: &CompTheme) -> f64 {
     10.0 - f64::from(halo_shadow_padding(theme).top + theme.halo_style().top_inset)
 }
 
-/// The design's `--duration-halo-hold` and `--duration-halo-fade`.
-pub(crate) const HALO_INTRO_HOLD: std::time::Duration = std::time::Duration::from_millis(2400);
-pub(crate) const HALO_INTRO_FADE: std::time::Duration = std::time::Duration::from_millis(1100);
+pub(crate) fn halo_intro_hold(theme: &CompTheme) -> std::time::Duration {
+    std::time::Duration::from_millis(theme.halo_intro_hold().max(0.0).round() as u64)
+}
+
+pub(crate) fn halo_intro_fade(theme: &CompTheme) -> std::time::Duration {
+    std::time::Duration::from_millis(theme.halo_intro_fade().max(0.0).round() as u64)
+}
 
 pub(crate) fn halo_is_visible(
     fullscreen: bool,

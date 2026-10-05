@@ -652,9 +652,9 @@ impl CosmicWindowInternal {
     fn halo_revealed(&self) -> bool {
         self.pointer_over_window.load(Ordering::SeqCst)
             || halo_overview()
-            || self
-                .introduced_for()
-                .is_some_and(|t| t < super::header_bar::HALO_INTRO_HOLD)
+            || self.introduced_for().is_some_and(|t| {
+                t < super::header_bar::halo_intro_hold(&self.theme.lock().unwrap())
+            })
     }
 
     fn introduced_for(&self) -> Option<std::time::Duration> {
@@ -1275,11 +1275,12 @@ impl CosmicWindow {
         if !window.0.with_program(|p| p.uses_halo_header()) {
             return;
         }
-        window.0.with_program(|p| {
+        let hold = window.0.with_program(|p| {
             *p.introduced.lock().unwrap() = Some(std::time::Instant::now());
+            super::header_bar::halo_intro_hold(&p.theme.lock().unwrap())
         });
         window.0.force_update();
-        let timer = calloop::timer::Timer::from_duration(super::header_bar::HALO_INTRO_HOLD);
+        let timer = calloop::timer::Timer::from_duration(hold);
         let _ = loop_handle.insert_source(timer, move |_, _, _| {
             window.0.force_update();
             calloop::timer::TimeoutAction::Drop
@@ -2041,8 +2042,14 @@ impl Program for CosmicWindowInternal {
                         || self.commands_open.load(Ordering::SeqCst),
                 ),
             );
-            if !visibility.visible && self.introduced_for().is_some() {
-                visibility.duration = super::header_bar::HALO_INTRO_FADE;
+            let intro_hold = super::header_bar::halo_intro_hold(theme);
+            let intro_fade = super::header_bar::halo_intro_fade(theme);
+            if !visibility.visible
+                && self.introduced_for().is_some_and(|elapsed| {
+                    elapsed >= intro_hold && elapsed < intro_hold.saturating_add(intro_fade)
+                })
+            {
+                visibility.duration = intro_fade;
             }
             visibility
         })
