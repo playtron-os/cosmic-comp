@@ -10910,6 +10910,9 @@ impl Shell {
         }
         // A sticky window has no desktop of its own; it goes back to the one on screen.
         let home = match self.space_for(mapped) {
+            // Alone on its desktop it already has one of its own, as a window
+            // opening fullscreen keeps an empty one.
+            Some(workspace) if !opens_on_own_desktop(true, workspace.len() > 1) => return None,
             Some(workspace) => workspace.handle,
             None if set.sticky_layer.mapped().any(|m| m == mapped) => {
                 set.workspaces.get(set.active)?.handle
