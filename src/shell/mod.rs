@@ -978,6 +978,11 @@ fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
     capabilities
 }
 
+/// Only sessions that run workspaces give fullscreen a desktop of its own.
+fn fullscreen_moves_to_own_desktop(workspaces: bool, mode: WorkspaceMode, game_here: bool) -> bool {
+    workspaces && mode == WorkspaceMode::OutputBound && !game_here
+}
+
 /// What a fullscreen desktop's set looks like, for [`fullscreen_desktop_step`].
 #[derive(Debug, Clone, Copy)]
 struct FullscreenDesktopFacts {
@@ -10659,9 +10664,11 @@ impl Shell {
         CosmicSurface: PartialEq<S>,
     {
         let realm = self.workspaces();
-        if realm.mode != WorkspaceMode::OutputBound
-            || (self.game_mode.active && self.game_mode.output.as_ref() == Some(output))
-        {
+        if !fullscreen_moves_to_own_desktop(
+            crate::dbus::workspaces::enabled(),
+            realm.mode,
+            self.game_mode.active && self.game_mode.output.as_ref() == Some(output),
+        ) {
             return None;
         }
         let set = realm.sets.get(output)?;

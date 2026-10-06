@@ -182,3 +182,31 @@ fn the_only_desktop_left_folds_instead_of_switching_to_nothing() {
         FullscreenDesktopStep::Fold(0)
     );
 }
+
+#[test]
+fn fullscreen_keeps_its_place_unless_the_session_runs_workspaces() {
+    assert!(!fullscreen_moves_to_own_desktop(
+        false,
+        WorkspaceMode::OutputBound,
+        false
+    ));
+    assert!(fullscreen_moves_to_own_desktop(
+        true,
+        WorkspaceMode::OutputBound,
+        false
+    ));
+}
+
+#[test]
+fn a_game_and_global_desktops_keep_fullscreen_in_place() {
+    assert!(!fullscreen_moves_to_own_desktop(
+        true,
+        WorkspaceMode::OutputBound,
+        true
+    ));
+    assert!(!fullscreen_moves_to_own_desktop(
+        true,
+        WorkspaceMode::Global,
+        false
+    ));
+}

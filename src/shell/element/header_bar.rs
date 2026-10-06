@@ -733,11 +733,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                         icons::FULLSCREEN
                     },
                     self.on_fullscreen.clone(),
-                    if self.fullscreen {
-                        fl!("halo-exit-fullscreen")
-                    } else {
-                        fl!("halo-fullscreen")
-                    },
+                    fullscreen_label(self.fullscreen, crate::dbus::workspaces::enabled()),
                 ),
             ] {
                 if let Some(message) = message {
@@ -1124,6 +1120,15 @@ impl<'a, Message: Clone + 'static> From<HeaderBar<'a, Message>>
     }
 }
 
+fn fullscreen_label(fullscreen: bool, own_desktop: bool) -> String {
+    match (fullscreen, own_desktop) {
+        (false, false) => fl!("halo-fullscreen"),
+        (true, false) => fl!("halo-exit-fullscreen"),
+        (false, true) => fl!("halo-fullscreen-desktop"),
+        (true, true) => fl!("halo-exit-fullscreen-desktop"),
+    }
+}
+
 /// Create a new header bar builder.
 pub fn header_bar<'a, Message: Clone + 'static>() -> HeaderBar<'a, Message> {
     HeaderBar::new()
@@ -1203,6 +1208,20 @@ mod tests {
         assert_eq!((padding.top, padding.bottom), (17.0, 25.0));
         assert_eq!(ssd_header_render_overhang(&theme), 57);
         assert_eq!(ssd_header_render_height(&theme), 56 + 17 + 25);
+    }
+
+    #[test]
+    fn only_a_session_with_workspaces_promises_fullscreen_a_desktop() {
+        assert_eq!(fullscreen_label(false, false), "Fullscreen");
+        assert_eq!(fullscreen_label(true, false), "Exit fullscreen");
+        assert_eq!(
+            fullscreen_label(false, true),
+            "Fullscreen — gives it its own desktop"
+        );
+        assert_eq!(
+            fullscreen_label(true, true),
+            "Exit fullscreen — back to the desktop it came from"
+        );
     }
 
     #[test]
