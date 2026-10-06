@@ -147,16 +147,14 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         .stateful(facts.recording),
     ];
 
-    // Edit is the window's own: only the verbs it says it answers.
+    // Every window lists the whole Edit set: the verbs it declares go to it, the shell answers the rest.
     for (id, label, keys, icon) in edit_verbs() {
-        if let Some(enabled) = facts.handles(id) {
-            commands.push(
-                HaloCommand::new(id, label, HaloCommandGroup::Edit)
-                    .icon(icon)
-                    .shortcut(keys)
-                    .enabled(enabled),
-            );
-        }
+        commands.push(
+            HaloCommand::new(id, label, HaloCommandGroup::Edit)
+                .icon(icon)
+                .shortcut(keys)
+                .enabled(facts.handles(id).unwrap_or(true)),
+        );
     }
 
     let settings = HaloCommand::new("settings", fl!("halo-settings"), HaloCommandGroup::App)
@@ -174,14 +172,12 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     } else {
         neww
     });
-    if let Some(enabled) = facts.handles("find") {
-        commands.push(
-            HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
-                .icon(icons::SEARCH)
-                .shortcut("Ctrl+F")
-                .enabled(enabled),
-        );
-    }
+    commands.push(
+        HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
+            .icon(icons::SEARCH)
+            .shortcut("Ctrl+F")
+            .enabled(facts.handles("find").unwrap_or(true)),
+    );
     commands.push(
         HaloCommand::new("info", fl!("halo-info"), HaloCommandGroup::App)
             .icon(icons::INFO)
@@ -271,6 +267,18 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         }
     }
     commands
+}
+
+/// What the shell says for a standard verb the window does not answer.
+pub fn shell_answer(id: &str) -> Option<String> {
+    Some(match id {
+        "markv" => fl!("halo-version-marked"),
+        "find" => fl!("halo-find-toast"),
+        _ => {
+            let (_, verb, ..) = edit_verbs().into_iter().find(|(verb, ..)| *verb == id)?;
+            fl!("halo-system-verb", verb = verb)
+        }
+    })
 }
 
 /// The commands an app put forward for its `⌄` menu, in its order, capped.
@@ -555,27 +563,47 @@ mod tests {
         catalog
     }
 
-    /// Edit lists only the verbs the window says it answers, as it can now.
     #[test]
-    fn a_window_s_edit_group_is_the_verbs_it_handles() {
+    fn every_window_lists_the_whole_edit_set_and_find() {
+        let ids = ["undo", "redo", "cut", "copy", "paste", "selall", "markv"];
+        let silent = commands(&facts(None));
+        let edit: Vec<_> = silent
+            .iter()
+            .filter(|c| c.group == HaloCommandGroup::Edit)
+            .collect();
+        assert_eq!(edit.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ids);
+        assert!(edit.iter().all(|c| c.enabled && c.shortcut.is_some()));
+        assert!(silent.iter().any(|c| c.id == "find" && c.enabled));
+
+        // A declared verb follows what the window says it can do now.
         let catalog = catalog();
         let mut facts = facts(None);
         facts.catalog = Some(&catalog);
         let listed = commands(&facts);
-        let edit: Vec<_> = listed
-            .iter()
-            .filter(|c| c.group == HaloCommandGroup::Edit)
-            .collect();
-        assert_eq!(edit.len(), 1);
-        assert_eq!(edit[0].id, "copy");
-        assert!(!edit[0].enabled);
-        assert_eq!(edit[0].shortcut.as_deref(), Some("Ctrl+C"));
+        let copy = listed.iter().find(|c| c.id == "copy").unwrap();
+        assert!(!copy.enabled);
+        assert_eq!(copy.shortcut.as_deref(), Some("Ctrl+C"));
+        assert!(listed.iter().find(|c| c.id == "paste").unwrap().enabled);
         assert!(listed.iter().any(|c| c.id == "neww" && c.enabled));
-        assert!(
-            commands(&self::facts(None))
-                .iter()
-                .all(|c| c.group != HaloCommandGroup::Edit)
+    }
+
+    #[test]
+    fn the_shell_answers_an_undeclared_verb_as_the_design_does() {
+        let answer = |id| shell_answer(id).map(plain);
+        assert_eq!(
+            answer("copy").as_deref(),
+            Some("Copy — system verb, guaranteed in every text and canvas surface")
         );
+        assert_eq!(
+            answer("selall").as_deref(),
+            Some("Select all — system verb, guaranteed in every text and canvas surface")
+        );
+        assert_eq!(answer("markv").as_deref(), Some("Version marked"));
+        assert_eq!(
+            answer("find").as_deref(),
+            Some("Find in window — standard command, every app")
+        );
+        assert_eq!(answer("close"), None);
     }
 
     /// The app's own commands make the last block, apart from the shell's ids.

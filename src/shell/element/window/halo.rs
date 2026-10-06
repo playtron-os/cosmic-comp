@@ -242,7 +242,11 @@ fn run_command(
         match id {
             "settings" => open_settings(state),
             "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
-            _ => {}
+            _ => {
+                if let Some(answer) = commands::shell_answer(id) {
+                    toast(state, answer);
+                }
+            }
         }
     }
 }
