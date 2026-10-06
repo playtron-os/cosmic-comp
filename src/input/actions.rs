@@ -188,7 +188,7 @@ impl State {
 
             Action::Close => {
                 if let Some(focus_target) = seat.get_keyboard().unwrap().current_focus() {
-                    crate::shell::element::window::runs::close_focused(self, &focus_target);
+                    self.common.shell.read().close_focused(&focus_target);
                 }
             }
 
