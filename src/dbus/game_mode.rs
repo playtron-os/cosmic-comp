@@ -48,6 +48,28 @@ const BUS_NAME: &str = "one.playtron.GameMode";
 /// The single object path; one object, one interface (no ObjectManager needed).
 const OBJECT_PATH: &str = "/one/playtron/GameMode";
 
+#[derive(Debug)]
+pub struct RegisteredGameProcess {
+    pub app_id: u32,
+    pub pid: u32,
+    pidfd: Arc<std::os::fd::OwnedFd>,
+}
+
+struct RegisteredGameTag(Mutex<std::sync::Weak<RegisteredGameProcess>>);
+
+impl RegisteredGameProcess {
+    pub fn alive(&self) -> bool {
+        pid_of_pidfd(&self.pidfd) == Some(self.pid)
+    }
+
+    pub fn tag(self: &Arc<Self>, surface: &CosmicSurface) {
+        let tag = surface
+            .user_data()
+            .get_or_insert(|| RegisteredGameTag(Mutex::default()));
+        *tag.0.lock().unwrap() = Arc::downgrade(self);
+    }
+}
+
 struct ClientFullscreen(AtomicBool);
 
 pub fn note_client_fullscreen(window: &X11Surface, fullscreen: bool) {
@@ -93,12 +115,6 @@ const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
 /// game at the output's right edge, rather than the launcher's whole window
 /// blended over it.
 const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
-
-/// How long a launch from the launcher keeps its loading screen up waiting
-/// for the game's first drawn frame. Long enough for a Proton game to clear
-/// its black window, short enough that one that never draws still shows.
-const FIRST_FRAME_WAIT: Duration = Duration::from_secs(20);
-
 /// How long game mode waits for a replacement once the game's window is gone,
 /// before giving the screen back to the launcher or the desktop.
 const REPLACEMENT_WAIT: Duration = Duration::from_secs(8);
@@ -192,7 +208,6 @@ impl VrrMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScalingMode {
     /// Present at native resolution, no scaling.
-    #[default]
     Native,
     /// Integer (pixel-perfect) scaling.
     Integer,
@@ -203,6 +218,7 @@ pub enum ScalingMode {
     /// to it on a pre-GLES-3.1 context or a ratio beyond 1x..2x.
     Nis,
     /// Aspect-preserving fit (letterbox).
+    #[default]
     Fit,
     /// Aspect-preserving fill (pillarbox / crop).
     Fill,
@@ -243,6 +259,48 @@ impl ScalingMode {
     }
 }
 
+/// Filtering is independent of destination sizing; Auto preserves the legacy modes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScalingFilter {
+    #[default]
+    Auto,
+    Linear,
+    Nearest,
+    Fsr,
+    Nis,
+}
+
+impl ScalingFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Linear => "linear",
+            Self::Nearest => "nearest",
+            Self::Fsr => "fsr",
+            Self::Nis => "nis",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "auto" => Some(Self::Auto),
+            "linear" => Some(Self::Linear),
+            "nearest" => Some(Self::Nearest),
+            "fsr" => Some(Self::Fsr),
+            "nis" => Some(Self::Nis),
+            _ => None,
+        }
+    }
+    pub fn resolve(self, sizing: ScalingMode) -> ScalingMode {
+        match self {
+            Self::Auto => sizing,
+            Self::Linear => ScalingMode::Fit,
+            Self::Nearest => ScalingMode::Integer,
+            Self::Fsr => ScalingMode::Fsr,
+            Self::Nis => ScalingMode::Nis,
+        }
+    }
+}
+
 /// The readable snapshot of game-mode state, served to clients. Minimal — no
 /// window registry, no atoms.
 #[derive(Debug, Default)]
@@ -263,6 +321,8 @@ pub struct GameModeShared {
     pub scale_width: u32,
     pub scale_height: u32,
     pub scale_mode: ScalingMode,
+    pub scale_filter: ScalingFilter,
+    pub applied_scaling: (String, String),
     /// Sharpening strength for the filtered scaling modes, 0.0..=1.0.
     pub sharpness: f32,
 
@@ -564,6 +624,10 @@ pub enum GameModeCommand {
     },
     /// The bus-reported pid of the client driving game mode.
     SetControllerPid(u32),
+    RegisterGameProcess {
+        app_id: u32,
+        pidfd: Arc<std::os::fd::OwnedFd>,
+    },
     Exit,
     SetFpsLimit(u32),
     SetScaling {
@@ -572,6 +636,7 @@ pub enum GameModeCommand {
         mode: ScalingMode,
     },
     SetSharpness(f32),
+    SetScalingFilter(ScalingFilter),
     SetTearing(bool),
     SetVrr(VrrMode),
     SetHdr(bool),
@@ -756,6 +821,9 @@ impl GameModeBridge {
                 let _ = iface.vrr_changed(&e).await;
                 let _ = iface.hdr_enabled_changed(&e).await;
                 let _ = iface.scaling_changed(&e).await;
+                let _ = iface.scaling_filter_changed(&e).await;
+                let _ = iface.applied_scaling_changed(&e).await;
+                let _ = iface.sharpness_changed(&e).await;
             }
         });
     }
@@ -809,6 +877,35 @@ impl GameModeInterface {
         self.io.send_from(GameModeCommand::Exit, sender);
     }
 
+    /// Register a launch root without depending on the client's window protocol or PID namespace.
+    async fn register_game_process(
+        &self,
+        app_id: u32,
+        pidfd: zbus::zvariant::OwnedFd,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let pidfd: std::os::fd::OwnedFd = pidfd.into();
+        let pid = pid_of_pidfd(&pidfd).ok_or_else(|| {
+            zbus::fdo::Error::InvalidArgs("expected a live process descriptor".into())
+        })?;
+        use std::os::unix::fs::MetadataExt;
+        let owned = std::fs::metadata(format!("/proc/{pid}"))
+            .is_ok_and(|m| m.uid() == rustix::process::getuid().as_raw());
+        if app_id == 0 || app_id == LAUNCHER_APP_ID || !owned {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "expected a game id and a process owned by this user".into(),
+            ));
+        }
+        self.io.send_from(
+            GameModeCommand::RegisterGameProcess {
+                app_id,
+                pidfd: Arc::new(pidfd),
+            },
+            header.sender().map(|name| name.to_string()),
+        );
+        Ok(())
+    }
+
     /// Cap the in-game frame rate (0 = uncapped).
     async fn set_fps_limit(&self, fps: u32, #[zbus(header)] header: zbus::message::Header<'_>) {
         let sender = header.sender().map(|name| name.to_string());
@@ -824,6 +921,11 @@ impl GameModeInterface {
         mode: &str,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<()> {
+        if (width == 0) != (height == 0) || width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "render size must be two positive i32 dimensions, or 0x0".into(),
+            ));
+        }
         let mode = ScalingMode::parse(mode).ok_or_else(|| {
             zbus::fdo::Error::InvalidArgs(format!("unknown scaling mode {mode:?}"))
         })?;
@@ -839,16 +941,39 @@ impl GameModeInterface {
         Ok(())
     }
 
+    /// Override the sampler independently of sizing; Auto uses the legacy mode's filter.
+    async fn set_scaling_filter(
+        &self,
+        filter: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let filter = ScalingFilter::parse(filter)
+            .ok_or_else(|| zbus::fdo::Error::InvalidArgs("unknown scaling filter".into()))?;
+        self.io.send_from(
+            GameModeCommand::SetScalingFilter(filter),
+            header.sender().map(|name| name.to_string()),
+        );
+        Ok(())
+    }
+
     /// Sharpening strength for the filtered scaling modes (`nis`, `fsr`),
     /// clamped to `0.0..=1.0`. Ignored by the unfiltered modes.
     async fn set_sharpness(
         &self,
         sharpness: f64,
         #[zbus(header)] header: zbus::message::Header<'_>,
-    ) {
+    ) -> zbus::fdo::Result<()> {
+        if !sharpness.is_finite() {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "sharpness must be finite".into(),
+            ));
+        }
         let sender = header.sender().map(|name| name.to_string());
-        self.io
-            .send_from(GameModeCommand::SetSharpness(sharpness as f32), sender);
+        self.io.send_from(
+            GameModeCommand::SetSharpness(sharpness.clamp(0.0, 1.0) as f32),
+            sender,
+        );
+        Ok(())
     }
 
     /// Allow tearing (immediate / non-vblank-latched flips) for the game.
@@ -988,6 +1113,17 @@ impl GameModeInterface {
         self.io.with_shared(|s| s.sharpness as f64)
     }
 
+    #[zbus(property)]
+    async fn scaling_filter(&self) -> String {
+        self.io.with_shared(|s| s.scale_filter.as_str().to_string())
+    }
+
+    /// Actual filter and the reason for falling back, or an empty reason.
+    #[zbus(property)]
+    async fn applied_scaling(&self) -> (String, String) {
+        self.io.with_shared(|s| s.applied_scaling.clone())
+    }
+
     // ── capabilities ──
     #[zbus(property)]
     async fn vrr_supported(&self) -> bool {
@@ -1072,7 +1208,10 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) -> GameM
     let (cmd_tx, cmd_rx) = calloop::channel::channel::<GameModeCommand>();
 
     let io = Arc::new(GameModeIo {
-        shared: Mutex::new(GameModeShared::default()),
+        shared: Mutex::new(GameModeShared {
+            sharpness: crate::backend::render::nis::DEFAULT_SHARPNESS,
+            ..Default::default()
+        }),
         cmd: Mutex::new(cmd_tx),
         executor: Some(executor.clone()),
         authorized: Mutex::new(std::collections::HashMap::new()),
@@ -1140,6 +1279,24 @@ impl State {
     pub fn handle_game_mode_command(&mut self, cmd: GameModeCommand) {
         let bridge = self.common.game_mode_bridge.clone();
         match cmd {
+            GameModeCommand::RegisterGameProcess { app_id, pidfd } => {
+                if let Some(pid) = pid_of_pidfd(&pidfd) {
+                    {
+                        let mut shell = self.common.shell.write();
+                        shell
+                            .game_processes
+                            .retain(|entry| entry.pid != pid && entry.alive());
+                        shell.game_processes.push(Arc::new(RegisteredGameProcess {
+                            app_id,
+                            pid,
+                            pidfd,
+                        }));
+                        shell.refresh_game_processes();
+                    }
+                    self.enter_game_mode(app_id);
+                    self.refresh_game_mode_state();
+                }
+            }
             GameModeCommand::SetControllerPid(pid) => {
                 debug!(target: GAMING_TARGET, pid, "cmd: controller pid resolved");
                 self.common.shell.write().game_mode.controller_pid = Some(pid);
@@ -1194,7 +1351,14 @@ impl State {
                     s.scale_height = height;
                     s.scale_mode = mode;
                 }
-                self.common.shell.write().game_mode_scaling = (width, height, mode);
+                {
+                    let mut shell = self.common.shell.write();
+                    shell.game_mode_scaling = (width, height, mode);
+                    shell.refresh_game_scaling();
+                }
+                if let Some(output) = self.common.shell.read().game_mode.output.clone() {
+                    self.backend.schedule_render(&output);
+                }
                 debug!(
                     width,
                     height,
@@ -1203,10 +1367,29 @@ impl State {
                 );
                 bridge.notify_tunables_changed();
             }
+            GameModeCommand::SetScalingFilter(filter) => {
+                bridge.shared().lock().unwrap().scale_filter = filter;
+                {
+                    let mut shell = self.common.shell.write();
+                    shell.game_mode_filter = filter;
+                    shell.refresh_game_scaling();
+                }
+                if let Some(output) = self.common.shell.read().game_mode.output.clone() {
+                    self.backend.schedule_render(&output);
+                }
+                bridge.notify_tunables_changed();
+            }
             GameModeCommand::SetSharpness(sharpness) => {
                 let sharpness = sharpness.clamp(0.0, 1.0);
                 bridge.shared().lock().unwrap().sharpness = sharpness;
-                self.common.shell.write().game_mode_sharpness = sharpness;
+                {
+                    let mut shell = self.common.shell.write();
+                    shell.game_mode_sharpness = sharpness;
+                    shell.refresh_game_scaling();
+                }
+                if let Some(output) = self.common.shell.read().game_mode.output.clone() {
+                    self.backend.schedule_render(&output);
+                }
                 debug!(sharpness, "game-mode: set sharpness");
                 bridge.notify_tunables_changed();
             }
@@ -1277,6 +1460,20 @@ impl State {
     /// Rebuild the game-mode snapshot (focus, display caps) from current
     /// compositor state and emit change notifications.
     pub fn refresh_game_mode_state(&mut self) {
+        self.common
+            .shell
+            .write()
+            .game_processes
+            .retain(|process| process.alive());
+        let failed = {
+            let shell = self.common.shell.read();
+            shell.game_mode.active && shell.game_mode.presentation.timed_out()
+        };
+        if failed {
+            warn!(target: GAMING_TARGET, "game presentation did not become ready; returning to the launcher");
+            self.exit_game_mode();
+            self.enter_game_mode(LAUNCHER_APP_ID);
+        }
         self.follow_shown_desktop();
         // What the overlay composites changes without a new assertion, as when
         // the launcher's quick-settings layer goes away under a raised keyboard.
@@ -1484,19 +1681,8 @@ impl State {
             shell.game_mode.spoof_requested = None;
         }
 
-        // Upscale: request a fill for the active game surface so a
-        // game whose buffer is smaller than the output is scaled up (via the DRM
-        // plane's hardware scaler). If the KMS thread latched a scale-reject
-        // (`game_mode_scale_rejected`), stop requesting it and letterbox instead,
-        // so a scanout-only buffer is never composited to black. The workspace
-        // computes the fit rect and clears it when the buffer isn't smaller.
+        // Resize requests are separate from the destination used to present the buffer.
         {
-            let scale_rejected = self
-                .common
-                .shell
-                .read()
-                .game_mode_scale_rejected
-                .load(std::sync::atomic::Ordering::Relaxed);
             let game = {
                 let shell = self.common.shell.read();
                 shell
@@ -1506,21 +1692,17 @@ impl State {
                     .flatten()
             };
             if let Some(game) = game {
-                // Only UPSCALE real games (which may render below the output). The
-                // launcher (769) is a UI that renders AT output size; if it's ever
-                // transiently/wrongly smaller it must letterbox (its own committed
-                // buffer), never be scanned-out-then-composited-to-black. Also skip
-                // when a prior scale was rejected (the letterbox fallback).
+                // Launcher resolution is managed by its normal fullscreen configure.
                 let game_app_id = app_id_of(&game);
-                let want_scale = !scale_rejected && game_app_id != LAUNCHER_APP_ID;
+                let want_scale = game_app_id != LAUNCHER_APP_ID;
                 let mut shell = self.common.shell.write();
                 let (spoof_w, spoof_h, mode) = shell.game_mode_scaling;
                 let sharpness = shell.game_mode_sharpness;
+                let filter = shell.game_mode_filter;
 
                 // Render at the requested size and let the presentation rect scale it up. Sent
                 // once per surface and size, or a client keeping its own size never settles.
-                if spoof_w > 0
-                    && spoof_h > 0
+                if (spoof_w > 0 || shell.game_mode.spoof_requested.is_some())
                     && want_scale
                     && game.x11_surface().is_none_or(client_fullscreen)
                 {
@@ -1536,10 +1718,18 @@ impl State {
                             .map(|o| o.current_scale().fractional_scale())
                             .unwrap_or(1.)
                     };
-                    let wanted = (
-                        (spoof_w as f64 / render_scale).round() as i32,
-                        (spoof_h as f64 / render_scale).round() as i32,
-                    );
+                    let wanted = if spoof_w == 0 {
+                        let Some(output) = shell.game_mode.output.as_ref() else {
+                            return;
+                        };
+                        let size = output.geometry().size;
+                        (size.w, size.h)
+                    } else {
+                        (
+                            (spoof_w as f64 / render_scale).round() as i32,
+                            (spoof_h as f64 / render_scale).round() as i32,
+                        )
+                    };
                     let already_requested = shell
                         .game_mode
                         .spoof_requested
@@ -1601,19 +1791,15 @@ impl State {
                     .spaces_mut()
                     .find(|ws| ws.get_fullscreen_surfaces().any(|f| f.surface == game))
                 {
-                    ws.set_fullscreen_scale_to(&game, want_scale, mode, sharpness);
+                    ws.set_fullscreen_scale_to(&game, want_scale, mode, filter, sharpness);
                     true
                 } else {
                     false
                 };
                 drop(shell);
-                // Per-tick (~150ms) so trace-level: a wrongly-set scale_to (or a
-                // scale_rejected latch inherited across apps) letterboxes a small
-                // centred image on a grey/black field (bug 1 look-alike).
                 trace!(
                     target: GAMING_TARGET,
                     app_id = game_app_id,
-                    scale_rejected,
                     want_scale,
                     matched_ws,
                     "upscale reconciled"
@@ -1625,6 +1811,31 @@ impl State {
         // since the last tick) and for a game surface retagged onto another window.
         self.try_resolve_pending_game_mode();
         self.refresh_active_game_surface();
+        let applied_scaling = {
+            let shell = self.common.shell.read();
+            shell
+                .game_mode
+                .game_surface
+                .as_ref()
+                .and_then(|game| {
+                    shell
+                        .workspaces()
+                        .spaces()
+                        .flat_map(|ws| ws.get_fullscreen_surfaces())
+                        .find(|f| &f.surface == game)
+                        .map(|f| f.applied_scaling())
+                })
+                .unwrap_or_else(|| ("none".into(), String::new()))
+        };
+        let changed = {
+            let mut shared = bridge.shared().lock().unwrap();
+            let changed = shared.applied_scaling != applied_scaling;
+            shared.applied_scaling = applied_scaling;
+            changed
+        };
+        if changed {
+            bridge.notify_tunables_changed();
+        }
 
         // Recompute the game's controlled children (its own dialogs / login
         // windows), which the render + input paths use to decide what may appear
@@ -1866,14 +2077,6 @@ impl State {
             }
         }
 
-        // A new game/app is entering — clear any prior scale-reject latch so it
-        // retries the upscale rather than inheriting the last app's.
-        self.common
-            .shell
-            .read()
-            .game_mode_scale_rejected
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-
         // Resolve the app's window anywhere: already fullscreen on its own
         // game-mode workspace, or a normal window on the desktop. Defer if it
         // isn't mapped yet (resolved later from the refresh tick / property hook).
@@ -1892,13 +2095,6 @@ impl State {
         if let Entry::Shown(shown) = entry
             && (shown != source_ws || !is_fullscreen)
         {
-            return;
-        }
-        // Leaving the launcher for a window the game has not drawn into yet
-        // fades its loading screen into black. Keep it showing until the game
-        // draws; the refresh tick asks again.
-        if entry == Entry::Asked && self.awaiting_first_frame(app_id, &game) {
-            self.common.shell.write().game_mode.pending_app_id = Some(app_id);
             return;
         }
         // Remember client intent before compositor-owned fullscreen changes the X11 state.
@@ -2030,11 +2226,7 @@ impl State {
                         );
                     }
                     if let Some(idx) = shell.workspaces().idx_for_handle(&output, &target) {
-                        let delta = if first_entry {
-                            WorkspaceDelta::new_shortcut()
-                        } else {
-                            WorkspaceDelta::new_crossfade()
-                        };
+                        let delta = WorkspaceDelta::new_crossfade();
                         let _ = shell.activate(
                             &output,
                             idx,
@@ -2048,23 +2240,21 @@ impl State {
 
             let workspace = shell.active_space(&output).map(|ws| ws.handle);
             // Already on screen when the user switched to it themselves.
-            if !first_entry && entry == Entry::Asked {
-                let crossfade = shell
-                    .workspaces()
-                    .active(&output)
-                    .is_some_and(|(previous, _)| {
-                        previous
-                            .is_some_and(|(_, delta)| matches!(delta, WorkspaceDelta::Crossfade(_)))
-                    });
-                if let Some(ws) = shell.active_space_mut(&output) {
-                    for fullscreen in &mut ws.fullscreen_surfaces {
-                        if fullscreen.surface == game {
-                            fullscreen.animate_game_mode_entry(crossfade);
-                        }
+            if entry == Entry::Asked
+                && let Some(ws) = shell.active_space_mut(&output)
+            {
+                for fullscreen in &mut ws.fullscreen_surfaces {
+                    if fullscreen.surface == game {
+                        fullscreen.animate_game_mode_entry(true);
                     }
                 }
             }
+            let presentation = shell.game_mode.presentation.clone();
+            if entry == Entry::Asked {
+                presentation.begin(shell.theme().motion.game_crossfade);
+            }
             shell.game_mode = GameMode {
+                presentation,
                 controller_pid: shell.game_mode.controller_pid,
                 baselayer_appids: std::mem::take(&mut shell.game_mode.baselayer_appids),
                 workspace,
@@ -2079,6 +2269,7 @@ impl State {
                 overlay_keyboard: prev_overlay_keyboard,
                 ..Default::default()
             };
+            shell.refresh_game_scaling();
 
             focus
         };
@@ -2099,47 +2290,6 @@ impl State {
         // Give the game keyboard focus so it receives input immediately.
         if let Some(target) = focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, true);
-        }
-    }
-
-    /// Whether `game`, about to replace the launcher on screen, has yet to draw
-    /// anything. Only a launch from the launcher waits, and only for
-    /// [`FIRST_FRAME_WAIT`].
-    fn awaiting_first_frame(&mut self, app_id: u32, game: &CosmicSurface) -> bool {
-        if app_id == LAUNCHER_APP_ID {
-            return false;
-        }
-        let since = {
-            let mut shell = self.common.shell.write();
-            let gm = &mut shell.game_mode;
-            if !(gm.active && gm.app_id == Some(LAUNCHER_APP_ID)) {
-                return false;
-            }
-            gm.first_frame_surface = Some(game.clone());
-            *gm.first_frame_since.get_or_insert_with(|| {
-                info!(target: GAMING_TARGET, app_id, "waiting for the game's first frame");
-                Instant::now()
-            })
-        };
-        let waited = since.elapsed();
-        if waited >= FIRST_FRAME_WAIT {
-            info!(target: GAMING_TARGET, app_id, ?waited, "no first frame; showing the game anyway");
-            return false;
-        }
-        let Some(surface) = game.wl_surface().map(std::borrow::Cow::into_owned) else {
-            return true;
-        };
-        let size = game.geometry().size;
-        let drawn = crate::backend::render::first_frame::has_drawn(self, &surface, size);
-        debug!(target: GAMING_TARGET, app_id, ?drawn, ?size, "first frame sample");
-        match drawn {
-            Some(false) => true,
-            Some(true) => {
-                info!(target: GAMING_TARGET, app_id, ?waited, "first frame drawn; leaving the launcher");
-                false
-            }
-            // Unsampleable: show it rather than wait out the timeout blind.
-            None => false,
         }
     }
 
@@ -2202,13 +2352,6 @@ impl State {
         // still needs them.
         shell.game_mode.controller_pid = game_mode.controller_pid;
         shell.game_mode.baselayer_appids = std::mem::take(&mut game_mode.baselayer_appids);
-        // The scale-reject latch lives on Shell (not the GameMode struct that
-        // mem::take just reset), so clear it here too — a fresh game must not
-        // inherit the previous one's letterbox latch.
-        shell
-            .game_mode_scale_rejected
-            .store(false, std::sync::atomic::Ordering::Relaxed);
-
         // Un-fullscreen the game so its now-empty game-mode workspace auto-reaps.
         let dbg_game_app_id = game_mode.game_surface.as_ref().map(app_id_of);
         if let Some(game) = &game_mode.game_surface {
@@ -2626,6 +2769,11 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
     if let Some(appid) = surface.steam_appid() {
         return appid;
     }
+    if let Some(tag) = surface.user_data().get::<RegisteredGameTag>()
+        && let Some(process) = tag.0.lock().unwrap().upgrade()
+    {
+        return process.app_id;
+    }
     // Steam Big Picture (a Steam client window with no game appid) is the
     // base-layer launcher, like the desktop launcher shell.
     if surface.is_steam_client() {
@@ -2750,6 +2898,25 @@ fn find_game_surface(
     shell: &Shell,
     app_id: u32,
 ) -> Option<(CosmicSurface, WorkspaceHandle, Output, bool)> {
+    let candidate = |surface: &CosmicSurface| {
+        use smithay::xwayland::xwm::WmWindowType;
+        surface.alive()
+            && !surface.is_useless()
+            && app_id_of(surface) == app_id
+            && !matches!(
+                surface.window_type(),
+                Some(
+                    WmWindowType::Splash
+                        | WmWindowType::DropdownMenu
+                        | WmWindowType::PopupMenu
+                        | WmWindowType::Menu
+                        | WmWindowType::Tooltip
+                        | WmWindowType::Combo
+                        | WmWindowType::Notification
+                        | WmWindowType::Dnd
+                )
+            )
+    };
     // 0 is `app_id_of`'s "unknown" sentinel (any untagged, non-launcher window),
     // never a valid game-mode target. Guard against it so an accidental
     // `enter_game(0)` can't fullscreen an arbitrary window.
@@ -2763,13 +2930,13 @@ fn find_game_surface(
     let mut candidates: Vec<(CosmicSurface, WorkspaceHandle, Output, bool)> = Vec::new();
     for ws in shell.workspaces().spaces() {
         for f in ws.get_fullscreen_surfaces() {
-            if f.surface.alive() && !f.surface.is_useless() && app_id_of(&f.surface) == app_id {
+            if candidate(&f.surface) {
                 candidates.push((f.surface.clone(), ws.handle, ws.output().clone(), true));
             }
         }
         for mapped in ws.mapped() {
             let surface = mapped.active_window();
-            if surface.alive() && !surface.is_useless() && app_id_of(&surface) == app_id {
+            if candidate(&surface) {
                 candidates.push((surface, ws.handle, ws.output().clone(), false));
             }
         }

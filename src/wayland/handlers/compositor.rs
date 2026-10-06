@@ -313,6 +313,13 @@ impl CompositorHandler for State {
         // handle initial configure events and map windows if necessary
         let mapped = self.send_initial_configure_and_map(surface);
 
+        if mapped || self.common.shell.read().game_mode.pending_app_id.is_some() {
+            self.common.event_loop_handle.insert_idle(|state| {
+                state.try_resolve_pending_game_mode();
+                state.refresh_active_game_surface();
+            });
+        }
+
         let mut shell = self.common.shell.write();
 
         // schedule a new render

@@ -629,6 +629,7 @@ fn init_wayland_display(
             // back to which workspace launched it.
             let workspace = crate::workspace_tag::of_stream(&client_stream);
             let client_state = crate::state::ClientState {
+                pid: crate::workspace_tag::peer_pid(&client_stream),
                 workspace,
                 ..state.new_client_state()
             };

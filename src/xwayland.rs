@@ -937,8 +937,9 @@ impl XwmHandler for State {
             // an idle: these can enter/exit game mode (fullscreen/minimize), which
             // drops decoration iced elements that unregister calloop sources —
             // unsafe while this XWM dispatch borrows the loop's source registry.
-            WmWindowProperty::SteamGame => {
+            WmWindowProperty::SteamGame | WmWindowProperty::WindowType | WmWindowProperty::Pid => {
                 self.common.event_loop_handle.insert_idle(|state| {
+                    state.common.shell.write().refresh_game_processes();
                     state.try_resolve_pending_game_mode();
                     state.refresh_active_game_surface();
                 });
@@ -956,6 +957,7 @@ impl XwmHandler for State {
     }
 
     fn map_window_request(&mut self, _xwm: XwmId, window: X11Surface) {
+        CosmicSurface::cache_x11_pid(&window);
         if let Err(err) = window.set_mapped(true) {
             warn!(?window, ?err, "Failed to send Xwayland Mapped-Event",);
         }
@@ -1774,6 +1776,9 @@ impl State {
                 .retain(|p| p.surface.x11_key() != Some(key));
             return;
         }
+        if let Some(surface) = window.x11_surface() {
+            CosmicSurface::cache_x11_pid(surface);
+        }
         self.check_pending_pid_embeds_for_window(window);
 
         let mut shell = self.common.shell.write();
@@ -1786,6 +1791,10 @@ impl State {
         std::mem::drop(shell);
 
         self.ensure_embedded_on_parent_output(window);
+        self.common.event_loop_handle.insert_idle(|state| {
+            state.try_resolve_pending_game_mode();
+            state.refresh_active_game_surface();
+        });
 
         if let Some(target) = res {
             let shell = self.common.shell.read();

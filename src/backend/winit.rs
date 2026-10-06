@@ -16,7 +16,7 @@ use smithay::{
         drm::NodeType,
         egl::EGLDevice,
         renderer::{
-            Bind, Blit, ImportDma, Offscreen, Texture, TextureFilter,
+            Bind, Blit, Frame, ImportDma, Offscreen, Renderer, Texture, TextureFilter,
             damage::{OutputDamageTracker, RenderOutputResult},
             gles::GlesTexture,
             glow::GlowRenderer,
@@ -135,6 +135,7 @@ impl WinitState {
             return self.render_split(state);
         }
         let age = self.backend.buffer_age().unwrap_or(0);
+        let window_size = self.backend.window_size();
         let (renderer, mut fb) = self
             .backend
             .bind()
@@ -153,6 +154,12 @@ impl WinitState {
             &state.event_loop_handle,
         )
         .map_err(|err| anyhow!("Rendering failed: {}", err))?;
+        // Filters can skip the final draw, and screen capture runs after it.
+        // Restore the window target before swapping in either case.
+        renderer
+            .render(&mut fb, window_size, Transform::Normal)?
+            .finish()?
+            .wait()?;
         std::mem::drop(fb);
         self.backend
             .submit(result.damage.map(|x| x.as_slice()))

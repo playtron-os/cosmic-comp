@@ -87,7 +87,7 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-fn peer_pid(stream: &UnixStream) -> Option<u32> {
+pub(crate) fn peer_pid(stream: &UnixStream) -> Option<u32> {
     // SAFETY: `ucred` is written by the kernel; the fd outlives the call.
     unsafe {
         let mut cred: libc::ucred = std::mem::zeroed();

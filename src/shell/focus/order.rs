@@ -97,6 +97,7 @@ pub struct GameModeView<'a> {
     /// Windows belonging with the game, stacked above it, FRONT-TO-BACK
     /// (topmost first) — the same order `Workspace::mapped()` yields.
     pub children: &'a [CosmicSurface],
+    pub presentation: Option<&'a crate::backend::render::game::GamePresentation>,
 }
 /// Whether an override-redirect window may render while strict game-mode control
 /// is in effect for this workspace.
@@ -176,6 +177,7 @@ fn render_input_order_internal<R: 'static>(
         trace!(target: GAMING_TARGET, output = %output.name(), game_mode_exclusive, "gm: exclusivity resolved");
     }
     let gaming_crossfade = game_mode_exclusive
+        && shell.game_mode.presentation.has_backdrop()
         && previous
             .as_ref()
             .is_some_and(|(_, _, delta)| matches!(delta, WorkspaceDelta::Crossfade(_)));
@@ -189,6 +191,7 @@ fn render_input_order_internal<R: 'static>(
     .map(|base| GameModeView {
         base,
         children: &shell.game_mode.children,
+        presentation: Some(&shell.game_mode.presentation),
     });
 
     if shell
@@ -463,6 +466,7 @@ fn render_input_order_internal<R: 'static>(
                 .map(|f| GameModeView {
                     base: &f.surface,
                     children: &[],
+                    presentation: None,
                 });
             if !gaming_crossfade || game_mode_only.is_some() {
                 callback(Stage::WorkspacePopups {
@@ -479,7 +483,7 @@ fn render_input_order_internal<R: 'static>(
             return ControlFlow::Break(Err(OutputNoMode));
         };
 
-        if current_alpha > 0.0 {
+        if current_alpha > 0.0 || game_mode_controlled.is_some() {
             callback(Stage::WorkspacePopups {
                 workspace,
                 offset: current_offset,
@@ -604,7 +608,7 @@ fn render_input_order_internal<R: 'static>(
         }
 
         // workspace windows (the incoming workspace — fades in during a crossfade)
-        if current_alpha > 0.0 {
+        if current_alpha > 0.0 || game_mode_controlled.is_some() {
             callback(Stage::Workspace {
                 workspace,
                 offset: current_offset,
@@ -627,6 +631,7 @@ fn render_input_order_internal<R: 'static>(
                 .map(|f| GameModeView {
                     base: &f.surface,
                     children: &[],
+                    presentation: None,
                 });
             if !gaming_crossfade || game_mode_only.is_some() {
                 callback(Stage::Workspace {

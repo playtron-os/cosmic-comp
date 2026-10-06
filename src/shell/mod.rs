@@ -401,6 +401,7 @@ pub struct GameMode {
     pub baselayer_appids: Vec<u32>,
     /// The game surface we fullscreened, so we can un-fullscreen it on exit.
     pub game_surface: Option<CosmicSurface>,
+    pub presentation: std::sync::Arc<crate::backend::render::game::GamePresentation>,
     /// Windows that belong WITH the adopted game and are therefore allowed to
     /// render above it under strict control: its own dialogs, launcher/EULA
     /// windows and in-prefix login/browser windows. Membership is an allowlist
@@ -425,11 +426,6 @@ pub struct GameMode {
     /// yet; resolved by `try_resolve_pending_game_mode` (the refresh tick and the
     /// `STEAM_GAME` property hook) once a matching window appears.
     pub pending_app_id: Option<u32>,
-    /// Since when a game launched from the launcher has been waiting to draw
-    /// its first frame, with the launcher still showing.
-    pub first_frame_since: Option<Instant>,
-    /// That game's window, driven at full frame rate while it is held back.
-    pub first_frame_surface: Option<CosmicSurface>,
     /// Since when the game's window has been gone, waiting for a replacement.
     pub missing_since: Option<Instant>,
     /// Whether a gaming overlay is currently up over the game — either a real
@@ -541,6 +537,7 @@ pub struct Shell {
     resize_indicator: Option<ResizeIndicator>,
     zoom_state: Option<ZoomState>,
     pub game_mode: GameMode,
+    pub game_processes: Vec<std::sync::Arc<crate::dbus::game_mode::RegisteredGameProcess>>,
     /// Whether tearing (immediate/async page flips) is permitted while in game
     /// mode. Driven by the `one.playtron.GameMode` `SetTearing` D-Bus call; kept
     /// on `Shell` (not `GameMode`) so it persists across game-mode enter/exit.
@@ -562,13 +559,6 @@ pub struct Shell {
     /// the KMS surface thread can probe (`c.supports_tearing()`); it writes this
     /// each frame for the game's output, read back for `TearingSupported`.
     pub game_mode_tearing_supported: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Latched by the KMS surface thread when a game-mode upscale (`scale_to`)
-    /// failed to land on a DRM plane and had to composite (`primary_element ==
-    /// Swapchain`) — detected only for a settled game on its own output with no
-    /// overlay up. Game mode reads it to stop requesting the scale (letterbox
-    /// instead of composited-to-black). Reset on entering game mode, so a new
-    /// game / an app switch re-tries the scale.
-    pub game_mode_scale_rejected: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Render resolution + scaling mode requested for the game (`SetScaling`).
     ///
     /// A non-zero size is a RESOLUTION SPOOF: the game is configured to render at
@@ -578,6 +568,7 @@ pub struct Shell {
     pub game_mode_scaling: (u32, u32, crate::dbus::game_mode::ScalingMode),
     /// Sharpening strength for the filtered scaling modes, 0.0..=1.0.
     pub game_mode_sharpness: f32,
+    pub game_mode_filter: crate::dbus::game_mode::ScalingFilter,
     appearance_conf: AppearanceConfig,
     tiling_exceptions: TilingExceptions,
     /// Home mode state for animation (fading in/out of home screen)
@@ -2682,6 +2673,7 @@ impl Common {
                 fs.surface.on_commit()
             };
         }
+        self.shell.write().refresh_game_scaling();
         self.popups.commit(surface);
     }
 }
@@ -3370,6 +3362,7 @@ impl Shell {
             appearance_conf: config.cosmic_conf.appearance_settings,
             zoom_state: None,
             game_mode: GameMode::default(),
+            game_processes: Vec::new(),
             tearing_allowed: false,
             game_mode_fps_limit: 0,
             game_mode_vrr: crate::dbus::game_mode::VrrMode::Auto,
@@ -3377,11 +3370,9 @@ impl Shell {
             game_mode_tearing_supported: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-            game_mode_scaling: (0, 0, crate::dbus::game_mode::ScalingMode::Native),
+            game_mode_scaling: (0, 0, crate::dbus::game_mode::ScalingMode::Fit),
             game_mode_sharpness: crate::backend::render::nis::DEFAULT_SHARPNESS,
-            game_mode_scale_rejected: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-                false,
-            )),
+            game_mode_filter: crate::dbus::game_mode::ScalingFilter::Auto,
             tiling_exceptions,
             hidden_surfaces: std::collections::HashSet::new(),
             layer_realms: std::collections::HashMap::new(),
@@ -3701,6 +3692,70 @@ impl Shell {
                 .is_some_and(|controlled| controlled == surface)
     }
 
+    pub fn tag_game_surface(&self, surface: &CosmicSurface) {
+        let Some(pid) = surface.pid() else {
+            return;
+        };
+        if let Some(process) = self
+            .game_processes
+            .iter()
+            .rev()
+            .find(|p| p.alive() && Self::process_descends_from(pid, p.pid))
+        {
+            process.tag(surface);
+        }
+    }
+
+    pub fn refresh_game_processes(&mut self) {
+        self.game_processes.retain(|process| process.alive());
+        if self.game_processes.is_empty() {
+            return;
+        }
+        for workspace in self.workspaces().spaces() {
+            for fullscreen in workspace.get_fullscreen_surfaces() {
+                self.tag_game_surface(&fullscreen.surface);
+            }
+            for mapped in workspace.mapped() {
+                for (surface, _) in mapped.windows() {
+                    self.tag_game_surface(&surface);
+                }
+            }
+        }
+    }
+
+    /// A filtered texture represents every surface that contributed to it.
+    pub fn game_render_states(&self, states: &RenderElementStates) -> RenderElementStates {
+        let mut expanded = states.clone();
+        for workspace in self.workspaces().spaces() {
+            for fullscreen in workspace.get_fullscreen_surfaces() {
+                if fullscreen.uses_shader() {
+                    fullscreen.extend_render_states(&mut expanded);
+                }
+            }
+        }
+        expanded
+    }
+
+    /// Update placement before a newly committed game buffer can be presented.
+    pub fn refresh_game_scaling(&mut self) {
+        let Some(game) = self
+            .game_mode
+            .game_surface
+            .clone()
+            .filter(|_| self.game_mode.active)
+        else {
+            return;
+        };
+        let scale =
+            crate::dbus::game_mode::app_id_of(&game) != crate::dbus::game_mode::LAUNCHER_APP_ID;
+        let (_, _, mode) = self.game_mode_scaling;
+        let sharpness = self.game_mode_sharpness;
+        let filter = self.game_mode_filter;
+        for ws in self.workspaces_mut().spaces_mut() {
+            ws.set_fullscreen_scale_to(&game, scale, mode, filter, sharpness);
+        }
+    }
+
     /// Whether a window that is being mapped belongs to game mode, and should
     /// therefore be placed on the output game mode owns rather than wherever the
     /// cursor happens to be.
@@ -3714,9 +3769,11 @@ impl Shell {
         if !self.game_mode.active {
             return false;
         }
-        if self.game_mode.app_id.is_some_and(|app_id| {
-            app_id != 0 && crate::dbus::game_mode::app_id_of(surface) == app_id
-        }) {
+        if [self.game_mode.app_id, self.game_mode.pending_app_id]
+            .into_iter()
+            .flatten()
+            .any(|app_id| app_id != 0 && crate::dbus::game_mode::app_id_of(surface) == app_id)
+        {
             return true;
         }
         let Some(pid) = surface.pid() else {
@@ -4360,6 +4417,14 @@ impl Shell {
     }
 
     fn non_slide_animations_going(&self) -> bool {
+        if self.game_mode.active
+            && self
+                .game_mode
+                .presentation
+                .animating(self.theme().motion.game_crossfade)
+        {
+            return true;
+        }
         // A realm switch animates across two realms, so it is not visible in
         // any one set's `previously_active` — without this the slide would draw
         // a frame or two and then freeze, because nothing asks for the next one.
@@ -7686,6 +7751,8 @@ impl Shell {
             ..
         } = self.pending_windows.remove(pos);
 
+        self.tag_game_surface(&window);
+
         // Check if this window is embedded - if so, we need to place it on the same
         // output/workspace as the parent window to ensure proper embedding
         let embed_parent_output = crate::wayland::handlers::surface_embed::get_embed_render_info(&window)
@@ -7825,19 +7892,36 @@ impl Shell {
         };
 
         let should_be_fullscreen = output.is_some();
-        // A window game mode claims belongs on the output game mode owns, decided
-        // HERE rather than after adoption: everything below places the window, so
-        // deferring would map it under the cursor, show it there for a frame, then
-        // move it. `game_mode_claims` recognizes it by process ancestry, since the
-        // session manager only tags a window after it appears.
+        let pending_game = self
+            .game_mode
+            .pending_app_id
+            .is_some_and(|id| crate::dbus::game_mode::app_id_of(&window) == id);
         let game_mode_output = self
             .game_mode_claims(&window)
             .then(|| self.game_mode.output.clone())
-            .flatten();
-        // A launch token or transient parent can still point at the desktop.
-        let workspace_handle = game_mode_output
-            .as_ref()
-            .and(self.game_mode.workspace)
+            .flatten()
+            .or_else(|| pending_game.then(|| seat.active_output()));
+        // A desktop launch must stay offscreen until adoption installs its presentation.
+        let staging = if pending_game && !self.game_mode.active {
+            game_mode_output.as_ref().and_then(|output| {
+                let active = self.active_space(output).map(|ws| ws.handle);
+                let set = self.workspaces_mut().sets.get_mut(output)?;
+                let mut target = set
+                    .workspaces
+                    .iter()
+                    .find(|ws| ws.is_empty() && Some(ws.handle) != active)
+                    .map(|ws| ws.handle);
+                if target.is_none() {
+                    set.add_empty_workspace(&mut workspace_state.update());
+                    target = set.workspaces.last().map(|ws| ws.handle);
+                }
+                target
+            })
+        } else {
+            None
+        };
+        let workspace_handle = staging
+            .or_else(|| game_mode_output.as_ref().and(self.game_mode.workspace))
             .or(workspace_handle);
         // The quick-access menu floats on the launcher's own desktop: it is drawn
         // over the game from there, and the game's desktop stays as it is.
@@ -11178,6 +11262,7 @@ impl Shell {
         output: &Output,
         render_element_states: &RenderElementStates,
     ) -> OutputPresentationFeedback {
+        let render_element_states = &self.game_render_states(render_element_states);
         let mut output_presentation_feedback = OutputPresentationFeedback::new(output);
 
         // The game-mode overlay (the QAM / launcher composited over the game)
