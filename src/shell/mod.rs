@@ -505,6 +505,7 @@ pub struct Shell {
     /// `ActiveChanged`. `None` means no registry workspace is active right now.
     /// It is distinct from `active_realm`, which is a map key and is never empty.
     active_workspace: Option<String>,
+    active_workspace_name: Option<String>,
 
     /// Whether a workspace registry is answering right now.
     ///
@@ -976,6 +977,52 @@ fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
         capabilities |= WorkspaceCapabilities::Remove;
     }
     capabilities
+}
+
+/// A desktop's name: its own, else "Main" for the first and "Desktop N" after it.
+pub fn desktop_label(idx: usize, name: Option<&str>) -> String {
+    match name.filter(|name| !name.is_empty()) {
+        Some(name) => name.to_owned(),
+        None if idx == 0 => crate::fl!("desktop-main"),
+        None => {
+            let number = idx as u64 + 1;
+            crate::dbus::notifications::plain(crate::fl!("desktop-numbered", number = number))
+        }
+    }
+}
+
+/// One desktop the Move to Desktop chooser offers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesktopChoice {
+    pub handle: WorkspaceHandle,
+    pub label: String,
+    pub windows: usize,
+    pub current: bool,
+}
+
+/// The chooser's rows for desktops `(handle, name, windows)`, the window being on
+/// `current`. The empty spare that dynamic desktops keep is "New desktop" instead.
+fn desktop_choices(
+    desktops: &[(WorkspaceHandle, Option<String>, usize)],
+    current: &WorkspaceHandle,
+    dynamic: bool,
+) -> Vec<DesktopChoice> {
+    let spare = dynamic && desktops.len() > 1 && desktops.last().is_some_and(|d| d.2 == 0);
+    let listed = if spare {
+        &desktops[..desktops.len() - 1]
+    } else {
+        desktops
+    };
+    listed
+        .iter()
+        .enumerate()
+        .map(|(idx, (handle, name, windows))| DesktopChoice {
+            handle: *handle,
+            label: desktop_label(idx, name.as_deref()),
+            windows: *windows,
+            current: handle == current,
+        })
+        .collect()
 }
 
 /// Only sessions that run workspaces give fullscreen a desktop of its own.
@@ -3136,6 +3183,10 @@ impl Shell {
         self.active_workspace = workspace;
     }
 
+    pub fn set_active_workspace_name(&mut self, name: Option<String>) {
+        self.active_workspace_name = name.filter(|name| !name.is_empty());
+    }
+
     pub fn set_workspace_accent(&mut self, accent: Option<iced_core::Color>, realm_changed: bool) {
         if self.theme.workspace_accent == accent && !realm_changed {
             return;
@@ -3289,6 +3340,7 @@ impl Shell {
             realm_transition: None,
             realm_initialized: false,
             active_workspace: None,
+            active_workspace_name: None,
             workspace_registry: false,
             seats: Seats::new(),
 
@@ -10942,6 +10994,101 @@ impl Shell {
         }
     }
 
+    /// The desktops of `surface`'s output it may move to, for the Move to Desktop chooser.
+    pub fn move_choices(&self, surface: &CosmicSurface) -> Option<Vec<DesktopChoice>> {
+        let (current, output) = self.workspace_for_surface(&*surface.wl_surface()?)?;
+        let realm = self.workspaces();
+        let desktops: Vec<_> = realm
+            .sets
+            .get(&output)?
+            .workspaces
+            .iter()
+            .map(|w| {
+                let windows = w.mapped().map(|m| m.windows().count()).sum::<usize>()
+                    + w.minimized_windows
+                        .iter()
+                        .map(|m| m.windows().count())
+                        .sum::<usize>()
+                    + w.get_fullscreen_surfaces().count();
+                (w.handle, w.name.clone(), windows)
+            })
+            .collect();
+        Some(desktop_choices(&desktops, &current, realm.dynamic))
+    }
+
+    /// Where the chooser says the window is: the workspace and desktop on screen.
+    pub fn move_source(&self, surface: &CosmicSurface) -> Option<String> {
+        let (current, _) = self.workspace_for_surface(&*surface.wl_surface()?)?;
+        let desktop = self
+            .move_choices(surface)?
+            .into_iter()
+            .find(|choice| choice.handle == current)?
+            .label;
+        Some(match &self.active_workspace_name {
+            Some(workspace) => format!("{workspace} · {desktop}"),
+            None => desktop,
+        })
+    }
+
+    /// Move `surface` to desktop `to`, or to a new one, and follow it there.
+    /// Returns the focus to give and the destination's name.
+    pub fn move_to_desktop(
+        &mut self,
+        surface: &CosmicSurface,
+        seat: &Seat<State>,
+        to: Option<WorkspaceHandle>,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+        evlh: &LoopHandle<'static, State>,
+    ) -> Option<(KeyboardFocusTarget, String)> {
+        let (from, output) = self.workspace_for_surface(&*surface.wl_surface()?)?;
+        let to = match to {
+            Some(to) => to,
+            None => self.desktop_for_new_move(&output, workspace_state)?,
+        };
+        if to == from {
+            return None;
+        }
+        let (target, _) = self.move_window(
+            Some(seat),
+            surface,
+            &from,
+            &to,
+            true,
+            None,
+            workspace_state,
+            evlh,
+        )?;
+        let set = self.workspaces().sets.get(&output)?;
+        let idx = set.workspaces.iter().position(|w| w.handle == to)?;
+        Some((
+            target,
+            desktop_label(idx, set.workspaces[idx].name.as_deref()),
+        ))
+    }
+
+    /// "New desktop": the spare that dynamic desktops keep, or one added at the end.
+    fn desktop_for_new_move(
+        &mut self,
+        output: &Output,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> Option<WorkspaceHandle> {
+        let realm = self.workspaces_mut();
+        let set = realm.sets.get(output)?;
+        if realm.dynamic
+            && set.workspaces.len() > 1
+            && let Some(spare) = set.workspaces.last().filter(|w| w.is_empty())
+        {
+            return Some(spare.handle);
+        }
+        let global = realm.mode == WorkspaceMode::Global;
+        for (o, set) in realm.sets.iter_mut() {
+            if global || o == output {
+                set.add_empty_workspace(workspace_state);
+            }
+        }
+        realm.sets.get(output)?.workspaces.last().map(|w| w.handle)
+    }
+
     /// Whether `surface` is fullscreen on a desktop of its own, with a handle to
     /// the loop that rebuilds its window when it comes home.
     fn fullscreen_desktop_loop<S>(&self, surface: &S) -> Option<LoopHandle<'static, State>>
@@ -11234,6 +11381,9 @@ mod transition_tests;
 
 #[cfg(test)]
 mod fullscreen_desktop_tests;
+
+#[cfg(test)]
+mod desktop_choice_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {

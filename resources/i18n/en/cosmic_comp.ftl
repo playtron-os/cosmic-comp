@@ -90,3 +90,18 @@ halo-closed = Closed { $closed ->
     [one] 1 window
    *[other] { $closed } windows
 }
+
+desktop-main = Main
+desktop-numbered = Desktop { $number }
+halo-move-desktop = Move to Desktop…
+move-desktop-title = Move to Desktop
+move-desktop-hint = Choose a desktop. You’ll follow this window there.
+move-desktop-current = Current desktop
+move-desktop-windows = { $count ->
+    [one] 1 window
+   *[other] { $count } windows
+}
+move-desktop-new = New desktop
+move-desktop-cancel = Cancel
+move-desktop-close = Close dialog
+move-desktop-moved = Moved to { $desktop }
