@@ -1,3 +1,12 @@
+## [1.55.2](https://github.com/playtron-os/cosmic-comp/compare/v1.55.1...v1.55.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **game-mode:** prepare full-size frames before game handoffs ([ce1c0b8](https://github.com/playtron-os/cosmic-comp/commit/ce1c0b8cd33a42d13981b20f5fc88147b6c526fa))
+* **render:** restore nested output after screen capture ([5b9b795](https://github.com/playtron-os/cosmic-comp/commit/5b9b7951b588b4072ab1301853bcbc8db3e020e3))
+* **xwayland:** recheck first buffers after surface association ([f32752b](https://github.com/playtron-os/cosmic-comp/commit/f32752bc973a15dd01ea86fd139d78c826e14c8e))
+
 ## [1.55.1](https://github.com/playtron-os/cosmic-comp/compare/v1.55.0...v1.55.1) (2026-10-06)
 
 
