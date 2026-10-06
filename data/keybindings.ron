@@ -14,6 +14,7 @@
     (modifiers: [Super], key: "j"): Focus(Down),
     // Super+K: the window's palette in Halo themes, focus up in bar themes.
     (modifiers: [Super], key: "k"): WindowCommands,
+    (modifiers: [Super, Shift], key: "m"): MoveToDesktop,
     (modifiers: [Super], key: "u"): Focus(Out),
     (modifiers: [Super, Shift], key: "u"): Focus(In),
     (modifiers: [Super, Shift], key: "Left"): Move(Left),

@@ -25,7 +25,7 @@ use crate::{
     shell::{
         Shell,
         element::CosmicMappedInternal,
-        grabs::{GrabStartData, Item, MenuGrab, Palette, PaletteKeyboardGrab},
+        grabs::{GrabStartData, Item, MenuGrab, MoveDialog, MoveRow, Palette, PaletteKeyboardGrab},
     },
     utils::desktop_action::DesktopApp,
 };
@@ -223,6 +223,12 @@ fn run_command(
         toast(state, fl!("halo-one-window", app = name.as_str()));
         return;
     }
+    if id == commands::MOVE_TO_DESKTOP {
+        if let Some(seat) = seat {
+            open_move_dialog(state, surface, seat, app.cloned());
+        }
+        return;
+    }
     if let Some(message) = commands::message_for(id) {
         perform_action(
             state,
@@ -243,6 +249,140 @@ fn run_command(
             "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
             _ => {}
         }
+    }
+}
+
+/// The Move to Desktop chooser, centred on the window's output as the design's Modal is.
+/// Opened from an idle, after whatever grab picked it has let go.
+pub(super) fn open_move_dialog(
+    state: &mut State,
+    surface: &CosmicSurface,
+    seat: &Seat<State>,
+    app: Option<DesktopApp>,
+) {
+    let surface = surface.clone();
+    let seat = seat.clone();
+    state.common.event_loop_handle.insert_idle(move |state| {
+        let shell = state.common.shell.read();
+        let Some(choices) = shell.move_choices(&surface) else {
+            return;
+        };
+        let Some(output) = surface
+            .wl_surface()
+            .and_then(|wl| shell.workspace_for_surface(&wl))
+            .map(|(_, output)| output.geometry())
+        else {
+            return;
+        };
+        let source = shell.move_source(&surface).unwrap_or_default();
+        let theme = shell.theme().clone();
+        drop(shell);
+        let serial = smithay::utils::SERIAL_COUNTER.next_serial();
+        let Some(start) = crate::shell::check_grab_preconditions(&seat, Some(serial), None) else {
+            return;
+        };
+        let name = app
+            .and_then(|app| app.name)
+            .unwrap_or_else(|| surface.app_id());
+        let title = surface.title();
+        let identity = if title.is_empty() || title == name {
+            name
+        } else {
+            format!("{name} · {title}")
+        };
+        let rows = move_rows(
+            choices
+                .iter()
+                .map(|choice| (choice.label.as_str(), choice.windows, choice.current)),
+        );
+        let destinations = choices
+            .iter()
+            .map(|choice| Some(choice.handle))
+            .chain([None]);
+        let items: Vec<Item> = rows
+            .iter()
+            .zip(destinations)
+            .map(|(row, to)| {
+                let (surface, seat) = (surface.clone(), seat.clone());
+                Item::new(row.label.clone(), move |handle| {
+                    let (surface, seat) = (surface.clone(), seat.clone());
+                    handle.insert_idle(move |state| move_and_follow(state, &surface, &seat, to));
+                })
+                .disabled(row.current)
+            })
+            .collect();
+        let dialog = MoveDialog {
+            identity,
+            source,
+            rows,
+            focus: 0,
+        };
+        let place = move |card: Size<i32, Logical>| {
+            Point::from((
+                output.loc.x + (output.size.w - card.w) / 2,
+                output.loc.y + (output.size.h - card.h) / 2,
+            ))
+        };
+        let grab = MenuGrab::new_dialog(
+            start,
+            &seat,
+            items.into_iter(),
+            place,
+            state.common.event_loop_handle.clone(),
+            theme,
+            dialog,
+        );
+        if grab.is_touch_grab() {
+            if let Some(touch) = seat.get_touch() {
+                touch.set_grab(state, grab, serial);
+            }
+        } else if let Some(pointer) = seat.get_pointer() {
+            pointer.set_grab(state, grab, serial, smithay::input::pointer::Focus::Keep);
+        }
+        if let Some(keyboard) = seat.get_keyboard() {
+            keyboard.set_grab(state, PaletteKeyboardGrab::new(seat.clone()), serial);
+        }
+    });
+}
+
+/// The chooser's rows from each desktop's (name, windows, current), then "New desktop".
+fn move_rows<'a>(desktops: impl IntoIterator<Item = (&'a str, usize, bool)>) -> Vec<MoveRow> {
+    desktops
+        .into_iter()
+        .map(|(label, windows, current)| MoveRow {
+            label: label.to_owned(),
+            detail: Some(if current {
+                fl!("move-desktop-current")
+            } else {
+                crate::dbus::notifications::plain(fl!("move-desktop-windows", count = windows))
+            }),
+            current,
+        })
+        .chain([MoveRow {
+            label: fl!("move-desktop-new"),
+            detail: None,
+            current: false,
+        }])
+        .collect()
+}
+
+/// Move the window to `to`, or to a new desktop, follow it, and say where it went.
+fn move_and_follow(
+    state: &mut State,
+    surface: &CosmicSurface,
+    seat: &Seat<State>,
+    to: Option<crate::wayland::protocols::workspace::WorkspaceHandle>,
+) {
+    let moved = state.common.shell.write().move_to_desktop(
+        surface,
+        seat,
+        to,
+        &mut state.common.workspace_state.update(),
+        &state.common.event_loop_handle,
+    );
+    if let Some((target, desktop)) = moved {
+        Shell::set_focus(state, Some(&target), seat, None, true);
+        toast(state, fl!("move-desktop-moved", desktop = desktop.as_str()));
     }
 }
 
@@ -411,6 +551,7 @@ fn menu_items(
         fullscreen: false,
         resizable: true,
         close_all: false,
+        on_desktop: false,
         app,
         catalog,
     };
@@ -682,6 +823,7 @@ fn open_surface(
         }
     });
     let close_all = close_all_item(&shell, surface);
+    let on_desktop = shell.move_choices(surface).is_some();
     let resizable = {
         let min = surface.min_size_without_ssd();
         !(min.is_some() && min == surface.max_size_without_ssd())
@@ -705,6 +847,7 @@ fn open_surface(
             fullscreen: surface.is_fullscreen(false),
             resizable,
             close_all: close_all.is_some(),
+            on_desktop,
             app: app.as_ref(),
             catalog: catalog.as_ref(),
         };
@@ -714,6 +857,7 @@ fn open_surface(
                 "minimize" => shortcuts::Action::Minimize,
                 "maximize" => shortcuts::Action::Maximize,
                 "fullscreen" => shortcuts::Action::Fullscreen,
+                commands::MOVE_TO_DESKTOP => shortcuts::Action::MoveToDesktop,
                 "close" => shortcuts::Action::Close,
                 _ => continue,
             };
@@ -793,6 +937,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_chooser_lists_desktops_with_their_counts_then_a_new_one() {
+        use crate::dbus::notifications::plain;
+        let rows = move_rows([
+            ("Main", 2, true),
+            ("Desktop 2", 1, false),
+            ("Desktop 3", 3, false),
+        ]);
+        let shown: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.label.as_str(),
+                    row.detail.clone().map(plain),
+                    row.current,
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Main", Some("Current desktop".to_owned()), true),
+                ("Desktop 2", Some("1 window".to_owned()), false),
+                ("Desktop 3", Some("3 windows".to_owned()), false),
+                ("New desktop", None, false),
+            ]
+        );
+    }
+
+    #[test]
     fn a_recent_item_s_age_reads_as_the_design_writes_it() {
         let minute = 60_000;
         let now = 1_000 * 24 * 60 * minute;
@@ -822,6 +995,7 @@ mod tests {
             fullscreen: false,
             resizable: true,
             close_all: false,
+            on_desktop: false,
             app,
             catalog,
         };

@@ -1143,6 +1143,19 @@ impl CosmicWindow {
         }
     }
 
+    /// The Move to Desktop chooser for this window.
+    pub fn open_move_dialog(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
+        if !self.0.with_program(|p| p.uses_halo_header()) {
+            return;
+        }
+        let surface = self.surface();
+        let app = self
+            .0
+            .with_program(|p| p.desktop_app.lock().unwrap().clone());
+        let seat = seat.clone();
+        loop_handle.insert_idle(move |state| halo::open_move_dialog(state, &surface, &seat, app));
+    }
+
     fn open_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let query_input = halo::menu_input_query(seat.clone(), serial);
@@ -2200,6 +2213,8 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             resizable: !(min.is_some() && min == win.window.max_size_without_ssd()),
             // Only the shell knows, and it is not pinnable anyway.
             close_all: false,
+            // A pinned Move to Desktop always opens; the chooser says where it can go.
+            on_desktop: true,
             app: app.as_ref(),
             catalog: catalog.as_ref(),
         };

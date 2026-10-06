@@ -1083,6 +1083,7 @@ impl State {
             Registry::Absent => {
                 shell.set_workspace_registry_present(false);
                 shell.set_active_workspace(None);
+                shell.set_active_workspace_name(None);
                 shell.set_workspace_accent(None, false);
                 self.common.theme.workspace_accent = None;
             }
@@ -1094,6 +1095,7 @@ impl State {
                 shell.set_workspace_registry_present(true);
                 let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
+                shell.set_active_workspace_name(active.as_ref().map(|a| a.name.clone()));
                 if active.is_none() {
                     shell.set_workspace_accent(None, false);
                     self.common.theme.workspace_accent = None;

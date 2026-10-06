@@ -24,6 +24,9 @@ use super::Message;
 /// action called `close` cannot shadow the window verb.
 pub const ACTION_PREFIX: &str = "action:";
 
+/// The Window group's Move to Desktop row, which opens the chooser.
+pub const MOVE_TO_DESKTOP: &str = "movews";
+
 /// Prefix for a command the app published itself, for the same reason.
 pub const APP_PREFIX: &str = "app:";
 
@@ -64,6 +67,8 @@ pub struct WindowFacts<'a> {
     pub resizable: bool,
     /// Another window of this app is open, so closing them all means something.
     pub close_all: bool,
+    /// The window sits on a desktop, so it can move to another.
+    pub on_desktop: bool,
     pub app: Option<&'a DesktopApp>,
     /// What the window published, when its app speaks `kora_app_commands_v1`.
     pub catalog: Option<&'a Catalog>,
@@ -224,6 +229,15 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
             icons::FULLSCREEN
         })
         .enabled(facts.resizable || facts.fullscreen),
+    );
+    commands.push(
+        HaloCommand::new(
+            MOVE_TO_DESKTOP,
+            fl!("halo-move-desktop"),
+            HaloCommandGroup::Window,
+        )
+        .icon(icons::MONITOR_SMARTPHONE)
+        .enabled(facts.on_desktop),
     );
     commands.push(
         // Never pinnable: Close is the one control the pill never sheds, so a
@@ -451,6 +465,7 @@ mod tests {
             fullscreen: false,
             resizable: true,
             close_all: false,
+            on_desktop: true,
             app,
             catalog: None,
         }
@@ -502,6 +517,28 @@ mod tests {
         // Namespaced, so an entry cannot shadow a window verb.
         assert!(message_for(&action.id).is_none());
         assert!(message_for("close").is_some());
+    }
+
+    #[test]
+    fn move_to_desktop_sits_before_close_and_needs_a_desktop() {
+        let mut facts = facts(None);
+        let window: Vec<_> = commands(&facts)
+            .into_iter()
+            .filter(|c| c.group == HaloCommandGroup::Window)
+            .collect();
+        let ids: Vec<_> = window.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(&ids[ids.len() - 2..], [MOVE_TO_DESKTOP, "close"]);
+        let row = &window[ids.len() - 2];
+        assert_eq!(row.label, "Move to Desktop…");
+        assert!(row.enabled && row.pinnable);
+        facts.on_desktop = false;
+        assert!(
+            !commands(&facts)
+                .iter()
+                .find(|c| c.id == MOVE_TO_DESKTOP)
+                .unwrap()
+                .enabled
+        );
     }
 
     /// Close is always in the pill, so a pin would only ever duplicate it.

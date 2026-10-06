@@ -1184,6 +1184,34 @@ impl State {
                 self.update_zoom(seat, change, true);
             }
 
+            Action::MoveToDesktop => {
+                let shell = self.common.shell.read();
+                if !crate::shell::element::header_bar::uses_halo_header(shell.theme()) {
+                    return;
+                }
+                // Opened from the keyboard, so its focus ring shows, as :focus-visible would.
+                icetron_themes::set_focus_visible(true);
+                let handle = &self.common.event_loop_handle;
+                match seat.get_keyboard().unwrap().current_focus() {
+                    Some(KeyboardFocusTarget::Element(mapped)) => {
+                        mapped.open_move_dialog(seat, handle)
+                    }
+                    Some(KeyboardFocusTarget::Fullscreen(surface)) => {
+                        if let Some(fullscreen) = shell
+                            .workspaces()
+                            .spaces()
+                            .flat_map(|workspace| &workspace.fullscreen_surfaces)
+                            .find(|fullscreen| fullscreen.surface == surface)
+                        {
+                            fullscreen.halo.open_move_dialog(seat, handle);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Action::FocusHalo => {}
+
             // Do nothing
             Action::Disable => (),
         }

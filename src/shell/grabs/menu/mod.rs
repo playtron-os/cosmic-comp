@@ -76,9 +76,11 @@ use super::{GrabStartData, ResizeEdge};
 
 mod default;
 mod item;
+mod move_dialog;
 #[cfg(test)]
 mod tests;
 pub use self::default::*;
+pub use self::move_dialog::{MoveDialog, MoveRow};
 
 /// Cheap to clone: a render thread takes a copy rather than rasterising under
 /// the seat's lock, which input on the main thread waits on.
@@ -387,6 +389,7 @@ pub struct ContextMenu {
     row_width: Mutex<Option<f32>>,
     halo: bool,
     palette: Option<Palette>,
+    dialog: Option<MoveDialog>,
     /// Set by a press that must not dismiss the grab. Read and cleared by
     /// [`MenuGrab::button`] right after it hands the press to the widget, which
     /// dispatches messages synchronously.
@@ -406,6 +409,7 @@ impl ContextMenu {
             row_width: Mutex::new(None),
             halo: false,
             palette: None,
+            dialog: None,
             keep_open: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             flyout: Mutex::new(None),
@@ -490,6 +494,12 @@ pub enum Message {
     RowEntered(usize),
     /// The pointer left a Halo menu row.
     RowLeft(usize),
+    /// A dialog's Cancel or close button: done, with nothing chosen.
+    Dismiss,
+    /// Tab (forward) or Shift+Tab in a dialog.
+    DialogStep(bool),
+    /// Enter or Space on the dialog's focused button.
+    DialogActivate,
 }
 
 impl item::CursorEvents for Message {
@@ -577,6 +587,20 @@ impl Program for ContextMenu {
                     let next = first.map_or(Message::AskChat, Message::ItemPressed);
                     return self.update(next, loop_handle, last_seat);
                 }
+            }
+            Message::Dismiss => self.selected.store(true, Ordering::SeqCst),
+            Message::DialogStep(forward) => {
+                if let Some(dialog) = self.dialog.as_mut() {
+                    dialog.step(forward);
+                }
+            }
+            Message::DialogActivate => {
+                let next = match self.dialog.as_ref().map(MoveDialog::focused) {
+                    Some(move_dialog::Target::Row(idx)) => Message::ItemPressed(idx),
+                    Some(_) => Message::Dismiss,
+                    None => return Task::none(),
+                };
+                return self.update(next, loop_handle, last_seat);
             }
             Message::AskChat => {
                 if let Some(palette) = self.palette.as_ref() {
@@ -748,6 +772,9 @@ impl Program for ContextMenu {
     }
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        if let Some(dialog) = &self.dialog {
+            return move_dialog::view(dialog, theme);
+        }
         if let Some(palette) = &self.palette {
             let commands = &palette.commands;
             let mut card = icetron_p::prelude::halo_palette(&palette.scope, &**theme)
@@ -996,7 +1023,9 @@ impl Program for ContextMenu {
         if self.halo {
             // The palette's card is rounded to `radii_xl` under the popover
             // shadow; the dropdown to its own radius under the menu shadow.
-            let (padding, radius) = if self.palette.is_some() {
+            let (padding, radius) = if self.dialog.is_some() {
+                (move_dialog::padding(theme), theme.radii_md())
+            } else if self.palette.is_some() {
                 (palette_padding(theme), theme.radii_xl())
             } else {
                 (halo_menu_padding(theme), theme.radii_md())
@@ -1721,6 +1750,7 @@ impl MenuGrab {
             false,
             None,
             None,
+            None,
         )
     }
 
@@ -1742,6 +1772,7 @@ impl MenuGrab {
             handle,
             theme,
             true,
+            None,
             None,
             None,
         )
@@ -1771,6 +1802,33 @@ impl MenuGrab {
             theme,
             true,
             Some(palette),
+            None,
+            Some(Box::new(place)),
+        )
+    }
+
+    /// The Move to Desktop chooser. `items` are index-aligned with `dialog.rows`.
+    pub fn new_dialog(
+        start_data: GrabStartData,
+        seat: &Seat<State>,
+        items: impl Iterator<Item = Item>,
+        place: impl FnOnce(Size<i32, Logical>) -> Point<i32, Global> + 'static,
+        handle: LoopHandle<'static, State>,
+        theme: CompTheme,
+        dialog: MoveDialog,
+    ) -> MenuGrab {
+        Self::new_styled(
+            start_data,
+            seat,
+            items,
+            Point::default(),
+            MenuAlignment::CORNER,
+            None,
+            handle,
+            theme,
+            true,
+            None,
+            Some(dialog),
             Some(Box::new(place)),
         )
     }
@@ -1787,6 +1845,7 @@ impl MenuGrab {
         theme: CompTheme,
         halo: bool,
         palette: Option<Palette>,
+        dialog: Option<MoveDialog>,
         // The card's top-left for a measured card size: a palette is placed
         // once its height is known, so it can go above the pill when it would
         // not fit below.
@@ -1797,8 +1856,12 @@ impl MenuGrab {
         menu.halo = halo;
         let is_palette = palette.is_some();
         menu.palette = palette;
+        let is_dialog = dialog.is_some();
+        menu.dialog = dialog;
         let padding = if !halo {
             iced_core::Padding::ZERO
+        } else if is_dialog {
+            move_dialog::padding(&theme)
         } else if is_palette {
             palette_padding(&theme)
         } else {
@@ -2029,6 +2092,40 @@ impl PaletteKeyboardGrab {
         }
     }
 
+    /// The first menu element, when it is a dialog.
+    fn dialog(&self) -> Option<IcedElement<ContextMenu>> {
+        let grab_state = self.seat.user_data().get::<SeatMenuGrabState>()?;
+        let element = grab_state.lock().unwrap().as_ref().and_then(|menu| {
+            menu.elements
+                .lock()
+                .unwrap()
+                .first()
+                .map(|e| e.iced.clone())
+        })?;
+        element
+            .with_program(|menu| menu.dialog.is_some())
+            .then_some(element)
+    }
+
+    /// Hand a dialog key to the dialog on its press; its release goes nowhere.
+    fn send_to_dialog(&self, message: Message, state: KeyState) -> bool {
+        let Some(element) = self.dialog() else {
+            return false;
+        };
+        if state == KeyState::Pressed {
+            icetron_themes::set_focus_visible(true);
+            element.queue_message(message);
+            element.force_update();
+        }
+        true
+    }
+
+    fn dialog_done(&self) -> bool {
+        self.dialog().is_some_and(|element| {
+            element.with_program(|menu| menu.selected.load(Ordering::SeqCst))
+        })
+    }
+
     /// End the palette. This grab goes now; the pointer grab that owns the
     /// palette is released once the keyboard is no longer mid-dispatch, since
     /// unsetting it reaches back into the keyboard to release this grab.
@@ -2062,9 +2159,17 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
         serial: Serial,
         time: u32,
     ) {
-        let escape = handle.keysym_handle(keycode).modified_sym() == Keysym::Escape;
-        if escape && state == KeyState::Pressed {
+        let sym = handle.keysym_handle(keycode).modified_sym();
+        if sym == Keysym::Escape && state == KeyState::Pressed {
             self.close(data, handle, serial, time);
+            return;
+        }
+        if let Some(message) = dialog_key(sym)
+            && self.send_to_dialog(message, state)
+        {
+            if self.dialog_done() {
+                self.close(data, handle, serial, time);
+            }
             return;
         }
         if let Forwarded::Close =
@@ -2089,6 +2194,16 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
     }
 
     fn unset(&mut self, _data: &mut State) {}
+}
+
+/// A dialog's keys: Tab and Down walk forward, Shift+Tab and Up back, Enter and Space press.
+fn dialog_key(sym: Keysym) -> Option<Message> {
+    match sym {
+        Keysym::Tab | Keysym::Down => Some(Message::DialogStep(true)),
+        Keysym::ISO_Left_Tab | Keysym::Up => Some(Message::DialogStep(false)),
+        Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Message::DialogActivate),
+        _ => None,
+    }
 }
 
 /// Close an open palette from outside it (Super+K pressed again).
