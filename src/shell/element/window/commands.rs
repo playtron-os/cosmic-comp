@@ -202,7 +202,7 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     commands.push(
         HaloCommand::new(
             "minimize",
-            fl!("halo-park-window"),
+            fl!("halo-minimize-window"),
             HaloCommandGroup::Window,
         )
         .icon(icons::MINUS),
@@ -501,6 +501,18 @@ mod tests {
         let commands = commands(&facts(None));
         assert!(!commands.iter().find(|c| c.id == "close").unwrap().pinnable);
         assert!(commands.iter().find(|c| c.id == "shot").unwrap().pinnable);
+    }
+
+    #[test]
+    fn the_window_group_says_minimize_not_park() {
+        let window: Vec<_> = commands(&facts(None))
+            .into_iter()
+            .filter(|c| c.group == HaloCommandGroup::Window)
+            .map(|c| (c.id, c.label))
+            .collect();
+        assert_eq!(window[0], ("minimize".into(), "Minimize window".into()));
+        assert!(matches!(message_for("minimize"), Some(Message::Minimize)));
+        assert_eq!(fl!("halo-minimize"), "Minimize");
     }
 
     #[test]

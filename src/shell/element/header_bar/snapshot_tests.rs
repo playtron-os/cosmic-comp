@@ -445,7 +445,7 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
     assert_eq!(
         glyphs.len(),
         9,
-        "app mark, screenshot, record, menu, new, park, fill, fullscreen, close"
+        "app mark, screenshot, record, menu, new, minimize, fill, fullscreen, close"
     );
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
@@ -778,14 +778,14 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
             1200.0_f32,
             9,
             2,
-            "tier 1: mark, 2 pins, ⌄, +, park, fill, fullscreen, close",
+            "tier 1: mark, 2 pins, ⌄, +, minimize, fill, fullscreen, close",
         ),
         (680.0, 9, 2, "tier 1 at its threshold"),
         (
             600.0,
             7,
             1,
-            "tier 2: mark, ⌄, +, park, fill, fullscreen, close",
+            "tier 2: mark, ⌄, +, minimize, fill, fullscreen, close",
         ),
         (480.0, 7, 1, "tier 2 at its threshold"),
         (400.0, 3, 1, "tier 3: mark, ⋯, close"),
