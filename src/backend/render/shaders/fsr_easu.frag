@@ -1,16 +1,6 @@
-// FSR 1.0 — EASU (Edge-Adaptive Spatial Upsampling)
-//
-// The upscaling half of FidelityFX Super Resolution 1.0. For each destination
-// pixel it inspects a 12-tap neighbourhood of the source, estimates the local
-// edge direction and length, and blends an anisotropic Lanczos-like kernel
-// aligned to that edge. The result keeps edges crisp instead of smearing them
-// the way a bilinear stretch does.
-//
-// Written against GLSL ES 1.00 (no textureGather, no integer ops), so the taps
-// are explicit texture2D fetches.
-//
-// Pass 1 of 2 — run RCAS afterwards to restore the high-frequency detail this
-// pass deliberately leaves soft.
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2021 Advanced Micro Devices, Inc. All rights reserved.
+// See LICENSE-FSR for the permission notice.
 
 #version 100
 
@@ -29,131 +19,94 @@ uniform sampler2D tex;
 #endif
 
 uniform float alpha;
-varying vec2 v_coords;
-
-// Source texture size in pixels, and its reciprocal.
 uniform vec2 src_size;
-// Destination size in pixels (the area being scaled to).
 uniform vec2 dst_size;
+varying vec2 v_coords;
 
 #if defined(DEBUG_FLAGS)
 uniform float tint;
 #endif
 
-// Perceptual weight used for the directional analysis. FSR works on a luma
-// approximation rather than full colour.
 float luma(vec3 c) {
-    return c.g * 0.5 + (c.r + c.b) * 0.25;
+    return c.g + (c.r + c.b) * 0.5;
 }
 
-// Accumulate one tap into the anisotropic kernel.
-//
-// `off` is the tap's offset from the kernel centre in source pixels, `dir`/`len`
-// the estimated edge direction and strength. The kernel is stretched along the
-// edge and squeezed across it, which is what preserves the edge.
-void tap(
-    inout vec3 acc,
-    inout float weight_acc,
-    vec2 off,
-    vec3 color,
-    vec2 dir,
-    float len
-) {
-    // Rotate the offset into edge space.
-    vec2 v = vec2(off.x * dir.x + off.y * dir.y, off.x * -dir.y + off.y * dir.x);
-    // Anisotropy: 1.0 across the edge, stretched along it.
-    v *= vec2(1.0, mix(1.0, 2.0, len));
+void edge(inout vec2 dir, inout float len, float weight,
+          float a, float b, float c, float d, float e) {
+    vec2 gradient = vec2(d - b, e - a);
+    vec2 contrast = vec2(max(abs(d - c), abs(c - b)),
+                         max(abs(e - c), abs(c - a)));
+    vec2 strength = clamp(abs(gradient) / max(contrast, vec2(1e-8)), 0.0, 1.0);
+    dir += gradient * weight;
+    len += dot(strength, strength) * weight;
+}
 
-    float d2 = min(dot(v, v), 4.0);
-    // Lanczos-ish window: (25/16 * (d2/4) - 1)^2 * ... approximated by the
-    // FSR base kernel, clamped so distant taps contribute nothing.
-    float base = (2.0 / 5.0) * d2 - 1.0;
-    float w = base * base - 1.0;
-    float window = (25.0 / 16.0) * base * base - (25.0 / 16.0 - 1.0);
-    w = window * w;
-    w = max(w, 0.0);
-
-    acc += color * w;
-    weight_acc += w;
+void tap(inout vec3 color, inout float weight_sum, vec2 offset,
+         vec2 dir, vec2 len, float lobe, float clip, vec3 sample_color) {
+    vec2 v = vec2(dot(offset, dir), dot(offset, vec2(-dir.y, dir.x))) * len;
+    float d2 = min(dot(v, v), clip);
+    float base = 0.4 * d2 - 1.0;
+    float window = lobe * d2 - 1.0;
+    float weight = (1.5625 * base * base - 0.5625) * window * window;
+    color += sample_color * weight;
+    weight_sum += weight;
 }
 
 void main() {
+    vec2 pos = v_coords * src_size - 0.5;
+    vec2 base = floor(pos) + 0.5;
+    vec2 pp = fract(pos);
     vec2 inv_src = 1.0 / src_size;
 
-    // Destination pixel centre expressed in source pixel space.
-    vec2 src_pos = v_coords * src_size;
-    vec2 base_px = floor(src_pos - 0.5) + 0.5;
-    vec2 frac = src_pos - base_px;
+    // Explicit texel-center samples keep the 12-tap kernel available on GLES 2.
+    vec3 b = texture2D(tex, (base + vec2( 0.0, -1.0)) * inv_src).rgb;
+    vec3 c = texture2D(tex, (base + vec2( 1.0, -1.0)) * inv_src).rgb;
+    vec3 e = texture2D(tex, (base + vec2(-1.0,  0.0)) * inv_src).rgb;
+    vec3 f = texture2D(tex, (base + vec2( 0.0,  0.0)) * inv_src).rgb;
+    vec3 g = texture2D(tex, (base + vec2( 1.0,  0.0)) * inv_src).rgb;
+    vec3 h = texture2D(tex, (base + vec2( 2.0,  0.0)) * inv_src).rgb;
+    vec3 i = texture2D(tex, (base + vec2(-1.0,  1.0)) * inv_src).rgb;
+    vec3 j = texture2D(tex, (base + vec2( 0.0,  1.0)) * inv_src).rgb;
+    vec3 k = texture2D(tex, (base + vec2( 1.0,  1.0)) * inv_src).rgb;
+    vec3 l = texture2D(tex, (base + vec2( 2.0,  1.0)) * inv_src).rgb;
+    vec3 n = texture2D(tex, (base + vec2( 0.0,  2.0)) * inv_src).rgb;
+    vec3 o = texture2D(tex, (base + vec2( 1.0,  2.0)) * inv_src).rgb;
 
-    // 3x3 neighbourhood (plus the extra taps EASU uses for the analysis).
-    vec3 c00 = texture2D(tex, (base_px + vec2(-1.0, -1.0)) * inv_src).rgb;
-    vec3 c10 = texture2D(tex, (base_px + vec2(0.0, -1.0)) * inv_src).rgb;
-    vec3 c20 = texture2D(tex, (base_px + vec2(1.0, -1.0)) * inv_src).rgb;
-    vec3 c01 = texture2D(tex, (base_px + vec2(-1.0, 0.0)) * inv_src).rgb;
-    vec3 c11 = texture2D(tex, (base_px + vec2(0.0, 0.0)) * inv_src).rgb;
-    vec3 c21 = texture2D(tex, (base_px + vec2(1.0, 0.0)) * inv_src).rgb;
-    vec3 c02 = texture2D(tex, (base_px + vec2(-1.0, 1.0)) * inv_src).rgb;
-    vec3 c12 = texture2D(tex, (base_px + vec2(0.0, 1.0)) * inv_src).rgb;
-    vec3 c22 = texture2D(tex, (base_px + vec2(1.0, 1.0)) * inv_src).rgb;
+    vec2 dir = vec2(0.0);
+    float len = 0.0;
+    edge(dir, len, (1.0 - pp.x) * (1.0 - pp.y), luma(b), luma(e), luma(f), luma(g), luma(j));
+    edge(dir, len, pp.x * (1.0 - pp.y), luma(c), luma(f), luma(g), luma(h), luma(k));
+    edge(dir, len, (1.0 - pp.x) * pp.y, luma(f), luma(i), luma(j), luma(k), luma(n));
+    edge(dir, len, pp.x * pp.y, luma(g), luma(j), luma(k), luma(l), luma(o));
 
-    // Edge estimation from luma gradients across the neighbourhood.
-    float l00 = luma(c00), l10 = luma(c10), l20 = luma(c20);
-    float l01 = luma(c01), l11 = luma(c11), l21 = luma(c21);
-    float l02 = luma(c02), l12 = luma(c12), l22 = luma(c22);
+    float dir2 = dot(dir, dir);
+    dir = dir2 < 1.0 / 32768.0 ? vec2(1.0, 0.0) : dir * inversesqrt(dir2);
+    len = 0.25 * len * len;
+    float stretch = dot(dir, dir) / max(abs(dir.x), abs(dir.y));
+    vec2 lengths = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+    float lobe = 0.5 - 0.29 * len;
+    float clip = 1.0 / lobe;
 
-    // Horizontal / vertical second derivatives give direction; their magnitude
-    // relative to the local contrast gives how strongly to stretch the kernel.
-    float dx = (l01 - l11) + (l21 - l11);
-    float dy = (l10 - l11) + (l12 - l11);
-    vec2 dir = vec2((l21 - l01), (l12 - l10));
+    vec3 color = vec3(0.0);
+    float weight_sum = 0.0;
+    tap(color, weight_sum, vec2( 0.0, -1.0) - pp, dir, lengths, lobe, clip, b);
+    tap(color, weight_sum, vec2( 1.0, -1.0) - pp, dir, lengths, lobe, clip, c);
+    tap(color, weight_sum, vec2(-1.0,  1.0) - pp, dir, lengths, lobe, clip, i);
+    tap(color, weight_sum, vec2( 0.0,  1.0) - pp, dir, lengths, lobe, clip, j);
+    tap(color, weight_sum, vec2( 0.0,  0.0) - pp, dir, lengths, lobe, clip, f);
+    tap(color, weight_sum, vec2(-1.0,  0.0) - pp, dir, lengths, lobe, clip, e);
+    tap(color, weight_sum, vec2( 1.0,  1.0) - pp, dir, lengths, lobe, clip, k);
+    tap(color, weight_sum, vec2( 2.0,  1.0) - pp, dir, lengths, lobe, clip, l);
+    tap(color, weight_sum, vec2( 2.0,  0.0) - pp, dir, lengths, lobe, clip, h);
+    tap(color, weight_sum, vec2( 1.0,  0.0) - pp, dir, lengths, lobe, clip, g);
+    tap(color, weight_sum, vec2( 1.0,  2.0) - pp, dir, lengths, lobe, clip, o);
+    tap(color, weight_sum, vec2( 0.0,  2.0) - pp, dir, lengths, lobe, clip, n);
 
-    float dir_len = length(dir);
-    if (dir_len > 1.0 / 32768.0) {
-        dir /= dir_len;
-    } else {
-        dir = vec2(1.0, 0.0);
-    }
-
-    // Edge strength, normalised against the local luma range so flat areas do
-    // not get treated as edges by noise alone.
-    float lmin = min(min(min(l00, l10), min(l20, l01)), min(min(l11, l21), min(l02, min(l12, l22))));
-    float lmax = max(max(max(l00, l10), max(l20, l01)), max(max(l11, l21), max(l02, max(l12, l22))));
-    float range = max(lmax - lmin, 1.0 / 32768.0);
-    float len = clamp(abs(dx + dy) / range, 0.0, 1.0);
-    len = len * len;
-
-    vec3 acc = vec3(0.0);
-    float weight_acc = 0.0;
-    tap(acc, weight_acc, vec2(-1.0, -1.0) - frac, c00, dir, len);
-    tap(acc, weight_acc, vec2(0.0, -1.0) - frac, c10, dir, len);
-    tap(acc, weight_acc, vec2(1.0, -1.0) - frac, c20, dir, len);
-    tap(acc, weight_acc, vec2(-1.0, 0.0) - frac, c01, dir, len);
-    tap(acc, weight_acc, vec2(0.0, 0.0) - frac, c11, dir, len);
-    tap(acc, weight_acc, vec2(1.0, 0.0) - frac, c21, dir, len);
-    tap(acc, weight_acc, vec2(-1.0, 1.0) - frac, c02, dir, len);
-    tap(acc, weight_acc, vec2(0.0, 1.0) - frac, c12, dir, len);
-    tap(acc, weight_acc, vec2(1.0, 1.0) - frac, c22, dir, len);
-
-    vec3 color;
-    if (weight_acc > 0.0) {
-        color = acc / weight_acc;
-    } else {
-        color = c11;
-    }
-
-    // Never overshoot the neighbourhood: EASU is not allowed to invent detail,
-    // that is RCAS's job and it does it with a limiter.
-    vec3 cmin = min(min(min(c00, c10), min(c20, c01)), min(min(c11, c21), min(c02, min(c12, c22))));
-    vec3 cmax = max(max(max(c00, c10), max(c20, c01)), max(max(c11, c21), max(c02, max(c12, c22))));
-    color = clamp(color, cmin, cmax);
-
-    vec4 result = vec4(color, 1.0);
-    result *= alpha;
-
+    color = clamp(color / weight_sum, min(min(f, g), min(j, k)), max(max(f, g), max(j, k)));
+    vec4 result = vec4(color, 1.0) * alpha;
     #if defined(DEBUG_FLAGS)
     if (tint == 1.0)
-        result = vec4(0.0, 0.4, 0.0, 0.3) + result * 0.7;
+        result = vec4(0.4, 0.0, 0.0, 0.3) + result * 0.7;
     #endif
-
     gl_FragColor = result;
 }
