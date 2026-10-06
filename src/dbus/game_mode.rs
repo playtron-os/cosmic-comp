@@ -1990,13 +1990,24 @@ impl State {
                 }
                 Some(KeyboardFocusTarget::Fullscreen(game.clone()))
             } else {
-                // A separate workspace keeps the desktop intact on exit.
-                let target = shell
+                // A separate workspace keeps the desktop intact on exit. One
+                // the app has to itself has nothing to keep: moving would
+                // only leave it empty behind.
+                let alone = shell
                     .workspaces()
                     .spaces_for_output(&output)
-                    .find(|ws| ws.is_empty())
-                    .or_else(|| shell.workspaces().spaces_for_output(&output).last())
-                    .map(|ws| ws.handle);
+                    .find(|ws| ws.handle == source_ws)
+                    .is_some_and(|ws| ws.len() == 1);
+                let target = if alone {
+                    Some(source_ws)
+                } else {
+                    shell
+                        .workspaces()
+                        .spaces_for_output(&output)
+                        .find(|ws| ws.is_empty())
+                        .or_else(|| shell.workspaces().spaces_for_output(&output).last())
+                        .map(|ws| ws.handle)
+                };
                 if relocate_fullscreen {
                     // It fullscreened itself on the output we are moving it AWAY
                     // from. A fullscreen surface is not a mapped element, so
@@ -2005,17 +2016,19 @@ impl State {
                     let _ = shell.unfullscreen_request(&game, &loop_handle);
                 }
                 if let Some(target) = target {
-                    info!(target: GAMING_TARGET, app_id, "moving app onto a clean game-mode workspace");
-                    let _ = shell.move_window(
-                        Some(&seat),
-                        &game,
-                        &source_ws,
-                        &target,
-                        false,
-                        None,
-                        &mut self.common.workspace_state.update(),
-                        &loop_handle,
-                    );
+                    if target != source_ws {
+                        info!(target: GAMING_TARGET, app_id, "moving app onto a clean game-mode workspace");
+                        let _ = shell.move_window(
+                            Some(&seat),
+                            &game,
+                            &source_ws,
+                            &target,
+                            false,
+                            None,
+                            &mut self.common.workspace_state.update(),
+                            &loop_handle,
+                        );
+                    }
                     if let Some(idx) = shell.workspaces().idx_for_handle(&output, &target) {
                         let delta = if first_entry {
                             WorkspaceDelta::new_shortcut()

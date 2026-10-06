@@ -578,6 +578,9 @@ fn render_input_order_internal<R: 'static>(
         if shell.game_mode.active
             && shell.game_mode.overlay_active
             && shell.game_mode.output.as_ref() == Some(output)
+            // Over the game's own desktop only: switched to another, the user
+            // has left it, and its overlay with it.
+            && shell.game_mode.workspace.is_none_or(|ws| ws == current.0)
             && let Some(surface) = shell.game_mode.overlay_surface.as_ref()
             // Wait for a frame drawn since it was shown; see `overlay_shown_at_commit`.
             && shell.game_mode.overlay_shown_at_commit.is_none_or(|shown| {
