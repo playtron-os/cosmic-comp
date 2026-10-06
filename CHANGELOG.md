@@ -1,3 +1,12 @@
+## [1.55.1](https://github.com/playtron-os/cosmic-comp/compare/v1.55.0...v1.55.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **desktops:** a window alone on its desktop keeps it ([4f5a40c](https://github.com/playtron-os/cosmic-comp/commit/4f5a40c547bda76b45d79cac9374a0354325a9b3))
+* **game-mode:** draw an overlay only over the game's own desktop ([f8a976b](https://github.com/playtron-os/cosmic-comp/commit/f8a976b169a5d99311779a9831001c2247103c31))
+* **render:** correct spatial upscaling and sharpening ([11b4f9e](https://github.com/playtron-os/cosmic-comp/commit/11b4f9e61995d94bc542d7f5627f6a707796a330))
+
 # [1.55.0](https://github.com/playtron-os/cosmic-comp/compare/v1.54.0...v1.55.0) (2026-10-06)
 
 
