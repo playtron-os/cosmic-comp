@@ -836,7 +836,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     HaloControl::Minimize,
                     icons::MINUS,
                     self.on_minimize.clone(),
-                    fl!("halo-park"),
+                    fl!("halo-minimize"),
                 ),
                 (
                     HaloControl::Maximize,
