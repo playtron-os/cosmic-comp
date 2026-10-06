@@ -1,3 +1,32 @@
+# [1.52.0](https://github.com/playtron-os/cosmic-comp/compare/v1.51.1...v1.52.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **game-mode:** give a blocking overlay the pointer, and the keyboard's typing to the game ([#26](https://github.com/playtron-os/cosmic-comp/issues/26)) ([a24a1fd](https://github.com/playtron-os/cosmic-comp/commit/a24a1fd91518af6e378b8c499633ec313334dd74))
+* **halo:** bring a parked fullscreen window's desktop home ([a3876ac](https://github.com/playtron-os/cosmic-comp/commit/a3876ac935e1f21b214bad8a94258e28bd53ee7d))
+* **halo:** use theme timing for temporary introductions ([0049252](https://github.com/playtron-os/cosmic-comp/commit/0049252ddb8899b246846edccc2076f972cd965b))
+* **input:** send absolute pointer motion a relative delta for Xwayland ([#23](https://github.com/playtron-os/cosmic-comp/issues/23)) ([9572c40](https://github.com/playtron-os/cosmic-comp/commit/9572c401fd9c56027d16f8f3bdd5b6ce61ffb9c2))
+* **input:** switch layouts with super shift space ([f3e55eb](https://github.com/playtron-os/cosmic-comp/commit/f3e55eb5befe96281853c9ec23bc9ad85b2d372c))
+* **screenshot:** toast "Screenshot saved" as the design does ([b1473da](https://github.com/playtron-os/cosmic-comp/commit/b1473da0117d8eef1d8a6c0542135d1aea57e0a7))
+
+
+### Features
+
+* **fullscreen:** give a fullscreen window a desktop of its own ([24166ae](https://github.com/playtron-os/cosmic-comp/commit/24166ae1851358d24c6bf751e4eb9f6d8b5358aa))
+* **game-mode:** GameFrame in a Kora workspace: overlays over a game, a launch that lands on the game ([#24](https://github.com/playtron-os/cosmic-comp/issues/24)) ([85a88a1](https://github.com/playtron-os/cosmic-comp/commit/85a88a1a28beae2c799b7b081b23e9e36ed6f7d9))
+* **halo:** always offer New window, and say when the app opens only one ([a3a0178](https://github.com/playtron-os/cosmic-comp/commit/a3a017857dc977c44075a74dbacee95c32ad784e))
+* **halo:** float the Halo above every window, as the design draws it ([#22](https://github.com/playtron-os/cosmic-comp/issues/22)) ([9cce6e5](https://github.com/playtron-os/cosmic-comp/commit/9cce6e544091f6221d4445c215a442e30071170e))
+* **halo:** introduce a window the shell brings forward ([beb98a6](https://github.com/playtron-os/cosmic-comp/commit/beb98a6cdc4d45c844f72c3427f56e62436ccc81))
+* **halo:** leave the park and chip receipts as system toasts ([9b80f6a](https://github.com/playtron-os/cosmic-comp/commit/9b80f6afd05a3cf74c1682c5ccb4d6e6daef8ac7))
+* **halo:** offer Close all windows for an app's lone window too ([13ba58f](https://github.com/playtron-os/cosmic-comp/commit/13ba58fbcaa1c60156663c665c4ea5210641a3fd))
+* **halo:** run the commands a window publishes, from its app menu and palette ([e430bf0](https://github.com/playtron-os/cosmic-comp/commit/e430bf04781003088d9522f81097ee3a2aed9f4d))
+* **halo:** say where fullscreen goes in its tooltip ([5fde44c](https://github.com/playtron-os/cosmic-comp/commit/5fde44c88516932edc955893ddc196da8c30872e))
+* **halo:** show a window's runs and park it on Close while work continues ([7d49f70](https://github.com/playtron-os/cosmic-comp/commit/7d49f7077f9e740c82d2ee27d56f58d6236cb003))
+* **identity:** keep mapped window attribution stable ([16dc17b](https://github.com/playtron-os/cosmic-comp/commit/16dc17b2f32c035e3a59ad035e845587e7717a32))
+* **layer:** move each kind of shell surface as the theme says ([#25](https://github.com/playtron-os/cosmic-comp/issues/25)) ([18e466d](https://github.com/playtron-os/cosmic-comp/commit/18e466df22955429a1dcff742fde2b73cd636d1e))
+* **xwayland:** give each workspace an X server of its own ([#21](https://github.com/playtron-os/cosmic-comp/issues/21)) ([1d29889](https://github.com/playtron-os/cosmic-comp/commit/1d29889dea16ec07d3d34e98c5462f7ebb87c248))
+
 ## [1.51.1](https://github.com/playtron-os/cosmic-comp/compare/v1.51.0...v1.51.1) (2026-10-01)
 
 
