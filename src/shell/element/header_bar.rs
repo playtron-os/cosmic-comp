@@ -720,7 +720,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
         } else {
             for (icon, message, label) in [
-                (icons::MINUS, self.on_minimize.clone(), fl!("halo-park")),
+                (icons::MINUS, self.on_minimize.clone(), fl!("halo-minimize")),
                 (
                     icons::MAXIMIZE_2,
                     self.on_maximize.clone(),
