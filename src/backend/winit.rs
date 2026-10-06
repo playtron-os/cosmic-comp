@@ -154,13 +154,12 @@ impl WinitState {
             &state.event_loop_handle,
         )
         .map_err(|err| anyhow!("Rendering failed: {}", err))?;
-        // A cached scene can skip the final draw after an offscreen pass changed EGL targets.
-        if result.damage.is_none() {
-            let sync = renderer
-                .render(&mut fb, window_size, Transform::Normal)?
-                .finish()?;
-            sync.wait()?;
-        }
+        // Filters can skip the final draw, and screen capture runs after it.
+        // Restore the window target before swapping in either case.
+        renderer
+            .render(&mut fb, window_size, Transform::Normal)?
+            .finish()?
+            .wait()?;
         std::mem::drop(fb);
         self.backend
             .submit(result.damage.map(|x| x.as_slice()))
