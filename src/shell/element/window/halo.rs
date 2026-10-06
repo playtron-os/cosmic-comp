@@ -103,7 +103,7 @@ pub(super) fn perform_action(
                 action.launch();
             }
         }
-        Message::Close => super::runs::close_window(state, surface),
+        Message::Close => surface.close(),
         Message::Minimize => {
             let mut shell = state.common.shell.write();
             shell.minimize_request(surface);
@@ -580,9 +580,23 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
             };
             // Snapshot before closing, outside the shell lock. Normal close
             // requests allow applications to ask about unsaved work.
-            super::runs::close_windows(state, &windows);
+            for window in &windows {
+                window.close();
+            }
+            if let Some(receipt) = closed_receipt(windows.len()) {
+                state
+                    .common
+                    .dbus_state
+                    .system_toast(receipt, crate::dbus::notifications::Tone::Neutral);
+            }
         });
     }))
+}
+
+/// The prototype's `closeWindows` receipt. Fluent's bidi isolate marks around
+/// the count show as tofu in the toast's Latin-only fonts.
+fn closed_receipt(closed: usize) -> Option<String> {
+    (closed > 0).then(|| fl!("halo-closed", closed = closed).replace(['\u{2068}', '\u{2069}'], ""))
 }
 
 /// The prototype's app menu offers Close all windows for every app with a
@@ -984,6 +998,13 @@ mod tests {
             "a lone window is offered it too"
         );
         assert!(!offers_close_all::<u32>(&[], &1));
+    }
+
+    #[test]
+    fn close_all_reports_what_it_closed() {
+        assert_eq!(closed_receipt(1).as_deref(), Some("Closed 1 window"));
+        assert_eq!(closed_receipt(3).as_deref(), Some("Closed 3 windows"));
+        assert_eq!(closed_receipt(0), None);
     }
 
     #[test]

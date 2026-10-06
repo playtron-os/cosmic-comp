@@ -78,12 +78,7 @@ halo-open-recent = Open Recent
 halo-run-done = done ✓
 halo-run-queued = queued
 halo-run-untitled = working
-halo-closed-parked = { $parked } parked — work continues
 halo-closed = Closed { $closed ->
     [one] 1 window
    *[other] { $closed } windows
 }
-halo-closed-some-parked = Closed { $closed ->
-    [one] 1 window
-   *[other] { $closed } windows
-} · { $parked } parked — work continues

@@ -1938,12 +1938,10 @@ impl Program for CosmicWindowInternal {
                     });
                 }
             }
-            Message::Close | Message::RunChip => {
+            Message::Close => self.window.close(),
+            Message::RunChip => {
                 let surface = self.window.clone();
-                loop_handle.insert_idle(move |state| match message {
-                    Message::Close => runs::close_window(state, &surface),
-                    _ => runs::chip_toast(state, &surface),
-                });
+                loop_handle.insert_idle(move |state| runs::chip_toast(state, &surface));
             }
             Message::Action(ref id) => {
                 let surface = self.window.clone();

@@ -71,7 +71,6 @@ fn a_run_attaches_only_in_the_workspace_the_registry_stamped() {
     let runs = [run("a", "win", RunState::Running)];
     assert!(halo_run_for(&runs, "win", "w2", NOW).is_none());
     assert!(halo_run_for(&runs, "win", "", NOW).is_none());
-    assert!(!has_live_work_in(&runs, "win", "w2"));
 
     let machine = Run {
         workspace: String::new(),
@@ -139,22 +138,6 @@ fn a_run_with_no_verb_falls_back_to_its_title() {
 }
 
 #[test]
-fn only_running_or_queued_work_keeps_a_window_open() {
-    assert!(has_live_work_in(
-        &[run("a", "win", RunState::Running)],
-        "win",
-        "w1"
-    ));
-    assert!(has_live_work_in(
-        &[run("a", "win", RunState::Queued)],
-        "win",
-        "w1"
-    ));
-    assert!(!has_live_work_in(&[done("a", "win", NOW)], "win", "w1"));
-    assert!(!has_live_work_in(&[], "win", "w1"));
-}
-
-#[test]
 fn the_next_redraw_is_when_the_soonest_flash_ends() {
     let runs = [
         done("a", "win", NOW - 1000),
@@ -168,17 +151,4 @@ fn the_next_redraw_is_when_the_soonest_flash_ends() {
     ];
     assert_eq!(next_expiry(&runs, NOW), Some(NOW + 1000));
     assert_eq!(next_expiry(&runs[2..], NOW), None);
-}
-
-#[test]
-fn park_receipts_read_as_the_prototype_writes_them() {
-    assert_eq!(
-        plain(fl!("halo-closed-parked", parked = 1)),
-        "1 parked — work continues"
-    );
-    assert_eq!(plain(fl!("halo-closed", closed = 1)), "Closed 1 window");
-    assert_eq!(
-        plain(fl!("halo-closed-some-parked", closed = 2, parked = 1)),
-        "Closed 2 windows · 1 parked — work continues"
-    );
 }
