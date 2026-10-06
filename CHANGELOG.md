@@ -1,3 +1,18 @@
+# [1.53.0](https://github.com/playtron-os/cosmic-comp/compare/v1.52.0...v1.53.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **fullscreen:** keep fullscreen in place unless workspaces are on ([11edb6e](https://github.com/playtron-os/cosmic-comp/commit/11edb6ef3f3e2a2886b420a20077f9638bdc9832))
+* **halo:** close a window instead of parking it ([bdc925d](https://github.com/playtron-os/cosmic-comp/commit/bdc925d9708f3d0c4ef893e75a3b7a2ff00f0883))
+* **stack:** stop a stack from freezing the compositor when it draws ([b67fe10](https://github.com/playtron-os/cosmic-comp/commit/b67fe10df0a1924fb5e1c2817f6056ad2ff2b084))
+
+
+### Features
+
+* **fullscreen:** give a window opening fullscreen its own desktop ([d249e75](https://github.com/playtron-os/cosmic-comp/commit/d249e75e259ce5da3bb89d898ef22d5acb494a58))
+* **game-mode:** write the shown window into a client's file ([448c95f](https://github.com/playtron-os/cosmic-comp/commit/448c95fa64ba855e2e22bd4d6ffe65e1c1bbdb1c))
+
 # [1.52.0](https://github.com/playtron-os/cosmic-comp/compare/v1.51.1...v1.52.0) (2026-10-06)
 
 

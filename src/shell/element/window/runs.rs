@@ -3,7 +3,7 @@
 //! What each window is doing, from the machine's `one.playtron.Runs1` feed.
 //!
 //! One reduction decides it, after the prototype's `halo-run.ts`, so the
-//! chip, the glyph dot and Close can never disagree: running outranks queued,
+//! chip and the glyph dot can never disagree: running outranks queued,
 //! which outranks a finished run's 4 s flash. A run belongs to a window only
 //! when it names the window's stable identifier and the registry stamped it
 //! with the window's own workspace; nothing is inferred from app ids or focus.
@@ -20,14 +20,8 @@ use calloop::{
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::{
-    dbus::notifications::Tone,
-    fl,
-    shell::{element::CosmicSurface, focus::target::KeyboardFocusTarget},
-    state::State,
-    wayland::{
-        handlers::surface_embed::is_surface_embedded,
-        protocols::toplevel_info::mapped_toplevel_identifier,
-    },
+    dbus::notifications::Tone, fl, shell::element::CosmicSurface, state::State,
+    wayland::protocols::toplevel_info::mapped_toplevel_identifier,
 };
 
 /// How long a finished run keeps its green flash, from when it ended.
@@ -168,13 +162,6 @@ pub fn halo_run_for(runs: &[Run], window: &str, workspace: &str, now: u64) -> Op
     })
 }
 
-/// Whether closing this window would abandon work it still owes.
-pub fn has_live_work_in(runs: &[Run], window: &str, workspace: &str) -> bool {
-    runs.iter().any(|run| {
-        run.attached(window, workspace) && matches!(run.state, RunState::Running | RunState::Queued)
-    })
-}
-
 /// When the next done flash on a window runs out; nothing else announces it.
 pub fn next_expiry(runs: &[Run], now: u64) -> Option<u64> {
     runs.iter()
@@ -223,11 +210,6 @@ pub fn halo_run(surface: &CosmicSurface) -> Option<HaloRun> {
     halo_run_for(&feed(), &window, &surface_workspace(surface), now_ms())
 }
 
-pub fn has_live_work(surface: &CosmicSurface) -> bool {
-    mapped_toplevel_identifier(surface)
-        .is_some_and(|window| has_live_work_in(&feed(), &window, &surface_workspace(surface)))
-}
-
 /// Take a new snapshot from the feed and redraw every Halo with it.
 pub fn apply(state: &mut State, runs: Vec<Run>) {
     *FEED.write().unwrap() = Some(Arc::from(runs));
@@ -255,71 +237,6 @@ fn schedule_expiry(state: &mut State) {
     *EXPIRY.lock().unwrap() = token.ok();
 }
 
-/// Close a window, or park it while a run it asked for is running or queued:
-/// closing a window is a statement about the screen, not about the work.
-fn close_or_park(state: &mut State, surface: &CosmicSurface) -> bool {
-    if has_live_work(surface) {
-        let mut shell = state.common.shell.write();
-        shell.minimize_request(surface);
-        // A fullscreen window parks from its own desktop, which goes home.
-        shell.settle_fullscreen_desktops(&mut state.common.workspace_state.update());
-        true
-    } else {
-        surface.close();
-        false
-    }
-}
-
-pub fn close_window(state: &mut State, surface: &CosmicSurface) {
-    if close_or_park(state, surface) {
-        let parked = fl!("halo-closed-parked", parked = 1);
-        state
-            .common
-            .dbus_state
-            .system_toast(plain(parked), Tone::Ai);
-    }
-}
-
-/// Close several windows of one app, with one receipt for all of them.
-pub fn close_windows(state: &mut State, surfaces: &[CosmicSurface]) {
-    if surfaces.is_empty() {
-        return;
-    }
-    let (mut closed, mut parked) = (0, 0);
-    for surface in surfaces {
-        if close_or_park(state, surface) {
-            parked += 1;
-        } else {
-            closed += 1;
-        }
-    }
-    let summary = match (closed, parked) {
-        (0, parked) => fl!("halo-closed-parked", parked = parked),
-        (closed, 0) => fl!("halo-closed", closed = closed),
-        (closed, parked) => fl!("halo-closed-some-parked", closed = closed, parked = parked),
-    };
-    let tone = if parked > 0 { Tone::Ai } else { Tone::Neutral };
-    state.common.dbus_state.system_toast(plain(summary), tone);
-}
-
-/// The keyboard's Close: the focused window, parked instead when it owes work.
-pub fn close_focused(state: &mut State, target: &KeyboardFocusTarget) {
-    let surface = {
-        let shell = state.common.shell.read();
-        match target {
-            KeyboardFocusTarget::Fullscreen(surface) => Some(surface.clone()),
-            KeyboardFocusTarget::Group(_) => None,
-            target => shell
-                .focused_element(target)
-                .map(|mapped| mapped.active_window()),
-        }
-    };
-    match surface.filter(|surface| !is_surface_embedded(surface) && has_live_work(surface)) {
-        Some(surface) => close_window(state, &surface),
-        None => state.common.shell.read().close_focused(target),
-    }
-}
-
 /// The prototype's receipt for a press on the chip: neutral for queued work,
 /// which nothing is being spent on yet.
 pub fn chip_toast(state: &mut State, surface: &CosmicSurface) {
@@ -331,12 +248,6 @@ pub fn chip_toast(state: &mut State, surface: &CosmicSurface) {
         };
         state.common.dbus_state.system_toast(run.toast(), tone);
     }
-}
-
-/// Fluent's bidi isolate marks around a number surface as tofu in the toast's
-/// Latin-only fonts.
-fn plain(text: String) -> String {
-    text.replace(['\u{2068}', '\u{2069}'], "")
 }
 
 #[cfg(test)]

@@ -103,7 +103,7 @@ pub(super) fn perform_action(
                 action.launch();
             }
         }
-        Message::Close => super::runs::close_window(state, surface),
+        Message::Close => surface.close(),
         Message::Minimize => {
             let mut shell = state.common.shell.write();
             shell.minimize_request(surface);
@@ -221,7 +221,7 @@ fn run_command(
         let name = app
             .and_then(|app| app.name.clone())
             .unwrap_or_else(|| surface.app_id());
-        notify(state, &name, fl!("halo-one-window", app = name.as_str()));
+        toast(state, fl!("halo-one-window", app = name.as_str()));
         return;
     }
     if let Some(message) = commands::message_for(id) {
@@ -241,7 +241,7 @@ fn run_command(
             .unwrap_or_else(|| surface.app_id());
         match id {
             "settings" => open_settings(state),
-            "info" => notify(state, &name, fl!("halo-info-toast", app = name.as_str())),
+            "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
             _ => {}
         }
     }
@@ -261,19 +261,11 @@ fn open_settings(state: &mut State) {
     }
 }
 
-/// A system toast about the window's app.
-fn notify(state: &State, app: &str, summary: String) {
+fn toast(state: &State, message: String) {
     state
         .common
         .dbus_state
-        .notify(crate::dbus::notifications::Notification {
-            app_name: app.to_owned(),
-            app_icon: String::new(),
-            summary,
-            body: String::new(),
-            expire_timeout: 5000,
-            transient: true,
-        });
+        .system_toast(message, crate::dbus::notifications::Tone::Neutral);
 }
 
 /// The design's compact age for a recent item: now, 5m, 3h, 2d, 4mo, 1y.
@@ -580,9 +572,23 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
             };
             // Snapshot before closing, outside the shell lock. Normal close
             // requests allow applications to ask about unsaved work.
-            super::runs::close_windows(state, &windows);
+            for window in &windows {
+                window.close();
+            }
+            if let Some(receipt) = closed_receipt(windows.len()) {
+                state
+                    .common
+                    .dbus_state
+                    .system_toast(receipt, crate::dbus::notifications::Tone::Neutral);
+            }
         });
     }))
+}
+
+/// The prototype's `closeWindows` receipt. Fluent's bidi isolate marks around
+/// the count show as tofu in the toast's Latin-only fonts.
+fn closed_receipt(closed: usize) -> Option<String> {
+    (closed > 0).then(|| fl!("halo-closed", closed = closed).replace(['\u{2068}', '\u{2069}'], ""))
 }
 
 /// The prototype's app menu offers Close all windows for every app with a
@@ -984,6 +990,13 @@ mod tests {
             "a lone window is offered it too"
         );
         assert!(!offers_close_all::<u32>(&[], &1));
+    }
+
+    #[test]
+    fn close_all_reports_what_it_closed() {
+        assert_eq!(closed_receipt(1).as_deref(), Some("Closed 1 window"));
+        assert_eq!(closed_receipt(3).as_deref(), Some("Closed 3 windows"));
+        assert_eq!(closed_receipt(0), None);
     }
 
     #[test]

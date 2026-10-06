@@ -8,7 +8,7 @@
 use tracing::warn;
 
 use crate::{
-    dbus::notifications::Notification,
+    dbus::notifications::{Notification, Tone},
     fl,
     shell::element::{CosmicSurface, surface::Recording},
     state::State,
@@ -90,7 +90,12 @@ fn start(state: &mut State, surface: &CosmicSurface) {
                 // closed meanwhile is Idle and its recording ends on its own.
                 if surface.recording() == Recording::Starting {
                     surface.set_recording(Recording::Active { id, path });
-                    notify(state, fl!("recording-started"), String::new());
+                    let notification = notification(fl!("recording-started"), String::new());
+                    state.common.dbus_state.system_toast_or(
+                        fl!("recording-started"),
+                        Tone::Destructive,
+                        notification,
+                    );
                 }
                 refresh_halo(state, &surface);
             }
@@ -123,7 +128,12 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
 fn finished(state: &mut State, surface: &CosmicSurface, path: &str) {
     surface.set_recording(Recording::Idle);
     refresh_halo(state, surface);
-    notify(state, fl!("recording-stopped"), path.to_owned());
+    let notification = notification(fl!("recording-stopped"), path.to_owned());
+    state.common.dbus_state.system_toast_or(
+        fl!("recording-stopped-toast"),
+        Tone::Neutral,
+        notification,
+    );
 }
 
 /// Whether `surface` is recording as `id` right now.
@@ -154,12 +164,16 @@ fn refresh_halo(state: &State, surface: &CosmicSurface) {
 }
 
 fn notify(state: &State, summary: String, body: String) {
-    state.common.dbus_state.notify(Notification {
+    state.common.dbus_state.notify(notification(summary, body));
+}
+
+fn notification(summary: String, body: String) -> Notification {
+    Notification {
         app_name: fl!("recording-app-name"),
         app_icon: NOTIFICATION_ICON.to_owned(),
         summary,
         body,
         expire_timeout: NOTIFICATION_TIMEOUT_MS,
         transient: true,
-    });
+    }
 }

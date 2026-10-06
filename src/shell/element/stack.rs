@@ -763,6 +763,7 @@ impl CosmicStack {
             }
 
             let activated = p.activated.load(Ordering::Acquire);
+            let tab_height = p.tab_height();
             let theme = p.theme.lock().unwrap();
             let appearance = p.appearance_conf.lock().unwrap();
             let tiled = p.tiled.load(Ordering::Acquire);
@@ -786,7 +787,7 @@ impl CosmicStack {
             };
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
-            geo.size.h += p.tab_height() as f64;
+            geo.size.h += tab_height as f64;
             if let Some(max_size) = max_size {
                 geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
             }
@@ -873,13 +874,15 @@ impl CosmicStack {
         self.0.with_program(|p| {
             let windows = p.windows.lock().unwrap();
             let active = p.active.load(Ordering::SeqCst);
+            // Before the theme lock below, which `tab_height` takes too.
+            let tab_height = p.tab_height();
             let theme = p.theme.lock().unwrap();
             let maximized = windows[active].is_maximized(false);
             let is_embedded = is_surface_embedded(&windows[active]);
 
             let mut geo = SpaceElement::geometry(&windows[active]).to_f64();
             geo.loc += location.to_f64().to_logical(scale);
-            geo.size.h += p.tab_height() as f64;
+            geo.size.h += tab_height as f64;
             if let Some(max_size) = max_size {
                 geo.size = geo.size.clamp(Size::default(), max_size.to_f64());
             }

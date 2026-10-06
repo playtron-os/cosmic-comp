@@ -576,6 +576,25 @@ pub enum GameModeCommand {
     },
     /// The overlay up is an on-screen keyboard typing into the game.
     SetOverlayKeyboard(bool),
+    /// Write the window game mode shows into the client's file as a PNG.
+    Screenshot(ScreenshotRequest),
+}
+
+/// The file a screenshot goes into and where its outcome is answered. Shared
+/// so the command stays `Clone`: one handler takes it, and a request refused
+/// unhandled drops it, which the caller hears as a refusal.
+#[derive(Debug, Clone)]
+pub struct ScreenshotRequest(Arc<std::sync::Mutex<Option<ScreenshotParts>>>);
+
+type ScreenshotParts = (
+    std::fs::File,
+    futures_channel::oneshot::Sender<Result<(), String>>,
+);
+
+impl ScreenshotRequest {
+    fn take(&self) -> Option<ScreenshotParts> {
+        self.0.lock().unwrap().take()
+    }
 }
 
 /// Compositor-side handle: mutate the snapshot and emit signals. Stored on
@@ -878,6 +897,30 @@ impl GameModeInterface {
         let sender = header.sender().map(|name| name.to_string());
         self.io
             .send_from(GameModeCommand::SetOverlayKeyboard(on), sender);
+    }
+
+    /// Write the window game mode shows, the game or the launcher, into `file`
+    /// as a PNG at the output's scale. Only that window: nothing an overlay
+    /// draws over it is in the picture, as gamescope's base-plane capture.
+    /// A file, not a path: the client may sit in a sandbox with its own `$HOME`.
+    async fn screenshot(
+        &self,
+        file: zbus::zvariant::OwnedFd,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header.sender().map(|name| name.to_string());
+        let file = std::fs::File::from(std::os::fd::OwnedFd::from(file));
+        let (tx, rx) = futures_channel::oneshot::channel();
+        let request = ScreenshotRequest(Arc::new(std::sync::Mutex::new(Some((file, tx)))));
+        self.io
+            .send_from(GameModeCommand::Screenshot(request), sender);
+        match rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(zbus::fdo::Error::Failed(error)),
+            Err(_) => Err(zbus::fdo::Error::AccessDenied(
+                "the screenshot was refused".into(),
+            )),
+        }
     }
 
     // ── state ──
@@ -1193,6 +1236,35 @@ impl State {
                     self.grab_overlay_input();
                 }
                 debug!(target: GAMING_TARGET, on, "cmd: set overlay keyboard");
+            }
+            GameModeCommand::Screenshot(request) => {
+                let Some((file, reply)) = request.take() else {
+                    return;
+                };
+                let (surface, scale) = {
+                    let shell = self.common.shell.read();
+                    let scale = shell
+                        .game_mode
+                        .output
+                        .as_ref()
+                        .map_or(1.0, |output| output.current_scale().fractional_scale());
+                    (shell.game_mode.game_surface.clone(), scale)
+                };
+                debug!(target: GAMING_TARGET, "cmd: screenshot");
+                match surface {
+                    Some(surface) => crate::utils::screenshot::write_window(
+                        self,
+                        &surface,
+                        scale,
+                        file,
+                        move |result| {
+                            let _ = reply.send(result);
+                        },
+                    ),
+                    None => {
+                        let _ = reply.send(Err("game mode shows no window".into()));
+                    }
+                }
             }
         }
     }

@@ -182,3 +182,128 @@ fn the_only_desktop_left_folds_instead_of_switching_to_nothing() {
         FullscreenDesktopStep::Fold(0)
     );
 }
+
+#[test]
+fn fullscreen_keeps_its_place_unless_the_session_runs_workspaces() {
+    assert!(!fullscreen_moves_to_own_desktop(false, false));
+    assert!(fullscreen_moves_to_own_desktop(true, false));
+}
+
+#[test]
+fn a_game_keeps_fullscreen_in_place() {
+    assert!(!fullscreen_moves_to_own_desktop(true, true));
+}
+
+#[test]
+fn opening_fullscreen_keeps_an_empty_desktop_and_leaves_a_busy_one() {
+    assert!(!opens_on_own_desktop(true, false));
+    assert!(opens_on_own_desktop(true, true));
+    assert!(!opens_on_own_desktop(false, true));
+}
+
+fn output(name: &str) -> Output {
+    let output = Output::new(
+        name.into(),
+        PhysicalProperties {
+            size: (300, 200).into(),
+            subpixel: Subpixel::Unknown,
+            make: "test".into(),
+            model: "test".into(),
+            serial_number: String::new(),
+        },
+    );
+    output.change_current_state(
+        Some(Mode {
+            size: (1280, 800).into(),
+            refresh: 60_000,
+        }),
+        None,
+        None,
+        None,
+    );
+    output
+}
+
+fn two_outputs(
+    count: usize,
+    test: impl FnOnce(&mut IndexMap<Output, WorkspaceSet>, &mut WorkspaceState<State>),
+) {
+    let display = Display::<State>::new().unwrap();
+    let mut state = WorkspaceState::<State>::new(&display.handle(), |_| true);
+    let mut sets = IndexMap::new();
+    for name in ["eDP-test", "HDMI-test"] {
+        let output = output(name);
+        let mut set = WorkspaceSet::new(
+            &mut state.update(),
+            &output,
+            false,
+            &crate::comp_theme::CompTheme::default(),
+            AppearanceConfig::default(),
+        );
+        for _ in 0..count {
+            set.add_empty_workspace(&mut state.update());
+        }
+        sets.insert(output, set);
+    }
+    test(&mut sets, &mut state);
+}
+
+/// Desktops that span outputs move together, so a fullscreen desktop is one
+/// on every output, at the same place.
+#[test]
+fn a_fullscreen_desktop_spans_every_output_when_desktops_do() {
+    two_outputs(2, |sets, state| {
+        let first = sets.get_index(0).unwrap().0.clone();
+        let desktop = insert_desktop(
+            sets,
+            WorkspaceMode::Global,
+            &first,
+            1,
+            "Rooftop fight",
+            &mut state.update(),
+        )
+        .unwrap();
+        assert_eq!(sets[&first].workspaces[1].handle, desktop);
+        for set in sets.values() {
+            assert_eq!(set.workspaces.len(), 3);
+            assert_eq!(set.workspaces[1].name.as_deref(), Some("Rooftop fight"));
+        }
+    });
+}
+
+#[test]
+fn per_output_desktops_mint_it_on_its_own_output_only() {
+    two_outputs(2, |sets, state| {
+        let first = sets.get_index(0).unwrap().0.clone();
+        insert_desktop(
+            sets,
+            WorkspaceMode::OutputBound,
+            &first,
+            1,
+            "Notes",
+            &mut state.update(),
+        )
+        .unwrap();
+        assert_eq!(sets[0].workspaces.len(), 3);
+        assert_eq!(sets[1].workspaces.len(), 2);
+    });
+}
+
+#[test]
+fn folding_goes_home_or_to_the_fallback() {
+    two_outputs(3, |sets, state| {
+        let set = &mut sets[0];
+        let home = set.workspaces[0].handle;
+        let folded = set.workspaces[2].handle;
+        assert_eq!(
+            fold_desktop(set, 2, Some(&home), 1, &mut state.update(), &[]),
+            Some(0)
+        );
+        assert!(!set.workspaces.iter().any(|w| w.handle == folded));
+        assert_eq!(
+            fold_desktop(set, 1, None, 5, &mut state.update(), &[]),
+            Some(0)
+        );
+        assert_eq!(set.workspaces.len(), 1);
+    });
+}

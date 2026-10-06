@@ -28,23 +28,22 @@ use smithay::{
     },
     desktop::utils::bbox_from_surface_tree,
     input::Seat,
-    utils::{Buffer, Scale, Size, Transform},
+    utils::{Buffer, Physical, Rectangle, Scale, Size, Transform},
     wayland::seat::WaylandFocus,
 };
 use tracing::warn;
 
 use crate::{
     backend::render::{RendererRef, element::AsGlowRenderer},
-    dbus::notifications::Notification,
+    dbus::notifications::{Notification, Tone},
     fl,
     shell::element::CosmicSurface,
     state::{State, advertised_node_for_surface},
     utils::captures::{self, CaptureKind},
 };
 
-/// Icon name shared with `cosmic-screenshot`, so both toasts look the same.
+/// Icon name shared with `cosmic-screenshot`, so both notifications look the same.
 const NOTIFICATION_ICON: &str = "com.system76.CosmicScreenshot";
-/// Toast lifetime in milliseconds, as `cosmic-screenshot` sends it.
 const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 const PNG_MIME: &str = "image/png";
 /// Captures of one window within the same second before giving up on a name.
@@ -63,11 +62,10 @@ struct Encoded {
     saved: Option<PathBuf>,
 }
 
-pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
-    let Some(wl_surface) = surface.wl_surface() else {
-        return;
-    };
-    let capture = state
+/// Render `surface` alone, at `scale`, into pixels.
+fn capture(state: &mut State, surface: &CosmicSurface, scale: f64) -> anyhow::Result<Capture> {
+    let wl_surface = surface.wl_surface().context("the window has no surface")?;
+    state
         .backend
         .offscreen_renderer(|kms| {
             advertised_node_for_surface(&wl_surface, &state.common.display_handle)
@@ -75,9 +73,38 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
         })
         .with_context(|| "Failed to get renderer for screenshot")
         .and_then(|renderer| match renderer {
-            RendererRef::Glow(renderer) => capture_window(renderer, surface),
-            RendererRef::GlMulti(mut renderer) => capture_window(&mut renderer, surface),
+            RendererRef::Glow(renderer) => capture_window(renderer, surface, scale),
+            RendererRef::GlMulti(mut renderer) => capture_window(&mut renderer, surface, scale),
+        })
+}
+
+/// Write `surface` alone, nothing drawn over it, into `out` as a PNG at `scale`,
+/// for a client that announces it itself: no clipboard, no toast, no flash.
+/// `done` runs on the encoding thread.
+pub fn write_window(
+    state: &mut State,
+    surface: &CosmicSurface,
+    scale: f64,
+    mut out: std::fs::File,
+    done: impl FnOnce(Result<(), String>) + Send + 'static,
+) {
+    let capture = match capture(state, surface, scale) {
+        Ok(capture) => capture,
+        Err(err) => return done(Err(format!("{err:#}"))),
+    };
+    let spawned = std::thread::Builder::new()
+        .name("screenshot-encode".into())
+        .spawn(move || {
+            let written = encode(&capture).and_then(|png| Ok(out.write_all(&png)?));
+            done(written.map_err(|err| format!("{err:#}")));
         });
+    if let Err(err) = spawned {
+        warn!(?err, "Failed to spawn screenshot encoder");
+    }
+}
+
+pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
+    let capture = capture(state, surface, 1.0);
     let mut capture = match capture {
         Ok(capture) => capture,
         Err(err) => {
@@ -138,32 +165,44 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
 /// Back on the compositor thread: offer the PNG on the clipboard and toast.
 fn deliver(state: &mut State, seat: &Seat<State>, encoded: Encoded) {
     crate::clipboard::set_compositor_clipboard(state, seat, PNG_MIME.to_owned(), encoded.png);
-    let (summary, body) = match &encoded.saved {
-        Some(_) => (fl!("screenshot-saved"), String::new()),
-        None => (fl!("screenshot-saved-to-clipboard"), String::new()),
+    let message = match &encoded.saved {
+        Some(_) => fl!("screenshot-saved"),
+        None => fl!("screenshot-saved-to-clipboard"),
     };
-    state.common.dbus_state.notify(Notification {
+    let notification = Notification {
         app_name: fl!("screenshot-app-name"),
         app_icon: NOTIFICATION_ICON.to_owned(),
-        summary,
-        body,
+        summary: message.clone(),
+        body: String::new(),
         expire_timeout: NOTIFICATION_TIMEOUT_MS,
         transient: true,
-    });
+    };
+    state
+        .common
+        .dbus_state
+        .system_toast_or(message, Tone::Neutral, notification);
 }
 
-fn capture_window<R>(renderer: &mut R, window: &CosmicSurface) -> anyhow::Result<Capture>
+fn capture_window<R>(
+    renderer: &mut R,
+    window: &CosmicSurface,
+    scale: f64,
+) -> anyhow::Result<Capture>
 where
     R: Renderer + ImportAll + Offscreen<GlesRenderbuffer> + ExportMem + AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
     R::Error: Send + Sync + 'static,
 {
-    let bbox = bbox_from_surface_tree(&window.wl_surface().unwrap(), (0, 0));
+    // Down, not round: a fullscreen window at a fractional scale is a part of
+    // a logical pixel wider than the output, and rounding adds a column.
+    let bbox: Rectangle<i32, Physical> =
+        bbox_from_surface_tree(&window.wl_surface().unwrap(), (0, 0))
+            .to_physical_precise_down(scale);
     let mut elements = Vec::new();
     window.push_render_elements(
         renderer,
         (-bbox.loc.x, -bbox.loc.y).into(),
-        Scale::from(1.0),
+        Scale::from(scale),
         1.0,
         None,
         None,
@@ -176,22 +215,17 @@ where
 
     // TODO: 10-bit
     let format = Fourcc::Abgr8888;
-    let size = bbox.size.to_buffer(1, Transform::Normal);
+    let size = bbox.size.to_logical(1).to_buffer(1, Transform::Normal);
     let mut render_buffer = Offscreen::<GlesRenderbuffer>::create_buffer(renderer, format, size)?;
     let mut fb = renderer.bind(&mut render_buffer)?;
-    let mut output_damage_tracker =
-        OutputDamageTracker::new(bbox.size.to_physical(1), 1.0, Transform::Normal);
+    let mut output_damage_tracker = OutputDamageTracker::new(bbox.size, scale, Transform::Normal);
     output_damage_tracker
         .render_output(renderer, &mut fb, 0, &elements, [0.0, 0.0, 0.0, 0.0])
         .map_err(|err| match err {
             smithay::backend::renderer::damage::Error::Rendering(err) => err,
             smithay::backend::renderer::damage::Error::OutputNoMode(_) => unreachable!(),
         })?;
-    let mapping = renderer.copy_framebuffer(
-        &fb,
-        bbox.to_buffer(1, Transform::Normal, &bbox.size),
-        format,
-    )?;
+    let mapping = renderer.copy_framebuffer(&fb, Rectangle::from_size(size), format)?;
     let pixels = renderer.map_texture(&mapping)?.to_vec();
     Ok(Capture {
         size,
