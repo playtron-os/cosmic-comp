@@ -172,13 +172,12 @@ fn invoke_own(surface: &CosmicSurface, id: &str, generation: Option<u32>) -> boo
     let Some(catalog) = app_commands::committed(&wl) else {
         return false;
     };
-    let own = id.strip_prefix(commands::APP_PREFIX);
-    if own.is_none() && !catalog.handles.contains_key(id) {
+    let Some(command) = commands::app_command(&catalog, id) else {
         return false;
-    }
+    };
     app_commands::invoke(
         &wl,
-        &Selection::Command(own.unwrap_or(id).to_owned()),
+        &Selection::Command(command.to_owned()),
         generation.unwrap_or(catalog.generation),
         smithay::utils::SERIAL_COUNTER.next_serial(),
     );
@@ -242,11 +241,7 @@ fn run_command(
         match id {
             "settings" => open_settings(state),
             "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
-            _ => {
-                if let Some(answer) = commands::shell_answer(id) {
-                    toast(state, answer);
-                }
-            }
+            _ => {}
         }
     }
 }

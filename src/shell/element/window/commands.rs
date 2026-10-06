@@ -147,14 +147,16 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         .stateful(facts.recording),
     ];
 
-    // Every window lists the whole Edit set: the verbs it declares go to it, the shell answers the rest.
+    // Edit is the window's own: only the verbs it says it answers.
     for (id, label, keys, icon) in edit_verbs() {
-        commands.push(
-            HaloCommand::new(id, label, HaloCommandGroup::Edit)
-                .icon(icon)
-                .shortcut(keys)
-                .enabled(facts.handles(id).unwrap_or(true)),
-        );
+        if let Some(enabled) = facts.handles(id) {
+            commands.push(
+                HaloCommand::new(id, label, HaloCommandGroup::Edit)
+                    .icon(icon)
+                    .shortcut(keys)
+                    .enabled(enabled),
+            );
+        }
     }
 
     let settings = HaloCommand::new("settings", fl!("halo-settings"), HaloCommandGroup::App)
@@ -172,12 +174,14 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     } else {
         neww
     });
-    commands.push(
-        HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
-            .icon(icons::SEARCH)
-            .shortcut("Ctrl+F")
-            .enabled(facts.handles("find").unwrap_or(true)),
-    );
+    if let Some(enabled) = facts.handles("find") {
+        commands.push(
+            HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
+                .icon(icons::SEARCH)
+                .shortcut("Ctrl+F")
+                .enabled(enabled),
+        );
+    }
     commands.push(
         HaloCommand::new("info", fl!("halo-info"), HaloCommandGroup::App)
             .icon(icons::INFO)
@@ -269,16 +273,13 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     commands
 }
 
-/// What the shell says for a standard verb the window does not answer.
-pub fn shell_answer(id: &str) -> Option<String> {
-    Some(match id {
-        "markv" => fl!("halo-version-marked"),
-        "find" => fl!("halo-find-toast"),
-        _ => {
-            let (_, verb, ..) = edit_verbs().into_iter().find(|(verb, ..)| *verb == id)?;
-            fl!("halo-system-verb", verb = verb)
-        }
-    })
+/// The command the window is sent for `id`: one of its own, or a standard verb it
+/// declares. A verb it does not declare is never sent, as a command or as keys.
+pub fn app_command<'a>(catalog: &Catalog, id: &'a str) -> Option<&'a str> {
+    match id.strip_prefix(APP_PREFIX) {
+        Some(own) => Some(own),
+        None => catalog.handles.contains_key(id).then_some(id),
+    }
 }
 
 /// The commands an app put forward for its `⌄` menu, in its order, capped.
@@ -563,47 +564,46 @@ mod tests {
         catalog
     }
 
+    /// An undeclared verb is not listed, so nothing can pick it; a declared one goes to the app.
     #[test]
-    fn every_window_lists_the_whole_edit_set_and_find() {
-        let ids = ["undo", "redo", "cut", "copy", "paste", "selall", "markv"];
-        let silent = commands(&facts(None));
-        let edit: Vec<_> = silent
-            .iter()
-            .filter(|c| c.group == HaloCommandGroup::Edit)
-            .collect();
-        assert_eq!(edit.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ids);
-        assert!(edit.iter().all(|c| c.enabled && c.shortcut.is_some()));
-        assert!(silent.iter().any(|c| c.id == "find" && c.enabled));
-
-        // A declared verb follows what the window says it can do now.
+    fn edit_and_find_go_only_to_a_window_that_declares_them() {
         let catalog = catalog();
         let mut facts = facts(None);
         facts.catalog = Some(&catalog);
         let listed = commands(&facts);
-        let copy = listed.iter().find(|c| c.id == "copy").unwrap();
-        assert!(!copy.enabled);
-        assert_eq!(copy.shortcut.as_deref(), Some("Ctrl+C"));
-        assert!(listed.iter().find(|c| c.id == "paste").unwrap().enabled);
-        assert!(listed.iter().any(|c| c.id == "neww" && c.enabled));
+        for id in ["undo", "redo", "cut", "paste", "selall", "markv", "find"] {
+            assert!(listed.iter().all(|c| c.id != id), "{id} is listed");
+            assert_eq!(app_command(&catalog, id), None, "{id} is sent");
+        }
+        assert!(message_for("copy").is_none());
+        assert_eq!(app_command(&catalog, "copy"), Some("copy"));
+        assert_eq!(
+            app_command(&catalog, &format!("{APP_PREFIX}slate.c0")),
+            Some("slate.c0")
+        );
     }
 
+    /// Edit lists only the verbs the window says it answers, as it can now.
     #[test]
-    fn the_shell_answers_an_undeclared_verb_as_the_design_does() {
-        let answer = |id| shell_answer(id).map(plain);
-        assert_eq!(
-            answer("copy").as_deref(),
-            Some("Copy — system verb, guaranteed in every text and canvas surface")
+    fn a_window_s_edit_group_is_the_verbs_it_handles() {
+        let catalog = catalog();
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let listed = commands(&facts);
+        let edit: Vec<_> = listed
+            .iter()
+            .filter(|c| c.group == HaloCommandGroup::Edit)
+            .collect();
+        assert_eq!(edit.len(), 1);
+        assert_eq!(edit[0].id, "copy");
+        assert!(!edit[0].enabled);
+        assert_eq!(edit[0].shortcut.as_deref(), Some("Ctrl+C"));
+        assert!(listed.iter().any(|c| c.id == "neww" && c.enabled));
+        assert!(
+            commands(&self::facts(None))
+                .iter()
+                .all(|c| c.group != HaloCommandGroup::Edit)
         );
-        assert_eq!(
-            answer("selall").as_deref(),
-            Some("Select all — system verb, guaranteed in every text and canvas surface")
-        );
-        assert_eq!(answer("markv").as_deref(), Some("Version marked"));
-        assert_eq!(
-            answer("find").as_deref(),
-            Some("Find in window — standard command, every app")
-        );
-        assert_eq!(answer("close"), None);
     }
 
     /// The app's own commands make the last block, apart from the shell's ids.
