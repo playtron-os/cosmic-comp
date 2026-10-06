@@ -720,6 +720,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
         } else {
             for (icon, message, label) in [
+                (icons::MINUS, self.on_minimize.clone(), fl!("halo-minimize")),
                 (
                     icons::MAXIMIZE_2,
                     self.on_maximize.clone(),
@@ -809,6 +810,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if tier <= 2 {
             controls(self.on_right_click.is_some());
             controls(self.on_new_window.is_some());
+            controls(self.on_minimize.is_some());
             controls(self.on_maximize.is_some());
             controls(self.on_fullscreen.is_some());
         } else {

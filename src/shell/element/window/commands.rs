@@ -199,6 +199,14 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     }
 
     commands.push(
+        HaloCommand::new(
+            "minimize",
+            fl!("halo-minimize-window"),
+            HaloCommandGroup::Window,
+        )
+        .icon(icons::MINUS),
+    );
+    commands.push(
         HaloCommand::new("maximize", fl!("halo-fill"), HaloCommandGroup::Window)
             .icon(icons::MAXIMIZE_2)
             .enabled(facts.resizable || facts.maximized || facts.fullscreen),
@@ -282,6 +290,7 @@ pub fn message_for(id: &str) -> Option<Message> {
         "shot" => Message::Screenshot,
         "record" => Message::Record,
         "neww" => Message::NewWindow,
+        "minimize" => Message::Minimize,
         "maximize" => Message::Maximize,
         "fullscreen" => Message::Fullscreen,
         "close" => Message::Close,
@@ -452,14 +461,16 @@ mod tests {
     }
 
     #[test]
-    fn the_window_group_has_no_park() {
-        let ids: Vec<_> = commands(&facts(None))
+    fn the_window_group_says_minimize_not_park() {
+        let window: Vec<_> = commands(&facts(None))
             .into_iter()
             .filter(|c| c.group == HaloCommandGroup::Window)
-            .map(|c| c.id)
+            .map(|c| (c.id, c.label))
             .collect();
-        assert_eq!(ids, ["maximize", "fullscreen", "close"]);
-        assert!(message_for("minimize").is_none());
+        assert_eq!(window[0], ("minimize".into(), "Minimize window".into()));
+        assert_eq!(window.len(), 4);
+        assert!(matches!(message_for("minimize"), Some(Message::Minimize)));
+        assert_eq!(fl!("halo-minimize"), "Minimize");
     }
 
     #[test]
@@ -468,7 +479,7 @@ mod tests {
         assert_eq!(toggle_pin("pins-test-a", "shot"), PinOutcome::Unpinned);
         assert_eq!(pins("pins-test-a"), ["record"]);
         assert_eq!(pins("pins-test-b"), DEFAULT_PINS);
-        assert_eq!(toggle_pin("pins-test-a", "info"), PinOutcome::Pinned);
+        assert_eq!(toggle_pin("pins-test-a", "minimize"), PinOutcome::Pinned);
         assert_eq!(toggle_pin("pins-test-a", "maximize"), PinOutcome::Pinned);
         assert_eq!(pins("pins-test-a").len(), TRAY_CAP);
         assert_eq!(toggle_pin("pins-test-a", "fullscreen"), PinOutcome::Full);

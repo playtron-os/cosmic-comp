@@ -444,8 +444,8 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
     let glyphs = glyph_tints(&mut renderer);
     assert_eq!(
         glyphs.len(),
-        8,
-        "app mark, screenshot, record, menu, new, fill, fullscreen, close"
+        9,
+        "app mark, screenshot, record, menu, new, minimize, fill, fullscreen, close"
     );
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
@@ -496,7 +496,7 @@ fn halo_record_glyph_turns_destructive_while_recording() {
             header.tray(capture_tray(true))
         });
     let glyphs = glyph_tints(&mut renderer);
-    assert_eq!(glyphs.len(), 8, "the dot is a quad, not a ninth glyph");
+    assert_eq!(glyphs.len(), 9, "the dot is a quad, not a tenth glyph");
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
             color,
@@ -776,13 +776,18 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
     for (width, glyphs, divider_count, case) in [
         (
             1200.0_f32,
-            8,
+            9,
             2,
-            "tier 1: mark, 2 pins, ⌄, +, fill, fullscreen, close",
+            "tier 1: mark, 2 pins, ⌄, +, minimize, fill, fullscreen, close",
         ),
-        (680.0, 8, 2, "tier 1 at its threshold"),
-        (600.0, 6, 1, "tier 2: mark, ⌄, +, fill, fullscreen, close"),
-        (480.0, 6, 1, "tier 2 at its threshold"),
+        (680.0, 9, 2, "tier 1 at its threshold"),
+        (
+            600.0,
+            7,
+            1,
+            "tier 2: mark, ⌄, +, minimize, fill, fullscreen, close",
+        ),
+        (480.0, 7, 1, "tier 2 at its threshold"),
         (400.0, 3, 1, "tier 3: mark, ⋯, close"),
         (280.0, 3, 1, "tier 3 at its threshold"),
         (240.0, 3, 0, "tier 4: mark, ⋯, close, no dividers"),
@@ -1003,7 +1008,7 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
     });
     let roomy = pill(&mut renderer, &theme, 2400.0);
     let expected: Vec<Rectangle> = control_icons(&mut renderer).split_off(1);
-    assert_eq!(expected.len(), 7);
+    assert_eq!(expected.len(), 8);
     let expected_dividers = dividers(&mut renderer, &theme);
     assert_eq!(expected_dividers.len(), 2);
     for width in [2400.0_f32, 900.0, 700.0] {
@@ -1036,10 +1041,10 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
     let theme = theme();
     let width = 700.0;
     for (chevron, new_window, expected) in [
-        (false, false, 6),
-        (true, false, 7),
-        (false, true, 7),
-        (true, true, 8),
+        (false, false, 7),
+        (true, false, 8),
+        (false, true, 8),
+        (true, true, 9),
     ] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
             let header = header
@@ -1130,7 +1135,7 @@ fn an_absent_or_repeated_app_name_shows_the_title_alone() {
 #[test]
 fn an_empty_header_still_draws_its_controls() {
     let theme = theme();
-    for (width, glyphs) in [(900.0_f32, 8), (400.0, 3)] {
+    for (width, glyphs) in [(900.0_f32, 9), (400.0, 3)] {
         let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
             everything(header)
                 .title("")
