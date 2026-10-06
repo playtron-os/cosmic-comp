@@ -571,3 +571,105 @@ fn the_palette_surface_refits_as_the_query_changes_its_rows() {
     element.refit();
     assert_eq!(element.iced.current_size(), full);
 }
+
+/// The design's fly-out keys, from `ContextMenu.tsx` and `use-shell-surface.ts`.
+#[test]
+fn the_keyboard_walks_into_and_out_of_the_open_recent_fly_out() {
+    // The fly-out is built with the loop handle, as on the compositor's own thread.
+    crate::utils::iced::mark_main_thread();
+    let event_loop = calloop::EventLoop::<State>::try_new().unwrap();
+    let mut seats = smithay::input::SeatState::<State>::new();
+    let seat = seats.new_seat("halo-fly-out-keys");
+    let output = Output::new(
+        "fly-out".into(),
+        smithay::output::PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: smithay::output::Subpixel::Unknown,
+            make: "Test".into(),
+            model: "Test".into(),
+            serial_number: String::new(),
+        },
+    );
+    seat.user_data()
+        .insert_if_missing_threadsafe(|| crate::shell::ActiveOutput(Mutex::new(output)));
+
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let recent = |label: &'static str| {
+        let opened = opened.clone();
+        Item::new(label, move |_| opened.lock().unwrap().push(label))
+    };
+    let mut menu = ContextMenu::new(vec![
+        Item::new("New window", |_| {}),
+        Item::Separator,
+        Item::new_submenu(
+            "Open Recent",
+            vec![recent("Meeting notes"), recent("Launch plan")],
+        ),
+    ]);
+    menu.halo = true;
+    let iced = IcedElement::new(menu, (400, 200), event_loop.handle(), CompTheme::default());
+    let elements = Arc::new(Mutex::new(vec![Element {
+        iced,
+        position: (100, 200).into(),
+        pointer_entered: false,
+        touch_entered: None,
+    }]));
+    seat.user_data()
+        .insert_if_missing_threadsafe(SeatMenuGrabState::default);
+    seat.user_data()
+        .get::<SeatMenuGrabState>()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .replace(MenuGrabState {
+            elements: elements.clone(),
+            screen_space_relative: None,
+            scale: Arc::new(Mutex::new(1.0)),
+        });
+
+    let key = |key| route_menu_key(&seat, key);
+    let rings = || {
+        elements
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|element| element.iced.with_program(ContextMenu::focus_ring))
+            .collect::<Vec<_>>()
+    };
+
+    key(MenuKey::First);
+    key(MenuKey::Step(true));
+    assert_eq!(rings(), [Some(2)], "↓ skips the divider onto Open Recent");
+    assert_eq!(key(MenuKey::Open), Some(false));
+    assert_eq!(
+        rings(),
+        [None, Some(0)],
+        "→ opens it, focus on its first row"
+    );
+    key(MenuKey::Step(true));
+    assert_eq!(rings(), [None, Some(1)]);
+    key(MenuKey::Step(true));
+    assert_eq!(rings(), [None, Some(0)], "↓ wraps inside the fly-out");
+    key(MenuKey::Last);
+    assert_eq!(rings(), [None, Some(1)]);
+    assert_eq!(key(MenuKey::Back), Some(false));
+    assert_eq!(rings(), [Some(2)], "← closes only the fly-out");
+    assert!(
+        !close_halo_flyout(&seat),
+        "with no fly-out, Escape closes the menu as before"
+    );
+
+    key(MenuKey::Press);
+    assert_eq!(rings(), [None, Some(0)], "Enter opens it too");
+    assert!(close_halo_flyout(&seat), "Escape closes the fly-out first");
+    assert_eq!(rings(), [Some(2)]);
+
+    key(MenuKey::Open);
+    key(MenuKey::Step(false));
+    assert_eq!(
+        key(MenuKey::Press),
+        Some(true),
+        "Enter on a recent chooses it, which closes the menu"
+    );
+    assert_eq!(*opened.lock().unwrap(), ["Launch plan"]);
+}

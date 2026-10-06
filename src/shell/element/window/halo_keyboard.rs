@@ -60,6 +60,20 @@ fn halo_key(sym: Keysym) -> Option<HaloKey> {
     }
 }
 
+/// The keys an open Halo menu and its fly-out take, as the design's do.
+fn menu_key(sym: Keysym) -> Option<MenuKey> {
+    match sym {
+        Keysym::Down | Keysym::Tab => Some(MenuKey::Step(true)),
+        Keysym::Up | Keysym::ISO_Left_Tab => Some(MenuKey::Step(false)),
+        Keysym::Home => Some(MenuKey::First),
+        Keysym::End => Some(MenuKey::Last),
+        Keysym::Right => Some(MenuKey::Open),
+        Keysym::Left => Some(MenuKey::Back),
+        Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(MenuKey::Press),
+        _ => None,
+    }
+}
+
 /// The control after (or before) `at`, wrapping; the first when focus is on none of them.
 fn step(controls: &[HaloControl], at: Option<HaloControl>, forward: bool) -> Option<HaloControl> {
     let count = controls.len();
@@ -300,20 +314,12 @@ impl KeyboardGrab<State> for HaloKeyboardGrab {
             .window
             .0
             .with_program(|p| p.menu_open.load(std::sync::atomic::Ordering::SeqCst));
-        if menu_open {
-            let menu_key = match sym {
-                Keysym::Down | Keysym::Tab => Some(MenuKey::Step(true)),
-                Keysym::Up | Keysym::ISO_Left_Tab => Some(MenuKey::Step(false)),
-                _ if key == Some(HaloKey::Press) => Some(MenuKey::Press),
-                _ => None,
-            };
-            if let Some(menu_key) = menu_key {
-                // A row the menu ran ends the visit, as a palette command does.
-                if crate::shell::grabs::halo_menu_key(&self.seat, menu_key, data) == Some(true) {
-                    handle.unset_grab(self, data, serial, false);
-                }
-                return;
+        if menu_open && let Some(menu_key) = menu_key(sym) {
+            // A row the menu ran ends the visit, as a palette command does.
+            if crate::shell::grabs::halo_menu_key(&self.seat, menu_key, data) == Some(true) {
+                handle.unset_grab(self, data, serial, false);
             }
+            return;
         }
         let stay = match key {
             Some(HaloKey::Step(forward)) => {
@@ -396,6 +402,21 @@ mod tests {
         assert_eq!(halo_key(Keysym::space), Some(HaloKey::Press));
         assert_eq!(halo_key(Keysym::Escape), Some(HaloKey::Leave));
         assert_eq!(halo_key(Keysym::a), None);
+    }
+
+    #[test]
+    fn menu_keys_follow_the_design_s_menus_and_fly_out() {
+        assert_eq!(menu_key(Keysym::Down), Some(MenuKey::Step(true)));
+        assert_eq!(menu_key(Keysym::Tab), Some(MenuKey::Step(true)));
+        assert_eq!(menu_key(Keysym::Up), Some(MenuKey::Step(false)));
+        assert_eq!(menu_key(Keysym::ISO_Left_Tab), Some(MenuKey::Step(false)));
+        assert_eq!(menu_key(Keysym::Home), Some(MenuKey::First));
+        assert_eq!(menu_key(Keysym::End), Some(MenuKey::Last));
+        assert_eq!(menu_key(Keysym::Right), Some(MenuKey::Open));
+        assert_eq!(menu_key(Keysym::Left), Some(MenuKey::Back));
+        assert_eq!(menu_key(Keysym::Return), Some(MenuKey::Press));
+        assert_eq!(menu_key(Keysym::space), Some(MenuKey::Press));
+        assert_eq!(menu_key(Keysym::Escape), None);
     }
 
     #[test]

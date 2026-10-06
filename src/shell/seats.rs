@@ -183,7 +183,7 @@ impl Drop for SeatId {
 struct SeatId(pub usize);
 
 /// The output which contains the cursor associated with a seat.
-struct ActiveOutput(pub Mutex<Output>);
+pub(crate) struct ActiveOutput(pub Mutex<Output>);
 
 /// The output which currently has keyboard focus
 struct FocusedOutput(pub Mutex<Option<Output>>);

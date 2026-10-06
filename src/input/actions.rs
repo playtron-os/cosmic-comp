@@ -87,6 +87,9 @@ impl State {
                 let in_halo = keyboard.with_grab(|_, grab| {
                     grab.is::<crate::shell::element::window::HaloKeyboardGrab>()
                 }) == Some(true);
+                if in_halo && crate::shell::grabs::close_halo_flyout(seat) {
+                    return;
+                }
                 let hook = keyboard
                     .with_grab(|_, grab| {
                         grab.downcast_ref::<crate::shell::grabs::PaletteKeyboardGrab>()
