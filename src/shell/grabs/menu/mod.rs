@@ -401,6 +401,8 @@ pub struct ContextMenu {
     on_flyout_row: AtomicBool,
     /// The Halo menu row holding keyboard focus, when the keyboard opened it.
     keyboard_row: Mutex<Option<usize>>,
+    /// Whether keyboard focus is in the open fly-out rather than on its row.
+    keyboard_flyout: AtomicBool,
 }
 
 impl ContextMenu {
@@ -417,7 +419,13 @@ impl ContextMenu {
             flyout: Mutex::new(None),
             on_flyout_row: AtomicBool::new(false),
             keyboard_row: Mutex::new(None),
+            keyboard_flyout: AtomicBool::new(false),
         }
+    }
+
+    fn focus_ring(&self) -> Option<usize> {
+        let row = *self.keyboard_row.lock().unwrap();
+        row.filter(|_| !self.keyboard_flyout.load(Ordering::SeqCst))
     }
 
     /// The Halo menu's rows as the menu card draws them, and the pointer
@@ -597,9 +605,16 @@ impl Program for ContextMenu {
             Message::MenuKey(key) => {
                 let (sections, _) = self.halo_sections();
                 let mut row = self.keyboard_row.lock().unwrap();
+                let on_submenu = row
+                    .is_some_and(|row| matches!(self.items.get(row), Some(Item::Submenu { .. })));
                 let press = match key {
                     MenuKey::First => {
                         *row = menu_card::first_focusable(&sections);
+                        None
+                    }
+                    MenuKey::Last => {
+                        *row =
+                            menu_card::step_focus(&sections, None, menu_card::FocusStep::Previous);
                         None
                     }
                     MenuKey::Step(forward) => {
@@ -611,7 +626,14 @@ impl Program for ContextMenu {
                         *row = menu_card::step_focus(&sections, *row, step);
                         None
                     }
+                    // The caller shows the fly-out and moves focus into it.
+                    MenuKey::Press | MenuKey::Open if on_submenu => {
+                        *self.flyout.lock().unwrap() = *row;
+                        self.keyboard_flyout.store(true, Ordering::SeqCst);
+                        None
+                    }
                     MenuKey::Press => row.and_then(|row| menu_card::row_press(&sections, row)),
+                    MenuKey::Open | MenuKey::Back => None,
                 };
                 drop(row);
                 drop(sections);
@@ -655,6 +677,7 @@ impl Program for ContextMenu {
                 let had = flyout.is_some();
                 *flyout = submenu.is_some().then_some(idx);
                 drop(flyout);
+                self.keyboard_flyout.store(false, Ordering::SeqCst);
                 if (had || submenu.is_some())
                     && let Some((seat, _)) = last_seat.cloned()
                 {
@@ -845,7 +868,7 @@ impl Program for ContextMenu {
             return container(
                 dropdown(&**theme)
                     .variant(DropdownVariant::Menu)
-                    .focus_ring(*self.keyboard_row.lock().unwrap())
+                    .focus_ring(self.focus_ring())
                     .shadow(true)
                     .sections_with_submenus(sections, rows),
             )
@@ -1155,6 +1178,7 @@ fn settle_flyout(seat: &Seat<State>, idx: usize) {
         let open = *flyout == Some(idx);
         if open && !in_flyout && !menu.on_flyout_row.load(Ordering::SeqCst) {
             *flyout = None;
+            menu.keyboard_flyout.store(false, Ordering::SeqCst);
             return false;
         }
         open
@@ -2249,32 +2273,17 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuKey {
     First,
+    Last,
     Step(bool),
     Press,
+    Open,
+    Back,
 }
 
 /// Hand `key` to the seat's open Halo menu. Returns whether one took it and, for a
 /// press, whether the press chose a row, which closes the menu.
 pub(crate) fn halo_menu_key(seat: &Seat<State>, key: MenuKey, state: &mut State) -> Option<bool> {
-    let element = seat
-        .user_data()
-        .get::<SeatMenuGrabState>()?
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|menu| {
-            menu.elements
-                .lock()
-                .unwrap()
-                .first()
-                .map(|e| e.iced.clone())
-        })?;
-    if !element.with_program(|menu| menu.halo && menu.palette.is_none() && menu.dialog.is_none()) {
-        return None;
-    }
-    element.queue_message(Message::MenuKey(key));
-    element.force_update();
-    let chosen = element.with_program(|menu| menu.selected.load(Ordering::SeqCst));
+    let chosen = route_menu_key(seat, key)?;
     if chosen && let Some(pointer) = seat.get_pointer() {
         state.common.event_loop_handle.insert_idle(move |state| {
             if pointer.is_grabbed() {
@@ -2284,6 +2293,92 @@ pub(crate) fn halo_menu_key(seat: &Seat<State>, key: MenuKey, state: &mut State)
         });
     }
     Some(chosen)
+}
+
+fn halo_menu(
+    seat: &Seat<State>,
+) -> Option<(IcedElement<ContextMenu>, Option<IcedElement<ContextMenu>>)> {
+    let (root, flyout) = seat
+        .user_data()
+        .get::<SeatMenuGrabState>()?
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|menu| {
+            let elements = menu.elements.lock().unwrap();
+            let root = elements.first()?.iced.clone();
+            Some((root, elements.get(1).map(|e| e.iced.clone())))
+        })?;
+    root.with_program(|menu| menu.halo && menu.palette.is_none() && menu.dialog.is_none())
+        .then_some((root, flyout))
+}
+
+fn route_menu_key(seat: &Seat<State>, key: MenuKey) -> Option<bool> {
+    let (root, flyout) = halo_menu(seat)?;
+    if key == MenuKey::Back {
+        close_halo_flyout(seat);
+        return Some(false);
+    }
+    let (in_flyout, was_open) = root.with_program(|menu| {
+        (
+            menu.keyboard_flyout.load(Ordering::SeqCst),
+            *menu.flyout.lock().unwrap(),
+        )
+    });
+    let target = match flyout {
+        Some(ref flyout) if in_flyout => flyout.clone(),
+        _ => root.clone(),
+    };
+    target.queue_message(Message::MenuKey(key));
+    target.force_update();
+    if in_flyout {
+        return Some(target.with_program(|menu| menu.selected.load(Ordering::SeqCst)));
+    }
+    let entered = root.with_program(|menu| {
+        let idx = (*menu.flyout.lock().unwrap())
+            .filter(|_| menu.keyboard_flyout.load(Ordering::SeqCst))?;
+        match menu.items.get(idx) {
+            Some(Item::Submenu { items, .. }) => Some((idx, items.clone())),
+            _ => None,
+        }
+    });
+    let Some((idx, items)) = entered else {
+        return Some(root.with_program(|menu| menu.selected.load(Ordering::SeqCst)));
+    };
+    // A fly-out the pointer already opened stays; the keyboard only moves into it.
+    if was_open == Some(idx) && flyout.is_some() {
+        root.force_update();
+    } else {
+        show_flyout(seat, Some((idx, items)));
+    }
+    match halo_menu(seat) {
+        Some((_, Some(flyout))) => {
+            flyout.queue_message(Message::MenuKey(MenuKey::First));
+            flyout.force_update();
+        }
+        _ => {
+            close_halo_flyout(seat);
+        }
+    }
+    Some(false)
+}
+
+/// Close the fly-out keyboard focus is in, if there is one, back to its row.
+pub(crate) fn close_halo_flyout(seat: &Seat<State>) -> bool {
+    let Some((root, _)) = halo_menu(seat) else {
+        return false;
+    };
+    let held = root.with_program(|menu| {
+        let held = menu.keyboard_flyout.swap(false, Ordering::SeqCst);
+        if held {
+            menu.flyout.lock().unwrap().take();
+        }
+        held
+    });
+    if held {
+        show_flyout(seat, None);
+    }
+    held
 }
 
 /// A dialog's keys: Tab and Down walk forward, Shift+Tab and Up back, Enter and Space press.
