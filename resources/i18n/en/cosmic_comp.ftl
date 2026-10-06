@@ -31,7 +31,7 @@ window-menu-resize-edge-right = Right
 window-menu-resize-edge-bottom = Bottom
 
 screenshot-app-name = Screenshot
-shell-notification-app = Kora
+shell-notification-app = System
 screenshot-saved = Screenshot saved
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
 

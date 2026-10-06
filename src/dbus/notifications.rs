@@ -101,7 +101,7 @@ impl DBusState {
     /// Confirm something the user just did, as a toast or a plain notification.
     pub fn system_toast(&self, message: String, tone: Tone) {
         let notification = Notification {
-            app_name: crate::fl!("shell-notification-app"),
+            app_name: system_name(),
             app_icon: String::new(),
             summary: plain(message.clone()),
             body: String::new(),
@@ -132,6 +132,26 @@ impl DBusState {
             }
         });
     }
+}
+
+/// The system's own name, from os-release, so each distribution names itself.
+fn system_name() -> String {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        ["/etc/os-release", "/usr/lib/os-release"]
+            .iter()
+            .find_map(|path| std::fs::read_to_string(path).ok())
+            .and_then(|text| os_release_name(&text))
+            .unwrap_or_else(|| crate::fl!("shell-notification-app"))
+    })
+    .clone()
+}
+
+fn os_release_name(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|line| line.strip_prefix("NAME="))
+        .map(|value| value.trim().trim_matches('"').to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 /// Fluent's bidi isolate marks around a placeable surface as tofu in the
@@ -168,6 +188,15 @@ mod tests {
     fn tones_go_by_the_names_the_daemon_reads() {
         let names = [Tone::Neutral, Tone::Ai, Tone::NeedsYou, Tone::Destructive].map(Tone::as_str);
         assert_eq!(names, ["neutral", "ai", "needs-you", "destructive"]);
+    }
+
+    #[test]
+    fn the_system_names_itself_from_os_release() {
+        let text = "PRETTY_NAME=\"Example OS 1\"\nNAME=\"Example OS\"\nID=example\n";
+        assert_eq!(os_release_name(text).as_deref(), Some("Example OS"));
+        assert_eq!(os_release_name("NAME=Plain\n").as_deref(), Some("Plain"));
+        assert_eq!(os_release_name("NAME=\"\"\n"), None);
+        assert_eq!(os_release_name("ID=example\n"), None);
     }
 
     #[test]
