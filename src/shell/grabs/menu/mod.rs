@@ -577,9 +577,7 @@ impl Program for ContextMenu {
                                 &app_id,
                             );
                         }
-                        let keys = state.common.config.shortcut_for_action(
-                            &cosmic_settings_config::shortcuts::Action::WindowCommands,
-                        );
+                        let keys = commands::palette_binding(&state.common.config.shortcuts);
                         if let Some((message, tone)) = commands::pin_receipt(outcome, keys) {
                             state.common.dbus_state.system_toast(message, tone);
                         }

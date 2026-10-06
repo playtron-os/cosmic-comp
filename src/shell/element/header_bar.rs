@@ -321,6 +321,7 @@ pub struct HeaderBar<'a, Message> {
     app_icon: Option<AppIcon>,
     run: Option<(HaloRun, Message)>,
     keyboard_focus: Option<HaloControl>,
+    palette_keys: Option<String>,
 }
 
 impl<'a, Message: Clone + 'static> Default for HeaderBar<'a, Message> {
@@ -357,6 +358,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             app_icon: None,
             run: None,
             keyboard_focus: None,
+            palette_keys: None,
         }
     }
 
@@ -397,6 +399,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn on_commands(mut self, msg: Message) -> Self {
         self.on_commands = Some(msg);
+        self
+    }
+
+    pub fn palette_keys(mut self, keys: Option<String>) -> Self {
+        self.palette_keys = keys;
         self
     }
 
@@ -695,7 +702,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             self.on_commands.clone(),
             self.commands_open,
             self.menu_open || self.commands_open,
-            fl!("halo-commands-hint", app = name.as_str()),
+            glyph_hint(&name, self.palette_keys.as_deref()),
             self.run
                 .as_ref()
                 .filter(|_| tier >= 3)
@@ -991,6 +998,14 @@ fn halo_divider<'a, Message: 'a>(
             ..Default::default()
         })
         .into()
+}
+
+/// The design's "<app> — commands (<chord>)", naming the configured binding.
+fn glyph_hint(app: &str, keys: Option<&str>) -> String {
+    match keys {
+        Some(keys) => fl!("halo-commands-hint-keys", app = app, keys = keys),
+        None => fl!("halo-commands-hint", app = app),
+    }
 }
 
 fn halo_glyph<'a, Message: Clone + 'static>(
@@ -1307,6 +1322,16 @@ mod tests {
     use super::*;
     use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
     use std::sync::Arc;
+
+    #[test]
+    fn the_glyph_tooltip_names_the_palette_binding_when_there_is_one() {
+        use crate::dbus::notifications::plain;
+        assert_eq!(
+            plain(glyph_hint("Example", Some("Super+K"))),
+            "Example — commands (Super+K)"
+        );
+        assert_eq!(plain(glyph_hint("Example", None)), "Example — commands");
+    }
 
     fn halo_theme() -> CompTheme {
         let mut theme = DEFAULT_THEME_PAIR.load(false);

@@ -867,7 +867,11 @@ fn open_surface(
                 "close" => shortcuts::Action::Close,
                 _ => continue,
             };
-            command.shortcut = state.common.config.shortcut_for_action(&action);
+            command.shortcut = state
+                .common
+                .config
+                .shortcut_for_action(&action)
+                .map(|keys| commands::key_text(&keys));
         }
         // Index-aligned with the command list: a row press is the same
         // callback the menu row would have run.
