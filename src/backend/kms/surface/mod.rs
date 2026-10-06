@@ -1517,12 +1517,16 @@ impl SurfaceThreadState {
             // (the overlay must composite above the game, which rules out the
             // single-plane tearing/scanout fast path). The scanout/VRR/compositing
             // checks happen below.
-            let game_mode_tearing =
-                shell.game_mode.active && shell.tearing_allowed && !shell.game_mode.overlay_active;
-            let fps_limit = shell.game_mode_fps_limit;
-            let game_mode_active = shell.game_mode.active;
-            let game_mode_vrr = shell.game_mode_vrr;
             let output = self.mirroring.as_ref().unwrap_or(&self.output);
+            let game_mode_active = shell.game_mode_on_screen(output);
+            let game_mode_tearing =
+                game_mode_active && shell.tearing_allowed && !shell.game_mode.overlay_active;
+            let fps_limit = if game_mode_active {
+                shell.game_mode_fps_limit
+            } else {
+                0
+            };
+            let game_mode_vrr = shell.game_mode_vrr;
             if let Some((_, workspace)) = shell.workspaces().active(output) {
                 let seat = shell.seats.last_active();
                 if let Some(fullscreen_surface) = workspace.get_fullscreen(seat) {
@@ -2110,7 +2114,7 @@ impl SurfaceThreadState {
             // game that doesn't declare an opaque region (common for Xwayland/
             // Proton titles) still take the primary plane — harmless since the
             // game covers the whole output.
-            let clear = if game_mode_active && has_active_fullscreen {
+            let clear = if game_mode_active {
                 smithay::backend::renderer::Color32F::new(0.0, 0.0, 0.0, 1.0)
             } else {
                 *CLEAR_COLOR // TODO use a theme neutral color
@@ -2123,7 +2127,7 @@ impl SurfaceThreadState {
                 output = %self.output.name(),
                 game_mode_active,
                 has_active_fullscreen,
-                clear_is_black = game_mode_active && has_active_fullscreen,
+                clear_is_black = game_mode_active,
                 element_count = elements.len(),
                 "frame clear-color + content"
             );
@@ -2217,70 +2221,9 @@ impl SurfaceThreadState {
                     PrimaryPlaneElement::Swapchain(_)
                 );
 
-                // Upscale scanout check: if this game frame requested an
-                // upscale (`scale_to`) but did NOT scan out (composited to the
-                // swapchain), the DRM plane rejected the scale. Latch it so game
-                // mode letterboxes instead of compositing a scanout-only buffer to
-                // black, and log the rejected config so the reject can be fixed.
-                if game_mode_active && has_active_fullscreen && !scanout {
-                    use smithay::desktop::space::SpaceElement as _;
-                    let shell = self.shell.read();
-                    // Only attribute compositing to a plane scale-REJECT when it's a
-                    // SETTLED game on THIS (the game's) output with NO overlay up.
-                    // The entrance/exit animation always composites; an active
-                    // overlay disables overlay planes and forces the game to
-                    // composite; another output compositing is unrelated. None of
-                    // those mean the plane rejected the scale, so don't latch on
-                    // them (that would spuriously letterbox a scalable game).
-                    // A controlled-set child (a game dialog / in-prefix login window)
-                    // composited above the game also forces composition, so a frame
-                    // with children present must never be blamed on the plane
-                    // rejecting the scale — latching there would letterbox the game
-                    // for the rest of the session over a dialog that has since closed.
-                    let eligible = shell.game_mode.output.as_ref() == Some(&self.output)
-                        && !shell.game_mode.overlay_active
-                        && shell.game_mode.children.is_empty();
-                    let scaled = eligible
-                        .then(|| {
-                            shell.game_mode.game_surface.as_ref().and_then(|game| {
-                                shell.workspaces().spaces().find_map(|ws| {
-                                    ws.get_fullscreen_surfaces()
-                                        .find(|f| &f.surface == game && !f.is_animating())
-                                        // A filtered upscale can never scan out
-                                        // — compositing is how it works, not a
-                                        // plane refusing the scale. Latching
-                                        // would clear `scale_to` and letterbox
-                                        // the very mode that asked for it.
-                                        .filter(|f| !f.scale_mode.is_filtered())
-                                        .and_then(|f| f.scale_to)
-                                        .map(|rect| {
-                                            (
-                                                game.bbox().size,
-                                                rect.size,
-                                                ws.output().geometry().size,
-                                            )
-                                        })
-                                })
-                            })
-                        })
-                        .flatten();
-                    if let Some((buffer, target, out_size)) = scaled
-                        && !shell.game_mode_scale_rejected.swap(true, Ordering::Relaxed)
-                    {
-                        warn!(
-                            target: GAMING_TARGET,
-                            output = %self.output.name(),
-                            buffer_w = buffer.w,
-                            buffer_h = buffer.h,
-                            target_w = target.w,
-                            target_h = target.h,
-                            output_w = out_size.w,
-                            output_h = out_size.h,
-                            "game upscale rejected by the DRM plane (composited, not \
-                             scanned out) -- letterboxing. The buffer/target/output \
-                             sizes are the rejected scale config."
-                        );
-                    }
+                if game_mode_active && !scanout {
+                    tracing::trace!(target: GAMING_TARGET, output = %self.output.name(), states = ?frame_result.states,
+                        "game composed at its requested destination");
                 }
 
                 let supports_tearing = compositor.with_compositor(|c| c.supports_tearing());

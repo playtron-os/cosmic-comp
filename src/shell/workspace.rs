@@ -37,15 +37,13 @@ use smithay::output::WeakOutput;
 use smithay::utils::user_data::UserDataMap;
 use smithay::{
     backend::renderer::{
-        Renderer, Texture,
+        Renderer,
         element::{
             Element, Id, RenderElement, texture::TextureRenderElement, utils::RescaleRenderElement,
         },
         gles::GlesTexture,
         glow::GlowRenderer,
-        utils::{
-            DamageBag, DamageSet, OpaqueRegions, RendererSurfaceStateUserData, import_surface_tree,
-        },
+        utils::{DamageSet, OpaqueRegions, RendererSurfaceStateUserData},
     },
     desktop::{WindowSurfaceType, layer_map_for_output, space::SpaceElement},
     input::Seat,
@@ -218,12 +216,6 @@ impl MinimizedWindow {
     }
 }
 
-/// Smallest buffer dimension (px) still treated as a game framebuffer worth
-/// upscaling to fill the output. Anything smaller is a launch artifact — a
-/// loading banner or splash a game maps before its real window — and is centered
-/// at native size instead of being stretched across the screen.
-const MIN_UPSCALE_DIM: i32 = 360;
-
 /// The last frame a fullscreen surface imported, kept alive so the window can
 /// still fade out after its client is gone.
 ///
@@ -263,12 +255,7 @@ pub struct FullscreenSurface {
     start_at: Option<Instant>,
     fade_in_only: bool,
     pub ended_at: Option<Instant>,
-    /// When `Some`, the surface is upscaled to this rect (a fill of
-    /// a smaller game buffer). The wrapping `RescaleRenderElement` is scanout-
-    /// shaped so smithay hands it to the DRM plane's hardware scaler; if the
-    /// plane rejects the scale the KMS thread latches `game_mode_scale_rejected`
-    /// and game mode clears this back to `None` (letterbox) so we never composite
-    /// a scanout-only buffer to black. `None` = native/letterbox (default).
+    /// Destination sizing is independent of whether the frame is composited or scanned out.
     pub scale_to: Option<Rectangle<i32, Local>>,
     /// Last imported frame, refreshed while this surface renders. Shared and
     /// locked because `Workspace::render` takes `&self` — the same reason
@@ -282,32 +269,14 @@ pub struct FullscreenSurface {
     /// `scale_to` so the render path can tell a filtered upscale from a plain
     /// one without reaching into the shell for `game_mode_scaling`.
     pub scale_mode: crate::dbus::game_mode::ScalingMode,
+    pub scale_filter: crate::dbus::game_mode::ScalingMode,
+    filter_bypassed: Arc<AtomicBool>,
+    flattened: Arc<AtomicBool>,
     /// Sharpening strength for `scale_mode`, when it is a filtered one.
     pub scale_sharpness: f32,
     /// Locked for the same reason as `retained`: `Workspace::render` takes
     /// `&self`.
-    nis: Arc<Mutex<Option<NisUpscale>>>,
-}
-
-/// An upscale filter's destination, and enough context to know when to rebuild.
-#[derive(Debug)]
-struct NisUpscale {
-    target: GlesTexture,
-    /// EASU's output, FSR only. NIS is a single pass and leaves this `None`.
-    intermediate: Option<GlesTexture>,
-    /// Stable, or the damage tracker sees a new element every frame.
-    id: Id,
-    /// A texture is only valid on the renderer that made it, and each output
-    /// has its own.
-    context_id: smithay::backend::renderer::ContextId<GlesTexture>,
-    /// Immutable storage cannot be resized, so a change means reallocating.
-    size: Size<i32, Physical>,
-    /// The filter these targets were allocated for; the two allocate
-    /// differently, so a mode change has to rebuild.
-    mode: crate::dbus::game_mode::ScalingMode,
-    /// Always the full rect: the pass rewrites every texel.
-    damage: DamageBag<i32, BufferCoords>,
-    last_trace: Option<(Size<i32, BufferCoords>, bool)>,
+    presentation_frame: Arc<Mutex<Option<crate::backend::render::game::GameFrame>>>,
 }
 
 impl PartialEq for FullscreenSurface {
@@ -320,6 +289,50 @@ impl FullscreenSurface {
     pub fn animate_game_mode_entry(&mut self, crossfade: bool) {
         self.fade_in_only = true;
         self.start_at = (!crossfade).then(Instant::now);
+    }
+
+    pub fn extend_render_states(
+        &self,
+        states: &mut smithay::backend::renderer::element::RenderElementStates,
+    ) {
+        if self.flattened.load(Ordering::Relaxed)
+            && let Some(frame) = self.presentation_frame.lock().unwrap().as_ref()
+            && let Some(surface) = self.surface.wl_surface()
+        {
+            frame.extend_render_states(Id::from_wayland_resource(surface.as_ref()), states);
+        }
+    }
+
+    pub fn uses_shader(&self) -> bool {
+        self.scale_mode == crate::dbus::game_mode::ScalingMode::Integer
+            || self.scale_filter.is_filtered()
+            || self.scale_filter == crate::dbus::game_mode::ScalingMode::Integer
+    }
+
+    pub fn applied_scaling(&self) -> (String, String) {
+        if self.filter_bypassed.load(Ordering::Relaxed) {
+            return ("linear".into(), "not-an-upscale".into());
+        }
+        if self.uses_shader() {
+            self.presentation_frame
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map_or_else(
+                    || ("pending".into(), String::new()),
+                    |frame| (frame.applied.into(), frame.fallback.into()),
+                )
+        } else {
+            (
+                if self.scale_mode == crate::dbus::game_mode::ScalingMode::Native {
+                    "native"
+                } else {
+                    "linear"
+                }
+                .into(),
+                String::new(),
+            )
+        }
     }
 
     pub fn is_animating(&self) -> bool {
@@ -453,173 +466,28 @@ where
     ))
 }
 
-/// Run the requested upscale filter over the game's imported buffer and return
-/// the result, positioned at `target_geo`.
-///
-/// `None` whenever the filter cannot apply this frame — no GLES 3.1 for NIS, a
-/// ratio it is not defined for, nothing to upscale, another output's renderer,
-/// nothing imported yet — and the caller falls back to the ordinary scaled draw,
-/// which lands in the same rect.
-///
-/// Reads the root surface's buffer rather than compositing the tree first, so a
-/// game drawing through subsurfaces would have only its root filtered. Same
-/// assumption `retain_fullscreen_frame` makes.
 fn upscaled_fullscreen_element<R>(
     fullscreen: &FullscreenSurface,
     renderer: &mut R,
     output_scale: f64,
-    target_geo: Rectangle<i32, Local>,
+    destination: Rectangle<i32, Physical>,
     alpha: f32,
 ) -> Option<WorkspaceRenderElement<R>>
 where
     R: AsGlowRenderer,
-    R::TextureId: Send + 'static,
+    R::TextureId: Send + Clone + 'static,
 {
-    use crate::backend::render::{fsr, nis};
-    use crate::dbus::game_mode::ScalingMode;
-
-    let mode = fullscreen.scale_mode;
-    let sharpness = fullscreen.scale_sharpness;
-
-    // Ask before allocating: on a context that cannot run the filter this is the
-    // cheap way out, taken every frame for the whole session.
-    match mode {
-        ScalingMode::Nis => nis::available(renderer).ok()?,
-        ScalingMode::Fsr => fsr::available().ok()?,
-        _ => return None,
-    }
-
-    let dst_size: Size<i32, Physical> = target_geo
-        .size
-        .as_logical()
-        .to_physical_precise_round(output_scale);
-    if dst_size.w <= 0 || dst_size.h <= 0 {
-        return None;
-    }
-
-    let surface = fullscreen.surface.wl_surface()?;
-    // The filtered path bypasses the surface elements that normally import each commit.
-    import_surface_tree(renderer, &surface).ok()?;
-    let glow_context = renderer.glow_renderer().context_id();
-    let context = renderer.context_id();
-
-    // Down to the concrete GlesTexture: the passes bind a GL texture name,
-    // which a MultiTexture cannot give.
-    let source = with_states(&surface, |data| {
-        let state = data.data_map.get::<RendererSurfaceStateUserData>()?;
-        let state = state.lock().unwrap();
-        let imported = state.texture(context.clone())?;
-        R::tex_to_gl(&glow_context, imported)
-    })?;
-    let flip_y = source.is_y_inverted();
-
-    let mut slot = fullscreen.nis.lock().unwrap();
-    // Reallocate on a size change, a mode change (the two want differently
-    // allocated targets), or when drawn by a renderer that did not make the
-    // current one.
-    let stale = slot
-        .as_ref()
-        .is_none_or(|n| n.size != dst_size || n.context_id != glow_context || n.mode != mode);
-    if stale {
-        let (target, intermediate) = match mode {
-            // Compute writes through an image binding, which needs immutable
-            // storage; FSR renders into a bound framebuffer and needs a second
-            // target for the EASU result.
-            ScalingMode::Nis => (nis::create_target(renderer, dst_size).ok()?, None),
-            _ => (
-                fsr::create_target(renderer, dst_size).ok()?,
-                Some(fsr::create_target(renderer, dst_size).ok()?),
-            ),
-        };
-        *slot = Some(NisUpscale {
-            target,
-            intermediate,
-            // Surface identity keeps frame callbacks and presentation feedback attached.
-            id: Id::from_wayland_resource(surface.as_ref()),
-            context_id: glow_context.clone(),
-            size: dst_size,
-            mode,
-            damage: DamageBag::default(),
-            last_trace: None,
-        });
-    }
-    let state = slot.as_mut()?;
-
-    // Split the borrow: FSR needs both targets mutably at once.
-    let NisUpscale {
-        target,
-        intermediate,
-        ..
-    } = state;
-    let filtered = match mode {
-        // The compute pass samples the texture itself, so it has to undo a
-        // bottom-up buffer; FSR goes through smithay's texture draw, which
-        // already accounts for one.
-        ScalingMode::Nis => nis::upscale(
-            renderer,
-            &source,
-            flip_y,
-            target,
-            nis::NisConfig::new(sharpness),
-        )
-        .is_ok(),
-        _ => fsr::upscale(
-            renderer,
-            &source,
-            intermediate.as_mut()?,
-            target,
-            dst_size,
-            sharpness,
-        )
-        .is_ok(),
-    };
-    let status = (source.size(), filtered);
-    if state.last_trace != Some(status) {
-        tracing::info!(
-            target: crate::logger::GAMING_TARGET,
-            source_size = ?status.0,
-            destination_size = ?dst_size,
-            ?target_geo,
-            output_scale,
-            mode = mode.as_str(),
-            filtered,
-            "game upscale result"
-        );
-        state.last_trace = Some(status);
-    }
-    if !filtered {
-        return None;
-    }
-
-    let buffer_size = Size::<i32, BufferCoords>::from((dst_size.w, dst_size.h));
-    state.damage.add([Rectangle::from_size(buffer_size)]);
-
-    Some(WorkspaceRenderElement::Texture(
-        TextureRenderElement::from_texture_with_damage(
-            state.id.clone(),
-            state.context_id.clone(),
-            target_geo
-                .loc
-                .as_logical()
-                .to_f64()
-                .to_physical(output_scale),
-            state.target.clone(),
-            1,
-            Transform::Normal,
-            Some(alpha),
-            // Explicit src: with only `size` the element derives src from it and
-            // CROPS instead of scaling, which a fractional output scale would
-            // turn into a dropped row.
-            Some(Rectangle::from_size(
-                (dst_size.w as f64, dst_size.h as f64).into(),
-            )),
-            Some(target_geo.size.as_logical()),
-            // Only opaque once faded in; mid-transition the element is blended.
-            (alpha >= 1.0).then(|| vec![Rectangle::from_size(buffer_size)]),
-            state.damage.snapshot(),
-            Kind::Unspecified,
-        ),
-    ))
+    crate::backend::render::game::prepare(
+        &mut fullscreen.presentation_frame.lock().unwrap(),
+        renderer,
+        &fullscreen.surface,
+        destination,
+        output_scale,
+        fullscreen.scale_filter,
+        fullscreen.scale_sharpness,
+        alpha,
+    )
+    .map(WorkspaceRenderElement::Game)
 }
 
 impl IsAlive for FullscreenSurface {
@@ -1507,19 +1375,36 @@ impl Workspace {
         fullscreen: &FullscreenSurface,
         location: Point<f64, Local>,
     ) -> (Point<f64, Local>, (f64, f64)) {
-        let geometry = self.fullscreen_geometry_for(fullscreen);
-        let src = fullscreen.surface.bbox().size;
+        let output_scale = self.output.current_scale().fractional_scale();
+        let geometry = if fullscreen.scale_mode == crate::dbus::game_mode::ScalingMode::Integer {
+            crate::backend::render::game::integer_rect(
+                &fullscreen.surface,
+                self.output
+                    .geometry()
+                    .size
+                    .as_logical()
+                    .to_physical_precise_round(output_scale),
+            )
+            .to_f64()
+            .to_logical(output_scale)
+            .as_local()
+        } else {
+            self.fullscreen_geometry_for(fullscreen).to_f64()
+        };
+        let bbox = fullscreen.surface.bbox();
+        let src = bbox.size;
         let scale = if fullscreen.scale_to.is_some() && src.w > 0 && src.h > 0 {
             (
-                geometry.size.w as f64 / src.w as f64,
-                geometry.size.h as f64 / src.h as f64,
+                geometry.size.w / src.w as f64,
+                geometry.size.h / src.h as f64,
             )
         } else {
             (1.0, 1.0)
         };
-        let relative = location - geometry.loc.to_f64();
+        let relative = location - geometry.loc;
         (
-            Point::from((relative.x / scale.0, relative.y / scale.1)),
+            Point::from((relative.x / scale.0, relative.y / scale.1))
+                + bbox.loc.as_local().to_f64(),
             scale,
         )
     }
@@ -1807,8 +1692,11 @@ impl Workspace {
                     retained: Arc::default(),
                     retain_reported: Arc::default(),
                     scale_mode: crate::dbus::game_mode::ScalingMode::Native,
+                    scale_filter: crate::dbus::game_mode::ScalingMode::Native,
+                    filter_bypassed: Arc::default(),
+                    flattened: Arc::default(),
                     scale_sharpness: crate::backend::render::nis::DEFAULT_SHARPNESS,
-                    nis: Arc::default(),
+                    presentation_frame: Arc::default(),
                 });
                 self.dirty.store(true, Ordering::SeqCst);
                 None
@@ -1932,8 +1820,11 @@ impl Workspace {
             retained: Arc::default(),
             retain_reported: Arc::default(),
             scale_mode: crate::dbus::game_mode::ScalingMode::Native,
+            scale_filter: crate::dbus::game_mode::ScalingMode::Native,
+            filter_bypassed: Arc::default(),
+            flattened: Arc::default(),
             scale_sharpness: crate::backend::render::nis::DEFAULT_SHARPNESS,
-            nis: Arc::default(),
+            presentation_frame: Arc::default(),
         });
         // Bug 1: the entrance animation clock starts NOW, before the client has
         // committed a fullscreen-sized buffer — until its first frame lands the
@@ -1993,9 +1884,7 @@ impl Workspace {
                 let factor = f64::min(ow / sw, oh / sh).floor().max(1.0);
                 centered((sw * factor) as i32, (sh * factor) as i32)
             }
-            // Letterbox: fit entirely, preserving aspect. NIS changes only how
-            // the pixels get there, so a context without the filter still places
-            // the image correctly. FSR shares it until its pass exists.
+            // Filter fallback keeps the same aspect-preserving destination.
             ScalingMode::Fit | ScalingMode::Fsr | ScalingMode::Nis => {
                 let ratio = f64::min(ow / sw, oh / sh);
                 centered((sw * ratio).round() as i32, (sh * ratio).round() as i32)
@@ -2017,7 +1906,7 @@ impl Workspace {
     /// Set (or clear) the presentation target for a tracked fullscreen surface.
     ///
     /// `mode` is the requested scaling mode; `scale` is false when scaling must be
-    /// suppressed entirely (the launcher, or a DRM plane that rejected the scale),
+    /// suppressed for the launcher,
     /// in which case an undersized surface is centered at native size rather than
     /// stretched or corner-anchored.
     pub fn set_fullscreen_scale_to<S>(
@@ -2025,29 +1914,44 @@ impl Workspace {
         surface: &S,
         scale: bool,
         mode: crate::dbus::game_mode::ScalingMode,
+        filter: crate::dbus::game_mode::ScalingFilter,
         sharpness: f32,
     ) where
         CosmicSurface: PartialEq<S>,
     {
         let out = self.output.geometry().size.as_local();
+        let output_scale = self.output.current_scale().fractional_scale();
         if let Some(fs) = self
             .fullscreen_surfaces
             .iter_mut()
             .find(|f| f.ended_at.is_none() && &f.surface == surface)
         {
             let src = fs.surface.bbox().size;
-            // Too small to be a game framebuffer — a loading banner or splash a
-            // game maps before its real window — or scaling was refused: centre it
-            // at native size instead of stretching it across the output.
-            let scalable = scale && src.w >= MIN_UPSCALE_DIM && src.h >= MIN_UPSCALE_DIM;
-            let mode = if scalable {
+            let mode = if scale {
                 mode
             } else {
                 crate::dbus::game_mode::ScalingMode::Native
             };
             fs.scale_to = Self::scaling_rect(src, out, mode);
+            if mode == crate::dbus::game_mode::ScalingMode::Integer {
+                fs.scale_to = Some(
+                    crate::backend::render::game::integer_rect(
+                        &fs.surface,
+                        out.as_logical().to_physical_precise_round(output_scale),
+                    )
+                    .to_f64()
+                    .to_logical(output_scale)
+                    .to_i32_round()
+                    .as_local(),
+                );
+            }
             // The RESOLVED mode, so a surface refused a scale is never filtered.
             fs.scale_mode = mode;
+            fs.scale_filter = if scale {
+                filter.resolve(mode)
+            } else {
+                crate::dbus::game_mode::ScalingMode::Native
+            };
             fs.scale_sharpness = sharpness;
         }
     }
@@ -2413,6 +2317,9 @@ impl Workspace {
         WorkspaceRenderElement<R>: RenderElement<R>,
     {
         let output_scale = self.output.current_scale().fractional_scale();
+        let presentation = game_mode_only.and_then(|view| view.presentation);
+        let window_alpha =
+            presentation.map_or(window_alpha, |p| p.alpha(theme.motion.game_crossfade));
         let zone = {
             let layer_map = layer_map_for_output(&self.output);
             layer_map.non_exclusive_zone().as_local()
@@ -2445,6 +2352,13 @@ impl Workspace {
                         ) {
                             fullscreen_elements.push(elem);
                         }
+                        return;
+                    }
+
+                    if presentation.is_some_and(|p| p.waiting())
+                        && fullscreen.surface.0.toplevel().is_some()
+                        && !fullscreen.surface.is_fullscreen(false)
+                    {
                         return;
                     }
 
@@ -2508,14 +2422,7 @@ impl Workspace {
                         .as_logical()
                         .to_physical_precise_round(output_scale);
 
-                    // Wrap in a RescaleRenderElement when animating (entrance/exit), or
-                    // when a `scale_to` upscale is requested (fill). The
-                    // wrapper forwards src/kind/underlying_storage, so smithay can still
-                    // hand it to a DRM plane's HARDWARE scaler (no GLES composition) —
-                    // and if the plane rejects the scale, the KMS thread latches
-                    // `game_mode_scale_rejected` and game mode clears `scale_to`, so a
-                    // settled game with no scale request is left UNWRAPPED (direct scanout,
-                    // never composited-to-black for scanout-only Proton/Vulkan buffers).
+                    // The same destination is used by hardware scaling and composition.
                     let scaling = fullscreen.scale_to.is_some();
                     // Upscale source: the committed BUFFER (bbox) for a fill, or the
                     // window geometry for the entrance/exit animation.
@@ -2565,21 +2472,57 @@ impl Workspace {
                         }
                     };
 
-                    // A filtered upscale replaces the scaled draw: the pass
-                    // already produced the image at presentation size, so the
-                    // rescale below would resample it twice. Settled only —
-                    // mid-animation the ratio sweeps outside NIS's range.
+                    let destination =
+                        if fullscreen.scale_mode == crate::dbus::game_mode::ScalingMode::Integer {
+                            crate::backend::render::game::integer_rect(
+                                &fullscreen.surface,
+                                self.output
+                                    .geometry()
+                                    .size
+                                    .as_logical()
+                                    .to_physical_precise_round(output_scale),
+                            )
+                        } else {
+                            target_geo
+                                .as_logical()
+                                .to_physical_precise_round(output_scale)
+                        };
+                    let source_pixels: Size<i32, Physical> =
+                        fullscreen.surface.bbox().size.to_physical_precise_round(
+                            crate::backend::render::game::source_scale(&fullscreen.surface),
+                        );
+                    let bypass = fullscreen.scale_filter.is_filtered()
+                        && fullscreen.scale_mode != crate::dbus::game_mode::ScalingMode::Integer
+                        && source_pixels.w >= destination.size.w
+                        && source_pixels.h >= destination.size.h;
+                    fullscreen.filter_bypassed.store(bypass, Ordering::Relaxed);
+                    fullscreen.flattened.store(false, Ordering::Relaxed);
+
+                    // The filter already produced presentation-sized pixels; rescaling would sample twice.
                     if scaling
-                        && !is_animating
-                        && fullscreen.scale_mode.is_filtered()
+                        && (!is_animating || fullscreen.fade_in_only)
+                        && fullscreen.uses_shader()
+                        && !bypass
                         && let Some(elem) = upscaled_fullscreen_element(
                             fullscreen,
                             renderer,
                             output_scale,
-                            target_geo,
+                            destination,
                             fullscreen_alpha,
                         )
                     {
+                        fullscreen.flattened.store(true, Ordering::Relaxed);
+                        if let Some(presentation) = presentation
+                            && let Some(frame) =
+                                fullscreen.presentation_frame.lock().unwrap().as_ref()
+                        {
+                            presentation.ready(
+                                crate::backend::render::game::GameSnapshot::from_filtered(
+                                    frame,
+                                    destination,
+                                ),
+                            );
+                        }
                         fullscreen_elements.push(elem);
                         if retain_frames {
                             retain_fullscreen_frame(fullscreen, renderer, target_geo);
@@ -2603,6 +2546,18 @@ impl Workspace {
                         &mut fullscreen_push,
                         None,
                     );
+
+                    if let Some(presentation) = presentation
+                        && let Some(snapshot) = crate::backend::render::game::GameSnapshot::capture(
+                            renderer,
+                            &fullscreen.surface,
+                            target_geo
+                                .as_logical()
+                                .to_physical_precise_round(output_scale),
+                        )
+                    {
+                        presentation.ready(snapshot);
+                    }
 
                     // Keep this frame so the window can still fade out if the
                     // client exits before the next one. Outside the traversal
@@ -2677,9 +2632,20 @@ impl Workspace {
                 }
             }
 
+            let missing = fullscreen_elements.is_empty() || !view.base.alive();
             // ...and the controlled game itself goes underneath them.
             for elem in fullscreen_elements {
                 push(elem);
+            }
+            if let Some(presentation) = presentation {
+                for frame in presentation.backdrop(
+                    renderer,
+                    theme.motion.game_crossfade,
+                    missing,
+                    output_scale,
+                ) {
+                    push(WorkspaceRenderElement::Game(frame));
+                }
             }
             return;
         }
@@ -3005,6 +2971,7 @@ where
     /// name the texture type. Used for the fade-out of a fullscreen window
     /// whose client has already exited.
     Texture(TextureRenderElement<GlesTexture>),
+    Game(crate::backend::render::game::GameFrameElement),
 }
 
 impl<R> Element for WorkspaceRenderElement<R>
@@ -3020,6 +2987,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.id(),
             WorkspaceRenderElement::Window(elem) => elem.id(),
             WorkspaceRenderElement::Texture(elem) => elem.id(),
+            WorkspaceRenderElement::Game(elem) => elem.id(),
         }
     }
 
@@ -3031,6 +2999,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.current_commit(),
             WorkspaceRenderElement::Window(elem) => elem.current_commit(),
             WorkspaceRenderElement::Texture(elem) => elem.current_commit(),
+            WorkspaceRenderElement::Game(elem) => elem.current_commit(),
         }
     }
 
@@ -3042,6 +3011,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.src(),
             WorkspaceRenderElement::Window(elem) => elem.src(),
             WorkspaceRenderElement::Texture(elem) => elem.src(),
+            WorkspaceRenderElement::Game(elem) => elem.src(),
         }
     }
 
@@ -3053,6 +3023,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.geometry(scale),
             WorkspaceRenderElement::Window(elem) => elem.geometry(scale),
             WorkspaceRenderElement::Texture(elem) => elem.geometry(scale),
+            WorkspaceRenderElement::Game(elem) => elem.geometry(scale),
         }
     }
 
@@ -3064,6 +3035,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.location(scale),
             WorkspaceRenderElement::Window(elem) => elem.location(scale),
             WorkspaceRenderElement::Texture(elem) => elem.location(scale),
+            WorkspaceRenderElement::Game(elem) => elem.location(scale),
         }
     }
 
@@ -3075,6 +3047,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.transform(),
             WorkspaceRenderElement::Window(elem) => elem.transform(),
             WorkspaceRenderElement::Texture(elem) => elem.transform(),
+            WorkspaceRenderElement::Game(elem) => elem.transform(),
         }
     }
 
@@ -3090,6 +3063,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.damage_since(scale, commit),
             WorkspaceRenderElement::Window(elem) => elem.damage_since(scale, commit),
             WorkspaceRenderElement::Texture(elem) => elem.damage_since(scale, commit),
+            WorkspaceRenderElement::Game(elem) => elem.damage_since(scale, commit),
         }
     }
 
@@ -3101,6 +3075,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.opaque_regions(scale),
             WorkspaceRenderElement::Window(elem) => elem.opaque_regions(scale),
             WorkspaceRenderElement::Texture(elem) => elem.opaque_regions(scale),
+            WorkspaceRenderElement::Game(elem) => elem.opaque_regions(scale),
         }
     }
 
@@ -3112,6 +3087,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.alpha(),
             WorkspaceRenderElement::Window(elem) => elem.alpha(),
             WorkspaceRenderElement::Texture(elem) => elem.alpha(),
+            WorkspaceRenderElement::Game(elem) => elem.alpha(),
         }
     }
 
@@ -3123,6 +3099,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.kind(),
             WorkspaceRenderElement::Window(elem) => elem.kind(),
             WorkspaceRenderElement::Texture(elem) => elem.kind(),
+            WorkspaceRenderElement::Game(elem) => elem.kind(),
         }
     }
 
@@ -3134,6 +3111,7 @@ where
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.is_framebuffer_effect(),
             WorkspaceRenderElement::Window(elem) => elem.is_framebuffer_effect(),
             WorkspaceRenderElement::Texture(elem) => elem.is_framebuffer_effect(),
+            WorkspaceRenderElement::Game(elem) => elem.is_framebuffer_effect(),
         }
     }
 }
@@ -3168,6 +3146,16 @@ where
             WorkspaceRenderElement::Window(elem) => {
                 elem.draw(frame, src, dst, damage, opaque_regions, cache)
             }
+            WorkspaceRenderElement::Game(elem) => RenderElement::<GlowRenderer>::draw(
+                elem,
+                R::glow_frame_mut(frame),
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                cache,
+            )
+            .map_err(R::from_gles_error),
             WorkspaceRenderElement::Texture(elem) => RenderElement::<GlowRenderer>::draw(
                 elem,
                 R::glow_frame_mut(frame),
@@ -3191,6 +3179,7 @@ where
             WorkspaceRenderElement::Fullscreen(elem) => elem.underlying_storage(renderer),
             WorkspaceRenderElement::FullscreenPopup(elem) => elem.underlying_storage(renderer),
             WorkspaceRenderElement::Window(elem) => elem.underlying_storage(renderer),
+            WorkspaceRenderElement::Game(_) => None,
             WorkspaceRenderElement::Texture(elem) => {
                 elem.underlying_storage(renderer.glow_renderer_mut())
             }
@@ -3220,6 +3209,7 @@ where
             WorkspaceRenderElement::Window(elem) => {
                 elem.capture_framebuffer(frame, src, dst, cache)
             }
+            WorkspaceRenderElement::Game(_) => Ok(()),
             WorkspaceRenderElement::Texture(elem) => {
                 RenderElement::<GlowRenderer>::capture_framebuffer(
                     elem,

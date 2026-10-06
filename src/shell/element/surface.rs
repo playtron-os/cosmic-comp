@@ -1,5 +1,7 @@
 use iced_core::Shadow;
 use smithay::backend::renderer::gles::element::PixelShaderElement;
+use smithay::reexports::wayland_server::Resource;
+
 use smithay::reexports::wayland_server::protocol::wl_surface;
 
 use smithay::backend::renderer::utils::with_renderer_surface_state;
@@ -307,6 +309,8 @@ pub struct PopupShadow<'a> {
     pub push: &'a mut dyn FnMut(PixelShaderElement),
 }
 
+struct X11ClientPid(Option<u32>);
+
 impl CosmicSurface {
     pub fn title(&self) -> String {
         match self.0.underlying_surface() {
@@ -410,14 +414,28 @@ impl CosmicSurface {
         }
     }
 
-    /// PID of the client owning this surface (`_NET_WM_PID`). `None` for native
-    /// Wayland toplevels. Game mode uses this to relate a window to the adopted
-    /// game: a popup may only composite over the game when it comes from the SAME
-    /// process.
+    /// Cache the server's PID before mapping; window properties may use a sandbox's PID namespace.
+    pub fn cache_x11_pid(surface: &X11Surface) {
+        surface
+            .user_data()
+            .get_or_insert(|| X11ClientPid(surface.get_client_pid().ok().filter(|pid| *pid != 0)));
+    }
+
+    /// Server-verified X11 client PID or native socket peer PID in our namespace.
     pub fn pid(&self) -> Option<u32> {
         match self.0.underlying_surface() {
-            WindowSurface::X11(surface) => surface.pid(),
-            WindowSurface::Wayland(_) => None,
+            WindowSurface::X11(surface) => surface
+                .user_data()
+                .get::<X11ClientPid>()
+                .and_then(|pid| pid.0)
+                .or_else(|| surface.pid()),
+            WindowSurface::Wayland(toplevel) => {
+                toplevel
+                    .wl_surface()
+                    .client()?
+                    .get_data::<crate::state::ClientState>()?
+                    .pid
+            }
         }
     }
 

@@ -185,6 +185,7 @@ macro_rules! fl {
 }
 
 pub struct ClientState {
+    pub pid: Option<u32>,
     pub compositor_client_state: CompositorClientState,
     pub advertised_drm_node: Option<DrmNode>,
     pub evlh: LoopHandle<'static, State>,
@@ -1165,6 +1166,7 @@ impl State {
 
     pub fn new_client_state(&self) -> ClientState {
         ClientState {
+            pid: None,
             compositor_client_state: CompositorClientState::default(),
             advertised_drm_node: match &self.backend {
                 BackendData::Kms(kms_state) => *kms_state.primary_node.read().unwrap(),
@@ -1326,6 +1328,7 @@ impl Common {
         render_element_states: &RenderElementStates,
     ) {
         let shell = self.shell.read();
+        let render_element_states = &shell.game_render_states(render_element_states);
         let processor = |namespace: Option<usize>| {
             move |surface: &WlSurface, states: &SurfaceData| {
                 let primary_scanout_output = update_surface_primary_scanout_output(
@@ -1487,6 +1490,7 @@ impl Common {
         mut dmabuf_feedback: impl FnMut(DrmNode) -> Option<SurfaceDmabufFeedback>,
     ) {
         let shell = self.shell.read();
+        let render_element_states = &shell.game_render_states(render_element_states);
 
         if let Some(session_lock) = shell.session_lock.as_ref()
             && let Some(lock_surface) = session_lock.surfaces.get(output)
@@ -1822,11 +1826,9 @@ impl Common {
             overlay.send_frame(output, time, throttle(overlay), should_send);
         }
 
-        // A game held back until it draws is not on screen, so the walk below
-        // would pace it at one frame a second, and a game that paces its loading
-        // by its frames would take that much longer to draw anything at all.
         if shell.game_mode.output.as_ref() == Some(output)
-            && let Some(game) = shell.game_mode.first_frame_surface.as_ref()
+            && shell.game_mode.presentation.waiting()
+            && let Some(game) = shell.game_mode.game_surface.as_ref()
         {
             game.send_frame(output, time, None, |_, _| Some(output.clone()));
         }

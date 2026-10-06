@@ -101,7 +101,6 @@ pub mod adaptive_foreground;
 pub mod animations;
 pub mod cursor;
 pub mod element;
-pub mod first_frame;
 pub mod gpu_profiler;
 pub mod perf_badge;
 pub mod shadow;
@@ -209,6 +208,7 @@ pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // (`BlurShaders`) replaces them, blitting the region under the element out of the
 // live framebuffer instead of maintaining our own capture/cache pipeline.
 pub mod fsr;
+pub mod game;
 pub mod nis;
 pub mod nis_coefficients;
 
@@ -1130,6 +1130,8 @@ where
         }
     };
 
+    // Output changes and client resizes must use the new placement on this frame.
+    shell.write().refresh_game_scaling();
     let shell_guard = shell.read();
     let Some((previous_workspace, workspace)) = shell_guard.workspaces().active(output) else {
         #[cfg(not(feature = "debug"))]
