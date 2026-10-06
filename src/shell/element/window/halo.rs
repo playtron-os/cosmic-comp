@@ -706,7 +706,6 @@ fn open_surface(
         let mut list = commands::commands(&facts);
         for command in &mut list {
             let action = match command.id.as_str() {
-                "minimize" => shortcuts::Action::Minimize,
                 "maximize" => shortcuts::Action::Maximize,
                 "fullscreen" => shortcuts::Action::Fullscreen,
                 "close" => shortcuts::Action::Close,
