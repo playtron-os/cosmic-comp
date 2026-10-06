@@ -30,6 +30,7 @@ pub fn enabled() -> bool {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveWorkspace {
     pub id: String,
+    pub name: String,
     /// Retained independently of transition rendering for workspace styling.
     pub accent: Option<[f32; 3]>,
 }
@@ -173,13 +174,12 @@ async fn read(conn: &zbus::Connection) -> Registry {
         };
     }
 
-    let accent = rows
-        .iter()
-        .find(|(row_id, ..)| *row_id == id)
-        .and_then(|(_, _, accent, ..)| parse_accent(accent));
+    let row = rows.iter().find(|(row_id, ..)| *row_id == id);
+    let accent = row.and_then(|(_, _, accent, ..)| parse_accent(accent));
+    let name = row.map(|(_, name, ..)| name.clone()).unwrap_or_default();
 
     Registry::Present {
-        active: Some(ActiveWorkspace { id, accent }),
+        active: Some(ActiveWorkspace { id, name, accent }),
         running,
         known,
     }
