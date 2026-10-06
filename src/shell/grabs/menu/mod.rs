@@ -399,6 +399,8 @@ pub struct ContextMenu {
     flyout: Mutex<Option<usize>>,
     /// Whether the pointer is on that row.
     on_flyout_row: AtomicBool,
+    /// The Halo menu row holding keyboard focus, when the keyboard opened it.
+    keyboard_row: Mutex<Option<usize>>,
 }
 
 impl ContextMenu {
@@ -414,6 +416,7 @@ impl ContextMenu {
             closing: AtomicBool::new(false),
             flyout: Mutex::new(None),
             on_flyout_row: AtomicBool::new(false),
+            keyboard_row: Mutex::new(None),
         }
     }
 
@@ -500,6 +503,8 @@ pub enum Message {
     DialogStep(bool),
     /// Enter or Space on the dialog's focused button.
     DialogActivate,
+    /// The keyboard in a Halo menu.
+    MenuKey(MenuKey),
 }
 
 impl item::CursorEvents for Message {
@@ -589,6 +594,31 @@ impl Program for ContextMenu {
                 }
             }
             Message::Dismiss => self.selected.store(true, Ordering::SeqCst),
+            Message::MenuKey(key) => {
+                let (sections, _) = self.halo_sections();
+                let mut row = self.keyboard_row.lock().unwrap();
+                let press = match key {
+                    MenuKey::First => {
+                        *row = menu_card::first_focusable(&sections);
+                        None
+                    }
+                    MenuKey::Step(forward) => {
+                        let step = if forward {
+                            menu_card::FocusStep::Next
+                        } else {
+                            menu_card::FocusStep::Previous
+                        };
+                        *row = menu_card::step_focus(&sections, *row, step);
+                        None
+                    }
+                    MenuKey::Press => row.and_then(|row| menu_card::row_press(&sections, row)),
+                };
+                drop(row);
+                drop(sections);
+                if let Some(press) = press {
+                    return self.update(press, loop_handle, last_seat);
+                }
+            }
             Message::DialogStep(forward) => {
                 if let Some(dialog) = self.dialog.as_mut() {
                     dialog.step(forward);
@@ -815,6 +845,7 @@ impl Program for ContextMenu {
             return container(
                 dropdown(&**theme)
                     .variant(DropdownVariant::Menu)
+                    .focus_ring(*self.keyboard_row.lock().unwrap())
                     .shadow(true)
                     .sections_with_submenus(sections, rows),
             )
@@ -2026,7 +2057,11 @@ fn search_field_id() -> iced_core::widget::Id {
 pub struct PaletteKeyboardGrab {
     seat: Seat<State>,
     start_data: KeyboardGrabStartData<State>,
+    on_escape: Mutex<Option<EscapeHook>>,
 }
+
+/// Run once Escape has closed the palette, to hand focus back to its opener.
+pub type EscapeHook = Box<dyn FnOnce(&mut State) + Send>;
 
 /// What forwarding a key to the palette asked of the grab.
 enum Forwarded {
@@ -2044,7 +2079,18 @@ impl PaletteKeyboardGrab {
         Self {
             seat,
             start_data: KeyboardGrabStartData { focus },
+            on_escape: Mutex::new(None),
         }
+    }
+
+    pub fn on_escape(self, hook: Option<EscapeHook>) -> Self {
+        *self.on_escape.lock().unwrap() = hook;
+        self
+    }
+
+    /// What Escape owes the palette's opener, taken once.
+    pub fn take_escape_hook(&self) -> Option<EscapeHook> {
+        self.on_escape.lock().unwrap().take()
     }
 
     /// Hand a key to the palette's widget tree.
@@ -2162,6 +2208,9 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
         let sym = handle.keysym_handle(keycode).modified_sym();
         if sym == Keysym::Escape && state == KeyState::Pressed {
             self.close(data, handle, serial, time);
+            if let Some(hook) = self.take_escape_hook() {
+                data.common.event_loop_handle.insert_idle(hook);
+            }
             return;
         }
         if let Some(message) = dialog_key(sym)
@@ -2194,6 +2243,47 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
     }
 
     fn unset(&mut self, _data: &mut State) {}
+}
+
+/// What the keyboard does in a Halo menu it opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKey {
+    First,
+    Step(bool),
+    Press,
+}
+
+/// Hand `key` to the seat's open Halo menu. Returns whether one took it and, for a
+/// press, whether the press chose a row, which closes the menu.
+pub(crate) fn halo_menu_key(seat: &Seat<State>, key: MenuKey, state: &mut State) -> Option<bool> {
+    let element = seat
+        .user_data()
+        .get::<SeatMenuGrabState>()?
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|menu| {
+            menu.elements
+                .lock()
+                .unwrap()
+                .first()
+                .map(|e| e.iced.clone())
+        })?;
+    if !element.with_program(|menu| menu.halo && menu.palette.is_none() && menu.dialog.is_none()) {
+        return None;
+    }
+    element.queue_message(Message::MenuKey(key));
+    element.force_update();
+    let chosen = element.with_program(|menu| menu.selected.load(Ordering::SeqCst));
+    if chosen && let Some(pointer) = seat.get_pointer() {
+        state.common.event_loop_handle.insert_idle(move |state| {
+            if pointer.is_grabbed() {
+                let time = state.common.clock.now().as_millis();
+                pointer.unset_grab(state, smithay::utils::SERIAL_COUNTER.next_serial(), time);
+            }
+        });
+    }
+    Some(chosen)
 }
 
 /// A dialog's keys: Tab and Down walk forward, Shift+Tab and Up back, Enter and Space press.

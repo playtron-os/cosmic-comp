@@ -72,6 +72,8 @@ use crate::utils::desktop_action::{DesktopApp, NewWindowAction, glob_match};
 
 pub(crate) mod commands;
 mod halo;
+mod halo_keyboard;
+pub use halo_keyboard::HaloKeyboardGrab;
 pub(crate) mod runs;
 
 pub const RESIZE_BORDER: i32 = 10;
@@ -195,6 +197,7 @@ pub struct CosmicWindowInternal {
     /// The command palette, which the app glyph opens. Separate from
     /// `menu_open` so the glyph lights up and the chevron does not.
     commands_open: Arc<AtomicBool>,
+    halo_keyboard: Mutex<Option<super::header_bar::HaloControl>>,
     tiled: AtomicBool,
     /// Whether the window fills the output zone (position 0,0 and size >= zone).
     /// Used to give square corners to non-maximized windows that visually fill the screen.
@@ -653,6 +656,7 @@ impl CosmicWindowInternal {
     fn halo_revealed(&self) -> bool {
         self.pointer_over_window.load(Ordering::SeqCst)
             || halo_overview()
+            || self.halo_keyboard.lock().unwrap().is_some()
             || self.introduced_for().is_some_and(|t| {
                 t < super::header_bar::halo_intro_hold(&self.theme.lock().unwrap())
             })
@@ -884,6 +888,7 @@ impl CosmicWindow {
                 desktop_app: Mutex::new(desktop_app),
                 menu_open: Arc::new(AtomicBool::new(false)),
                 commands_open: Arc::new(AtomicBool::new(false)),
+                halo_keyboard: Mutex::new(None),
                 tiled: AtomicBool::new(false),
                 fills_output_zone: AtomicBool::new(false),
                 output_edges: AtomicU8::new(super::OutputEdges::ALL.bits()),
@@ -1166,7 +1171,7 @@ impl CosmicWindow {
         let seat = seat.clone();
         loop_handle.insert_idle(move |state| {
             if let Some((start, position)) = query_input() {
-                halo::open_commands(state, &surface, &seat, serial, start, position, app);
+                halo::open_commands(state, &surface, &seat, serial, start, position, app, None);
             }
         });
     }
@@ -1973,7 +1978,7 @@ impl Program for CosmicWindowInternal {
                     loop_handle.insert_idle(move |state| {
                         if let Some((start, position)) = query_input() {
                             halo::open_commands(
-                                state, &surface, &seat, serial, start, position, app,
+                                state, &surface, &seat, serial, start, position, app, None,
                             );
                         }
                     });
@@ -2147,6 +2152,17 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
         win: &'a CosmicWindowInternal,
         theme: &'a crate::comp_theme::CompTheme,
     ) -> crate::utils::iced::CompElement<'a, Message> {
+        win.halo_header()
+            .theme(theme)
+            .keyboard_focus(*win.halo_keyboard.lock().unwrap())
+            .into()
+    }
+}
+
+impl CosmicWindowInternal {
+    /// The window's header as the decorations draw it, before a theme is chosen.
+    fn halo_header<'b>(&self) -> super::header_bar::HeaderBar<'b, Message> {
+        let win = self;
         // Use forced title from .desktop override if available
         let title = {
             let ovr = win.desktop_override.lock().unwrap();
@@ -2185,8 +2201,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             .square_top(win.squares_top_corners())
             .window_width(win.window.geometry().size.w as f32)
             .panel(win.window.has_parent())
-            .run(runs::halo_run(&win.window), Message::RunChip)
-            .theme(theme);
+            .run(runs::halo_run(&win.window), Message::RunChip);
         let app = win.desktop_app.lock().unwrap().clone();
         if let Some(app) = app.as_ref() {
             if let Some(name) = &app.name {
@@ -2272,7 +2287,7 @@ impl Decorations<CosmicWindowInternal, Message> for DefaultDecorations {
             header = header.app_icon(icon);
         }
 
-        header.into()
+        header
     }
 }
 

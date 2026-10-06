@@ -84,11 +84,25 @@ impl State {
                 }
                 let pointer = seat.get_pointer().unwrap();
                 let keyboard = seat.get_keyboard().unwrap();
-                if pointer.is_grabbed() {
+                let in_halo = keyboard.with_grab(|_, grab| {
+                    grab.is::<crate::shell::element::window::HaloKeyboardGrab>()
+                }) == Some(true);
+                let hook = keyboard
+                    .with_grab(|_, grab| {
+                        grab.downcast_ref::<crate::shell::grabs::PaletteKeyboardGrab>()
+                            .and_then(|palette| palette.take_escape_hook())
+                    })
+                    .flatten();
+                let closed_a_surface = pointer.is_grabbed();
+                if closed_a_surface {
                     pointer.unset_grab(self, serial, time);
                 }
-                if keyboard.is_grabbed() {
+                // One level at a time: a menu opened from the Halo goes, focus stays in the Halo.
+                if keyboard.is_grabbed() && !(in_halo && closed_a_surface) {
                     keyboard.unset_grab(self);
+                }
+                if let Some(hook) = hook {
+                    self.common.event_loop_handle.insert_idle(hook);
                 }
             }
 
@@ -1210,7 +1224,38 @@ impl State {
                 }
             }
 
-            Action::FocusHalo => {}
+            Action::FocusHalo => {
+                let shell = self.common.shell.read();
+                if !crate::shell::element::header_bar::uses_halo_header(shell.theme()) {
+                    return;
+                }
+                let window = match seat.get_keyboard().unwrap().current_focus() {
+                    Some(KeyboardFocusTarget::Element(mapped)) => mapped.halo_window(),
+                    Some(KeyboardFocusTarget::Fullscreen(surface)) => shell
+                        .workspaces()
+                        .spaces()
+                        .flat_map(|workspace| &workspace.fullscreen_surfaces)
+                        .find(|fullscreen| fullscreen.surface == surface)
+                        .map(|fullscreen| fullscreen.halo.clone()),
+                    _ => None,
+                };
+                drop(shell);
+                let seat = seat.clone();
+                self.common.event_loop_handle.insert_idle(move |state| {
+                    let Some(keyboard) = seat.get_keyboard() else {
+                        return;
+                    };
+                    // Pressed again from inside the Halo, it hands focus back.
+                    if keyboard.with_grab(|_, grab| {
+                        grab.is::<crate::shell::element::window::HaloKeyboardGrab>()
+                    }) == Some(true)
+                    {
+                        keyboard.unset_grab(state);
+                    } else if let Some(window) = window {
+                        window.enter_halo_keyboard(state, &seat, None);
+                    }
+                });
+            }
 
             // Do nothing
             Action::Disable => (),

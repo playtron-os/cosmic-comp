@@ -253,6 +253,45 @@ pub struct TrayEntry<Message> {
     pub on: bool,
 }
 
+/// A control the keyboard can stand on in a Halo, in the order Tab walks them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HaloControl {
+    Glyph,
+    Chip,
+    Tray(usize),
+    Menu,
+    NewWindow,
+    More,
+    Minimize,
+    Maximize,
+    Fullscreen,
+    Close,
+}
+
+/// The ⌄ button's id, so a keyboard-opened menu can hang under it.
+pub fn menu_trigger_id() -> iced_core::widget::Id {
+    iced_core::widget::Id::new("halo-menu-trigger")
+}
+
+/// The focus ring Halo keyboard focus draws around `control`, while it is in the Halo.
+/// `focus` is the focused control, and whether its ring shows: not while a menu it opened is up.
+fn ringed<'b, Message: Clone + 'b>(
+    focus: Option<(HaloControl, bool)>,
+    control: HaloControl,
+    element: Element<'b, Message, iced_core::Theme, iced_tiny_skia::Renderer>,
+    theme: &CompTheme,
+) -> Element<'b, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let Some((focused, shown)) = focus else {
+        return element;
+    };
+    let on = shown && focused == control;
+    icetron_p::components::focus_ring::focus_ring(element, &**theme)
+        .radius(theme.halo_style().control_size / 2.0)
+        .force_shown(on)
+        .hidden(!on)
+        .into()
+}
+
 /// Builder for the compositor SSD header bar.
 pub struct HeaderBar<'a, Message> {
     title: String,
@@ -281,6 +320,7 @@ pub struct HeaderBar<'a, Message> {
     theme: Option<&'a CompTheme>,
     app_icon: Option<AppIcon>,
     run: Option<(HaloRun, Message)>,
+    keyboard_focus: Option<HaloControl>,
 }
 
 impl<'a, Message: Clone + 'static> Default for HeaderBar<'a, Message> {
@@ -316,6 +356,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             theme: None,
             app_icon: None,
             run: None,
+            keyboard_focus: None,
         }
     }
 
@@ -436,6 +477,66 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     pub fn run(mut self, run: Option<HaloRun>, on_press: Message) -> Self {
         self.run = run.map(|run| (run, on_press));
         self
+    }
+
+    /// The control Halo keyboard focus is on, which draws its ring and keeps the pill up.
+    pub fn keyboard_focus(mut self, control: Option<HaloControl>) -> Self {
+        self.keyboard_focus = control;
+        self
+    }
+
+    /// The controls this Halo shows at its tier, in Tab order.
+    pub fn controls(&self) -> Vec<HaloControl> {
+        let tier = self.tier();
+        let mut controls = Vec::new();
+        if self.on_commands.is_some() {
+            controls.push(HaloControl::Glyph);
+        }
+        if self.run.is_some() && tier < 4 {
+            controls.push(HaloControl::Chip);
+        }
+        for (idx, entry) in self.tray.iter().enumerate() {
+            if tier == 1 || entry.on {
+                controls.push(HaloControl::Tray(idx));
+            }
+        }
+        if tier <= 2 {
+            if self.on_right_click.is_some() {
+                controls.push(HaloControl::Menu);
+            }
+            if self.on_new_window.is_some() {
+                controls.push(HaloControl::NewWindow);
+            }
+            for (control, present) in [
+                (HaloControl::Minimize, self.on_minimize.is_some()),
+                (HaloControl::Maximize, self.on_maximize.is_some()),
+                (HaloControl::Fullscreen, self.on_fullscreen.is_some()),
+            ] {
+                if present {
+                    controls.push(control);
+                }
+            }
+        } else if self.on_commands.is_some() {
+            controls.push(HaloControl::More);
+        }
+        if self.on_close.is_some() {
+            controls.push(HaloControl::Close);
+        }
+        controls
+    }
+
+    pub fn control_message(&self, control: HaloControl) -> Option<Message> {
+        match control {
+            HaloControl::Glyph | HaloControl::More => self.on_commands.clone(),
+            HaloControl::Chip => self.run.as_ref().map(|(_, message)| message.clone()),
+            HaloControl::Tray(idx) => self.tray.get(idx).map(|entry| entry.message.clone()),
+            HaloControl::Menu => self.on_right_click.clone(),
+            HaloControl::NewWindow => self.on_new_window.clone(),
+            HaloControl::Minimize => self.on_minimize.clone(),
+            HaloControl::Maximize => self.on_maximize.clone(),
+            HaloControl::Fullscreen => self.on_fullscreen.clone(),
+            HaloControl::Close => self.on_close.clone(),
+        }
     }
 
     fn tier(&self) -> u8 {
@@ -586,6 +687,9 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             bytes: icons::APP_WINDOW.bytes,
             symbolic: true,
         });
+        let focus = self
+            .keyboard_focus
+            .map(|control| (control, !(self.menu_open || self.commands_open)));
         let glyph = halo_glyph(
             app_mark(&app_icon, metrics.glyph_icon_size, theme.halo_accent()),
             self.on_commands.clone(),
@@ -598,6 +702,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 .map(|(run, _)| run.state),
             theme,
         );
+        let glyph = ringed(focus, HaloControl::Glyph, glyph, theme);
 
         let mut name_style = theme.text_styles().role(TextRole::Label);
         name_style.font_weight = metrics.title_font_weight;
@@ -644,7 +749,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
             let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
-            identity = identity.push_rigid(chip);
+            identity = identity.push_rigid(ringed(focus, HaloControl::Chip, chip, theme));
         }
         let identity: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             identity.into_single().unwrap_or_else(Into::into);
@@ -663,18 +768,20 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let pins: Vec<_> = self
             .tray
             .iter()
-            .filter(|entry| tier == 1 || entry.on)
+            .enumerate()
+            .filter(|(_, entry)| tier == 1 || entry.on)
             .collect();
         if !pins.is_empty() {
-            let pinned = row(pins.into_iter().map(|entry| {
-                halo_button(
+            let pinned = row(pins.into_iter().map(|(idx, entry)| {
+                let button = halo_button(
                     entry.icon,
                     Some(entry.message.clone()),
                     entry.label.clone(),
                     HaloButtonRole::Tray { on: entry.on },
                     self.menu_open,
                     theme,
-                )
+                );
+                ringed(focus, HaloControl::Tray(idx), button, theme)
             }))
             .spacing(theme.spacing_0_5());
             if tier == 1 {
@@ -684,24 +791,28 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         if tier <= 2 {
             if let Some(message) = self.on_right_click.clone() {
-                trailing = trailing.push(halo_button(
+                let menu = halo_button(
                     icons::CHEVRON_DOWN,
                     Some(message),
                     fl!("halo-app-menu", app = name.as_str()),
                     HaloButtonRole::Menu,
                     self.menu_open,
                     theme,
-                ));
+                );
+                let menu =
+                    container(ringed(focus, HaloControl::Menu, menu, theme)).id(menu_trigger_id());
+                trailing = trailing.push(menu);
             }
             if let Some(message) = self.on_new_window.clone() {
-                trailing = trailing.push(halo_button(
+                let button = halo_button(
                     icons::PLUS,
                     Some(message),
                     fl!("halo-new-window", app = name.as_str()),
                     HaloButtonRole::Window,
                     self.menu_open,
                     theme,
-                ));
+                );
+                trailing = trailing.push(ringed(focus, HaloControl::NewWindow, button, theme));
             }
         }
         header = header.trailing(trailing);
@@ -709,24 +820,32 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let mut actions = row![].spacing(metrics.gap).align_y(Alignment::Center);
         if tier >= 3 {
             if let Some(message) = self.on_commands.clone() {
-                actions = actions.push(halo_button(
+                let button = halo_button(
                     icons::MORE_HORIZONTAL,
                     Some(message),
                     fl!("halo-all-commands"),
                     HaloButtonRole::Window,
                     self.menu_open,
                     theme,
-                ));
+                );
+                actions = actions.push(ringed(focus, HaloControl::More, button, theme));
             }
         } else {
-            for (icon, message, label) in [
-                (icons::MINUS, self.on_minimize.clone(), fl!("halo-park")),
+            for (control, icon, message, label) in [
                 (
+                    HaloControl::Minimize,
+                    icons::MINUS,
+                    self.on_minimize.clone(),
+                    fl!("halo-park"),
+                ),
+                (
+                    HaloControl::Maximize,
                     icons::MAXIMIZE_2,
                     self.on_maximize.clone(),
                     fl!("halo-fill"),
                 ),
                 (
+                    HaloControl::Fullscreen,
                     if self.fullscreen {
                         icons::SHRINK
                     } else {
@@ -737,26 +856,28 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 ),
             ] {
                 if let Some(message) = message {
-                    actions = actions.push(halo_button(
+                    let button = halo_button(
                         icon,
                         Some(message),
                         label,
                         HaloButtonRole::Window,
                         self.menu_open,
                         theme,
-                    ));
+                    );
+                    actions = actions.push(ringed(focus, control, button, theme));
                 }
             }
         }
         if let Some(message) = self.on_close.clone() {
-            actions = actions.push(halo_button(
+            let button = halo_button(
                 icons::X,
                 Some(message),
                 fl!("halo-close"),
                 HaloButtonRole::Close,
                 self.menu_open,
                 theme,
-            ));
+            );
+            actions = actions.push(ringed(focus, HaloControl::Close, button, theme));
         }
         header = header.action_buttons(actions);
 
@@ -1208,6 +1329,38 @@ mod tests {
         assert_eq!((padding.top, padding.bottom), (17.0, 25.0));
         assert_eq!(ssd_header_render_overhang(&theme), 57);
         assert_eq!(ssd_header_render_height(&theme), 56 + 17 + 25);
+    }
+
+    #[test]
+    fn halo_keyboard_focus_walks_the_controls_the_tier_shows() {
+        use HaloControl::*;
+        let header = |width| {
+            header_bar::<u8>()
+                .on_commands(0)
+                .on_right_click(1)
+                .on_minimize(2)
+                .on_maximize(3)
+                .on_fullscreen(4, false)
+                .on_close(5)
+                .tray(vec![TrayEntry {
+                    icon: icons::CAMERA,
+                    message: 6,
+                    label: String::new(),
+                    on: false,
+                }])
+                .window_width(width)
+        };
+        assert_eq!(
+            header(900.0).controls(),
+            [Glyph, Tray(0), Menu, Minimize, Maximize, Fullscreen, Close]
+        );
+        assert_eq!(
+            header(500.0).controls(),
+            [Glyph, Menu, Minimize, Maximize, Fullscreen, Close]
+        );
+        assert_eq!(header(300.0).controls(), [Glyph, More, Close]);
+        assert_eq!(header(900.0).control_message(Tray(0)), Some(6));
+        assert_eq!(header(300.0).control_message(More), Some(0));
     }
 
     #[test]
