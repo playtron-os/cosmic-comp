@@ -307,3 +307,14 @@ fn folding_goes_home_or_to_the_fallback() {
         assert_eq!(set.workspaces.len(), 1);
     });
 }
+
+/// A window opening fullscreen on the output the pointer is not on still takes
+/// that output to its new desktop, as long as it opened over the desktop shown there.
+#[test]
+fn an_output_follows_a_fullscreen_window_whichever_output_has_the_pointer() {
+    two_outputs(2, |sets, _| {
+        let (shown, hidden) = (sets[1].workspaces[0].handle, sets[1].workspaces[1].handle);
+        assert!(shows_its_fullscreen_desktop(shown, shown));
+        assert!(!shows_its_fullscreen_desktop(shown, hidden));
+    });
+}

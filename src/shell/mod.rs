@@ -1036,6 +1036,13 @@ fn opens_on_own_desktop(moves: bool, others_there: bool) -> bool {
     moves && others_there
 }
 
+/// Whether an output switches to the desktop a window opening fullscreen was
+/// given: when the desktop it opened over is the one that output shows, whichever
+/// output the pointer is on.
+fn shows_its_fullscreen_desktop(showing: WorkspaceHandle, opened_over: WorkspaceHandle) -> bool {
+    showing == opened_over
+}
+
 /// Insert a desktop named `name` at `idx` of `output`'s set. Desktops that span
 /// outputs get it on every output, so their sets stay index-aligned.
 fn insert_desktop(
@@ -7972,7 +7979,7 @@ impl Shell {
             };
             workspace.map_fullscreen(&window, &seat, None, None, loop_handle);
             if let Some(idx) = own_desktop {
-                if on_screen {
+                if shows_its_fullscreen_desktop(active_handle, workspace_handle) {
                     let _ = self.activate(
                         &output,
                         idx,
