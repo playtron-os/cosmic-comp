@@ -221,7 +221,7 @@ fn run_command(
         let name = app
             .and_then(|app| app.name.clone())
             .unwrap_or_else(|| surface.app_id());
-        toast(state, fl!("halo-one-window", app = name.as_str()));
+        notify(state, &name, fl!("halo-one-window", app = name.as_str()));
         return;
     }
     if let Some(message) = commands::message_for(id) {
@@ -241,7 +241,7 @@ fn run_command(
             .unwrap_or_else(|| surface.app_id());
         match id {
             "settings" => open_settings(state),
-            "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
+            "info" => notify(state, &name, fl!("halo-info-toast", app = name.as_str())),
             _ => {}
         }
     }
@@ -261,11 +261,19 @@ fn open_settings(state: &mut State) {
     }
 }
 
-fn toast(state: &State, message: String) {
+/// A notification about the window's app.
+fn notify(state: &State, app: &str, summary: String) {
     state
         .common
         .dbus_state
-        .system_toast(message, crate::dbus::notifications::Tone::Neutral);
+        .notify(crate::dbus::notifications::Notification {
+            app_name: app.to_owned(),
+            app_icon: String::new(),
+            summary,
+            body: String::new(),
+            expire_timeout: 5000,
+            transient: true,
+        });
 }
 
 /// The design's compact age for a recent item: now, 5m, 3h, 2d, 4mo, 1y.
@@ -576,10 +584,7 @@ fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
                 window.close();
             }
             if let Some(receipt) = closed_receipt(windows.len()) {
-                state
-                    .common
-                    .dbus_state
-                    .system_toast(receipt, crate::dbus::notifications::Tone::Neutral);
+                state.common.dbus_state.system_notification(receipt);
             }
         });
     }))

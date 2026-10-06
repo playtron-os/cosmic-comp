@@ -31,6 +31,7 @@ window-menu-resize-edge-right = Right
 window-menu-resize-edge-bottom = Bottom
 
 screenshot-app-name = Screenshot
+shell-notification-app = Kora
 screenshot-saved = Screenshot saved
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
 
@@ -38,7 +39,7 @@ window-menu-record = Record window
 window-menu-stop-recording = Stop recording
 recording-app-name = Recording
 recording-started = Recording this window
-recording-stopped = Recording stopped — saved with provenance
+recording-stopped = Recording stopped
 recording-failed = Recording failed
 recording-window-not-capturable = This window cannot be captured
 

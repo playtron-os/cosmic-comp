@@ -8,7 +8,7 @@
 use tracing::warn;
 
 use crate::{
-    dbus::notifications::{Notification, Tone},
+    dbus::notifications::Notification,
     fl,
     shell::element::{CosmicSurface, surface::Recording},
     state::State,
@@ -90,10 +90,7 @@ fn start(state: &mut State, surface: &CosmicSurface) {
                 // closed meanwhile is Idle and its recording ends on its own.
                 if surface.recording() == Recording::Starting {
                     surface.set_recording(Recording::Active { id, path });
-                    state
-                        .common
-                        .dbus_state
-                        .system_toast(fl!("recording-started"), Tone::Destructive);
+                    notify(state, fl!("recording-started"), String::new());
                 }
                 refresh_halo(state, &surface);
             }
@@ -126,11 +123,7 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
 fn finished(state: &mut State, surface: &CosmicSurface, path: &str) {
     surface.set_recording(Recording::Idle);
     refresh_halo(state, surface);
-    state
-        .common
-        .dbus_state
-        .system_toast(fl!("recording-stopped"), Tone::Neutral);
-    tracing::info!(%path, "Recording saved");
+    notify(state, fl!("recording-stopped"), path.to_owned());
 }
 
 /// Whether `surface` is recording as `id` right now.
