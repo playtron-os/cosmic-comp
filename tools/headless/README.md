@@ -91,6 +91,14 @@ bar headers rather than the Halo.
 - Logs: `CC_STATE/comp.log` (stderr) and the runtime dir's `cosmic-comp.log`;
   `RUST_LOG` is passed through.
 
+## Several outputs
+
+`CC_OUTPUTS=2` (with, say, `CC_SIZE=3840x1080`) splits the nested window into
+that many outputs side by side, `WINIT-0` on the left. Each is drawn on its own
+and copied into its slice, so output placement, per-output desktops and moving
+between outputs can be checked headless. Pointer coordinates span the whole
+window, and `scale` sets every output.
+
 ## Comparing builds
 
 Point `CC_BIN` at another build and use another `CC_STATE` to run two
