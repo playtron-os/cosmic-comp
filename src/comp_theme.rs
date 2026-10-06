@@ -94,9 +94,16 @@ impl Deref for CompTheme {
 impl Default for CompTheme {
     fn default() -> Self {
         let is_dark = true;
-        let theme: Arc<dyn ThemeInterface> = Arc::new(DEFAULT_THEME_PAIR.load(is_dark));
+        let theme: Arc<dyn ThemeInterface> = Arc::new(sharp(DEFAULT_THEME_PAIR.load(is_dark)));
         Self::new(theme, is_dark)
     }
+}
+
+/// The compositor draws icetron-p surfaces with tiny-skia into its own buffers,
+/// where a software blur would cost a frame and blur nothing.
+fn sharp(mut theme: DynamicTheme) -> DynamicTheme {
+    theme.backdrop_blur_software = false;
+    theme
 }
 
 impl CompTheme {
@@ -153,14 +160,14 @@ impl CompTheme {
     pub fn from_file(theme_name: &str, is_dark: bool) -> Self {
         let loaded = DynamicTheme::load_by_name(theme_name, is_dark);
         let using_fallback = loaded.is_none();
-        let theme: Arc<dyn ThemeInterface> = Arc::new(loaded.unwrap_or_else(|| {
+        let theme: Arc<dyn ThemeInterface> = Arc::new(sharp(loaded.unwrap_or_else(|| {
             let fallback = if is_dark {
                 DEFAULT_THEME_PAIR.dark_fallback
             } else {
                 DEFAULT_THEME_PAIR.light_fallback
             };
             ron::from_str(fallback).expect("embedded fallback theme RON is invalid")
-        }));
+        })));
 
         info!(
             theme_name,
@@ -376,6 +383,15 @@ mod focus_border_tests {
         tokens.window_header_style = style;
         tokens.window_border_color = Color::from_rgba(0.96, 0.94, 0.96, 0.08);
         CompTheme::new(Arc::new(tokens), true)
+    }
+
+    #[test]
+    fn a_theme_that_blurs_on_software_still_draws_sharp_here() {
+        let mut tokens = DEFAULT_THEME_PAIR.load(true);
+        tokens.backdrop_blur_software = true;
+        let theme = CompTheme::new(Arc::new(sharp(tokens)), true);
+        assert!(!theme.backdrop_blur_software());
+        assert!(!theme.halo_chrome_theme().backdrop_blur_software());
     }
 
     #[test]
