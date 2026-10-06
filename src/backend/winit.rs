@@ -173,7 +173,10 @@ impl WinitState {
                 .current_mode()
                 .context("output without a mode")?;
             let size = Size::<i32, smithay::utils::Buffer>::from((mode.size.w, mode.size.h));
+            // A texture kept from the last frame still holds it, so only damage is redrawn.
+            let mut age = 1;
             if split.texture.as_ref().is_none_or(|t| t.size() != size) {
+                age = 0;
                 split.texture = Some(
                     Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, size)
                         .map_err(|err| anyhow!("No offscreen buffer: {err}"))?,
@@ -188,7 +191,7 @@ impl WinitState {
                 renderer,
                 &mut target,
                 &mut split.damage_tracker,
-                0,
+                age,
                 &state.shell,
                 state.clock.now(),
                 &split.output,
