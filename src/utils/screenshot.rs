@@ -35,17 +35,13 @@ use tracing::warn;
 
 use crate::{
     backend::render::{RendererRef, element::AsGlowRenderer},
-    dbus::notifications::Notification,
+    dbus::notifications::Tone,
     fl,
     shell::element::CosmicSurface,
     state::{State, advertised_node_for_surface},
     utils::captures::{self, CaptureKind},
 };
 
-/// Icon name shared with `cosmic-screenshot`, so both toasts look the same.
-const NOTIFICATION_ICON: &str = "com.system76.CosmicScreenshot";
-/// Toast lifetime in milliseconds, as `cosmic-screenshot` sends it.
-const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 const PNG_MIME: &str = "image/png";
 /// Captures of one window within the same second before giving up on a name.
 const NAME_ATTEMPTS: u32 = 100;
@@ -166,18 +162,11 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
 /// Back on the compositor thread: offer the PNG on the clipboard and toast.
 fn deliver(state: &mut State, seat: &Seat<State>, encoded: Encoded) {
     crate::clipboard::set_compositor_clipboard(state, seat, PNG_MIME.to_owned(), encoded.png);
-    let (summary, body) = match &encoded.saved {
-        Some(_) => (fl!("screenshot-saved"), String::new()),
-        None => (fl!("screenshot-saved-to-clipboard"), String::new()),
+    let message = match &encoded.saved {
+        Some(_) => fl!("screenshot-saved"),
+        None => fl!("screenshot-saved-to-clipboard"),
     };
-    state.common.dbus_state.notify(Notification {
-        app_name: fl!("screenshot-app-name"),
-        app_icon: NOTIFICATION_ICON.to_owned(),
-        summary,
-        body,
-        expire_timeout: NOTIFICATION_TIMEOUT_MS,
-        transient: true,
-    });
+    state.common.dbus_state.system_toast(message, Tone::Neutral);
 }
 
 fn capture_window<R>(

@@ -1209,16 +1209,18 @@ impl Drop for MoveGrab {
             drop(shell);
 
             // Dropped onto a stack: the dragged windows are its tabs now.
-            if crate::dbus::workspaces::enabled()
-                && position
-                    .as_ref()
-                    .is_some_and(|(mapped, _)| mapped != &window)
+            if position
+                .as_ref()
+                .is_some_and(|(mapped, _)| mapped != &window)
             {
                 let message = match tabs {
                     1 => crate::fl!("halo-merged"),
                     tabs => crate::fl!("halo-merged-tabs", tabs = tabs),
                 };
-                state.common.dbus_state.system_notification(message);
+                state
+                    .common
+                    .dbus_state
+                    .system_toast(message, crate::dbus::notifications::Tone::Neutral);
             }
 
             // Move embedded children to follow the parent to the new output

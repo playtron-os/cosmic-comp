@@ -30,6 +30,38 @@ trait Notifications {
     ) -> zbus::Result<u32>;
 }
 
+/// The shell's system toasts: a one-line confirmation of something the user
+/// just did, never a notification (no history, no unread, no sound).
+#[zbus::proxy(
+    interface = "one.playtron.AgentOS.Notifications1",
+    default_service = "one.playtron.AgentOS.Notifications1",
+    default_path = "/one/playtron/AgentOS/Notifications1"
+)]
+trait SystemToasts {
+    fn toast(&self, message: &str, tone: &str) -> zbus::Result<()>;
+}
+
+/// The colour grammar a system toast's dot carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Neutral,
+    /// Work the machine is doing for you.
+    Ai,
+    NeedsYou,
+    Destructive,
+}
+
+impl Tone {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tone::Neutral => "neutral",
+            Tone::Ai => "ai",
+            Tone::NeedsYou => "needs-you",
+            Tone::Destructive => "destructive",
+        }
+    }
+}
+
 /// One toast. `app_icon` is a freedesktop icon name.
 #[derive(Debug, Clone)]
 pub struct Notification {
@@ -56,16 +88,21 @@ impl DBusState {
 }
 
 impl DBusState {
-    /// A one-line confirmation of something the user just did, as a transient
-    /// notification from the shell.
-    pub fn system_notification(&self, message: String) {
-        self.notify(Notification {
-            app_name: crate::fl!("shell-notification-app"),
-            app_icon: String::new(),
-            summary: plain(message),
-            body: String::new(),
-            expire_timeout: 5000,
-            transient: true,
+    /// Show a system toast, fire and forget. A missing daemon is only logged.
+    pub fn system_toast(&self, message: String, tone: Tone) {
+        let message = plain(message);
+        let state = self.clone();
+        self.spawn(async move {
+            let sent = async {
+                let conn = state.session_conn().await?;
+                SystemToastsProxy::new(conn)
+                    .await?
+                    .toast(&message, tone.as_str())
+                    .await
+            };
+            if let Err(err) = sent.await {
+                warn!(?err, %message, "Failed to show a system toast");
+            }
         });
     }
 }
@@ -101,10 +138,19 @@ mod tests {
     use crate::fl;
 
     #[test]
-    fn the_shells_confirmations_read_as_the_prototype_writes_them() {
+    fn tones_go_by_the_names_the_daemon_reads() {
+        let names = [Tone::Neutral, Tone::Ai, Tone::NeedsYou, Tone::Destructive].map(Tone::as_str);
+        assert_eq!(names, ["neutral", "ai", "needs-you", "destructive"]);
+    }
+
+    #[test]
+    fn the_shells_toasts_read_as_the_prototype_writes_them() {
         assert_eq!(fl!("screenshot-saved"), "Screenshot saved");
         assert_eq!(fl!("recording-started"), "Recording this window");
-        assert_eq!(fl!("recording-stopped"), "Recording stopped");
+        assert_eq!(
+            fl!("recording-stopped"),
+            "Recording stopped — saved with provenance"
+        );
         assert_eq!(fl!("halo-merged"), "Merged — this window is a tab now");
         assert_eq!(
             plain(fl!("halo-merged-tabs", tabs = 3)),

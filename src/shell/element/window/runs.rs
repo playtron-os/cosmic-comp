@@ -20,7 +20,7 @@ use calloop::{
 use smithay::wayland::seat::WaylandFocus;
 
 use crate::{
-    fl, shell::element::CosmicSurface, state::State,
+    dbus::notifications::Tone, fl, shell::element::CosmicSurface, state::State,
     wayland::protocols::toplevel_info::mapped_toplevel_identifier,
 };
 
@@ -237,10 +237,16 @@ fn schedule_expiry(state: &mut State) {
     *EXPIRY.lock().unwrap() = token.ok();
 }
 
-/// The prototype's receipt for a press on the chip.
+/// The prototype's receipt for a press on the chip: neutral for queued work,
+/// which nothing is being spent on yet.
 pub fn chip_toast(state: &mut State, surface: &CosmicSurface) {
     if let Some(run) = halo_run(surface) {
-        state.common.dbus_state.system_notification(run.toast());
+        let tone = if run.state == RunState::Queued {
+            Tone::Neutral
+        } else {
+            Tone::Ai
+        };
+        state.common.dbus_state.system_toast(run.toast(), tone);
     }
 }
 
