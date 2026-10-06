@@ -103,6 +103,11 @@ const FIRST_FRAME_WAIT: Duration = Duration::from_secs(20);
 /// before giving the screen back to the launcher or the desktop.
 const REPLACEMENT_WAIT: Duration = Duration::from_secs(8);
 
+/// How long game mode waits for the launcher to come back once its window is
+/// gone. Short, because a launcher that quit for good leaves an empty screen
+/// for this long.
+const LAUNCHER_RESTART_WAIT: Duration = Duration::from_secs(4);
+
 /// Whether `window` is the launcher's own.
 pub fn is_launcher_window(window: &CosmicSurface) -> bool {
     LAUNCHER_APP_IDS.contains(&window.app_id().to_lowercase().as_str())
@@ -1394,9 +1399,26 @@ impl State {
         if let Some((Some(app_id), pending)) = missing_app {
             let no_launcher =
                 || find_game_surface(&self.common.shell.read(), LAUNCHER_APP_ID).is_none();
-            if app_id == LAUNCHER_APP_ID && pending.is_none() {
-                info!(target: GAMING_TARGET, "launcher window gone; leaving game mode");
-                self.exit_game_mode();
+            if app_id == LAUNCHER_APP_ID {
+                // A launcher that restarts (a crash, an update) maps a new
+                // window within moments; leaving at once dropped game mode
+                // under it. The new window is adopted as a pending enter.
+                let since = self.common.shell.read().game_mode.missing_since;
+                match (pending, since) {
+                    (None, _) | (Some(LAUNCHER_APP_ID), None) => {
+                        info!(target: GAMING_TARGET, "launcher window gone; waiting for it to come back");
+                        let mut shell = self.common.shell.write();
+                        shell.game_mode.pending_app_id = Some(LAUNCHER_APP_ID);
+                        shell.game_mode.missing_since = Some(Instant::now());
+                    }
+                    (Some(LAUNCHER_APP_ID), Some(since))
+                        if since.elapsed() >= LAUNCHER_RESTART_WAIT =>
+                    {
+                        info!(target: GAMING_TARGET, "launcher did not come back; leaving game mode");
+                        self.exit_game_mode();
+                    }
+                    _ => {}
+                }
             } else if pending == Some(LAUNCHER_APP_ID) && no_launcher() {
                 // A game started from the desktop, without the launcher, has ended.
                 info!(target: GAMING_TARGET, app_id, "app gone and no launcher to return to; leaving game mode");

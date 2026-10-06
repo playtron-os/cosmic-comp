@@ -1,3 +1,19 @@
+# [1.54.0](https://github.com/playtron-os/cosmic-comp/compare/v1.53.0...v1.54.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **game-mode:** wait for a restarted launcher instead of leaving game mode ([e7a7fec](https://github.com/playtron-os/cosmic-comp/commit/e7a7fece1d8719234a168f07bf2b44fa33645dfe))
+* **halo:** call the Park button Minimize ([601203f](https://github.com/playtron-os/cosmic-comp/commit/601203ff70a72af9a4a3b1ebf242546dc2b797c5))
+* **notifications:** name the shell after the system, not Kora ([27e3683](https://github.com/playtron-os/cosmic-comp/commit/27e3683156432431ae9e64a822aa7a9503986377))
+
+
+### Features
+
+* **halo:** remove the Park button and palette row ([0f65c17](https://github.com/playtron-os/cosmic-comp/commit/0f65c174a0eb5f8cdb1e860010a769dfd44bd8aa))
+* **halo:** send the shell's confirmations as system toasts ([1e91942](https://github.com/playtron-os/cosmic-comp/commit/1e91942c121bb4a890233a6966b74eac177f3dcf))
+* **notifications:** choose toasts or notifications by COSMIC_SYSTEM_TOASTS ([5b18f6c](https://github.com/playtron-os/cosmic-comp/commit/5b18f6cd1624bf2bfbcbaac09a124e5a9efeda11))
+
 # [1.53.0](https://github.com/playtron-os/cosmic-comp/compare/v1.52.0...v1.53.0) (2026-10-06)
 
 
