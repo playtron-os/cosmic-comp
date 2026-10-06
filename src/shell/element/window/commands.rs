@@ -273,6 +273,15 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
     commands
 }
 
+/// The command the window is sent for `id`: one of its own, or a standard verb it
+/// declares. A verb it does not declare is never sent, as a command or as keys.
+pub fn app_command<'a>(catalog: &Catalog, id: &'a str) -> Option<&'a str> {
+    match id.strip_prefix(APP_PREFIX) {
+        Some(own) => Some(own),
+        None => catalog.handles.contains_key(id).then_some(id),
+    }
+}
+
 /// The commands an app put forward for its `⌄` menu, in its order, capped.
 pub fn menu_nominees(
     catalog: &Catalog,
@@ -565,6 +574,25 @@ mod tests {
         }
         catalog.set_state("slate.c2", 1).unwrap();
         catalog
+    }
+
+    /// An undeclared verb is not listed, so nothing can pick it; a declared one goes to the app.
+    #[test]
+    fn edit_and_find_go_only_to_a_window_that_declares_them() {
+        let catalog = catalog();
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let listed = commands(&facts);
+        for id in ["undo", "redo", "cut", "paste", "selall", "markv", "find"] {
+            assert!(listed.iter().all(|c| c.id != id), "{id} is listed");
+            assert_eq!(app_command(&catalog, id), None, "{id} is sent");
+        }
+        assert!(message_for("copy").is_none());
+        assert_eq!(app_command(&catalog, "copy"), Some("copy"));
+        assert_eq!(
+            app_command(&catalog, &format!("{APP_PREFIX}slate.c0")),
+            Some("slate.c0")
+        );
     }
 
     /// Edit lists only the verbs the window says it answers, as it can now.
