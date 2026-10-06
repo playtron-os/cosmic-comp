@@ -1,3 +1,26 @@
+# [1.55.0](https://github.com/playtron-os/cosmic-comp/compare/v1.54.0...v1.55.0) (2026-10-06)
+
+
+### Bug Fixes
+
+* **fullscreen:** switch an output to its window's new fullscreen desktop ([02db8a0](https://github.com/playtron-os/cosmic-comp/commit/02db8a053d418368df78168d9b547d0669a34ca8))
+* **halo:** list only the Edit verbs a window declares ([e22db6b](https://github.com/playtron-os/cosmic-comp/commit/e22db6baddb216fd84a9e9a5e8b9371ec93d41db))
+
+
+### Features
+
+* **halo:** add Move to Desktop ([0f10e8c](https://github.com/playtron-os/cosmic-comp/commit/0f10e8c401ea69d4657361a98a10d07f0d1d984d)), closes [playtron-os/cosmic-settings-daemon#5](https://github.com/playtron-os/cosmic-settings-daemon/issues/5)
+* **halo:** add Move to Desktop ([98196d1](https://github.com/playtron-os/cosmic-comp/commit/98196d139b54922f4a3f31ef6685a8a65fbc4cfc)), closes [playtron-os/cosmic-settings-daemon#5](https://github.com/playtron-os/cosmic-settings-daemon/issues/5)
+* **halo:** list the whole Edit set in every window's palette ([f44f205](https://github.com/playtron-os/cosmic-comp/commit/f44f2054a26a0bac87478a7b0cde3a9fca26538d))
+* **halo:** move keyboard focus into the Halo with Super+F10 ([0b367a4](https://github.com/playtron-os/cosmic-comp/commit/0b367a44e1341686d1cf69523a2bbb5a08a9ce8b))
+* **halo:** name the palette binding in the glyph tooltip ([7f57c49](https://github.com/playtron-os/cosmic-comp/commit/7f57c49d5c5257dd61c98e8fcb3ab3edcc349fbd))
+* **halo:** walk the Open Recent fly-out with the keyboard ([b8f2ff0](https://github.com/playtron-os/cosmic-comp/commit/b8f2ff03dd2324ed98eb0d6d06a23857bb2bfe5b))
+
+
+### Performance Improvements
+
+* **headless:** redraw only the damage of each split output ([9587b28](https://github.com/playtron-os/cosmic-comp/commit/9587b282707425761526f91de5b9966fd13ad1f0))
+
 # [1.54.0](https://github.com/playtron-os/cosmic-comp/compare/v1.53.0...v1.54.0) (2026-10-06)
 
 
