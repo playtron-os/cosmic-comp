@@ -35,7 +35,8 @@ usage: headless.sh <command> [args]
 Environment for `up`:
   CC_BIN      cosmic-comp binary (default: target/debug/cosmic-comp)
   CC_STATE    state dir: logs, private HOME and config (default: ./.headless)
-  CC_SIZE     output size in physical pixels (default: 1920x1080)
+  CC_SIZE     window size in physical pixels (default: 1920x1080)
+  CC_OUTPUTS  outputs side by side in that window, each an equal slice (default: 1)
   CC_SCALE    initial output scale (default: 1)
   CC_MODE     dark or light (default: dark)
   CC_THEMES   dir holding <theme>/{dark,light}.ron (default: the built-in fallback)
@@ -238,6 +239,7 @@ cmd_up() {
 	sandbox
 	local n; n=$(cut -c2- "$STATE/display")
 
+	export COSMIC_WINIT_OUTPUTS=${CC_OUTPUTS:-1}
 	export DISPLAY=:$n COSMIC_BACKEND=winit LIBGL_ALWAYS_SOFTWARE=1 LD_LIBRARY_PATH=$libs \
 		COSMIC_CLEAR_COLOR=${CC_CLEAR:-#2a2a2e} RUST_LOG=${RUST_LOG:-warn}
 	clean_env
@@ -252,7 +254,7 @@ cmd_up() {
 	xdo windowmove "$win" 0 0 windowsize "$win" "${size%x*}" "${size#*x}"
 	# No window manager hands out focus, so give the keyboard to the nested window.
 	xdo windowfocus --sync "$win"
-	wait_for "comp wlr-randr | grep -q '${size%x*}x${size#*x} px'"
+	wait_for "comp wlr-randr | grep -q '$((${size%x*} / ${CC_OUTPUTS:-1}))x${size#*x} px'"
 	sleep 0.5
 	[ "${CC_SCALE:-1}" = 1 ] || cmd_scale "$CC_SCALE"
 	echo "up: display :$n, $(cat "$STATE/socket") in $r (state $STATE)"
@@ -374,8 +376,9 @@ cmd_selftest() {
 
 cmd_scale() {
 	local out
-	out=$(comp wlr-randr | awk 'NR==1 {print $1}')
-	comp wlr-randr --output "$out" --scale "${1:?scale}"
+	for out in $(comp wlr-randr | awk '/^[^ ]/ {print $1}'); do
+		comp wlr-randr --output "$out" --scale "${1:?scale}"
+	done
 	sleep 0.6
 }
 

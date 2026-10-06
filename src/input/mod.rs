@@ -825,14 +825,31 @@ impl State {
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
                     notify_cursor_activity(self, &seat);
-                    let output = seat.active_output();
-                    let output_geometry = output.geometry();
-                    let position = output_geometry.loc.to_f64()
+                    let mut output = seat.active_output();
+                    // A window holding several outputs reports positions across all of them.
+                    let area = match &self.backend {
+                        BackendData::Winit(winit) => winit.split_area().map(|a| a.as_global()),
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| output.geometry());
+                    let position = area.loc.to_f64()
                         + smithay::backend::input::AbsolutePositionEvent::position_transformed(
                             &event,
-                            output_geometry.size.as_logical(),
+                            area.size.as_logical(),
                         )
                         .as_global();
+                    if let Some(under) = self
+                        .common
+                        .shell
+                        .read()
+                        .outputs()
+                        .find(|o| o.geometry().to_f64().contains(position))
+                        .filter(|o| **o != output)
+                        .cloned()
+                    {
+                        seat.set_active_output(&under);
+                        output = under;
+                    }
                     let serial = SERIAL_COUNTER.next_serial();
                     let shell_guard = self.common.shell.write();
 
