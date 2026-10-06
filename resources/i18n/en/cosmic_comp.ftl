@@ -31,6 +31,7 @@ window-menu-resize-edge-right = Right
 window-menu-resize-edge-bottom = Bottom
 
 screenshot-app-name = Screenshot
+shell-notification-app = System
 screenshot-saved = Screenshot saved
 screenshot-saved-to-clipboard = Screenshot saved to clipboard
 
@@ -39,6 +40,7 @@ window-menu-stop-recording = Stop recording
 recording-app-name = Recording
 recording-started = Recording this window
 recording-stopped = Recording stopped
+recording-stopped-toast = Recording stopped — saved with provenance
 recording-failed = Recording failed
 recording-window-not-capturable = This window cannot be captured
 
@@ -56,6 +58,8 @@ halo-fullscreen-desktop = Fullscreen — gives it its own desktop
 halo-exit-fullscreen-desktop = Exit fullscreen — back to the desktop it came from
 halo-close = Close — runs continue
 halo-pin-full = Tray is full ({ $cap }) — the halo is a pill, not a toolbar
+halo-unpinned = Unpinned — still one { $keys } away
+halo-unpinned-unbound = Unpinned — still in the palette
 halo-ask-chat = Ask Kora
 halo-ask-chat-hint = opens a new conversation
 halo-undo = Undo
@@ -73,6 +77,8 @@ halo-info = App info & provenance
 halo-info-toast = { $app } — standard command set, provenance on every capture
 halo-one-window = { $app } opens one window
 halo-park-window = Park window
+halo-merged = Merged — this window is a tab now
+halo-merged-tabs = Merged { $tabs } tabs into the other window
 halo-fullscreen-toggle = Fullscreen / exit fullscreen
 halo-close-window = Close window
 halo-open-recent = Open Recent

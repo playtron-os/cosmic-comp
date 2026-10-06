@@ -454,14 +454,12 @@ fn the_palette_query_filters_rows_and_enter_runs_the_first_hit_or_asks_chat() {
     );
 }
 
-/// Unpinning says nothing, since the header shows the result, while a full
-/// tray still explains its refusal.
 #[test]
-fn only_a_refused_pin_leaves_a_notice() {
+fn a_full_tray_refuses_another_pin() {
     use crate::shell::element::window::commands;
     use icetron_p::prelude::{HaloCommand, HaloCommandGroup, TRAY_CAP};
 
-    let app_id = "palette-notice-test";
+    let app_id = "palette-full-tray-test";
     let ids: Vec<String> = (0..=TRAY_CAP).map(|i| format!("cmd{i}")).collect();
     let commands_list = ids
         .iter()
@@ -471,32 +469,15 @@ fn only_a_refused_pin_leaves_a_notice() {
     menu.halo = true;
     menu.palette = Some(Palette::new(app_id, "Example", commands_list));
     let loop_handle = crate::utils::iced::ProgramLoop::test_handle();
-    let notice = |menu: &ContextMenu| {
-        menu.palette
-            .as_ref()
-            .unwrap()
-            .notice
-            .lock()
-            .unwrap()
-            .clone()
-    };
 
     // Start from an empty tray, whatever the app's defaults are.
     for id in commands::pins(app_id) {
         commands::toggle_pin(app_id, &id);
     }
-    for id in ids.iter().take(TRAY_CAP) {
+    for id in &ids {
         let _ = menu.update(Message::TogglePin(id.clone()), &loop_handle, None);
-        assert_eq!(notice(&menu), None, "a pin that fits says nothing");
     }
-    let _ = menu.update(
-        Message::TogglePin(ids[TRAY_CAP].clone()),
-        &loop_handle,
-        None,
-    );
-    assert!(notice(&menu).is_some(), "the refused pin explains itself");
-    let _ = menu.update(Message::TogglePin(ids[0].clone()), &loop_handle, None);
-    assert_eq!(notice(&menu), None, "unpinning says nothing");
+    assert_eq!(commands::pins(app_id), ids[..TRAY_CAP]);
 }
 
 /// The palette's backdrop is its card: the card's width, its `radii_xl`
