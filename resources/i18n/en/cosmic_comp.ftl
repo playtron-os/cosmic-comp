@@ -48,6 +48,7 @@ halo-screenshot-window = Screenshot window
 halo-app-menu = { $app } menu
 halo-commands = { $app } commands
 halo-commands-hint = { $app } — commands
+halo-commands-hint-keys = { $app } — commands ({ $keys })
 halo-all-commands = All commands
 halo-new-window = New { $app } window
 halo-minimize = Minimize

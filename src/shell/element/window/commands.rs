@@ -381,6 +381,38 @@ pub fn pin_receipt(outcome: PinOutcome, palette_keys: Option<String>) -> Option<
     }
 }
 
+/// A binding as the Halo's hints write it, with a letter key in capitals: "Super+K".
+pub fn key_text(binding: &str) -> String {
+    let (mods, key) = binding.rsplit_once('+').unwrap_or(("", binding));
+    let key = if key.chars().count() == 1 {
+        key.to_uppercase()
+    } else {
+        key.to_owned()
+    };
+    if mods.is_empty() {
+        key
+    } else {
+        format!("{mods}+{key}")
+    }
+}
+
+/// The palette's binding as the glyph's tooltip names it, or none when it is unbound.
+pub fn palette_binding(shortcuts: &cosmic_settings_config::Shortcuts) -> Option<String> {
+    shortcuts
+        .shortcut_for_action(&shortcuts::Action::WindowCommands)
+        .map(|keys| key_text(&keys))
+}
+
+static PALETTE_KEYS: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn set_palette_keys(shortcuts: &cosmic_settings_config::Shortcuts) {
+    *PALETTE_KEYS.lock().unwrap() = palette_binding(shortcuts);
+}
+
+pub fn palette_keys() -> Option<String> {
+    PALETTE_KEYS.lock().unwrap().clone()
+}
+
 /// The chat panel's own command with `query` appended as one shell-quoted
 /// argument, so a question typed into the palette arrives as the
 /// conversation's opening line. An empty query adds nothing.
@@ -435,6 +467,26 @@ mod tests {
     use crate::dbus::notifications::plain;
     use crate::utils::desktop_action::DesktopApp;
     use icetron_p::prelude::TRAY_CAP;
+
+    #[test]
+    fn hints_write_the_configured_binding_with_its_letter_in_capitals() {
+        use cosmic_settings_config::{Binding, Shortcuts};
+        use std::str::FromStr;
+
+        assert_eq!(key_text("Super+k"), "Super+K");
+        assert_eq!(key_text("Super+Shift+m"), "Super+Shift+M");
+        assert_eq!(key_text("Super+F11"), "Super+F11");
+        assert_eq!(key_text("Alt+F4"), "Alt+F4");
+        assert_eq!(key_text("Super"), "Super");
+
+        let mut keys = Shortcuts::default();
+        assert_eq!(palette_binding(&keys), None);
+        keys.0.insert(
+            Binding::from_str("Super+k").unwrap(),
+            shortcuts::Action::WindowCommands,
+        );
+        assert_eq!(palette_binding(&keys).as_deref(), Some("Super+K"));
+    }
 
     #[test]
     fn pin_receipts_read_as_the_prototype_writes_them() {

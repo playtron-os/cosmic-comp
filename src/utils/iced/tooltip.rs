@@ -15,7 +15,11 @@ impl Operation for Collector {
         operate(self);
     }
     fn custom(&mut self, _: Option<&iced_core::widget::Id>, _: IcedRectangle, state: &mut dyn Any) {
-        if let Some(report) = state.downcast_ref::<TooltipReport>() {
+        // A tooltip inside another's trigger reports first and wins, so the glyph's
+        // shows rather than the identity's around it, as with the design's sibling titles.
+        if self.0.is_none()
+            && let Some(report) = state.downcast_ref::<TooltipReport>()
+        {
             self.0 = Some(report.clone());
         }
     }

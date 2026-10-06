@@ -2184,6 +2184,7 @@ impl CosmicWindowInternal {
             .on_maximize(Message::Maximize)
             .on_right_click(Message::Menu)
             .on_commands(Message::Commands)
+            .palette_keys(commands::palette_keys())
             .on_fullscreen(
                 Message::Fullscreen,
                 win.fullscreen_output.is_some() || win.window.is_fullscreen(false),

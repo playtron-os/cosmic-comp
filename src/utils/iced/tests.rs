@@ -862,6 +862,71 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
 }
 
 #[test]
+fn the_glyph_tooltip_names_the_palette_binding_over_the_identity_around_it() {
+    use icetron_p::utils::platform::test_clock;
+    use std::time::Duration;
+    struct Glyph;
+    impl Program for Glyph {
+        type Message = ();
+        fn visibility(&self, theme: &CompTheme) -> Option<Visibility> {
+            Some(halo_visibility(theme, true))
+        }
+        fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
+            header_bar()
+                .theme(theme)
+                .title("Explorer")
+                .app_name("Explorer")
+                .focused(true)
+                .on_commands(())
+                .palette_keys(Some("Super+K".into()))
+                .on_close(())
+                .into_element()
+        }
+    }
+    let _clock = test_clock::Frozen::start();
+    let at = icetron_p::utils::platform::now();
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let element = IcedElement::new(
+        Glyph,
+        (640, ssd_header_render_height(&theme) as i32),
+        event_loop.handle(),
+        theme.clone(),
+    );
+    let mut internal = element.0.lock().unwrap();
+    let pill = internal
+        .renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.quads)
+        .find(|(quad, _)| {
+            (quad.bounds.height - theme.halo_style().pill_height()).abs() < 1.0
+                && quad.bounds.width > 100.0
+        })
+        .unwrap()
+        .0
+        .bounds;
+    let glyph = IcedPoint::new(
+        pill.x + theme.halo_style().padding_horizontal + theme.halo_style().control_size / 2.0,
+        pill.center_y(),
+    );
+    internal.cursor_pos = Some((glyph.x as f64, glyph.y as f64).into());
+    for ms in [0, 400] {
+        let now = at + Duration::from_millis(ms);
+        test_clock::set(now);
+        internal
+            .event_queue
+            .push(Event::Window(WindowEvent::RedrawRequested(now)));
+        internal.update(UpdateSource::AnimRedraw);
+    }
+    let label = internal.tooltip.report.as_ref().unwrap().label.clone();
+    assert_eq!(
+        crate::dbus::notifications::plain(label),
+        "Explorer — commands (Super+K)"
+    );
+}
+
+#[test]
 fn header_transition_requests_frames_with_a_stationary_pointer_then_stops() {
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
     let mut theme = theme();

@@ -266,6 +266,7 @@ impl Config {
         let settings_context = shortcuts::context().expect("Failed to load shortcuts config");
         let system_actions = shortcuts::system_actions(&settings_context);
         let shortcuts = shortcuts::shortcuts(&settings_context);
+        crate::shell::element::window::commands::set_palette_keys(&shortcuts);
 
         // Listen for updates to the keybindings config.
         match cosmic_config::calloop::ConfigWatchSource::new(&settings_context) {
@@ -276,6 +277,9 @@ impl Config {
                             // Reload the keyboard shortcuts config.
                             "custom" | "defaults" => {
                                 state.common.config.shortcuts = shortcuts::shortcuts(&config);
+                                crate::shell::element::window::commands::set_palette_keys(
+                                    &state.common.config.shortcuts,
+                                );
                             }
 
                             "system_actions" => {
