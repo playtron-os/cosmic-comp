@@ -87,9 +87,36 @@ impl DBusState {
     }
 }
 
+/// Whether the shell confirms with system toasts rather than notifications.
+/// `COSMIC_SYSTEM_TOASTS` decides; unset, toasts follow `COSMIC_WORKSPACES`.
+pub fn toasts_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        crate::utils::env::bool_var("COSMIC_SYSTEM_TOASTS")
+            .unwrap_or_else(super::workspaces::enabled)
+    })
+}
+
 impl DBusState {
-    /// Show a system toast, fire and forget. A missing daemon is only logged.
+    /// Confirm something the user just did, as a toast or a plain notification.
     pub fn system_toast(&self, message: String, tone: Tone) {
+        let notification = Notification {
+            app_name: crate::fl!("shell-notification-app"),
+            app_icon: String::new(),
+            summary: plain(message.clone()),
+            body: String::new(),
+            expire_timeout: 5000,
+            transient: true,
+        };
+        self.system_toast_or(message, tone, notification);
+    }
+
+    /// A system toast when [`toasts_enabled`], otherwise `notification`.
+    pub fn system_toast_or(&self, message: String, tone: Tone, notification: Notification) {
+        if !toasts_enabled() {
+            self.notify(notification);
+            return;
+        }
         let message = plain(message);
         let state = self.clone();
         self.spawn(async move {
@@ -148,7 +175,7 @@ mod tests {
         assert_eq!(fl!("screenshot-saved"), "Screenshot saved");
         assert_eq!(fl!("recording-started"), "Recording this window");
         assert_eq!(
-            fl!("recording-stopped"),
+            fl!("recording-stopped-toast"),
             "Recording stopped — saved with provenance"
         );
         assert_eq!(fl!("halo-merged"), "Merged — this window is a tab now");

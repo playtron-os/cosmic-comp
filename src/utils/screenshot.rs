@@ -35,13 +35,16 @@ use tracing::warn;
 
 use crate::{
     backend::render::{RendererRef, element::AsGlowRenderer},
-    dbus::notifications::Tone,
+    dbus::notifications::{Notification, Tone},
     fl,
     shell::element::CosmicSurface,
     state::{State, advertised_node_for_surface},
     utils::captures::{self, CaptureKind},
 };
 
+/// Icon name shared with `cosmic-screenshot`, so both notifications look the same.
+const NOTIFICATION_ICON: &str = "com.system76.CosmicScreenshot";
+const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 const PNG_MIME: &str = "image/png";
 /// Captures of one window within the same second before giving up on a name.
 const NAME_ATTEMPTS: u32 = 100;
@@ -166,7 +169,18 @@ fn deliver(state: &mut State, seat: &Seat<State>, encoded: Encoded) {
         Some(_) => fl!("screenshot-saved"),
         None => fl!("screenshot-saved-to-clipboard"),
     };
-    state.common.dbus_state.system_toast(message, Tone::Neutral);
+    let notification = Notification {
+        app_name: fl!("screenshot-app-name"),
+        app_icon: NOTIFICATION_ICON.to_owned(),
+        summary: message.clone(),
+        body: String::new(),
+        expire_timeout: NOTIFICATION_TIMEOUT_MS,
+        transient: true,
+    };
+    state
+        .common
+        .dbus_state
+        .system_toast_or(message, Tone::Neutral, notification);
 }
 
 fn capture_window<R>(

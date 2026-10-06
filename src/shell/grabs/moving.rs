@@ -1209,9 +1209,10 @@ impl Drop for MoveGrab {
             drop(shell);
 
             // Dropped onto a stack: the dragged windows are its tabs now.
-            if position
-                .as_ref()
-                .is_some_and(|(mapped, _)| mapped != &window)
+            if crate::dbus::workspaces::enabled()
+                && position
+                    .as_ref()
+                    .is_some_and(|(mapped, _)| mapped != &window)
             {
                 let message = match tabs {
                     1 => crate::fl!("halo-merged"),
