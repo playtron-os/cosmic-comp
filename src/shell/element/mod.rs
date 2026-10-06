@@ -1129,6 +1129,13 @@ impl CosmicMapped {
         }
     }
 
+    pub fn halo_window(&self) -> Option<CosmicWindow> {
+        match &self.element {
+            CosmicMappedInternal::Window(w) => Some(w.clone()),
+            _ => None,
+        }
+    }
+
     pub fn open_move_dialog(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
         if let CosmicMappedInternal::Window(w) = &self.element {
             w.open_move_dialog(seat, loop_handle);

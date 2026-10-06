@@ -747,7 +747,9 @@ pub(super) fn open_menu(
     position: Point<i32, Global>,
     app: Option<DesktopApp>,
 ) {
-    open_surface(state, surface, seat, serial, start, position, app, false);
+    open_surface(
+        state, surface, seat, serial, start, position, app, false, None,
+    );
 }
 
 /// The command palette — every verb this window answers, each pinnable to the
@@ -760,8 +762,11 @@ pub(super) fn open_commands(
     start: GrabStartData,
     position: Point<i32, Global>,
     app: Option<DesktopApp>,
+    on_escape: Option<crate::shell::grabs::EscapeHook>,
 ) {
-    open_surface(state, surface, seat, serial, start, position, app, true);
+    open_surface(
+        state, surface, seat, serial, start, position, app, true, on_escape,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -774,6 +779,7 @@ fn open_surface(
     position: Point<i32, Global>,
     app: Option<DesktopApp>,
     palette: bool,
+    on_escape: Option<crate::shell::grabs::EscapeHook>,
 ) {
     let shell = state.common.shell.read();
     let theme = shell.theme().clone();
@@ -928,7 +934,11 @@ fn open_surface(
     // The palette has a search field: typing goes to it, and Escape closes
     // the palette, for as long as it is up.
     if palette && let Some(keyboard) = seat.get_keyboard() {
-        keyboard.set_grab(state, PaletteKeyboardGrab::new(seat.clone()), serial);
+        keyboard.set_grab(
+            state,
+            PaletteKeyboardGrab::new(seat.clone()).on_escape(on_escape),
+            serial,
+        );
     }
 }
 
