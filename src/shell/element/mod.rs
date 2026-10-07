@@ -1150,11 +1150,7 @@ impl CosmicMapped {
             CosmicMappedInternal::Stack(s) => s.window_inset(),
             _ => 0,
         };
-        crate::shell::layout::floating::Room {
-            top: self.halo_clearance(),
-            side: inset,
-            bottom: inset,
-        }
+        crate::shell::layout::floating::Room::around(self.halo_clearance(), inset)
     }
 
     /// Check if this mapped element has server-side decorations (SSD header)

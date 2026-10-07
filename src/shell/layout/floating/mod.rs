@@ -90,8 +90,8 @@ fn grabbable_position(
 
 pub(crate) const HALO_TILE_GAP: i32 = 10;
 
-/// What a window keeps clear of the zone's edges: its Halo's room above, the theme's inset
-/// beside and below.
+/// What a window keeps clear of the zone's edges: its Halo's room (at least the theme's inset)
+/// above, the theme's inset beside and below.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Room {
     pub top: i32,
@@ -105,6 +105,15 @@ impl Room {
             top,
             side: 0,
             bottom: 0,
+        }
+    }
+
+    /// A window without a Halo, such as a client-decorated one, still keeps the inset above it.
+    pub fn around(halo_clearance: i32, inset: i32) -> Self {
+        Self {
+            top: halo_clearance.max(inset),
+            side: inset,
+            bottom: inset,
         }
     }
 }
@@ -4055,6 +4064,17 @@ mod tests {
             window_zone(sliver, KORA).size.w,
             1,
             "never a negative width"
+        );
+    }
+
+    #[test]
+    fn a_window_without_a_halo_keeps_the_inset_above_it() {
+        assert_eq!(Room::around(0, 10), Room { top: 10, ..KORA });
+        assert_eq!(Room::around(HALO, 10), KORA);
+        let zone = Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1028));
+        assert_eq!(
+            window_zone(zone, Room::around(0, 10)),
+            Rectangle::new(at(10, 10), size(1900, 1008))
         );
     }
 
