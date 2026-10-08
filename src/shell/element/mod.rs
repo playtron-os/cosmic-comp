@@ -108,7 +108,7 @@ impl OutputEdges {
         self.0
     }
 
-    /// Whether each corner sits in a screen corner, in the renderer's order:
+    /// Whether each corner sits in a screen corner, as
     /// `[top-left, top-right, bottom-right, bottom-left]`.
     ///
     /// A corner is squared when EITHER of its two edges meets the output — a
@@ -131,9 +131,11 @@ impl OutputEdges {
     }
 
     /// Zero the corners that meet an output edge, leaving the rest alone.
+    /// `radii` is in the renderers' order: `[bottom-right, top-right, bottom-left, top-left]`.
     #[must_use]
     pub fn apply(self, radii: [u8; 4]) -> [u8; 4] {
-        let squared = self.squared_corners();
+        let [tl, tr, br, bl] = self.squared_corners();
+        let squared = [br, tr, bl, tl];
         std::array::from_fn(|i| if squared[i] { 0 } else { radii[i] })
     }
 }
@@ -1148,11 +1150,7 @@ impl CosmicMapped {
             CosmicMappedInternal::Stack(s) => s.window_inset(),
             _ => 0,
         };
-        crate::shell::layout::floating::Room {
-            top: self.halo_clearance(),
-            side: inset,
-            bottom: inset,
-        }
+        crate::shell::layout::floating::Room::around(self.halo_clearance(), inset)
     }
 
     /// Check if this mapped element has server-side decorations (SSD header)
@@ -1911,7 +1909,15 @@ mod output_edges_tests {
         let edges = OutputEdges::of(rect(10, 10, 1910, 1070), output());
         // [top-left, top-right, bottom-right, bottom-left]
         assert_eq!(edges.squared_corners(), [false, true, true, true]);
-        assert_eq!(edges.apply([20; 4]), [20, 0, 0, 0]);
+        // Renderer order [bottom-right, top-right, bottom-left, top-left].
+        assert_eq!(edges.apply([1, 2, 3, 4]), [0, 0, 0, 4]);
+    }
+
+    #[test]
+    fn a_window_flush_with_the_top_squares_its_top_corners() {
+        // Squaring by reading order instead squared the right-hand corners.
+        let edges = OutputEdges::of(rect(10, 0, 1900, 1018), output());
+        assert_eq!(edges.apply([1, 2, 3, 4]), [1, 0, 3, 0]);
     }
 
     #[test]
