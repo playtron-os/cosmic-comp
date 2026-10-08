@@ -1,3 +1,11 @@
+## [1.55.3](https://github.com/playtron-os/cosmic-comp/compare/v1.55.2...v1.55.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **floating:** keep the inset above windows without a Halo ([0624863](https://github.com/playtron-os/cosmic-comp/commit/06248635205967cc5b2ec1afbc8c54f46318e7b7))
+* **render:** square the corners that meet an output edge ([72c04d3](https://github.com/playtron-os/cosmic-comp/commit/72c04d3f7d68deb94cfbd3a6b7de40eba8283154))
+
 ## [1.55.2](https://github.com/playtron-os/cosmic-comp/compare/v1.55.1...v1.55.2) (2026-10-06)
 
 
