@@ -57,6 +57,21 @@ fn straight_strokes_keep_their_weight_at_fractional_positions() {
     }
 }
 
+/// The Halo's half-pixel hairline: one device pixel below 2x, exact from there.
+#[test]
+fn a_stroke_under_a_device_pixel_is_drawn_one_pixel_wide() {
+    for scale in [1.0, 1.25, 1.5, 1.75] {
+        let width = device_stroke(0.5, scale);
+        assert!(
+            (f64::from(width) * scale - 1.0).abs() < 1e-6,
+            "{scale}x: {width}"
+        );
+    }
+    assert_eq!(device_stroke(0.5, 2.0), 0.5);
+    assert_eq!(device_stroke(1.0, 1.5), 1.0);
+    assert_eq!(device_stroke(0.0, 1.5), 0.0);
+}
+
 /// Run with `LIBGL_ALWAYS_SOFTWARE=1 cargo test gles_outline -- --ignored --nocapture`.
 #[test]
 #[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
@@ -448,5 +463,103 @@ fn gles_dashed_outline_alternates_equal_dashes_and_gaps() -> anyhow::Result<()> 
         let (cx, cy) = ((65.0 * scale) as usize, (50.0 * scale) as usize);
         assert_eq!(red(cx, cy), 0.0, "the inside stays clear");
     }
+    Ok(())
+}
+
+/// The Halo's hairline is a device pixel wide below 2x, round its corners as
+/// along its sides: a narrower one beaded on the arcs and faded beside the edges.
+#[test]
+#[ignore = "requires surfaceless EGL (Mesa llvmpipe or a GPU driver)"]
+fn gles_outline_halo_hairline_is_a_device_pixel_wide_on_arcs_and_sides() -> anyhow::Result<()> {
+    use crate::backend::render::IndicatorShader;
+    use iced_core::Color;
+    use smithay::backend::{
+        allocator::Fourcc,
+        egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+        renderer::{
+            Bind, ExportMem, Offscreen, TextureMapping, damage::OutputDamageTracker, element::Id,
+            gles::GlesRenderbuffer, glow::GlowRenderer,
+        },
+    };
+    use smithay::utils::Transform;
+    use std::borrow::BorrowMut;
+
+    // SAFETY: this surfaceless context is owned and used on this test thread.
+    let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay)? };
+    let context = EGLContext::new(&display)?;
+    let mut renderer = unsafe { GlowRenderer::new(context)? };
+    let shader = IndicatorShader::compile(renderer.borrow_mut())?;
+    let gles: &mut smithay::backend::renderer::gles::GlesRenderer = renderer.borrow_mut();
+    crate::backend::render::thread_user_data(gles).insert_if_missing(|| IndicatorShader(shader));
+    let key = Id::new();
+    let (width, height, radius) = (100.0_f64, 32.0_f64, 16.0_f32);
+    for scale in [1.0_f64, 1.25, 1.5, 1.75, 2.0] {
+        let stroke = (0.5 * scale).max(1.0);
+        for phase in [0.0, 0.25, 0.5, 0.75] {
+            let shape = Rectangle::new((12.0 + phase, 13.0 + phase).into(), (width, height).into());
+            let element = IndicatorShader::animated_outline(
+                &renderer,
+                key.clone(),
+                shape,
+                0.5,
+                [radius; 4],
+                1.0,
+                scale,
+                Color::from_rgba(1.0, 0.0, 0.0, 1.0),
+                0.0,
+                Color::TRANSPARENT,
+                None,
+            );
+            let mut buffer = <GlowRenderer as Offscreen<GlesRenderbuffer>>::create_buffer(
+                &mut renderer,
+                Fourcc::Abgr8888,
+                (256, 128).into(),
+            )?;
+            let mut fb = renderer.bind(&mut buffer)?;
+            let mut tracker = OutputDamageTracker::new((256, 128), scale, Transform::Normal);
+            tracker.render_output(&mut renderer, &mut fb, 0, &[element], [0.0; 4])?;
+            let mapping = renderer.copy_framebuffer(
+                &fb,
+                Rectangle::from_size((256, 128).into()),
+                Fourcc::Abgr8888,
+            )?;
+            let flipped = mapping.flipped();
+            let bytes = renderer.map_texture(&mapping)?;
+            let alpha = |x: usize, y: usize| {
+                let y = if flipped { y } else { 127 - y };
+                f64::from(bytes[(y * 256 + x) * 4 + 3]) / 255.0
+            };
+            let (left, top) = (shape.loc.x * scale, shape.loc.y * scale);
+            let cx = (left + width * scale / 2.0) as usize;
+            let cy = (top + height * scale / 2.0) as usize;
+            let across_top: f64 = (0..cy).map(|y| alpha(cx, y)).sum();
+            let across_left: f64 = (0..(left as usize + 4 * scale as usize))
+                .map(|x| alpha(x, cy))
+                .sum();
+            assert!(
+                (across_top - stroke).abs() < 0.016,
+                "{scale}x+{phase}: top {across_top}"
+            );
+            assert!(
+                (across_left - stroke).abs() < 0.016,
+                "{scale}x+{phase}: side {across_left}"
+            );
+            // The top-left quarter arc holds a quarter ring `stroke` pixels wide,
+            // plus the straight stroke the pixel-aligned box takes in past it.
+            let r = f64::from(radius) * scale;
+            let (right, bottom) = ((left + r).ceil(), (top + r).ceil());
+            let arc: f64 = (0..right as usize)
+                .flat_map(|x| (0..bottom as usize).map(move |y| (x, y)))
+                .map(|(x, y)| alpha(x, y))
+                .sum();
+            let ink = std::f64::consts::FRAC_PI_4 * (r * r - (r - stroke) * (r - stroke))
+                + stroke * (right - (left + r) + bottom - (top + r));
+            assert!(
+                (arc / ink - 1.0).abs() < 0.03,
+                "{scale}x+{phase}: arc {arc}, ring {ink}"
+            );
+        }
+    }
+    eprintln!("GLES hairline verified at five scales and four pixel phases");
     Ok(())
 }

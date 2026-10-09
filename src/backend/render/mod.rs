@@ -455,7 +455,7 @@ impl IndicatorShader {
         )
     }
 
-    /// Fractional strokes let the Halo retain its half-pixel hairline. Focus
+    /// Takes a fractional stroke for the Halo's half-pixel hairline. Focus
     /// changes only uniforms on this cached element, preserving damage identity.
     pub fn animated_outline<R: AsGlowRenderer>(
         renderer: &R,
@@ -555,8 +555,9 @@ impl IndicatorShader {
     fn outline_element<R: AsGlowRenderer>(
         renderer: &R,
         key: impl Into<Key>,
-        settings: IndicatorSettings,
+        mut settings: IndicatorSettings,
     ) -> PixelShaderElement {
+        settings.thickness = outline::device_stroke(settings.thickness, settings.scale);
         let alpha = settings.alpha;
 
         let user_data = thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()));
