@@ -73,6 +73,17 @@ impl<R: super::element::AsGlowRenderer> RenderElement<R> for OutlineElement {
     }
 }
 
+/// A stroke under a device pixel wide is drawn one pixel wide, as the UI draws
+/// its borders: a fraction of a pixel beads along curves and fades beside the
+/// straight edges.
+pub(super) fn device_stroke(width: f32, scale: f64) -> f32 {
+    if width > 0.0 && f64::from(width) * scale < 1.0 {
+        (1.0 / scale) as f32
+    } else {
+        width
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Geometry {
     pub canvas: Rectangle<i32, Local>,
