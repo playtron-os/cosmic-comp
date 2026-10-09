@@ -1,3 +1,11 @@
+## [1.55.4](https://github.com/playtron-os/cosmic-comp/compare/v1.55.3...v1.55.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* **halo:** centre the window controls in the pill ([f42b173](https://github.com/playtron-os/cosmic-comp/commit/f42b17337687879ef3dcde290cf135c846851b85))
+* **halo:** draw the hairline a device pixel wide ([dc98116](https://github.com/playtron-os/cosmic-comp/commit/dc98116f3158ffd237e41b31c3f71556da84099d))
+
 ## [1.55.3](https://github.com/playtron-os/cosmic-comp/compare/v1.55.2...v1.55.3) (2026-10-08)
 
 
