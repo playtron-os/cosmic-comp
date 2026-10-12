@@ -93,7 +93,7 @@
     (modifiers: [Super], key: "s"): ToggleStacking,
     (modifiers: [Super], key: "y"): ToggleTiling,
     (modifiers: [Super], key: "g"): ToggleWindowFloating,
-    (modifiers: [Super], key: "x"): SwapWindow,
+    (modifiers: [Super, Shift], key: "x"): SwapWindow,
 
     (modifiers: [Super], key: "m"): Maximize,
     (modifiers: [Super], key: "F11"): Fullscreen,
@@ -112,11 +112,11 @@
     (modifiers: [Super, Shift], key: "space"): System(InputSourceSwitch),
     (modifiers: [Super], key: "t"): System(Terminal),
 
-    (modifiers: [Super], key: "a"): System(AppLibrary),
+    (modifiers: [Super]): System(AppLibrary),
     (modifiers: [Super], key: "c"): System(ChatPanel),
     (modifiers: [Super], key: "w"): System(WorkspaceOverview),
     (modifiers: [Super], key: "slash"): System(Launcher),
-    (modifiers: [Super]): System(StartMenu),
+    (modifiers: [Super], key: "x"): System(StartMenu),
     (modifiers: [Alt], key: "Tab"): System(WindowSwitcher),
     (modifiers: [Alt, Shift], key: "Tab"): System(WindowSwitcherPrevious),
 
