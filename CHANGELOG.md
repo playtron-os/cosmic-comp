@@ -1,3 +1,10 @@
+## [1.56.1](https://github.com/playtron-os/cosmic-comp/compare/v1.56.0...v1.56.1) (2026-10-13)
+
+
+### Bug Fixes
+
+* **halo:** keep the run chip when a render thread redraws it ([6856c82](https://github.com/playtron-os/cosmic-comp/commit/6856c82cb513bab6246fbdb6bafade7bc8769e0d))
+
 # [1.56.0](https://github.com/playtron-os/cosmic-comp/compare/v1.55.4...v1.56.0) (2026-10-13)
 
 
