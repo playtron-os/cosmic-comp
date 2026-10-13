@@ -1,3 +1,12 @@
+# [1.56.0](https://github.com/playtron-os/cosmic-comp/compare/v1.55.4...v1.56.0) (2026-10-13)
+
+
+### Features
+
+* **halo:** put app quick settings on the halo and drop its app menu ([45271ef](https://github.com/playtron-os/cosmic-comp/commit/45271ef733fa778b4a28fda3942902cd5e3fa89d))
+* **keybindings:** open the app library on Super, start menu on Super+X ([31c0e2c](https://github.com/playtron-os/cosmic-comp/commit/31c0e2cbfecea743fdd021c8833fe4cf7cf14cd2))
+* **workspaces:** move a desktop to another output on assign ([70e2d0a](https://github.com/playtron-os/cosmic-comp/commit/70e2d0a52b3a4210a3ce3c25083cca5444b5d915))
+
 ## [1.55.4](https://github.com/playtron-os/cosmic-comp/compare/v1.55.3...v1.55.4) (2026-10-09)
 
 
