@@ -6,6 +6,8 @@ pub const HANDLED_VERBS: &[&str] = &[
 pub const MENU: u32 = 1;
 pub const STATEFUL: u32 = 2;
 pub const BOUND: u32 = 4;
+/// Shown as a toggle on the Halo; only a stateful command can be one.
+pub const QUICK_SETTING: u32 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
@@ -100,7 +102,8 @@ impl Catalog {
             || !text(&command.section, false)
             || !text(&command.icon, false)
             || command.icon.contains(['/', '\\'])
-            || command.flags & !(MENU | STATEFUL | BOUND) != 0
+            || command.flags & !(MENU | STATEFUL | BOUND | QUICK_SETTING) != 0
+            || (command.flags & QUICK_SETTING != 0 && command.flags & STATEFUL == 0)
         {
             return Err(Invalid::Value);
         }
@@ -263,9 +266,23 @@ mod tests {
         let mut path = command("slate.y", 0);
         path.icon = "/usr/share/icon.svg".into();
         assert_eq!(catalog.add(path), Err(Invalid::Value));
-        assert_eq!(catalog.add(command("slate.z", 8)), Err(Invalid::Value));
+        assert_eq!(catalog.add(command("slate.z", 16)), Err(Invalid::Value));
         assert_eq!(
             catalog.add(command("slate.ok", MENU | STATEFUL | BOUND)),
+            Ok(())
+        );
+    }
+
+    /// A quick setting is a toggle, so it needs a state to show.
+    #[test]
+    fn a_quick_setting_must_be_stateful() {
+        let mut catalog = Catalog::default();
+        assert_eq!(
+            catalog.add(command("files.plain", QUICK_SETTING)),
+            Err(Invalid::Value)
+        );
+        assert_eq!(
+            catalog.add(command("files.show-hidden", QUICK_SETTING | STATEFUL)),
             Ok(())
         );
     }

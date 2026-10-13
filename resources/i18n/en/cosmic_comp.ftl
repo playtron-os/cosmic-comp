@@ -45,12 +45,13 @@ recording-failed = Recording failed
 recording-window-not-capturable = This window cannot be captured
 
 halo-screenshot-window = Screenshot window
-halo-app-menu = { $app } menu
 halo-commands = { $app } commands
 halo-commands-hint = { $app } — commands
 halo-commands-hint-keys = { $app } — commands ({ $keys })
 halo-all-commands = All commands
 halo-new-window = New { $app } window
+halo-quick-setting-on = { $name }: On
+halo-quick-setting-off = { $name }: Off
 halo-minimize = Minimize
 halo-fill = Fill / restore
 halo-fullscreen = Fullscreen
@@ -70,27 +71,18 @@ halo-copy = Copy
 halo-paste = Paste
 halo-select-all = Select all
 halo-mark-version = Mark a version
-halo-settings = Settings…
-halo-app-settings = { $app } Settings…
 halo-new-window-row = New window
 halo-find = Find in window
-halo-info = App info & provenance
-halo-info-toast = { $app } — standard command set, provenance on every capture
 halo-one-window = { $app } opens one window
 halo-minimize-window = Minimize window
 halo-merged = Merged — this window is a tab now
 halo-merged-tabs = Merged { $tabs } tabs into the other window
 halo-fullscreen-toggle = Fullscreen / exit fullscreen
 halo-close-window = Close window
-halo-open-recent = Open Recent
 
 halo-run-done = done ✓
 halo-run-queued = queued
 halo-run-untitled = working
-halo-closed = Closed { $closed ->
-    [one] 1 window
-   *[other] { $closed } windows
-}
 
 desktop-main = Main
 desktop-numbered = Desktop { $number }

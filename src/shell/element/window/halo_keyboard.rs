@@ -1,8 +1,5 @@
 //! Keyboard focus in a Halo: Super+F10 moves it from the app into the pill.
 
-use std::sync::{Arc, Mutex};
-
-use iced_core::{Rectangle as IcedRectangle, widget::Id};
 use smithay::{
     backend::input::{KeyState, Keycode},
     input::{
@@ -12,19 +9,12 @@ use smithay::{
             ModifiersState,
         },
     },
-    utils::{Point, SERIAL_COUNTER, Serial},
+    utils::{SERIAL_COUNTER, Serial},
 };
 use xkbcommon::xkb::Keysym;
 
 use super::{CosmicWindow, Message, halo};
-use crate::{
-    shell::{
-        element::header_bar::{HaloControl, menu_trigger_id},
-        grabs::MenuKey,
-    },
-    state::State,
-    utils::prelude::*,
-};
+use crate::{shell::element::header_bar::HaloControl, state::State, utils::prelude::*};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HaloKey {
@@ -60,20 +50,6 @@ fn halo_key(sym: Keysym) -> Option<HaloKey> {
     }
 }
 
-/// The keys an open Halo menu and its fly-out take, as the design's do.
-fn menu_key(sym: Keysym) -> Option<MenuKey> {
-    match sym {
-        Keysym::Down | Keysym::Tab => Some(MenuKey::Step(true)),
-        Keysym::Up | Keysym::ISO_Left_Tab => Some(MenuKey::Step(false)),
-        Keysym::Home => Some(MenuKey::First),
-        Keysym::End => Some(MenuKey::Last),
-        Keysym::Right => Some(MenuKey::Open),
-        Keysym::Left => Some(MenuKey::Back),
-        Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(MenuKey::Press),
-        _ => None,
-    }
-}
-
 /// The control after (or before) `at`, wrapping; the first when focus is on none of them.
 fn step(controls: &[HaloControl], at: Option<HaloControl>, forward: bool) -> Option<HaloControl> {
     let count = controls.len();
@@ -83,31 +59,6 @@ fn step(controls: &[HaloControl], at: Option<HaloControl>, forward: bool) -> Opt
         None => 0,
     };
     controls.get(next).copied()
-}
-
-/// Where a menu opened from the keyboard hangs: 4px under the trigger's bottom-left corner.
-fn menu_anchor(origin: Point<f64, Global>, trigger: IcedRectangle) -> Point<i32, Global> {
-    Point::from((
-        (origin.x + f64::from(trigger.x)).round() as i32,
-        (origin.y + f64::from(trigger.y + trigger.height) + 4.0).round() as i32,
-    ))
-}
-
-struct FindBounds {
-    id: Id,
-    found: Arc<Mutex<Option<IcedRectangle>>>,
-}
-
-impl iced_core::widget::Operation<()> for FindBounds {
-    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced_core::widget::Operation<()>)) {
-        operate(self);
-    }
-
-    fn container(&mut self, id: Option<&Id>, bounds: IcedRectangle) {
-        if id == Some(&self.id) {
-            *self.found.lock().unwrap() = Some(bounds);
-        }
-    }
 }
 
 impl CosmicWindow {
@@ -151,61 +102,6 @@ impl CosmicWindow {
                 SERIAL_COUNTER.next_serial(),
             );
         }
-    }
-
-    fn widget_bounds(&self, id: Id) -> Option<IcedRectangle> {
-        let found = Arc::new(Mutex::new(None));
-        self.0.queue_operation(FindBounds {
-            id,
-            found: found.clone(),
-        });
-        found.lock().unwrap().take()
-    }
-
-    /// Where this Halo's own coordinates start on screen.
-    fn halo_origin(&self, state: &State) -> Option<Point<f64, Global>> {
-        let (surface, fullscreen, origin) = self.0.with_program(|p| {
-            (
-                p.window.clone(),
-                p.fullscreen_output
-                    .as_ref()
-                    .map(|output| output.lock().unwrap().geometry().loc),
-                p.header_origin(),
-            )
-        });
-        let loc = match fullscreen {
-            Some(loc) => loc,
-            None => {
-                let shell = state.common.shell.read();
-                let mapped = shell.element_for_surface(&surface)?;
-                shell.element_geometry(mapped)?.loc
-            }
-        };
-        Some(loc.to_f64() + Point::from((origin.x, origin.y)))
-    }
-
-    /// The app menu, hung under the `⌄` as a keyboard-opened menu is.
-    fn open_menu_from_keyboard(&self, state: &mut State, seat: &Seat<State>) {
-        let Some(trigger) = self.widget_bounds(menu_trigger_id()) else {
-            return;
-        };
-        let Some(origin) = self.halo_origin(state) else {
-            return;
-        };
-        let position = menu_anchor(origin, trigger);
-        let surface = self.surface();
-        let app = self
-            .0
-            .with_program(|p| p.desktop_app.lock().unwrap().clone());
-        let seat = seat.clone();
-        state.common.event_loop_handle.insert_idle(move |state| {
-            let serial = SERIAL_COUNTER.next_serial();
-            if let Some(start) = crate::shell::check_grab_preconditions(&seat, Some(serial), None) {
-                halo::open_menu(state, &surface, &seat, serial, start, position, app);
-                // As in the design, focus goes into the menu's first row.
-                crate::shell::grabs::halo_menu_key(&seat, MenuKey::First, state);
-            }
-        });
     }
 
     /// The palette from the glyph; Escape there brings focus back to the glyph.
@@ -272,8 +168,15 @@ impl HaloKeyboardGrab {
                 self.window.open_commands_from_keyboard(data, &self.seat);
                 false
             }
-            HaloControl::Menu => {
-                self.window.open_menu_from_keyboard(data, &self.seat);
+            // A toggle keeps focus, as the design's quick-setting button does.
+            HaloControl::QuickSetting(_) => {
+                let message: Option<Message> = self
+                    .window
+                    .0
+                    .with_program(|p| p.halo_header().control_message(control));
+                if let Some(message) = message {
+                    self.window.0.queue_message(message);
+                }
                 true
             }
             _ => {
@@ -307,17 +210,6 @@ impl KeyboardGrab<State> for HaloKeyboardGrab {
         if state != KeyState::Pressed || (key.is_none() && is_modifier(sym)) {
             if key.is_none() {
                 handle.input(data, keycode, state, modifiers, serial, time);
-            }
-            return;
-        }
-        let menu_open = self
-            .window
-            .0
-            .with_program(|p| p.menu_open.load(std::sync::atomic::Ordering::SeqCst));
-        if menu_open && let Some(menu_key) = menu_key(sym) {
-            // A row the menu ran ends the visit, as a palette command does.
-            if crate::shell::grabs::halo_menu_key(&self.seat, menu_key, data) == Some(true) {
-                handle.unset_grab(self, data, serial, false);
             }
             return;
         }
@@ -364,7 +256,7 @@ mod tests {
 
     const CONTROLS: [HaloControl; 4] = [
         HaloControl::Glyph,
-        HaloControl::Menu,
+        HaloControl::QuickSetting(0),
         HaloControl::Maximize,
         HaloControl::Close,
     ];
@@ -374,7 +266,7 @@ mod tests {
         assert_eq!(step(&CONTROLS, None, true), Some(HaloControl::Glyph));
         assert_eq!(
             step(&CONTROLS, Some(HaloControl::Glyph), true),
-            Some(HaloControl::Menu)
+            Some(HaloControl::QuickSetting(0))
         );
         assert_eq!(
             step(&CONTROLS, Some(HaloControl::Close), true),
@@ -402,34 +294,5 @@ mod tests {
         assert_eq!(halo_key(Keysym::space), Some(HaloKey::Press));
         assert_eq!(halo_key(Keysym::Escape), Some(HaloKey::Leave));
         assert_eq!(halo_key(Keysym::a), None);
-    }
-
-    #[test]
-    fn menu_keys_follow_the_design_s_menus_and_fly_out() {
-        assert_eq!(menu_key(Keysym::Down), Some(MenuKey::Step(true)));
-        assert_eq!(menu_key(Keysym::Tab), Some(MenuKey::Step(true)));
-        assert_eq!(menu_key(Keysym::Up), Some(MenuKey::Step(false)));
-        assert_eq!(menu_key(Keysym::ISO_Left_Tab), Some(MenuKey::Step(false)));
-        assert_eq!(menu_key(Keysym::Home), Some(MenuKey::First));
-        assert_eq!(menu_key(Keysym::End), Some(MenuKey::Last));
-        assert_eq!(menu_key(Keysym::Right), Some(MenuKey::Open));
-        assert_eq!(menu_key(Keysym::Left), Some(MenuKey::Back));
-        assert_eq!(menu_key(Keysym::Return), Some(MenuKey::Press));
-        assert_eq!(menu_key(Keysym::space), Some(MenuKey::Press));
-        assert_eq!(menu_key(Keysym::Escape), None);
-    }
-
-    #[test]
-    fn a_keyboard_opened_menu_hangs_4px_under_its_trigger() {
-        let trigger = IcedRectangle {
-            x: 300.0,
-            y: 18.0,
-            width: 28.0,
-            height: 28.0,
-        };
-        assert_eq!(
-            menu_anchor(Point::from((100.0, 200.0)), trigger),
-            Point::from((400, 250))
-        );
     }
 }

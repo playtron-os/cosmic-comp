@@ -1985,19 +1985,8 @@ impl Program for CosmicWindowInternal {
                 }
             }
             Message::Menu => {
+                // The Halo has no app menu; its commands are in the palette.
                 if self.uses_halo_header() {
-                    if let Some((seat, serial)) = last_seat.cloned() {
-                        let query_input = halo::menu_input_query(seat.clone(), serial);
-                        let surface = self.window.clone();
-                        let app = self.desktop_app.lock().unwrap().clone();
-                        loop_handle.insert_idle(move |state| {
-                            if let Some((start, position)) = query_input() {
-                                halo::open_menu(
-                                    state, &surface, &seat, serial, start, position, app,
-                                );
-                            }
-                        });
-                    }
                     return Task::none();
                 }
                 if let Some((seat, serial)) = last_seat.cloned()
@@ -2227,8 +2216,6 @@ impl CosmicWindowInternal {
                 || win.fills_output_zone.load(Ordering::Acquire),
             fullscreen: win.fullscreen_output.is_some() || win.window.is_fullscreen(false),
             resizable: !(min.is_some() && min == win.window.max_size_without_ssd()),
-            // Only the shell knows, and it is not pinnable anyway.
-            close_all: false,
             // A pinned Move to Desktop always opens; the chooser says where it can go.
             on_desktop: true,
             app: app.as_ref(),
@@ -2261,6 +2248,19 @@ impl CosmicWindowInternal {
                 })
                 .collect(),
         );
+        if let Some(catalog) = catalog.as_ref() {
+            header = header.quick_settings(
+                commands::quick_settings(catalog)
+                    .filter(|command| command.enabled)
+                    .map(|command| super::header_bar::TrayEntry {
+                        icon: commands::app_icon(&command.icon),
+                        message: Message::Action(format!("{}{}", commands::APP_PREFIX, command.id)),
+                        label: command.name.clone(),
+                        on: command.active,
+                    })
+                    .collect(),
+            );
+        }
 
         // Pass the application icon if resolved. A client-set toplevel icon
         // (xdg-toplevel-icon) takes priority over the app_id-based icon —
