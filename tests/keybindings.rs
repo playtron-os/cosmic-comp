@@ -62,6 +62,22 @@ fn laptop_function_row() {
     );
 }
 
+/// Super alone opens the app library; the start menu took Super+X from swap.
+#[test]
+fn super_opens_the_app_library() {
+    let shortcuts = defaults();
+
+    assert_eq!(
+        action_for(&shortcuts, "Super"),
+        Action::System(System::AppLibrary)
+    );
+    assert_eq!(
+        action_for(&shortcuts, "Super+x"),
+        Action::System(System::StartMenu)
+    );
+    assert_eq!(action_for(&shortcuts, "Super+Shift+x"), Action::SwapWindow);
+}
+
 #[test]
 fn input_source_switch_uses_space_without_replacing_spotlight() {
     let shortcuts = defaults();
