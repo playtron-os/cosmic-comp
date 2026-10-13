@@ -259,18 +259,14 @@ pub enum HaloControl {
     Glyph,
     Chip,
     Tray(usize),
-    Menu,
+    /// An app's toggle on its Halo; the entries are [`TrayEntry`]s with `on` as its state.
+    QuickSetting(usize),
     NewWindow,
     More,
     Minimize,
     Maximize,
     Fullscreen,
     Close,
-}
-
-/// The ⌄ button's id, so a keyboard-opened menu can hang under it.
-pub fn menu_trigger_id() -> iced_core::widget::Id {
-    iced_core::widget::Id::new("halo-menu-trigger")
 }
 
 /// The focus ring Halo keyboard focus draws around `control`, while it is in the Halo.
@@ -304,6 +300,7 @@ pub struct HeaderBar<'a, Message> {
     /// The app glyph's own press — the window's commands.
     on_commands: Option<Message>,
     tray: Vec<TrayEntry<Message>>,
+    quick_settings: Vec<TrayEntry<Message>>,
     on_new_window: Option<Message>,
     on_fullscreen: Option<Message>,
     fullscreen: bool,
@@ -342,6 +339,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             on_right_click: None,
             on_commands: None,
             tray: Vec::new(),
+            quick_settings: Vec::new(),
             on_new_window: None,
             on_fullscreen: None,
             fullscreen: false,
@@ -410,6 +408,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     /// The commands pinned to this window's header, in pin order.
     pub fn tray(mut self, tray: Vec<TrayEntry<Message>>) -> Self {
         self.tray = tray;
+        self
+    }
+
+    /// The app's toggles, drawn before the `+` and shed into the palette when narrow.
+    pub fn quick_settings(mut self, settings: Vec<TrayEntry<Message>>) -> Self {
+        self.quick_settings = settings;
         self
     }
 
@@ -508,9 +512,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
         }
         if tier <= 2 {
-            if self.on_right_click.is_some() {
-                controls.push(HaloControl::Menu);
-            }
+            controls.extend((0..self.quick_settings.len()).map(HaloControl::QuickSetting));
             if self.on_new_window.is_some() {
                 controls.push(HaloControl::NewWindow);
             }
@@ -537,7 +539,10 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             HaloControl::Glyph | HaloControl::More => self.on_commands.clone(),
             HaloControl::Chip => self.run.as_ref().map(|(_, message)| message.clone()),
             HaloControl::Tray(idx) => self.tray.get(idx).map(|entry| entry.message.clone()),
-            HaloControl::Menu => self.on_right_click.clone(),
+            HaloControl::QuickSetting(idx) => self
+                .quick_settings
+                .get(idx)
+                .map(|entry| entry.message.clone()),
             HaloControl::NewWindow => self.on_new_window.clone(),
             HaloControl::Minimize => self.on_minimize.clone(),
             HaloControl::Maximize => self.on_maximize.clone(),
@@ -797,18 +802,22 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             trailing = trailing.push(pinned);
         }
         if tier <= 2 {
-            if let Some(message) = self.on_right_click.clone() {
-                let menu = halo_button(
-                    icons::CHEVRON_DOWN,
-                    Some(message),
-                    fl!("halo-app-menu", app = name.as_str()),
-                    HaloButtonRole::Menu,
+            for (idx, entry) in self.quick_settings.iter().enumerate() {
+                let state = if entry.on {
+                    fl!("halo-quick-setting-on", name = entry.label.as_str())
+                } else {
+                    fl!("halo-quick-setting-off", name = entry.label.as_str())
+                };
+                let button = halo_button(
+                    entry.icon,
+                    Some(entry.message.clone()),
+                    state,
+                    HaloButtonRole::Toggle { on: entry.on },
                     self.menu_open,
                     theme,
                 );
-                let menu =
-                    container(ringed(focus, HaloControl::Menu, menu, theme)).id(menu_trigger_id());
-                trailing = trailing.push(menu);
+                trailing =
+                    trailing.push(ringed(focus, HaloControl::QuickSetting(idx), button, theme));
             }
             if let Some(message) = self.on_new_window.clone() {
                 let button = halo_button(
@@ -898,9 +907,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if let Some(message) = self.on_maximize {
             gestures = gestures.on_double_click(message);
         }
-        if let Some(message) = self.on_right_click {
-            gestures = gestures.on_right_click(message);
-        }
+        // No right-click: the Halo's app menu is gone, and the palette is on the glyph.
         container(gestures)
             .width(Length::Fill)
             .height(Length::Fixed(ssd_header_render_height(theme) as f32))
@@ -932,7 +939,9 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
         };
         if tier <= 2 {
-            controls(self.on_right_click.is_some());
+            for _ in &self.quick_settings {
+                controls(true);
+            }
             controls(self.on_new_window.is_some());
             controls(self.on_minimize.is_some());
             controls(self.on_maximize.is_some());
@@ -1157,7 +1166,10 @@ enum HaloButtonRole {
     Tray {
         on: bool,
     },
-    Menu,
+    /// A quick setting, on a neutral pressed plate while `on`.
+    Toggle {
+        on: bool,
+    },
     Window,
     Close,
 }
@@ -1171,10 +1183,9 @@ fn halo_button<'a, Message: Clone + 'static>(
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     let metrics = theme.halo_style();
-    let active = menu_open && matches!(role, HaloButtonRole::Menu);
+    let active = matches!(role, HaloButtonRole::Toggle { on: true });
     let icon_size = match role {
-        HaloButtonRole::Tray { .. } => metrics.glyph_icon_size,
-        HaloButtonRole::Menu => metrics.menu_icon_size,
+        HaloButtonRole::Tray { .. } | HaloButtonRole::Toggle { .. } => metrics.glyph_icon_size,
         HaloButtonRole::Window | HaloButtonRole::Close => metrics.control_icon_size,
     };
     let destructive = matches!(role, HaloButtonRole::Close);
@@ -1293,6 +1304,17 @@ pub(crate) fn capture_tray(recording: bool) -> Vec<TrayEntry<()>> {
     ]
 }
 
+/// Explorer's Show hidden files quick setting, as the design draws it.
+#[cfg(test)]
+pub(crate) fn hidden_files(on: bool) -> Vec<TrayEntry<()>> {
+    vec![TrayEntry {
+        icon: if on { icons::EYE } else { icons::EYE_OFF },
+        message: (),
+        label: "Show hidden files".to_owned(),
+        on,
+    }]
+}
+
 #[cfg(test)]
 mod snapshot_tests;
 
@@ -1373,18 +1395,41 @@ mod tests {
                     label: String::new(),
                     on: false,
                 }])
+                .quick_settings(vec![TrayEntry {
+                    icon: icons::EYE_OFF,
+                    message: 7,
+                    label: String::new(),
+                    on: false,
+                }])
                 .window_width(width)
         };
+        // A right-click handler adds nothing: the Halo has no app menu.
         assert_eq!(
             header(900.0).controls(),
-            [Glyph, Tray(0), Menu, Minimize, Maximize, Fullscreen, Close]
+            [
+                Glyph,
+                Tray(0),
+                QuickSetting(0),
+                Minimize,
+                Maximize,
+                Fullscreen,
+                Close
+            ]
         );
         assert_eq!(
             header(500.0).controls(),
-            [Glyph, Menu, Minimize, Maximize, Fullscreen, Close]
+            [
+                Glyph,
+                QuickSetting(0),
+                Minimize,
+                Maximize,
+                Fullscreen,
+                Close
+            ]
         );
         assert_eq!(header(300.0).controls(), [Glyph, More, Close]);
         assert_eq!(header(900.0).control_message(Tray(0)), Some(6));
+        assert_eq!(header(500.0).control_message(QuickSetting(0)), Some(7));
         assert_eq!(header(300.0).control_message(More), Some(0));
     }
 

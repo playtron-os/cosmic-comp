@@ -34,7 +34,7 @@ pub struct AppCommandsState {
 impl AppCommandsState {
     pub fn new(dh: &DisplayHandle) -> Self {
         Self {
-            _global: dh.create_global::<State, KoraAppCommandsV1, _>(1, ()),
+            _global: dh.create_global::<State, KoraAppCommandsV1, _>(2, ()),
         }
     }
 }
@@ -260,6 +260,13 @@ impl Dispatch<KoraAppCommandsHandleV1, HandleData> for State {
                     icon,
                     flags,
                 } => match flags {
+                    // A version 1 registration never offered the quick-setting flag.
+                    WEnum::Value(flags)
+                        if flags.contains(handle::CommandFlags::QuickSetting)
+                            && resource.version() < 2 =>
+                    {
+                        Err(Invalid::Value)
+                    }
                     WEnum::Value(flags) => staged.pending.add(Command {
                         id,
                         name,

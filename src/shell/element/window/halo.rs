@@ -32,7 +32,7 @@ use crate::{
 
 use super::commands;
 use crate::shell::element::header_bar;
-use crate::wayland::protocols::app_commands::{self, Selection, catalog::Catalog};
+use crate::wayland::protocols::app_commands::{self, Selection};
 use cosmic_settings_config::shortcuts;
 use icetron_p::prelude::{PALETTE_TOP_OFFSET, PALETTE_WIDTH};
 
@@ -239,16 +239,8 @@ fn run_command(
         );
     } else if let Some(action) = commands::desktop_action(app, id) {
         action.launch();
-    } else if !invoke_own(surface, id, generation) {
-        // What the shell answers for a window that does not.
-        let name = app
-            .and_then(|app| app.name.clone())
-            .unwrap_or_else(|| surface.app_id());
-        match id {
-            "settings" => open_settings(state),
-            "info" => toast(state, fl!("halo-info-toast", app = name.as_str())),
-            _ => {}
-        }
+    } else {
+        invoke_own(surface, id, generation);
     }
 }
 
@@ -386,74 +378,11 @@ fn move_and_follow(
     }
 }
 
-/// Settings… for an app without its own: System Settings, as the design does.
-fn open_settings(state: &mut State) {
-    let command = state
-        .common
-        .config
-        .system_actions
-        .get(&cosmic_settings_config::shortcuts::action::System::Settings)
-        .cloned();
-    match command {
-        Some(command) => state.spawn_command(command),
-        None => tracing::warn!("no Settings system action is configured"),
-    }
-}
-
 fn toast(state: &State, message: String) {
     state
         .common
         .dbus_state
         .system_toast(message, crate::dbus::notifications::Tone::Neutral);
-}
-
-/// The design's compact age for a recent item: now, 5m, 3h, 2d, 4mo, 1y.
-pub(super) fn relative_age(at_ms: u64, now_ms: u64) -> String {
-    const MINUTE: u64 = 60_000;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    let delta = now_ms.saturating_sub(at_ms);
-    match delta {
-        d if d < MINUTE => "now".to_owned(),
-        d if d < HOUR => format!("{}m", d / MINUTE),
-        d if d < DAY => format!("{}h", d / HOUR),
-        d if d / DAY < 30 => format!("{}d", d / DAY),
-        d if d / DAY / 30 < 12 => format!("{}mo", d / DAY / 30),
-        d => format!("{}y", d / DAY / 365),
-    }
-}
-
-/// The window's desktop-entry actions, as menu rows.
-///
-/// The freedesktop entry is where an application already declares what it can
-/// do from outside itself, so the window menu offers those rather than a
-/// parallel set only apps built for this compositor could answer.
-fn app_action_items(
-    surface: &CosmicSurface,
-    seat: &Seat<State>,
-    app: Option<&DesktopApp>,
-) -> Vec<Item> {
-    let Some(app) = app else {
-        return Vec::new();
-    };
-    app.actions
-        .iter()
-        .map(|action| {
-            let surface = surface.clone();
-            let seat = seat.clone();
-            let app = app.clone();
-            let id = format!("{}{}", commands::ACTION_PREFIX, action.id);
-            Item::new(action.name.clone(), move |handle| {
-                let surface = surface.clone();
-                let seat = seat.clone();
-                let app = app.clone();
-                let id = id.clone();
-                handle.insert_idle(move |state| {
-                    perform_command(state, &surface, Some(&seat), &id, Some(&app));
-                });
-            })
-        })
-        .collect()
 }
 
 /// A menu row that runs command `id` on the window, as of catalog `generation`.
@@ -479,281 +408,9 @@ fn command_item(
     })
 }
 
-/// One row of the app menu, before it is bound to the window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AppMenuRow {
-    Settings,
-    NewWindow,
-    /// The app's menu nominee at this index of its catalog's commands.
-    Own(usize),
-    /// The desktop entry's action at this index.
-    Action(usize),
-    Recents,
-    Info,
-    CloseAll,
-    Separator,
-}
-
-/// The app menu, as the design lays it out: the app's Settings and a new
-/// window, the app's own nominees (or its desktop entry's actions), Open
-/// Recent, then App info and Close all.
-fn app_menu_plan(facts: &commands::WindowFacts<'_>, close_all: bool) -> Vec<AppMenuRow> {
-    let top = vec![AppMenuRow::Settings, AppMenuRow::NewWindow];
-    let own = match facts.catalog {
-        Some(catalog) => commands::menu_nominees(catalog)
-            .filter_map(|command| {
-                catalog
-                    .commands
-                    .iter()
-                    .position(|candidate| candidate.id == command.id)
-            })
-            .map(AppMenuRow::Own)
-            .collect(),
-        None => (0..facts.app.map_or(0, |app| app.actions.len()))
-            .map(AppMenuRow::Action)
-            .collect(),
-    };
-    let recents = if facts
-        .catalog
-        .is_some_and(|catalog| !catalog.recents.is_empty())
-    {
-        vec![AppMenuRow::Recents]
-    } else {
-        Vec::new()
-    };
-    let mut bottom = vec![AppMenuRow::Info];
-    if close_all {
-        bottom.push(AppMenuRow::CloseAll);
-    }
-    let mut rows = Vec::new();
-    for section in [top, own, recents, bottom] {
-        if section.is_empty() {
-            continue;
-        }
-        if !rows.is_empty() {
-            rows.push(AppMenuRow::Separator);
-        }
-        rows.extend(section);
-    }
-    rows
-}
-
-fn menu_items(
-    surface: &CosmicSurface,
-    seat: &Seat<State>,
-    app: Option<&DesktopApp>,
-    catalog: Option<&Catalog>,
-    close_all: Option<Item>,
-) -> Vec<Item> {
-    let facts = commands::WindowFacts {
-        recording: false,
-        maximized: false,
-        fullscreen: false,
-        resizable: true,
-        close_all: false,
-        on_desktop: false,
-        app,
-        catalog,
-    };
-    let generation = catalog.map(|catalog| catalog.generation);
-    let name = app
-        .and_then(|app| app.name.clone())
-        .unwrap_or_else(|| surface.app_id());
-    let item = |title: String, id: &str| {
-        command_item(surface, seat, app, title, id.to_owned(), generation)
-    };
-    let handled = |item: Item, id: &str, keys: &str| match facts.handles(id) {
-        Some(enabled) => item.shortcut(keys.to_owned()).disabled(!enabled),
-        None => item,
-    };
-    let actions = app_action_items(surface, seat, app);
-    app_menu_plan(&facts, close_all.is_some())
-        .into_iter()
-        .filter_map(|row| {
-            Some(match row {
-                AppMenuRow::Settings => handled(
-                    item(fl!("halo-app-settings", app = name.as_str()), "settings"),
-                    "settings",
-                    "Ctrl+,",
-                ),
-                AppMenuRow::NewWindow => {
-                    handled(item(fl!("halo-new-window-row"), "neww"), "neww", "Ctrl+N")
-                        .disabled(facts.new_window() == Some(false))
-                }
-                AppMenuRow::Own(index) => {
-                    let command = catalog?.commands.get(index)?;
-                    let row = item(
-                        command.name.clone(),
-                        &format!("{}{}", commands::APP_PREFIX, command.id),
-                    )
-                    .disabled(!command.enabled);
-                    if command.keys.is_empty() {
-                        row
-                    } else {
-                        row.shortcut(command.keys.clone())
-                    }
-                }
-                AppMenuRow::Action(index) => actions.get(index)?.clone(),
-                AppMenuRow::Recents => recent_items(surface, catalog?),
-                AppMenuRow::Info => {
-                    item(fl!("halo-info"), "info").disabled(facts.handles("info") == Some(false))
-                }
-                AppMenuRow::CloseAll => close_all.clone()?,
-                AppMenuRow::Separator => Item::Separator,
-            })
-        })
-        .collect()
-}
-
-/// Open Recent, newest first, each row with how long ago it was touched.
-fn recent_items(surface: &CosmicSurface, catalog: &Catalog) -> Item {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64);
-    let rows = catalog
-        .recent_items()
-        .into_iter()
-        .map(|recent| {
-            let surface = surface.clone();
-            let id = recent.id.clone();
-            let generation = catalog.generation;
-            let row = Item::new(recent.label.clone(), move |handle| {
-                let surface = surface.clone();
-                let id = id.clone();
-                handle.insert_idle(move |_| {
-                    if let Some(wl) = surface.wl_surface() {
-                        app_commands::invoke(
-                            &wl,
-                            &Selection::Recent(id),
-                            generation,
-                            smithay::utils::SERIAL_COUNTER.next_serial(),
-                        );
-                    }
-                });
-            })
-            .shortcut(relative_age(recent.timestamp, now));
-            if recent.sublabel.is_empty() {
-                row
-            } else {
-                row.subtitle(recent.sublabel.clone())
-            }
-        })
-        .collect();
-    Item::new_submenu(fl!("halo-open-recent"), rows).icon(icetron_themes::icons::HISTORY)
-}
-
-fn select_app_windows<T: Clone + Eq + std::hash::Hash>(
-    app_id: &str,
-    origin_realm: &str,
-    current_realm: &str,
-    candidates: impl Iterator<Item = (T, String)>,
-) -> Vec<T> {
-    // Unknown app IDs must not group unrelated applications. A stale menu must
-    // not close an identically named app in a different workspace context.
-    if app_id.is_empty() || origin_realm != current_realm {
-        return Vec::new();
-    }
-    let mut seen = std::collections::HashSet::new();
-    candidates
-        .filter_map(|(window, candidate_app)| {
-            (candidate_app == app_id && seen.insert(window.clone())).then_some(window)
-        })
-        .collect()
-}
-
-fn app_windows(shell: &Shell, app_id: &str, origin_realm: &str) -> Vec<CosmicSurface> {
-    let mapped = shell
-        .mapped()
-        .flat_map(|mapped| mapped.windows().map(|(window, _)| window));
-    // mapped() includes normal minimized windows, but not minimized fullscreen
-    // surfaces. Deduplicate below, also covering windows in transition.
-    let minimized = shell.workspaces().iter().flat_map(|(_, set)| {
-        set.minimized_windows
-            .iter()
-            .chain(
-                set.workspaces
-                    .iter()
-                    .flat_map(|desktop| &desktop.minimized_windows),
-            )
-            .flat_map(|minimized| minimized.windows())
-    });
-    let fullscreen = shell
-        .workspaces()
-        .spaces()
-        .flat_map(|desktop| desktop.get_fullscreen_surfaces())
-        .map(|fullscreen| fullscreen.surface.clone());
-    let candidates = mapped
-        .chain(minimized)
-        .chain(fullscreen)
-        .filter(|window| {
-            window.alive() && !window.is_override_redirect() && !is_surface_embedded(window)
-        })
-        .map(|window| {
-            let app_id = window.app_id();
-            (window, app_id)
-        });
-    select_app_windows(app_id, origin_realm, shell.active_realm(), candidates)
-}
-
-fn close_all_item(shell: &Shell, origin: &CosmicSurface) -> Option<Item> {
-    let app_id = origin.app_id();
-    let realm = shell.active_realm().to_owned();
-    let windows = app_windows(shell, &app_id, &realm);
-    if !offers_close_all(&windows, origin) {
-        return None;
-    }
-    Some(Item::new(fl!("window-menu-close-all"), move |handle| {
-        let app_id = app_id.clone();
-        let realm = realm.clone();
-        handle.insert_idle(move |state| {
-            let windows = {
-                let shell = state.common.shell.read();
-                app_windows(&shell, &app_id, &realm)
-            };
-            // Snapshot before closing, outside the shell lock. Normal close
-            // requests allow applications to ask about unsaved work.
-            for window in &windows {
-                window.close();
-            }
-            if let Some(receipt) = closed_receipt(windows.len()) {
-                state
-                    .common
-                    .dbus_state
-                    .system_toast(receipt, crate::dbus::notifications::Tone::Neutral);
-            }
-        });
-    }))
-}
-
-/// The prototype's `closeWindows` receipt. Fluent's bidi isolate marks around
-/// the count show as tofu in the toast's Latin-only fonts.
-fn closed_receipt(closed: usize) -> Option<String> {
-    (closed > 0).then(|| fl!("halo-closed", closed = closed).replace(['\u{2068}', '\u{2069}'], ""))
-}
-
-/// The prototype's app menu offers Close all windows for every app with a
-/// window open, a lone one included.
-fn offers_close_all<T: PartialEq>(windows: &[T], origin: &T) -> bool {
-    windows.contains(origin)
-}
-
-/// The compact app menu — the `⌄`, or a right-click.
-pub(super) fn open_menu(
-    state: &mut State,
-    surface: &CosmicSurface,
-    seat: &Seat<State>,
-    serial: Serial,
-    start: GrabStartData,
-    position: Point<i32, Global>,
-    app: Option<DesktopApp>,
-) {
-    open_surface(
-        state, surface, seat, serial, start, position, app, false, None,
-    );
-}
-
 /// The command palette — every verb this window answers, each pinnable to the
 /// header. Opened from the app glyph.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn open_commands(
     state: &mut State,
     surface: &CosmicSurface,
@@ -762,23 +419,6 @@ pub(super) fn open_commands(
     start: GrabStartData,
     position: Point<i32, Global>,
     app: Option<DesktopApp>,
-    on_escape: Option<crate::shell::grabs::EscapeHook>,
-) {
-    open_surface(
-        state, surface, seat, serial, start, position, app, true, on_escape,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn open_surface(
-    state: &mut State,
-    surface: &CosmicSurface,
-    seat: &Seat<State>,
-    serial: Serial,
-    start: GrabStartData,
-    position: Point<i32, Global>,
-    app: Option<DesktopApp>,
-    palette: bool,
     on_escape: Option<crate::shell::grabs::EscapeHook>,
 ) {
     let shell = state.common.shell.read();
@@ -821,14 +461,7 @@ fn open_surface(
             Some((output, header_bar::fullscreen_pill_bottom(&theme), output)),
         )
     };
-    let open = ui.with_program(|p| {
-        if palette {
-            p.commands_open.clone()
-        } else {
-            p.menu_open.clone()
-        }
-    });
-    let close_all = close_all_item(&shell, surface);
+    let open = ui.with_program(|p| p.commands_open.clone());
     let on_desktop = shell.move_choices(surface).is_some();
     let resizable = {
         let min = surface.min_size_without_ssd();
@@ -846,85 +479,61 @@ fn open_surface(
         }
         None => Box::new(move |_| position),
     };
-    let grab = if palette {
-        let facts = commands::WindowFacts {
-            recording: surface.is_recording(),
-            maximized: surface.is_maximized(false),
-            fullscreen: surface.is_fullscreen(false),
-            resizable,
-            close_all: close_all.is_some(),
-            on_desktop,
-            app: app.as_ref(),
-            catalog: catalog.as_ref(),
-        };
-        let mut list = commands::commands(&facts);
-        for command in &mut list {
-            let action = match command.id.as_str() {
-                "minimize" => shortcuts::Action::Minimize,
-                "maximize" => shortcuts::Action::Maximize,
-                "fullscreen" => shortcuts::Action::Fullscreen,
-                commands::MOVE_TO_DESKTOP => shortcuts::Action::MoveToDesktop,
-                "close" => shortcuts::Action::Close,
-                _ => continue,
-            };
-            command.shortcut = state
-                .common
-                .config
-                .shortcut_for_action(&action)
-                .map(|keys| commands::key_text(&keys));
-        }
-        // Index-aligned with the command list: a row press is the same
-        // callback the menu row would have run.
-        let items = list
-            .iter()
-            .map(|command| match (&command.id[..], &close_all) {
-                ("closeall", Some(close_all)) => close_all.clone(),
-                _ => command_item(
-                    surface,
-                    seat,
-                    app.as_ref(),
-                    command.label.clone(),
-                    command.id.clone(),
-                    generation,
-                ),
-            });
-        let scope = app
-            .as_ref()
-            .and_then(|app| app.name.clone())
-            .unwrap_or_else(|| surface.app_id());
-        let palette = Palette::new(surface.app_id(), scope, list.clone());
-        open.store(true, Ordering::SeqCst);
-        crate::frametrace::mark(format_args!("palette opened ({})", surface.app_id()));
-        ui.force_update();
-        MenuGrab::new_palette(
-            start,
-            seat,
-            items.collect::<Vec<_>>().into_iter(),
-            place,
-            state.common.event_loop_handle.clone(),
-            theme,
-            palette,
-        )
-    } else {
-        let items = menu_items(surface, seat, app.as_ref(), catalog.as_ref(), close_all);
-        open.store(true, Ordering::SeqCst);
-        crate::frametrace::mark(format_args!("menu opened ({})", surface.app_id()));
-        ui.force_update();
-        MenuGrab::new_halo(
-            start,
-            seat,
-            items.into_iter(),
-            position,
-            state.common.event_loop_handle.clone(),
-            theme,
-        )
+    let facts = commands::WindowFacts {
+        recording: surface.is_recording(),
+        maximized: surface.is_maximized(false),
+        fullscreen: surface.is_fullscreen(false),
+        resizable,
+        on_desktop,
+        app: app.as_ref(),
+        catalog: catalog.as_ref(),
     };
-    let grab = grab.on_close(move || {
-        crate::frametrace::mark(if palette {
-            "palette closed"
-        } else {
-            "menu closed"
-        });
+    let mut list = commands::commands(&facts);
+    for command in &mut list {
+        let action = match command.id.as_str() {
+            "minimize" => shortcuts::Action::Minimize,
+            "maximize" => shortcuts::Action::Maximize,
+            "fullscreen" => shortcuts::Action::Fullscreen,
+            commands::MOVE_TO_DESKTOP => shortcuts::Action::MoveToDesktop,
+            "close" => shortcuts::Action::Close,
+            _ => continue,
+        };
+        command.shortcut = state
+            .common
+            .config
+            .shortcut_for_action(&action)
+            .map(|keys| commands::key_text(&keys));
+    }
+    // Index-aligned with the command list: a row press runs that command.
+    let items = list.iter().map(|command| {
+        command_item(
+            surface,
+            seat,
+            app.as_ref(),
+            command.label.clone(),
+            command.id.clone(),
+            generation,
+        )
+    });
+    let scope = app
+        .as_ref()
+        .and_then(|app| app.name.clone())
+        .unwrap_or_else(|| surface.app_id());
+    let palette = Palette::new(surface.app_id(), scope, list.clone());
+    open.store(true, Ordering::SeqCst);
+    crate::frametrace::mark(format_args!("palette opened ({})", surface.app_id()));
+    ui.force_update();
+    let grab = MenuGrab::new_palette(
+        start,
+        seat,
+        items.collect::<Vec<_>>().into_iter(),
+        place,
+        state.common.event_loop_handle.clone(),
+        theme,
+        palette,
+    )
+    .on_close(move || {
+        crate::frametrace::mark("palette closed");
         open.store(false, Ordering::SeqCst);
         ui.force_update();
     });
@@ -937,7 +546,7 @@ fn open_surface(
     }
     // The palette has a search field: typing goes to it, and Escape closes
     // the palette, for as long as it is up.
-    if palette && let Some(keyboard) = seat.get_keyboard() {
+    if let Some(keyboard) = seat.get_keyboard() {
         keyboard.set_grab(
             state,
             PaletteKeyboardGrab::new(seat.clone()).on_escape(on_escape),
@@ -979,121 +588,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_recent_item_s_age_reads_as_the_design_writes_it() {
-        let minute = 60_000;
-        let now = 1_000 * 24 * 60 * minute;
-        for (ago, expected) in [
-            (0, "now"),
-            (59_999, "now"),
-            (minute, "1m"),
-            (59 * minute, "59m"),
-            (3 * 60 * minute, "3h"),
-            (2 * 24 * 60 * minute, "2d"),
-            (45 * 24 * 60 * minute, "1mo"),
-            (400 * 24 * 60 * minute, "1y"),
-        ] {
-            assert_eq!(relative_age(now - ago, now), expected, "{ago}");
-        }
-        assert_eq!(relative_age(now + minute, now), "now");
-    }
-
-    fn plan(
-        app: Option<&DesktopApp>,
-        catalog: Option<&Catalog>,
-        close_all: bool,
-    ) -> Vec<AppMenuRow> {
-        let facts = commands::WindowFacts {
-            recording: false,
-            maximized: false,
-            fullscreen: false,
-            resizable: true,
-            close_all: false,
-            on_desktop: false,
-            app,
-            catalog,
-        };
-        app_menu_plan(&facts, close_all)
-    }
-
-    /// A window that publishes nothing keeps its desktop entry's actions there.
-    #[test]
-    fn a_silent_window_s_app_menu_is_the_design_s_with_its_entry_s_actions() {
-        use AppMenuRow::*;
-        let app = DesktopApp::from_content(
-            std::path::Path::new("/apps/example.desktop"),
-            "[Desktop Entry]\nType=Application\nName=Example\nActions=new-window;compose;\n\
-             [Desktop Action new-window]\nName=New Window\nExec=example --new\n\
-             [Desktop Action compose]\nName=Compose\nExec=example --compose\n",
-        )
-        .unwrap();
-        let actions = app.actions.len();
-        let mut expected = vec![Settings, NewWindow, Separator];
-        expected.extend((0..actions).map(Action));
-        expected.extend([Separator, Info, CloseAll]);
-        assert_eq!(plan(Some(&app), None, true), expected);
-        assert_eq!(
-            plan(None, None, false),
-            [Settings, NewWindow, Separator, Info]
-        );
-    }
-
-    #[test]
-    fn a_publishing_window_s_app_menu_has_its_nominees_and_open_recent() {
-        use crate::wayland::protocols::app_commands::catalog::{Command, MENU, Recent};
-        use AppMenuRow::*;
-        let mut catalog = Catalog::default();
-        catalog.handle("neww".into(), 1).unwrap();
-        for (id, flags) in [("a.one", MENU), ("a.two", 0), ("a.three", MENU)] {
-            catalog
-                .add(Command {
-                    id: id.into(),
-                    name: id.into(),
-                    keys: String::new(),
-                    section: String::new(),
-                    icon: String::new(),
-                    flags,
-                    enabled: true,
-                    active: false,
-                })
-                .unwrap();
-        }
-        assert_eq!(
-            plan(None, Some(&catalog), false),
-            [
-                Settings,
-                NewWindow,
-                Separator,
-                Own(0),
-                Own(2),
-                Separator,
-                Info
-            ]
-        );
-        catalog
-            .add_recent(Recent {
-                id: "doc".into(),
-                label: "Rooftop fight".into(),
-                sublabel: String::new(),
-                timestamp: 1,
-            })
-            .unwrap();
-        assert_eq!(
-            plan(None, Some(&catalog), true),
-            [
-                Settings,
-                NewWindow,
-                Separator,
-                Own(0),
-                Own(2),
-                Separator,
-                Recents,
-                Separator,
-                Info,
-                CloseAll
-            ]
-        );
-    }
     use smithay::input::SeatState;
 
     /// The palette is the window's: centred on it, hanging under its pill, and
@@ -1151,68 +645,6 @@ mod tests {
         );
         let huge = Size::from((430, 1200));
         assert_eq!(palette_origin(&theme, low, -4, output, huge).y, 10);
-    }
-
-    #[test]
-    fn close_all_counts_distinct_app_windows_and_requires_the_origin() {
-        let candidates = [
-            (1, "editor"),
-            (2, "editor"),
-            (1, "editor"),
-            (3, "terminal"),
-            (4, "Editor"),
-            (2, "editor"),
-        ];
-        let windows = select_app_windows(
-            "editor",
-            "work",
-            "work",
-            candidates.into_iter().map(|(id, app)| (id, app.to_owned())),
-        );
-        assert_eq!(windows, [1, 2]);
-        assert!(offers_close_all(&windows, &1));
-        assert!(!offers_close_all(&windows, &3));
-        assert!(
-            offers_close_all(&[1], &1),
-            "a lone window is offered it too"
-        );
-        assert!(!offers_close_all::<u32>(&[], &1));
-    }
-
-    #[test]
-    fn close_all_reports_what_it_closed() {
-        assert_eq!(closed_receipt(1).as_deref(), Some("Closed 1 window"));
-        assert_eq!(closed_receipt(3).as_deref(), Some("Closed 3 windows"));
-        assert_eq!(closed_receipt(0), None);
-    }
-
-    #[test]
-    fn close_all_never_groups_unknown_apps_or_crosses_workspace_contexts() {
-        let unknown = [(1, String::new()), (2, String::new())];
-        assert!(select_app_windows("", "work", "work", unknown.into_iter()).is_empty());
-        let other_workspace = [(1, "editor".to_owned()), (2, "editor".to_owned())];
-        assert!(
-            select_app_windows("editor", "work", "personal", other_workspace.into_iter())
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn close_all_targets_follow_the_current_window_list() {
-        let before = [(1, "editor".to_owned()), (2, "editor".to_owned())];
-        let after = [
-            (2, "editor".to_owned()),
-            (3, "editor".to_owned()),
-            (4, "terminal".to_owned()),
-        ];
-        assert_eq!(
-            select_app_windows("editor", "work", "work", before.into_iter()),
-            [1, 2]
-        );
-        assert_eq!(
-            select_app_windows("editor", "work", "work", after.into_iter()),
-            [2, 3]
-        );
     }
 
     #[test]

@@ -511,8 +511,6 @@ pub enum Message {
     DialogStep(bool),
     /// Enter or Space on the dialog's focused button.
     DialogActivate,
-    /// The keyboard in a Halo menu.
-    MenuKey(MenuKey),
 }
 
 impl item::CursorEvents for Message {
@@ -600,45 +598,6 @@ impl Program for ContextMenu {
                 }
             }
             Message::Dismiss => self.selected.store(true, Ordering::SeqCst),
-            Message::MenuKey(key) => {
-                let (sections, _) = self.halo_sections();
-                let mut row = self.keyboard_row.lock().unwrap();
-                let on_submenu = row
-                    .is_some_and(|row| matches!(self.items.get(row), Some(Item::Submenu { .. })));
-                let press = match key {
-                    MenuKey::First => {
-                        *row = menu_card::first_focusable(&sections);
-                        None
-                    }
-                    MenuKey::Last => {
-                        *row =
-                            menu_card::step_focus(&sections, None, menu_card::FocusStep::Previous);
-                        None
-                    }
-                    MenuKey::Step(forward) => {
-                        let step = if forward {
-                            menu_card::FocusStep::Next
-                        } else {
-                            menu_card::FocusStep::Previous
-                        };
-                        *row = menu_card::step_focus(&sections, *row, step);
-                        None
-                    }
-                    // The caller shows the fly-out and moves focus into it.
-                    MenuKey::Press | MenuKey::Open if on_submenu => {
-                        *self.flyout.lock().unwrap() = *row;
-                        self.keyboard_flyout.store(true, Ordering::SeqCst);
-                        None
-                    }
-                    MenuKey::Press => row.and_then(|row| menu_card::row_press(&sections, row)),
-                    MenuKey::Open | MenuKey::Back => None,
-                };
-                drop(row);
-                drop(sections);
-                if let Some(press) = press {
-                    return self.update(press, loop_handle, last_seat);
-                }
-            }
             Message::DialogStep(forward) => {
                 if let Some(dialog) = self.dialog.as_mut() {
                     dialog.step(forward);
@@ -1807,30 +1766,6 @@ impl MenuGrab {
         )
     }
 
-    pub fn new_halo(
-        start_data: GrabStartData,
-        seat: &Seat<State>,
-        items: impl Iterator<Item = Item>,
-        position: Point<i32, Global>,
-        handle: LoopHandle<'static, State>,
-        theme: CompTheme,
-    ) -> MenuGrab {
-        Self::new_styled(
-            start_data,
-            seat,
-            items,
-            position,
-            MenuAlignment::CORNER,
-            None,
-            handle,
-            theme,
-            true,
-            None,
-            None,
-            None,
-        )
-    }
-
     /// The window's commands, as the palette rather than a menu.
     ///
     /// `items` must be index-aligned with `palette.commands`, so pressing a row
@@ -2267,32 +2202,6 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
     fn unset(&mut self, _data: &mut State) {}
 }
 
-/// What the keyboard does in a Halo menu it opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuKey {
-    First,
-    Last,
-    Step(bool),
-    Press,
-    Open,
-    Back,
-}
-
-/// Hand `key` to the seat's open Halo menu. Returns whether one took it and, for a
-/// press, whether the press chose a row, which closes the menu.
-pub(crate) fn halo_menu_key(seat: &Seat<State>, key: MenuKey, state: &mut State) -> Option<bool> {
-    let chosen = route_menu_key(seat, key)?;
-    if chosen && let Some(pointer) = seat.get_pointer() {
-        state.common.event_loop_handle.insert_idle(move |state| {
-            if pointer.is_grabbed() {
-                let time = state.common.clock.now().as_millis();
-                pointer.unset_grab(state, smithay::utils::SERIAL_COUNTER.next_serial(), time);
-            }
-        });
-    }
-    Some(chosen)
-}
-
 fn halo_menu(
     seat: &Seat<State>,
 ) -> Option<(IcedElement<ContextMenu>, Option<IcedElement<ContextMenu>>)> {
@@ -2309,56 +2218,6 @@ fn halo_menu(
         })?;
     root.with_program(|menu| menu.halo && menu.palette.is_none() && menu.dialog.is_none())
         .then_some((root, flyout))
-}
-
-fn route_menu_key(seat: &Seat<State>, key: MenuKey) -> Option<bool> {
-    let (root, flyout) = halo_menu(seat)?;
-    if key == MenuKey::Back {
-        close_halo_flyout(seat);
-        return Some(false);
-    }
-    let (in_flyout, was_open) = root.with_program(|menu| {
-        (
-            menu.keyboard_flyout.load(Ordering::SeqCst),
-            *menu.flyout.lock().unwrap(),
-        )
-    });
-    let target = match flyout {
-        Some(ref flyout) if in_flyout => flyout.clone(),
-        _ => root.clone(),
-    };
-    target.queue_message(Message::MenuKey(key));
-    target.force_update();
-    if in_flyout {
-        return Some(target.with_program(|menu| menu.selected.load(Ordering::SeqCst)));
-    }
-    let entered = root.with_program(|menu| {
-        let idx = (*menu.flyout.lock().unwrap())
-            .filter(|_| menu.keyboard_flyout.load(Ordering::SeqCst))?;
-        match menu.items.get(idx) {
-            Some(Item::Submenu { items, .. }) => Some((idx, items.clone())),
-            _ => None,
-        }
-    });
-    let Some((idx, items)) = entered else {
-        return Some(root.with_program(|menu| menu.selected.load(Ordering::SeqCst)));
-    };
-    // A fly-out the pointer already opened stays; the keyboard only moves into it.
-    if was_open == Some(idx) && flyout.is_some() {
-        root.force_update();
-    } else {
-        show_flyout(seat, Some((idx, items)));
-    }
-    match halo_menu(seat) {
-        Some((_, Some(flyout))) => {
-            flyout.queue_message(Message::MenuKey(MenuKey::First));
-            flyout.force_update();
-        }
-        _ => {
-            close_halo_flyout(seat);
-        }
-    }
-    Some(false)
 }
 
 /// Close the fly-out keyboard focus is in, if there is one, back to its row.

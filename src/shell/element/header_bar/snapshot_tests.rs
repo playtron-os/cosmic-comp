@@ -60,7 +60,8 @@ fn halo_header_double_click_toggles_without_stealing_button_clicks_or_drags() {
                 vec![Message::Toggle],
             ),
             (Target::Title, Gesture::Drag, vec![Message::Drag]),
-            (Target::Title, Gesture::Right, vec![Message::Menu]),
+            // The Halo has no app menu, so a right-click sends nothing.
+            (Target::Title, Gesture::Right, vec![]),
             (
                 Target::Maximize,
                 Gesture::Double,
@@ -311,8 +312,8 @@ fn layout_with(
                 .on_close(())
                 .on_minimize(())
                 .on_maximize(())
-                .on_right_click(())
                 .tray(capture_tray(false))
+                .quick_settings(hidden_files(false))
                 .on_fullscreen((), false)
                 .on_new_window(()),
         )
@@ -445,7 +446,7 @@ fn halo_controls_stay_neutral_when_the_workspace_accent_changes() {
     assert_eq!(
         glyphs.len(),
         9,
-        "app mark, screenshot, record, menu, new, minimize, fill, fullscreen, close"
+        "app mark, screenshot, record, hidden files, new, minimize, fill, fullscreen, close"
     );
     for (index, color) in glyphs.into_iter().enumerate() {
         assert_eq!(
@@ -507,6 +508,24 @@ fn halo_record_glyph_turns_destructive_while_recording() {
             },
             "only the active Record glyph wears the destructive colour"
         );
+    }
+}
+
+/// An On quick setting is pressed, not tinted: the primary glyph on the neutral plate.
+#[test]
+fn a_quick_setting_that_is_on_is_pressed_not_tinted() {
+    let theme = theme();
+    for (on, tint) in [
+        (false, theme.text_secondary()),
+        (true, theme.text_primary()),
+    ] {
+        let (mut renderer, _viewport, _cache) =
+            layout_with(&theme, 1024.0, "Explorer", 1.0, |header| {
+                header.quick_settings(hidden_files(on))
+            });
+        let glyphs = glyph_tints(&mut renderer);
+        assert_eq!(glyphs.len(), 9, "on={on}");
+        assert_eq!(glyphs[3], tint, "on={on}");
     }
 }
 
@@ -763,9 +782,9 @@ fn everything<'a>(header: HeaderBar<'a, ()>) -> HeaderBar<'a, ()> {
         .on_close(())
         .on_minimize(())
         .on_maximize(())
-        .on_right_click(())
         .on_commands(())
         .tray(capture_tray(false))
+        .quick_settings(hidden_files(false))
         .on_fullscreen((), false)
         .on_new_window(())
 }
@@ -778,14 +797,14 @@ fn the_overflow_tiers_shed_what_the_design_sheds() {
             1200.0_f32,
             9,
             2,
-            "tier 1: mark, 2 pins, ⌄, +, minimize, fill, fullscreen, close",
+            "tier 1: mark, 2 pins, quick setting, +, minimize, fill, fullscreen, close",
         ),
         (680.0, 9, 2, "tier 1 at its threshold"),
         (
             600.0,
             7,
             1,
-            "tier 2: mark, ⌄, +, minimize, fill, fullscreen, close",
+            "tier 2: mark, quick setting, +, minimize, fill, fullscreen, close",
         ),
         (480.0, 7, 1, "tier 2 at its threshold"),
         (400.0, 3, 1, "tier 3: mark, ⋯, close"),
@@ -1037,10 +1056,10 @@ fn the_controls_keep_their_size_and_spacing_however_long_the_title_is() {
 }
 
 #[test]
-fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
+fn the_tray_and_quick_settings_come_and_go_without_squeezing_anything() {
     let theme = theme();
     let width = 700.0;
-    for (chevron, new_window, expected) in [
+    for (quick, new_window, expected) in [
         (false, false, 7),
         (true, false, 8),
         (false, true, 8),
@@ -1057,8 +1076,10 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
                 .on_maximize(())
                 .tray(capture_tray(false))
                 .on_fullscreen((), false);
-            let header = if chevron {
-                header.on_right_click(())
+            // A right-click handler never adds a control: the Halo has no app menu.
+            let header = header.on_right_click(());
+            let header = if quick {
+                header.quick_settings(hidden_files(false))
             } else {
                 header
             };
@@ -1070,7 +1091,7 @@ fn the_tray_and_the_chevron_come_and_go_without_squeezing_anything() {
         });
         let bounds = pill(&mut renderer, &theme, width);
         let icons = control_icons(&mut renderer);
-        let case = format!("chevron={chevron}, new_window={new_window}");
+        let case = format!("quick={quick}, new_window={new_window}");
         assert_eq!(icons.len(), expected, "{case}");
         let last = icons.last().expect("the close button");
         assert!(

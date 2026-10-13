@@ -1,8 +1,8 @@
 //! Every verb a window offers: the compositor's, the ones the app publishes
 //! over `kora_app_commands_v1`, and its desktop entry's.
 //!
-//! The header, its menu and its command palette are three views of this one
-//! list, so a verb cannot be pinnable in one and missing from another.
+//! The header and its command palette are two views of this one list, so a verb
+//! cannot be pinnable in one and missing from the other.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -15,7 +15,7 @@ use crate::dbus::notifications::Tone;
 use crate::fl;
 use crate::state::State;
 use crate::utils::desktop_action::DesktopApp;
-use crate::wayland::protocols::app_commands::catalog::{Catalog, MENU, STATEFUL};
+use crate::wayland::protocols::app_commands::catalog::{self, Catalog, QUICK_SETTING, STATEFUL};
 
 use super::Message;
 
@@ -29,9 +29,6 @@ pub const MOVE_TO_DESKTOP: &str = "movews";
 
 /// Prefix for a command the app published itself, for the same reason.
 pub const APP_PREFIX: &str = "app:";
-
-/// The shell shows at most this many of an app's menu nominees.
-pub const MENU_NOMINEE_CAP: usize = 6;
 
 /// Pinned out of the box. The capture pair is the one worth a click: both are
 /// about what is on screen *now*, on *this* window, without disturbing it.
@@ -65,8 +62,6 @@ pub struct WindowFacts<'a> {
     /// filling the screen is not a shape it has — the same test the tiling
     /// layout uses to spot a dialog.
     pub resizable: bool,
-    /// Another window of this app is open, so closing them all means something.
-    pub close_all: bool,
     /// The window sits on a desktop, so it can move to another.
     pub on_desktop: bool,
     pub app: Option<&'a DesktopApp>,
@@ -126,6 +121,8 @@ pub fn app_icon(name: &str) -> Icon {
         "copy" => icons::COPY,
         "history" => icons::HISTORY,
         "info" => icons::INFO,
+        "eye" => icons::EYE,
+        "eye-off" => icons::EYE_OFF,
         _ => icons::COMMAND,
     }
 }
@@ -164,43 +161,23 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
         }
     }
 
-    let settings = HaloCommand::new("settings", fl!("halo-settings"), HaloCommandGroup::App)
-        .icon(icons::SETTINGS);
-    commands.push(match facts.handles("settings") {
-        Some(enabled) => settings.shortcut("Ctrl+,").enabled(enabled),
-        None => settings,
-    });
-    // Always offered: an app that cannot open another window says so.
-    let neww = HaloCommand::new("neww", fl!("halo-new-window-row"), HaloCommandGroup::App)
-        .icon(icons::PLUS)
-        .enabled(facts.new_window().unwrap_or(true));
-    commands.push(if facts.handles("neww").is_some() {
-        neww.shortcut("Ctrl+N")
-    } else {
-        neww
-    });
+    // Only an app that opens windows offers another, as its `+` does.
+    if let Some(enabled) = facts.new_window() {
+        let neww = HaloCommand::new("neww", fl!("halo-new-window-row"), HaloCommandGroup::App)
+            .icon(icons::PLUS)
+            .enabled(enabled);
+        commands.push(if facts.handles("neww").is_some() {
+            neww.shortcut("Ctrl+N")
+        } else {
+            neww
+        });
+    }
     if let Some(enabled) = facts.handles("find") {
         commands.push(
             HaloCommand::new("find", fl!("halo-find"), HaloCommandGroup::App)
                 .icon(icons::SEARCH)
                 .shortcut("Ctrl+F")
                 .enabled(enabled),
-        );
-    }
-    commands.push(
-        HaloCommand::new("info", fl!("halo-info"), HaloCommandGroup::App)
-            .icon(icons::INFO)
-            .enabled(facts.handles("info").unwrap_or(true)),
-    );
-    if facts.close_all {
-        commands.push(
-            HaloCommand::new(
-                "closeall",
-                fl!("window-menu-close-all"),
-                HaloCommandGroup::App,
-            )
-            .icon(icons::X)
-            .pinnable(false),
         );
     }
 
@@ -267,6 +244,10 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
             if command.flags & STATEFUL != 0 {
                 row = row.stateful(command.active);
             }
+            // It has its own button, so a pin would only be a second copy.
+            if command.flags & QUICK_SETTING != 0 {
+                row = row.pinnable(false);
+            }
             commands.push(row);
         }
     } else if let Some(app) = facts.app {
@@ -296,15 +277,12 @@ pub fn app_command<'a>(catalog: &Catalog, id: &'a str) -> Option<&'a str> {
     }
 }
 
-/// The commands an app put forward for its `⌄` menu, in its order, capped.
-pub fn menu_nominees(
-    catalog: &Catalog,
-) -> impl Iterator<Item = &crate::wayland::protocols::app_commands::catalog::Command> {
+/// The toggles an app put on its Halo, in its order.
+pub fn quick_settings(catalog: &Catalog) -> impl Iterator<Item = &catalog::Command> {
     catalog
         .commands
         .iter()
-        .filter(|command| command.flags & MENU != 0)
-        .take(MENU_NOMINEE_CAP)
+        .filter(|command| command.flags & QUICK_SETTING != 0)
 }
 
 /// The compositor message a command id stands for, or `None` when the id names
@@ -516,7 +494,6 @@ mod tests {
             maximized: false,
             fullscreen: false,
             resizable: true,
-            close_all: false,
             on_desktop: true,
             app,
             catalog: None,
@@ -631,18 +608,9 @@ mod tests {
         let mut catalog = Catalog::default();
         catalog.handle("copy".into(), 0).unwrap();
         catalog.handle("neww".into(), 1).unwrap();
-        for (index, flags) in [
-            MENU,
-            0,
-            MENU | STATEFUL,
-            MENU,
-            MENU,
-            MENU,
-            MENU,
-            MENU | BOUND,
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, flags) in [0, 0, QUICK_SETTING | STATEFUL, 0, 0, 0, 0, BOUND]
+            .into_iter()
+            .enumerate()
         {
             catalog
                 .add(Command {
@@ -751,21 +719,43 @@ mod tests {
         );
     }
 
+    /// A quick setting has its own button, so its palette row cannot be pinned too.
     #[test]
-    fn the_menu_takes_the_first_six_nominees_in_order() {
+    fn a_quick_setting_is_on_the_halo_and_never_pinned() {
         let catalog = catalog();
-        let nominees: Vec<_> = menu_nominees(&catalog).map(|c| c.id.as_str()).collect();
-        assert_eq!(
-            nominees,
-            [
-                "slate.c0", "slate.c2", "slate.c3", "slate.c4", "slate.c5", "slate.c6"
-            ]
-        );
+        let quick: Vec<_> = quick_settings(&catalog).map(|c| c.id.as_str()).collect();
+        assert_eq!(quick, ["slate.c2"]);
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let commands = commands(&facts);
+        let row = |id: &str| {
+            commands
+                .iter()
+                .find(|c| c.id == format!("{APP_PREFIX}{id}"))
+                .unwrap()
+        };
+        assert!(!row("slate.c2").pinnable && row("slate.c2").stateful);
+        assert!(row("slate.c0").pinnable);
+    }
+
+    /// The App group has no Settings, App info or Close all, and New window only
+    /// for an app that opens windows.
+    #[test]
+    fn the_app_group_offers_only_what_the_app_does() {
+        let silent = commands(&facts(None));
+        for id in ["settings", "info", "closeall", "neww"] {
+            assert!(silent.iter().all(|c| c.id != id), "{id} is listed");
+        }
+        let catalog = catalog();
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        assert!(commands(&facts).iter().any(|c| c.id == "neww"));
     }
 
     #[test]
     fn an_unknown_icon_name_wears_the_generic_mark() {
         assert_eq!(app_icon("zoom-in"), icons::ZOOM_IN);
+        assert_eq!(app_icon("eye-off"), icons::EYE_OFF);
         assert_eq!(app_icon("../../etc/passwd"), icons::COMMAND);
         assert_eq!(app_icon(""), icons::COMMAND);
     }

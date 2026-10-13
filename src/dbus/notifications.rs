@@ -216,9 +216,5 @@ mod tests {
             plain(fl!("halo-one-window", app = "Files")),
             "Files opens one window"
         );
-        assert_eq!(
-            plain(fl!("halo-info-toast", app = "Files")),
-            "Files — standard command set, provenance on every capture"
-        );
     }
 }

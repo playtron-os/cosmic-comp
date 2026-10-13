@@ -1118,7 +1118,7 @@ dependencies = [
 [[package]]
 name = "cosmic-protocols"
 version = "0.2.0"
-source = "git+https://github.com/playtron-os/cosmic-protocols?branch=main#3a42592ab2d74c972545a3e0ad16533db954cd69"
+source = "git+https://github.com/playtron-os/cosmic-protocols?branch=main#d9d99c6ae36ea962284447b4fb11966de816e506"
 dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
