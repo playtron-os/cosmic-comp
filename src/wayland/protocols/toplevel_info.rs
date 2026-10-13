@@ -371,9 +371,10 @@ where
             toplevel_state.identifier = Some(toplevel_handle.identifier());
             toplevel_state.foreign_handle = Some(toplevel_handle);
         } else {
-            toplevel
-                .user_data()
-                .insert_if_missing(move || ToplevelStateInner::from_foreign(toplevel_handle));
+            // KMS surface threads rebuild the Halo, and a thread-bound entry reads as missing there.
+            toplevel.user_data().insert_if_missing_threadsafe(move || {
+                ToplevelStateInner::from_foreign(toplevel_handle)
+            });
         }
     }
 
