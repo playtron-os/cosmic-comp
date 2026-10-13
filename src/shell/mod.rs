@@ -908,7 +908,7 @@ fn create_workspace(
     if active {
         state.add_workspace_state(&workspace_handle, WState::Active);
     }
-    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false));
+    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false, false));
     Workspace::new(
         workspace_handle,
         output.clone(),
@@ -942,7 +942,7 @@ fn create_workspace_from_pinned(
     if active {
         state.add_workspace_state(&workspace_handle, WState::Active);
     }
-    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false));
+    state.set_workspace_capabilities(&workspace_handle, desktop_capabilities(false, false));
 
     if let Some(ref name) = pinned.name {
         state.set_workspace_name(&workspace_handle, name);
@@ -957,9 +957,9 @@ fn create_workspace_from_pinned(
     )
 }
 
-/// What clients may do with a desktop. Removal is only offered where it can
-/// happen, so a switcher shows its trash only there.
-fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
+/// What clients may do with a desktop. Removal and moving to another output
+/// are only offered where they can happen, so a switcher offers them only there.
+fn desktop_capabilities(removable: bool, assignable: bool) -> WorkspaceCapabilities {
     let mut capabilities = WorkspaceCapabilities::Activate
         | WorkspaceCapabilities::SetTilingState
         | WorkspaceCapabilities::Pin
@@ -967,7 +967,64 @@ fn desktop_capabilities(removable: bool) -> WorkspaceCapabilities {
     if removable {
         capabilities |= WorkspaceCapabilities::Remove;
     }
+    if assignable {
+        capabilities |= WorkspaceCapabilities::Assign;
+    }
     capabilities
+}
+
+/// Move `handle` into the set that is `group`, on another output: the user
+/// choosing a monitor for a desktop. Refused where desktops span outputs, for
+/// a group that is not one of these sets, and for the set it is already in.
+fn assign_desktop(
+    sets: &mut IndexMap<Output, WorkspaceSet>,
+    mode: WorkspaceMode,
+    handle: &WorkspaceHandle,
+    group: &WorkspaceGroupHandle,
+    workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+) -> bool {
+    if mode == WorkspaceMode::Global {
+        return false;
+    }
+    let output_of = |found: &dyn Fn(&WorkspaceSet) -> bool| {
+        sets.iter()
+            .find(|(_, set)| found(set))
+            .map(|(output, _)| output.clone())
+    };
+    let Some(from) = output_of(&|set| set.workspaces.iter().any(|w| w.handle == *handle)) else {
+        return false;
+    };
+    let Some(to) = output_of(&|set| set.group == *group) else {
+        return false;
+    };
+    migrate_desktop(sets, &from, &to, handle, workspace_state)
+}
+
+/// Move `handle` from `from`'s set to `to`'s, after the desktop on screen there.
+fn migrate_desktop(
+    sets: &mut IndexMap<Output, WorkspaceSet>,
+    from: &Output,
+    to: &Output,
+    handle: &WorkspaceHandle,
+    workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+) -> bool {
+    if !sets.contains_key(to) || from == to {
+        return false;
+    }
+    let Some(mut workspace) = sets
+        .get_mut(from)
+        .and_then(|set| set.remove_workspace(workspace_state, handle))
+    else {
+        return false;
+    };
+    let new_set = sets.get_mut(to).unwrap();
+    workspace_state.remove_workspace_state(&workspace.handle, WState::Active);
+    workspace_state.move_workspace_to_group(new_set.group, workspace.handle);
+    workspace.set_output(to, true);
+    workspace.refresh();
+    new_set.workspaces.insert(new_set.active + 1, workspace);
+    new_set.update_workspace_idxs(workspace_state);
+    true
 }
 
 /// A desktop's name: its own, else "Main" for the first and "Desktop N" after it.
@@ -1906,24 +1963,25 @@ impl Workspaces {
         if self.mode == WorkspaceMode::Global {
             return;
         }
+        migrate_desktop(&mut self.sets, from, to, handle, workspace_state);
+    }
 
-        if !self.sets.contains_key(to) || from == to {
-            return;
-        }
-
-        if let Some(mut workspace) = self
-            .sets
-            .get_mut(from)
-            .and_then(|set| set.remove_workspace(workspace_state, handle))
+    /// Move `handle` to the output whose set is `group`. A fullscreen window's
+    /// own desktop stays where its window is.
+    pub fn assign_desktop(
+        &mut self,
+        handle: &WorkspaceHandle,
+        group: &WorkspaceGroupHandle,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> bool {
+        if self
+            .fullscreen_desktops
+            .iter()
+            .any(|f| f.desktop == *handle)
         {
-            let new_set = self.sets.get_mut(to).unwrap();
-            workspace_state.remove_workspace_state(&workspace.handle, WState::Active);
-            workspace_state.move_workspace_to_group(new_set.group, workspace.handle);
-            workspace.set_output(to, true);
-            workspace.refresh();
-            new_set.workspaces.insert(new_set.active + 1, workspace);
-            new_set.update_workspace_idxs(workspace_state);
+            return false;
         }
+        assign_desktop(&mut self.sets, self.mode, handle, group, workspace_state)
     }
 
     // Move a workspace before/after a different workspace
@@ -2832,6 +2890,22 @@ impl Shell {
             set.add_empty_workspace(workspace_state);
         }
         Some((output.clone(), set.workspaces.len() - 1))
+    }
+
+    /// Move `handle` to the output `group` is on, inside the realm on screen.
+    pub fn assign_desktop(
+        &mut self,
+        handle: &WorkspaceHandle,
+        group: &WorkspaceGroupHandle,
+        workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> bool {
+        let moved = self
+            .workspaces_mut()
+            .assign_desktop(handle, group, workspace_state);
+        if moved {
+            self.refresh_removable(workspace_state);
+        }
+        moved
     }
 
     /// Remove `handle`. A desktop with windows hands them to the one before it
@@ -7412,9 +7486,12 @@ impl Shell {
                         .any(|f| f.desktop == workspace.handle)
                         || (realm.mode == WorkspaceMode::Global
                             && realm.fullscreen_desktop_slots().any(|(at, _)| at == i));
+                    let assignable = realm.mode == WorkspaceMode::OutputBound
+                        && realm.sets.len() > 1
+                        && !fullscreen;
                     workspace_state.set_workspace_capabilities(
                         &workspace.handle,
-                        desktop_capabilities(len > 1 && !spare && !fullscreen),
+                        desktop_capabilities(len > 1 && !spare && !fullscreen, assignable),
                     );
                 }
             }
@@ -11477,6 +11554,8 @@ mod transition_tests;
 #[cfg(test)]
 mod fullscreen_desktop_tests;
 
+#[cfg(test)]
+mod assign_desktop_tests;
 #[cfg(test)]
 mod desktop_choice_tests;
 
