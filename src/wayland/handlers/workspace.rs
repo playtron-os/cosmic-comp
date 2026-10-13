@@ -62,6 +62,11 @@ impl WorkspaceHandler for State {
                     let mut guard = self.common.workspace_state.update();
                     shell.remove_desktop(&handle, &mut guard);
                 }
+                Request::Assign { workspace, group } => {
+                    let mut shell = self.common.shell.write();
+                    let mut guard = self.common.workspace_state.update();
+                    shell.assign_desktop(&workspace, &group, &mut guard);
+                }
                 Request::SetTilingState { workspace, state } => {
                     let mut shell = self.common.shell.write();
                     let seat = shell.seats.last_active().clone();
