@@ -1,3 +1,10 @@
+# [1.57.0](https://github.com/playtron-os/cosmic-comp/compare/v1.56.2...v1.57.0) (2026-10-15)
+
+
+### Features
+
+* **shell:** suspend windows nobody can see ([7312ce2](https://github.com/playtron-os/cosmic-comp/commit/7312ce2033ae822710cdea842a4cc39ab21b1372))
+
 ## [1.56.2](https://github.com/playtron-os/cosmic-comp/compare/v1.56.1...v1.56.2) (2026-10-15)
 
 
