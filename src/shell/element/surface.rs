@@ -960,16 +960,20 @@ impl CosmicSurface {
         }
     }
 
-    pub fn set_suspended(&self, suspended: bool) {
-        if let WindowSurface::Wayland(window) = self.0.underlying_surface() {
-            window.with_pending_state(|state| {
-                if suspended {
-                    state.states.set(ToplevelState::Suspended);
-                } else {
-                    state.states.unset(ToplevelState::Suspended);
-                }
-            });
-        }
+    /// Returns whether the pending state changed, so a caller knows to configure.
+    pub fn set_suspended(&self, suspended: bool) -> bool {
+        let WindowSurface::Wayland(window) = self.0.underlying_surface() else {
+            return false;
+        };
+        window.with_pending_state(|state| {
+            let was = state.states.contains(ToplevelState::Suspended);
+            if suspended {
+                state.states.set(ToplevelState::Suspended);
+            } else {
+                state.states.unset(ToplevelState::Suspended);
+            }
+            was != suspended
+        })
     }
 
     pub fn min_size_without_ssd(&self) -> Option<Size<i32, Logical>> {

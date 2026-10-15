@@ -264,6 +264,28 @@ pub enum ActivationKey {
     X11(X11Key),
 }
 
+fn suspend(window: &CosmicSurface, hidden: bool) {
+    if window.set_suspended(hidden) {
+        window.send_configure();
+    }
+}
+
+fn suspend_mapped(mapped: &CosmicMapped, hidden: bool) {
+    let active = mapped.active_window();
+    for (window, _) in mapped.windows() {
+        suspend(&window, hidden || window != active);
+    }
+}
+
+fn suspend_minimized(minimized: &MinimizedWindow) {
+    match minimized {
+        MinimizedWindow::Fullscreen { surface, .. } => suspend(surface, true),
+        MinimizedWindow::Floating { window, .. } | MinimizedWindow::Tiling { window, .. } => {
+            suspend_mapped(window, true)
+        }
+    }
+}
+
 impl From<&CosmicSurface> for ActivationKey {
     fn from(value: &CosmicSurface) -> Self {
         match value.0.underlying_surface() {
@@ -2628,6 +2650,7 @@ impl Common {
             &self.xdg_activation_state,
             &mut self.workspace_state.update(),
         );
+        self.shell.read().update_suspended();
         self.popups.cleanup();
         // The transition is driven by the render clock and has no completion
         // callback, so it is noticed here. A no-op unless one is outstanding.
@@ -2738,6 +2761,34 @@ impl Common {
 
 impl Shell {
     /// The desktop sets of the realm currently on screen.
+    /// Suspends every window nobody can see — minimized, on a desktop or in a
+    /// realm that is not shown, or a stack's hidden tab — and resumes it when
+    /// it shows again, so its client can stop work nobody sees.
+    pub fn update_suspended(&self) {
+        for (realm, workspaces) in &self.realms {
+            let realm_shown = *realm == self.active_realm;
+            for set in workspaces.sets.values() {
+                for mapped in set.sticky_layer.mapped() {
+                    suspend_mapped(mapped, !realm_shown);
+                }
+                set.minimized_windows.iter().for_each(suspend_minimized);
+                for (i, workspace) in set.workspaces.iter().enumerate() {
+                    let hidden = !realm_shown || i != set.active;
+                    for mapped in workspace.mapped() {
+                        suspend_mapped(mapped, hidden);
+                    }
+                    for fullscreen in workspace.get_fullscreen_surfaces() {
+                        suspend(&fullscreen.surface, hidden);
+                    }
+                    workspace
+                        .minimized_windows
+                        .iter()
+                        .for_each(suspend_minimized);
+                }
+            }
+        }
+    }
+
     pub fn workspaces(&self) -> &Workspaces {
         self.realms
             .get(&self.active_realm)
