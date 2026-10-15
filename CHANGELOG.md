@@ -1,3 +1,10 @@
+## [1.56.2](https://github.com/playtron-os/cosmic-comp/compare/v1.56.1...v1.56.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **halo:** name the window controls without commentary ([1707343](https://github.com/playtron-os/cosmic-comp/commit/170734365a99117ddede26748084a95be2748e67))
+
 ## [1.56.1](https://github.com/playtron-os/cosmic-comp/compare/v1.56.0...v1.56.1) (2026-10-13)
 
 
