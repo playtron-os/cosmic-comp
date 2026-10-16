@@ -8,12 +8,12 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::prelude::{
-    animated_opacity, animated_tooltip, app_header, halo_close_hover, header_height_for,
+    Source, animated_opacity, animated_tooltip, app_header, halo_close_hover, header_height_for,
     header_render_height_for, measure_text_width, styled_text,
 };
 use icetron_p::{
     animation::transition::ButtonTransition,
-    components::{draggable::draggable, icons::icon_svg_inherit},
+    components::{draggable::draggable, icons::icon_svg_inherit_stroked},
 };
 use icetron_themes::icons;
 use icetron_themes::{TextRole, WindowHeaderStyle};
@@ -600,7 +600,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     .into();
             let title_row: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
                 match self.app_icon.as_ref() {
-                    Some(icon) => row![app_mark(icon, icon_size, title_color), text_element]
+                    Some(icon) => row![app_mark(icon, icon_size, title_color, None), text_element]
                         .spacing(theme.header_title_gap())
                         .align_y(Alignment::Center)
                         .into(),
@@ -703,7 +703,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .keyboard_focus
             .map(|control| (control, !(self.menu_open || self.commands_open)));
         let glyph = halo_glyph(
-            app_mark(&app_icon, metrics.glyph_icon_size, theme.halo_accent()),
+            app_mark(
+                &app_icon,
+                metrics.glyph_icon_size,
+                theme.halo_accent(),
+                Some(theme.icon_stroke_emphasis()),
+            ),
             self.on_commands.clone(),
             self.commands_open,
             self.menu_open || self.commands_open,
@@ -972,6 +977,7 @@ fn app_mark<'a, Message: 'a>(
     icon: &AppIcon,
     size: f32,
     tint: iced_core::Color,
+    stroke: Option<f32>,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     match icon {
         AppIcon::Svg { bytes, symbolic } => {
@@ -981,7 +987,15 @@ fn app_mark<'a, Message: 'a>(
             } else {
                 iced_core::Color::TRANSPARENT
             };
-            Svg::new(iced_core::svg::Handle::from_memory(*bytes))
+            // A symbolic mark is a line glyph, so it takes the stroke asked for; a coloured one keeps its own.
+            let bytes = match (stroke, *symbolic) {
+                (Some(width), true) => match Source::Memory(bytes).with_stroke_width(width) {
+                    Source::Memory(restroked) => restroked,
+                    _ => *bytes,
+                },
+                _ => *bytes,
+            };
+            Svg::new(iced_core::svg::Handle::from_memory(bytes))
                 .width(size)
                 .height(size)
                 .style(move |_theme, _status| svg::Style { color: Some(tint) })
@@ -1196,9 +1210,13 @@ fn halo_button<'a, Message: Clone + 'static>(
     let background = theme.overlay_5();
     let close_hover = halo_close_hover(&**theme);
     let disabled = theme.text_quaternary();
-    let glyph = container(icon_svg_inherit(icon, icon_size))
-        .center_x(Length::Fill)
-        .center_y(Length::Fill);
+    let glyph = container(icon_svg_inherit_stroked(
+        icon,
+        icon_size,
+        theme.icon_stroke_emphasis(),
+    ))
+    .center_x(Length::Fill)
+    .center_y(Length::Fill);
     let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if on {
         let mark = crate::utils::iced::pulse::PulsingDot::new(
             RECORD_DOT_PX,

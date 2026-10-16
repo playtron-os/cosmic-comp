@@ -10,6 +10,7 @@
 
 use iced_core::{Background, Border, Color};
 use icetron_themes::ThemeInterface;
+use icetron_themes::color::mix_oklch;
 use icetron_themes::dynamic::{DEFAULT_THEME_PAIR, DynamicTheme};
 use std::ops::Deref;
 use std::sync::Arc;
@@ -17,38 +18,6 @@ use tracing::info;
 
 const FRAME_FOCUS_WEIGHT: f32 = 0.60;
 const FRAME_RING_ALPHA: f32 = 0.30;
-
-/// CSS `color-mix(in oklch, ...)` premultiplies L and C but not hue.
-fn mix_border_accent(border: Color, accent: Color, weight: f32) -> Color {
-    use palette::{FromColor, Mix, Oklch, Srgb};
-    let alpha = border.a * (1.0 - weight) + accent.a * weight;
-    if alpha <= f32::EPSILON {
-        return Color::TRANSPARENT;
-    }
-    let mut base = Oklch::from_color(Srgb::new(border.r, border.g, border.b));
-    let mut tint = Oklch::from_color(Srgb::new(accent.r, accent.g, accent.b));
-    // A powerless hue (achromatic or fully transparent) takes the other hue.
-    if base.chroma < 0.00001 || border.a == 0.0 {
-        base.hue = tint.hue;
-    }
-    if tint.chroma < 0.00001 || accent.a == 0.0 {
-        tint.hue = base.hue;
-    }
-    base.l *= border.a;
-    base.chroma *= border.a;
-    tint.l *= accent.a;
-    tint.chroma *= accent.a;
-    let mut mixed = base.mix(tint, weight);
-    mixed.l /= alpha;
-    mixed.chroma /= alpha;
-    let rgb = Srgb::from_color(mixed);
-    Color::from_rgba(
-        rgb.red.clamp(0.0, 1.0),
-        rgb.green.clamp(0.0, 1.0),
-        rgb.blue.clamp(0.0, 1.0),
-        alpha,
-    )
-}
 
 /// Compositor theme replacing `cosmic::Theme`.
 /// Wraps a `ThemeInterface` for design tokens and carries compositor-specific settings.
@@ -215,14 +184,14 @@ impl CompTheme {
     pub(crate) fn focused_window_border(&self, focused: bool) -> Color {
         let border = self.window_border_color();
         if focused && self.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
-            mix_border_accent(border, self.halo_accent(), FRAME_FOCUS_WEIGHT)
+            mix_oklch(border, self.halo_accent(), FRAME_FOCUS_WEIGHT)
         } else {
             border
         }
     }
 
     pub(crate) fn halo_pill_border(&self) -> Color {
-        mix_border_accent(
+        mix_oklch(
             self.window_border_color(),
             self.halo_accent(),
             icetron_p::prelude::HALO_ACCENT_BORDER_WEIGHT,
@@ -401,7 +370,8 @@ mod focus_border_tests {
         let blue = Color::from_rgb(0.0, 0.4, 1.0);
         theme.workspace_accent = Some(blue);
         let focused = theme.focused_window_border(true);
-        assert!((focused.a - (0.60 + 0.40 * neutral.a)).abs() < 0.00001);
+        // Alpha is stored in 8 bits, as Chromium stores it.
+        assert!((focused.a - (0.60 + 0.40 * neutral.a)).abs() <= 0.5 / 255.0);
         assert_ne!(focused, neutral);
         assert_eq!(
             theme.focused_window_ring(true),
@@ -428,7 +398,7 @@ mod focus_border_tests {
         let theme = CompTheme::new(Arc::new(tokens), true);
         assert_eq!(
             theme.focused_window_border(true),
-            mix_border_accent(theme.window_border_color(), jade, FRAME_FOCUS_WEIGHT)
+            mix_oklch(theme.window_border_color(), jade, FRAME_FOCUS_WEIGHT)
         );
         let bar = super::focus_border_tests::theme(WindowHeaderStyle::Bar);
         assert_eq!(bar.focused_window_border(true), bar.window_border_color());
@@ -438,7 +408,7 @@ mod focus_border_tests {
     #[test]
     fn transparent_border_does_not_darken_the_accent() {
         let accent = Color::from_rgb(0.2, 0.5, 0.8);
-        let color = mix_border_accent(Color::TRANSPARENT, accent, 0.45);
+        let color = mix_oklch(Color::TRANSPARENT, accent, 0.45);
         for (actual, expected) in [
             (color.r, accent.r),
             (color.g, accent.g),
@@ -446,10 +416,28 @@ mod focus_border_tests {
         ] {
             assert!((actual - expected).abs() < 0.0001);
         }
-        assert!((color.a - 0.45).abs() < 0.00001);
+        assert!((color.a - 0.45).abs() <= 0.5 / 255.0);
         assert_eq!(
-            mix_border_accent(Color::TRANSPARENT, Color::TRANSPARENT, 0.45),
+            mix_oklch(Color::TRANSPARENT, Color::TRANSPARENT, 0.45),
             Color::TRANSPARENT
         );
+    }
+
+    /// Aurora's border is a faintly blue grey whose hue Chromium drops, so the Halo edge stays jade.
+    #[test]
+    fn near_grey_border_keeps_the_accent_hue() {
+        let border = Color::from_rgba8(233, 238, 250, 0.10);
+        let jade = icetron_themes::color::oklch(0.71, 0.135, 159.0);
+        let mixed = mix_oklch(border, jade, 0.45);
+        // Chromium: color-mix(in oklch, oklch(0.71 0.135 159) 45%, rgba(233, 238, 250, 0.1)).
+        let expected = icetron_themes::color::oklch(0.736_464, 0.121_924, 159.0);
+        for (actual, want) in [
+            (mixed.r, expected.r),
+            (mixed.g, expected.g),
+            (mixed.b, expected.b),
+        ] {
+            assert!((actual - want).abs() < 0.005, "{mixed:?} vs {expected:?}");
+        }
+        assert!((mixed.a - 0.506).abs() < 0.001);
     }
 }
