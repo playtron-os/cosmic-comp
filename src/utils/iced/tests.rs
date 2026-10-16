@@ -1239,3 +1239,32 @@ fn a_caret_blink_books_a_later_frame_instead_of_the_next_one() {
     assert!(take_redraw_request(&active));
     assert!(!take_redraw_request(&active));
 }
+
+/// The pill lands on a half pixel when centring leaves an odd width over, so its
+/// outline snaps to whole device pixels as the iced quad under it does.
+#[test]
+fn the_halo_outline_lands_on_whole_device_pixels() {
+    let bounds = iced_core::Rectangle::new(
+        iced_core::Point::new(100.5, 4.25),
+        iced_core::Size::new(240.5, 31.75),
+    );
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+        for origin in [(0.0, 0.0), (10.4, 3.6)] {
+            let outline = snapped_outline(bounds, Point::from(origin), 1.0, Scale::from(scale));
+            for edge in [
+                outline.loc.x,
+                outline.loc.y,
+                outline.loc.x + outline.size.w,
+                outline.loc.y + outline.size.h,
+            ] {
+                let device = edge * scale;
+                assert!(
+                    (device - device.round()).abs() < 1e-9,
+                    "an edge on {device} device pixels at {scale}x from {origin:?}"
+                );
+            }
+            // Still the pill: the origin and the edge each round by under half a pixel.
+            assert!((outline.loc.x - (origin.0 / scale + 100.5)).abs() <= 1.0 / scale);
+        }
+    }
+}

@@ -8,8 +8,8 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::prelude::{
-    Source, animated_opacity, animated_tooltip, app_header, halo_close_hover, header_height_for,
-    header_render_height_for, measure_text_width, styled_text,
+    Source, animated_opacity, animated_tooltip, app_header, hairline, halo_close_hover,
+    header_height_for, header_render_height_for, measure_text_width, styled_text,
 };
 use icetron_p::{
     animation::transition::ButtonTransition,
@@ -1014,15 +1014,11 @@ fn halo_divider<'a, Message: 'a>(
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     let metrics = theme.halo_style();
-    let color = theme.stroke_subtler();
-    container(iced_widget::Space::new())
-        .width(metrics.border_width)
-        .height(metrics.divider_height)
-        .style(move |_| container::Style {
-            background: Some(iced_core::Background::Color(color)),
-            ..Default::default()
-        })
-        .into()
+    hairline(
+        metrics.border_width,
+        metrics.divider_height,
+        theme.stroke_subtler(),
+    )
 }
 
 /// The design's "<app> — commands (<chord>)", naming the configured binding.

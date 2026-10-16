@@ -797,8 +797,9 @@ fn dividers(renderer: &mut Renderer, theme: &CompTheme) -> Vec<Rectangle> {
         .layers()
         .iter()
         .flat_map(|layer| &layer.quads)
+        // A hairline: the line is the left border of a quad at least a pixel wide.
         .filter(|(quad, _)| {
-            quad.bounds.width == metrics.border_width
+            quad.border.sides == Some([0.0, 0.0, 0.0, metrics.border_width])
                 && quad.bounds.height == metrics.divider_height
         })
         .map(|(quad, _)| quad.bounds)
