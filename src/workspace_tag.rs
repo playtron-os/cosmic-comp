@@ -275,8 +275,15 @@ mod tests {
         assert!(visible_in(None, None));
     }
 
+    /// On the machine our own pid is machine-plane; run inside a Kora workspace, it is that workspace.
     #[test]
-    fn our_own_pid_is_machine_plane_in_a_normal_test_run() {
-        assert_eq!(of_pid(std::process::id()), None);
+    fn our_own_pid_is_in_the_plane_the_test_runs_in() {
+        let cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap();
+        let workspace = cgroup
+            .trim_end()
+            .rsplit('/')
+            .find_map(|segment| segment.strip_prefix("workspace-")?.strip_suffix(".slice"));
+        assert_eq!(of_pid(std::process::id()).as_deref(), workspace);
+        assert_eq!(of_pid(u32::MAX), None);
     }
 }
