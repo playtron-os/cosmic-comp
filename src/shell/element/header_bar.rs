@@ -8,8 +8,8 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::prelude::{
-    Source, animated_opacity, animated_tooltip, app_header, halo_close_hover, header_height_for,
-    header_render_height_for, measure_text_width, styled_text,
+    Source, animated_opacity, animated_tooltip, app_header, hairline, halo_close_hover,
+    header_height_for, header_render_height_for, measure_text_width, styled_text,
 };
 use icetron_p::{
     animation::transition::ButtonTransition,
@@ -737,32 +737,34 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .floor(name_style.font_size * 6.0)
             .push_rigid(glyph);
         identity = if tier == 4 {
-            identity.push_elastic(name_text)
+            identity.push_elastic(name_text).on_baseline()
         } else {
-            identity.push_rigid(name_text)
+            identity.push_rigid(name_text).on_baseline()
         };
         let name_width = measure_text_width(&name, &name_style)
             .ceil()
             .min(HALO_NAME_MAX);
         let selection_max = HALO_SELECTION_MAX.min(HALO_IDENTITY_MAX - identity_gap - name_width);
         if let Some(selection) = selection.as_deref().filter(|_| selection_max > 0.0) {
-            identity = identity.push_elastic_droppable(
-                1,
-                container(
-                    styled_text(
-                        selection.to_owned(),
-                        theme.text_styles().role(TextRole::Caption),
-                        theme.text_secondary(),
+            identity = identity
+                .push_elastic_droppable(
+                    1,
+                    container(
+                        styled_text(
+                            selection.to_owned(),
+                            theme.text_styles().role(TextRole::Caption),
+                            theme.text_secondary(),
+                        )
+                        .wrapping(iced_widget::text::Wrapping::None)
+                        .ellipsis(iced_widget::text::Ellipsis::End),
                     )
-                    .wrapping(iced_widget::text::Wrapping::None)
-                    .ellipsis(iced_widget::text::Ellipsis::End),
+                    .max_width(selection_max + identity_gap - metrics.gap)
+                    .padding(iced_core::Padding {
+                        left: identity_gap - metrics.gap,
+                        ..iced_core::Padding::ZERO
+                    }),
                 )
-                .max_width(selection_max + identity_gap - metrics.gap)
-                .padding(iced_core::Padding {
-                    left: identity_gap - metrics.gap,
-                    ..iced_core::Padding::ZERO
-                }),
-            );
+                .on_baseline();
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
             let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
@@ -1012,15 +1014,11 @@ fn halo_divider<'a, Message: 'a>(
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
     let metrics = theme.halo_style();
-    let color = theme.stroke_subtler();
-    container(iced_widget::Space::new())
-        .width(metrics.border_width)
-        .height(metrics.divider_height)
-        .style(move |_| container::Style {
-            background: Some(iced_core::Background::Color(color)),
-            ..Default::default()
-        })
-        .into()
+    hairline(
+        metrics.border_width,
+        metrics.divider_height,
+        theme.stroke_subtler(),
+    )
 }
 
 /// The design's "<app> — commands (<chord>)", naming the configured binding.

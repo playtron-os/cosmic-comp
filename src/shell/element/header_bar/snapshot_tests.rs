@@ -553,6 +553,47 @@ fn the_app_name_leads_and_the_window_title_follows_as_the_selection() {
     assert!(selection.is_none());
 }
 
+/// The design lines the name and the window title up on one baseline
+/// (`align-items: baseline`); centring their boxes left them a pixel apart.
+#[test]
+fn the_name_and_the_window_title_share_a_baseline() {
+    let theme = theme();
+    let (mut renderer, _, _cache) = layout(&theme, 1024.0, "Documents", 1.0);
+    let baselines: Vec<(Color, f32)> = renderer
+        .layers()
+        .iter()
+        .flat_map(|layer| &layer.text)
+        .flat_map(|item| item.as_slice())
+        .filter_map(|text| {
+            let iced_graphics::text::Text::Paragraph {
+                paragraph,
+                position,
+                color,
+                ..
+            } = text
+            else {
+                return None;
+            };
+            let paragraph = paragraph.upgrade()?;
+            let line = paragraph.buffer().layout_runs().next()?;
+            Some((*color, position.y + line.line_y))
+        })
+        .collect();
+    let baseline = |wanted: Color| {
+        baselines
+            .iter()
+            .find(|(color, _)| *color == wanted)
+            .map(|(_, y)| *y)
+            .expect("drawn")
+    };
+    let name = baseline(theme.text_primary());
+    let title = baseline(theme.text_secondary());
+    assert!(
+        (name - title).abs() < 0.01,
+        "name on {name}, window title on {title}"
+    );
+}
+
 #[test]
 fn the_identity_uses_the_label_and_caption_roles() {
     let theme = theme();
@@ -756,8 +797,9 @@ fn dividers(renderer: &mut Renderer, theme: &CompTheme) -> Vec<Rectangle> {
         .layers()
         .iter()
         .flat_map(|layer| &layer.quads)
+        // A hairline: the line is the left border of a quad at least a pixel wide.
         .filter(|(quad, _)| {
-            quad.bounds.width == metrics.border_width
+            quad.border.sides == Some([0.0, 0.0, 0.0, metrics.border_width])
                 && quad.bounds.height == metrics.divider_height
         })
         .map(|(quad, _)| quad.bounds)

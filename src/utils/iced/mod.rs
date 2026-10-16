@@ -287,6 +287,29 @@ fn on_main_thread() -> bool {
     MAIN_THREAD.get() == Some(&std::thread::current().id())
 }
 
+/// The Halo outline over the pill's `bounds`, on the device pixels the pill's snapped
+/// quad covers: otherwise its one-pixel stroke straddles two rows wherever centring
+/// leaves the pill on a half pixel.
+fn snapped_outline(
+    bounds: iced_core::Rectangle,
+    location: Point<f64, Physical>,
+    zoom: f64,
+    scale: Scale<f64>,
+) -> Rectangle<f64, crate::utils::geometry::Local> {
+    // The buffer lands on rounded device pixels, and iced snaps the quad within it.
+    let edge = |origin: f64, value: f32, scale: f64| {
+        origin.round() + (f64::from(value) * zoom * scale + 0.001).round()
+    };
+    let left = edge(location.x, bounds.x, scale.x);
+    let top = edge(location.y, bounds.y, scale.y);
+    let right = edge(location.x, bounds.x + bounds.width, scale.x);
+    let bottom = edge(location.y, bounds.y + bounds.height, scale.y);
+    Rectangle::new(
+        (left / scale.x, top / scale.y).into(),
+        ((right - left) / scale.x, (bottom - top) / scale.y).into(),
+    )
+}
+
 /// Idle callbacks parked by [`ProgramLoop::insert_idle`] when it was called off
 /// the event-loop thread. Drained by [`drain_deferred_loop_work`].
 #[allow(clippy::type_complexity)]
@@ -1984,15 +2007,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         if let Some(frame) = focus_frame {
             let theme = &internal_ref.theme;
             let zoom = internal_ref.additional_scale;
-            let bounds = frame.bounds;
-            let geometry = Rectangle::new(
-                (
-                    location.x / output_scale.x + bounds.x as f64 * zoom,
-                    location.y / output_scale.y + bounds.y as f64 * zoom,
-                )
-                    .into(),
-                (bounds.width as f64 * zoom, bounds.height as f64 * zoom).into(),
-            );
+            let geometry = snapped_outline(frame.bounds, location, zoom, output_scale);
             push_above(IcedRenderElement::Outline(OutlineElement(
                 IndicatorShader::animated_outline_with_bottom_border(
                     renderer,
