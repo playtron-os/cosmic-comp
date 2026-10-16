@@ -26,6 +26,8 @@ pub struct ElasticRow<'a, Message, Theme, Renderer> {
     /// Parallel to `children`: `Some(rank)` if the child may be dropped once
     /// squeezing is not enough, lowest rank first. `None` never leaves.
     priority: Vec<Option<u8>>,
+    /// Parallel to `children`: whether the child lines up on the shared baseline.
+    baseline: Vec<bool>,
     spacing: f32,
     /// Width to leave for siblings laid out after this row.
     reserve: f32,
@@ -48,6 +50,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
             children: Vec::new(),
             elastic: Vec::new(),
             priority: Vec::new(),
+            baseline: Vec::new(),
             spacing: 0.0,
             reserve: 0.0,
             reserve_min: 0.0,
@@ -61,6 +64,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         self.children.push(child.into());
         self.elastic.push(false);
         self.priority.push(None);
+        self.baseline.push(false);
         self
     }
 
@@ -70,6 +74,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         self.children.push(child.into());
         self.elastic.push(true);
         self.priority.push(None);
+        self.baseline.push(false);
         self
     }
 
@@ -84,6 +89,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         self.children.push(child.into());
         self.elastic.push(false);
         self.priority.push(Some(rank));
+        self.baseline.push(false);
         self
     }
 
@@ -99,6 +105,17 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         self.children.push(child.into());
         self.elastic.push(true);
         self.priority.push(Some(rank));
+        self.baseline.push(false);
+        self
+    }
+
+    /// Line the child just pushed up on a baseline it shares with the others
+    /// marked so, as CSS `align-items: baseline` does; the group is centred as one.
+    #[must_use]
+    pub fn on_baseline(mut self) -> Self {
+        if let Some(last) = self.baseline.last_mut() {
+            *last = true;
+        }
         self
     }
 
@@ -328,12 +345,29 @@ where
             );
         }
 
+        // Each shown child on the shared baseline: its baseline, or its bottom edge.
+        let baselines: Vec<Option<f32>> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                (self.baseline[index] && !dropped[index])
+                    .then(|| node.baseline().unwrap_or(node.size().height))
+            })
+            .collect();
+        let above = baselines.iter().flatten().copied().fold(0.0_f32, f32::max);
+        let below = nodes
+            .iter()
+            .zip(&baselines)
+            .filter_map(|(node, baseline)| baseline.map(|b| node.size().height - b))
+            .fold(0.0_f32, f32::max);
+
         let height = nodes
             .iter()
             .enumerate()
-            .filter(|(index, _)| !dropped[*index])
+            .filter(|(index, _)| !dropped[*index] && !self.baseline[*index])
             .map(|(_, node)| node.size().height)
-            .fold(0.0_f32, f32::max);
+            .fold(above + below, f32::max);
+        let group_top = (height - above - below) / 2.0;
         let mut x = 0.0_f32;
         for (index, node) in nodes.iter_mut().enumerate() {
             if dropped[index] {
@@ -342,15 +376,24 @@ where
                 continue;
             }
             let size = node.size();
-            node.move_to_mut(Point::new(x, (height - size.height) / 2.0));
+            let y = match baselines[index] {
+                Some(baseline) => group_top + above - baseline,
+                None => (height - size.height) / 2.0,
+            };
+            node.move_to_mut(Point::new(x, y));
             x += size.width + self.spacing;
         }
         let width = (x - self.spacing).max(0.0);
+        let row_baseline = baselines
+            .iter()
+            .any(Option::is_some)
+            .then_some(group_top + above);
 
         layout::Node::with_children(
             limits.resolve(Length::Shrink, Length::Shrink, Size::new(width, height)),
             nodes,
         )
+        .with_baseline(row_baseline)
     }
 
     fn operate(
