@@ -2778,7 +2778,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_debug",
@@ -2817,7 +2817,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2835,7 +2835,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_futures 0.15.0-dev",
@@ -2858,7 +2858,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "futures",
  "iced_core 0.15.0-dev",
@@ -2872,7 +2872,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -2894,7 +2894,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -2903,7 +2903,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2915,7 +2915,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "bytes",
  "iced_core 0.15.0-dev",
@@ -2928,7 +2928,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "bytemuck",
  "cosmic-text 0.18.0",
@@ -2945,7 +2945,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.13.2",
@@ -2976,7 +2976,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "iced_renderer",
  "log",
@@ -2990,7 +2990,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#4beaa1810e47180eb01d9c6b2ba7e0f68a134167"
+source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
 dependencies = [
  "arboard",
  "iced_debug",
