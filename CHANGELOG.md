@@ -1,3 +1,12 @@
+## [1.57.1](https://github.com/playtron-os/cosmic-comp/compare/v1.57.0...v1.57.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **halo:** draw the pill outline and dividers on whole device pixels ([ac7fad4](https://github.com/playtron-os/cosmic-comp/commit/ac7fad4b09a51f5bdd0cec7642f339068bfdefec))
+* **halo:** match the design's icon stroke and aurora edge ([d4048b7](https://github.com/playtron-os/cosmic-comp/commit/d4048b77b539012ba13ed1a49221bc0e09ea33a1))
+* **halo:** sit the window title on the app name's baseline ([fa6266c](https://github.com/playtron-os/cosmic-comp/commit/fa6266c72925724dfdbe439bffd8927ed218efc3))
+
 # [1.57.0](https://github.com/playtron-os/cosmic-comp/compare/v1.56.2...v1.57.0) (2026-10-15)
 
 
