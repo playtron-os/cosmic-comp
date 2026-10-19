@@ -1,3 +1,10 @@
+## [1.57.2](https://github.com/playtron-os/cosmic-comp/compare/v1.57.1...v1.57.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* **halo:** offer new-empty-window as the new window action ([174a0f1](https://github.com/playtron-os/cosmic-comp/commit/174a0f1424531b835e08051f234ff0a1880f03e3))
+
 ## [1.57.1](https://github.com/playtron-os/cosmic-comp/compare/v1.57.0...v1.57.1) (2026-10-16)
 
 
