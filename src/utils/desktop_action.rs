@@ -142,6 +142,19 @@ fn launch_argv(argv: &[String], what: &str) {
     }
 }
 
+/// Desktop action ids, lowercased with `_` as `-`, that open another plain
+/// window. A private or incognito window is not one.
+const NEW_WINDOW_IDS: [&str; 5] = [
+    "new-window",
+    "window-new",
+    "newwindow",
+    "new-empty-window",
+    "newemptywindow",
+];
+
+/// The same actions by their untranslated name, for an entry with its own id.
+const NEW_WINDOW_NAMES: [&str; 2] = ["New Window", "New Empty Window"];
+
 impl NewWindowAction {
     #[cfg(test)]
     fn from_content(path: &Path, content: &str) -> Option<Self> {
@@ -155,8 +168,10 @@ impl NewWindowAction {
         for action in entry.actions()? {
             let id = action.to_ascii_lowercase().replace('_', "-");
             let name = entry.action_entry(action, "Name").unwrap_or_default();
-            if !matches!(id.as_str(), "new-window" | "window-new" | "newwindow")
-                && !name.eq_ignore_ascii_case("New Window")
+            if !NEW_WINDOW_IDS.contains(&id.as_str())
+                && !NEW_WINDOW_NAMES
+                    .iter()
+                    .any(|known| name.eq_ignore_ascii_case(known))
             {
                 continue;
             }
@@ -291,6 +306,38 @@ mod tests {
         assert!(action("", "").is_none());
         let undeclared = "[Desktop Entry]\nType=Application\nName=Example\n[Desktop Action new-window]\nExec=example --new-window\n";
         assert!(NewWindowAction::from_content(Path::new("example.desktop"), undeclared).is_none());
+    }
+
+    /// Editors name it `new-empty-window`, and a browser may list a private
+    /// window first, which must not be what the Halo's `+` opens.
+    #[test]
+    fn editors_browsers_and_terminals_offer_their_plain_new_window() {
+        let editor = NewWindowAction::from_content(
+            Path::new("/apps/editor.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Editor\nExec=editor %F\nActions=new-empty-window\n\n[Desktop Action new-empty-window]\nName=New Empty Window\nExec=editor --new-window %F\n",
+        )
+        .unwrap();
+        assert_eq!(editor.argv, ["editor", "--new-window"]);
+
+        let browser = NewWindowAction::from_content(
+            Path::new("/apps/browser.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Browser\nExec=browser %U\nActions=new-private-window;new-window;\n\n[Desktop Action new-private-window]\nName=New Private Window\nExec=browser --private-window %U\n\n[Desktop Action new-window]\nName=New Window\nExec=browser --new-window %U\n",
+        )
+        .unwrap();
+        assert_eq!(browser.argv, ["browser", "--new-window"]);
+
+        let terminal = NewWindowAction::from_content(
+            Path::new("/apps/terminal.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Terminal\nExec=terminal\nActions=NewWindow;\n\n[Desktop Action NewWindow]\nName=New Window\nExec=terminal\n",
+        )
+        .unwrap();
+        assert_eq!(terminal.argv, ["terminal"]);
+
+        let private_only = NewWindowAction::from_content(
+            Path::new("/apps/private.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Browser\nExec=browser\nActions=new-private-window;\n\n[Desktop Action new-private-window]\nName=New Private Window\nExec=browser --private\n",
+        );
+        assert!(private_only.is_none());
     }
 
     #[test]
