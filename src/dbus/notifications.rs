@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use tracing::warn;
+use futures_channel::mpsc::UnboundedSender;
+use futures_util::StreamExt;
+use tracing::{debug, warn};
 use zbus::zvariant::Value;
 
 use super::DBusState;
@@ -41,6 +43,8 @@ trait SystemToasts {
     fn toast(&self, message: &str, tone: &str) -> zbus::Result<()>;
 
     fn show_capture(&self, capture: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+
+    fn capture_drag_over(&self, app: &str) -> zbus::Result<()>;
 }
 
 /// The colour grammar a system toast's dot carries.
@@ -172,6 +176,36 @@ impl DBusState {
                 evlh.insert_idle(move |state| unseen(state, handoff));
             }
         });
+    }
+}
+
+impl DBusState {
+    /// Tell the preview, in order, which app a dragged capture is over (`""` for none).
+    /// The channel closes with the drag.
+    pub fn capture_drag_targets(&self) -> UnboundedSender<String> {
+        let (tell, mut heard) = futures_channel::mpsc::unbounded::<String>();
+        if !toasts_enabled() {
+            return tell;
+        }
+        let state = self.clone();
+        self.spawn(async move {
+            let Ok(conn) = state.session_conn().await else {
+                return;
+            };
+            let Ok(preview) = SystemToastsProxy::new(conn).await else {
+                return;
+            };
+            while let Some(mut app) = heard.next().await {
+                // Only the latest name matters once several are waiting.
+                while let Ok(newer) = heard.try_recv() {
+                    app = newer;
+                }
+                if let Err(err) = preview.capture_drag_over(&app).await {
+                    debug!(?err, "The preview did not take the drag's target");
+                }
+            }
+        });
+        tell
     }
 }
 

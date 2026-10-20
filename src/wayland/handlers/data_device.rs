@@ -70,7 +70,7 @@ impl WaylandDndGrabHandler for State {
         serial: smithay::utils::Serial,
         type_: GrabType,
     ) {
-        crate::input::dnd_hover::started(&seat);
+        let source = crate::input::dnd_hover::started(self, &seat, source);
         let user_data = seat.user_data();
         user_data.insert_if_missing_threadsafe::<Mutex<Option<DnDIcon>>, _>(Default::default);
 
