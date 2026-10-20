@@ -94,7 +94,7 @@ impl Hold {
 /// Every hold the compositor announces, in order, for as long as `connection` lasts.
 pub async fn holds(
     connection: &zbus::Connection,
-) -> zbus::Result<impl Stream<Item = Hold> + Send + 'static> {
+) -> zbus::Result<impl Stream<Item = Hold> + Send + use<>> {
     // One stream for all three signals: separate ones could hand a Finished over
     // before the Started it follows.
     let rule = zbus::MatchRule::builder()
@@ -112,7 +112,7 @@ pub async fn holds(
 /// Whether a dictation host owns [`HOST_NAME`]: now, then each time that changes.
 pub async fn host_present(
     connection: &zbus::Connection,
-) -> zbus::Result<impl Stream<Item = bool> + Send + 'static> {
+) -> zbus::Result<impl Stream<Item = bool> + Send + use<>> {
     let dbus = DBusProxy::new(connection).await?;
     // Subscribed first, so a host arriving in between is not missed.
     let changes = dbus

@@ -99,8 +99,8 @@ fn holds_arrive_in_order() {
             .build()
             .await
             .unwrap();
-        let listener = bus.connect().await;
-        let mut heard = Box::pin(holds(&listener).await.unwrap());
+        // The streams keep their connection: the caller need not.
+        let mut heard = Box::pin(holds(&bus.connect().await).await.unwrap());
 
         let sent = [
             Hold::Started {
@@ -158,8 +158,7 @@ fn a_hold_from_anyone_else_is_ignored() {
 fn the_host_is_followed_as_it_comes_and_goes() {
     let bus = PrivateBus::start();
     zbus::block_on(async {
-        let compositor = bus.connect().await;
-        let mut present = Box::pin(host_present(&compositor).await.unwrap());
+        let mut present = Box::pin(host_present(&bus.connect().await).await.unwrap());
         assert!(!next(&mut present).await, "no host yet");
 
         let host = Host::claim(bus.builder()).await.unwrap();
@@ -181,8 +180,7 @@ fn a_host_already_there_is_seen_at_once() {
     let bus = PrivateBus::start();
     zbus::block_on(async {
         let _host = Host::claim(bus.builder()).await.unwrap();
-        let compositor = bus.connect().await;
-        let mut present = Box::pin(host_present(&compositor).await.unwrap());
+        let mut present = Box::pin(host_present(&bus.connect().await).await.unwrap());
         assert!(next(&mut present).await);
     });
 }
