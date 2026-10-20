@@ -120,6 +120,7 @@ mod tests {
             ("Super+k", shortcuts::Action::WindowCommands),
             ("Super+Shift+m", shortcuts::Action::MoveToDesktop),
             ("Super+F10", shortcuts::Action::FocusHalo),
+            ("Ctrl+space", shortcuts::Action::SpeechToText),
             (
                 "Super+Ctrl+Up",
                 shortcuts::Action::Focus(shortcuts::action::FocusDirection::Up),
