@@ -39,13 +39,17 @@
     (modifiers: [Super], key: "8"): Workspace(8),
     (modifiers: [Super], key: "9"): Workspace(9),
     (modifiers: [Super], key: "0"): LastWorkspace,
-    (modifiers: [Super, Shift], key: "1"): MoveToWorkspace(1),
-    (modifiers: [Super, Shift], key: "2"): MoveToWorkspace(2),
-    (modifiers: [Super, Shift], key: "6"): MoveToWorkspace(6),
-    (modifiers: [Super, Shift], key: "7"): MoveToWorkspace(7),
-    (modifiers: [Super, Shift], key: "8"): MoveToWorkspace(8),
-    (modifiers: [Super, Shift], key: "9"): MoveToWorkspace(9),
-    (modifiers: [Super, Shift], key: "0"): MoveToLastWorkspace,
+    // Super+Shift+digit belongs to the screen captures, as on a Mac.
+    (modifiers: [Super, Alt], key: "1"): MoveToWorkspace(1),
+    (modifiers: [Super, Alt], key: "2"): MoveToWorkspace(2),
+    (modifiers: [Super, Alt], key: "3"): MoveToWorkspace(3),
+    (modifiers: [Super, Alt], key: "4"): MoveToWorkspace(4),
+    (modifiers: [Super, Alt], key: "5"): MoveToWorkspace(5),
+    (modifiers: [Super, Alt], key: "6"): MoveToWorkspace(6),
+    (modifiers: [Super, Alt], key: "7"): MoveToWorkspace(7),
+    (modifiers: [Super, Alt], key: "8"): MoveToWorkspace(8),
+    (modifiers: [Super, Alt], key: "9"): MoveToWorkspace(9),
+    (modifiers: [Super, Alt], key: "0"): MoveToLastWorkspace,
 
     // Two axes, one modifier: Super+Left/Right move between desktops, Super+Up/Down
     // between workspaces; the tiling focus moves live under Super+Ctrl instead.
@@ -124,8 +128,7 @@
     (modifiers: [Super], key: "l"): System(LockScreen),
     (modifiers: [], key: "XF86Calculator"): System(Calculator),
 
-    // Screenshots and recordings take the Mac's keys, so Super+Shift+3/4/5 no
-    // longer move a window to workspace 3/4/5.
+    // Screenshots and recordings take the Mac's keys.
     (modifiers: [Super, Shift], key: "3"): CaptureScreen,
     (modifiers: [Super, Ctrl, Shift], key: "3"): CaptureScreenClipboard,
     (modifiers: [Super, Shift], key: "4"): CaptureSelection,

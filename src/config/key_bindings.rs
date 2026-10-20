@@ -157,6 +157,19 @@ mod tests {
             let binding = shortcuts::Binding::from_str(combo).unwrap();
             assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
         }
+        // Moving a window to a workspace keeps its whole set, under Super+Alt.
+        for digit in 1..=9u8 {
+            let binding = shortcuts::Binding::from_str(&format!("Super+Alt+{digit}")).unwrap();
+            let want = shortcuts::Action::MoveToWorkspace(digit);
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "Super+Alt+{digit}");
+            let shifted = shortcuts::Binding::from_str(&format!("Super+Shift+{digit}")).unwrap();
+            assert_ne!(shortcuts.0.get(&shifted), Some(&want), "Super+Shift+{digit}");
+        }
+        let last = shortcuts::Binding::from_str("Super+Alt+0").unwrap();
+        assert_eq!(
+            shortcuts.0.get(&last),
+            Some(&shortcuts::Action::MoveToLastWorkspace)
+        );
         assert!(
             !shortcuts.iter().any(|(_, action)| *action
                 == shortcuts::Action::System(shortcuts::action::System::Screenshot)),
