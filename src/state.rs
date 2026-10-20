@@ -939,7 +939,8 @@ impl State {
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
         crate::dbus::workspaces::init(&handle, &async_executor);
         crate::dbus::runs::init(&handle, &async_executor);
-        let speech_to_text = crate::dbus::speech_to_text::SpeechToText::init(&async_executor);
+        let speech_to_text =
+            crate::dbus::speech_to_text::SpeechToText::init(&handle, &async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
         // live values to the game-mode `AppFrametimeNs` reader.
         shell.write().game_mode_frametime_ns = game_mode_bridge.frametime_handle();
