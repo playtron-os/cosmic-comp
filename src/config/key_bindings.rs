@@ -131,6 +131,39 @@ mod tests {
         }
     }
 
+    /// The capture shortcuts follow the Mac's, and Print opens the capture toolbar.
+    #[test]
+    fn capture_shortcuts_match_the_mac() {
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (combo, want) in [
+            ("Super+Shift+3", shortcuts::Action::CaptureScreen),
+            (
+                "Super+Ctrl+Shift+3",
+                shortcuts::Action::CaptureScreenClipboard,
+            ),
+            ("Super+Shift+4", shortcuts::Action::CaptureSelection),
+            (
+                "Super+Ctrl+Shift+4",
+                shortcuts::Action::CaptureSelectionClipboard,
+            ),
+            ("Super+Shift+5", shortcuts::Action::CaptureToolbar),
+            ("Print", shortcuts::Action::CaptureToolbar),
+            ("Super+Ctrl+Escape", shortcuts::Action::StopRecording),
+        ] {
+            let binding = shortcuts::Binding::from_str(combo).unwrap();
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+        }
+        assert!(
+            !shortcuts.iter().any(|(_, action)| *action
+                == shortcuts::Action::System(shortcuts::action::System::Screenshot)),
+            "the old screenshot tool is still bound"
+        );
+    }
+
     /// Super+Tab is the workspace switch, not a second Alt+Tab.
     #[test]
     fn super_tab_switches_workspaces() {

@@ -1,7 +1,7 @@
 {
     (modifiers: [Super, Alt], key: "Escape"): Terminate,
     (modifiers: [Super, Shift], key: "Escape"): System(LogOut),
-    (modifiers: [Super, Ctrl], key: "Escape"): Debug,
+    (modifiers: [Super, Ctrl], key: "Escape"): StopRecording,
     (modifiers: [Super], key: "Escape"): System(LockScreen),
     (modifiers: [Super], key: "q"): Close,
     (modifiers: [Alt], key: "F4"): Close,
@@ -41,9 +41,6 @@
     (modifiers: [Super], key: "0"): LastWorkspace,
     (modifiers: [Super, Shift], key: "1"): MoveToWorkspace(1),
     (modifiers: [Super, Shift], key: "2"): MoveToWorkspace(2),
-    (modifiers: [Super, Shift], key: "3"): MoveToWorkspace(3),
-    (modifiers: [Super, Shift], key: "4"): MoveToWorkspace(4),
-    (modifiers: [Super, Shift], key: "5"): MoveToWorkspace(5),
     (modifiers: [Super, Shift], key: "6"): MoveToWorkspace(6),
     (modifiers: [Super, Shift], key: "7"): MoveToWorkspace(7),
     (modifiers: [Super, Shift], key: "8"): MoveToWorkspace(8),
@@ -127,9 +124,16 @@
     (modifiers: [Super], key: "l"): System(LockScreen),
     (modifiers: [], key: "XF86Calculator"): System(Calculator),
 
-    (modifiers: [], key: "Print"): System(Screenshot),
-    (modifiers: [Super], key: "F23"): System(Screenshot),
-    (modifiers: [Super, Shift], key: "F23"): System(Screenshot),
+    // Screenshots and recordings take the Mac's keys, so Super+Shift+3/4/5 no
+    // longer move a window to workspace 3/4/5.
+    (modifiers: [Super, Shift], key: "3"): CaptureScreen,
+    (modifiers: [Super, Ctrl, Shift], key: "3"): CaptureScreenClipboard,
+    (modifiers: [Super, Shift], key: "4"): CaptureSelection,
+    (modifiers: [Super, Ctrl, Shift], key: "4"): CaptureSelectionClipboard,
+    (modifiers: [Super, Shift], key: "5"): CaptureToolbar,
+    (modifiers: [], key: "Print"): CaptureToolbar,
+    (modifiers: [Super], key: "F23"): CaptureToolbar,
+    (modifiers: [Super, Shift], key: "F23"): CaptureToolbar,
     (modifiers: [], key: "XF86AudioRaiseVolume"): System(VolumeRaise),
     (modifiers: [], key: "XF86AudioLowerVolume"): System(VolumeLower),
     (modifiers: [], key: "XF86AudioMute"): System(Mute),
