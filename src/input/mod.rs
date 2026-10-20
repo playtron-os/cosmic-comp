@@ -91,6 +91,7 @@ use std::{
 };
 
 pub mod actions;
+pub mod capture;
 pub mod dnd_hover;
 pub mod gestures;
 

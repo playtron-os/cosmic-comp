@@ -1187,6 +1187,21 @@ impl State {
 
             Action::Spawn(command) => self.spawn_command(command),
 
+            action @ (Action::CaptureScreen
+            | Action::CaptureScreenClipboard
+            | Action::CaptureSelection
+            | Action::CaptureSelectionClipboard
+            | Action::CaptureToolbar
+            | Action::StopRecording) => {
+                let program = super::capture::installed_program();
+                let system_actions = &self.common.config.system_actions;
+                if let Some(command) =
+                    super::capture::command(&action, program.as_deref(), system_actions)
+                {
+                    self.spawn_command(command);
+                }
+            }
+
             x @ Action::ZoomIn | x @ Action::ZoomOut => {
                 let change = {
                     let increment =

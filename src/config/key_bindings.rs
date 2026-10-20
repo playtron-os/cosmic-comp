@@ -131,6 +131,56 @@ mod tests {
         }
     }
 
+    /// The capture shortcuts follow the Mac's, and Print opens the capture toolbar.
+    #[test]
+    fn capture_shortcuts_match_the_mac() {
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (combo, want) in [
+            ("Super+Shift+3", shortcuts::Action::CaptureScreen),
+            (
+                "Super+Ctrl+Shift+3",
+                shortcuts::Action::CaptureScreenClipboard,
+            ),
+            ("Super+Shift+4", shortcuts::Action::CaptureSelection),
+            (
+                "Super+Ctrl+Shift+4",
+                shortcuts::Action::CaptureSelectionClipboard,
+            ),
+            ("Super+Shift+5", shortcuts::Action::CaptureToolbar),
+            ("Print", shortcuts::Action::CaptureToolbar),
+            ("Super+Ctrl+Escape", shortcuts::Action::StopRecording),
+        ] {
+            let binding = shortcuts::Binding::from_str(combo).unwrap();
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+        }
+        // Moving a window to a workspace keeps its whole set, under Super+Alt.
+        for digit in 1..=9u8 {
+            let binding = shortcuts::Binding::from_str(&format!("Super+Alt+{digit}")).unwrap();
+            let want = shortcuts::Action::MoveToWorkspace(digit);
+            assert_eq!(shortcuts.0.get(&binding), Some(&want), "Super+Alt+{digit}");
+            let shifted = shortcuts::Binding::from_str(&format!("Super+Shift+{digit}")).unwrap();
+            assert_ne!(
+                shortcuts.0.get(&shifted),
+                Some(&want),
+                "Super+Shift+{digit}"
+            );
+        }
+        let last = shortcuts::Binding::from_str("Super+Alt+0").unwrap();
+        assert_eq!(
+            shortcuts.0.get(&last),
+            Some(&shortcuts::Action::MoveToLastWorkspace)
+        );
+        assert!(
+            !shortcuts.iter().any(|(_, action)| *action
+                == shortcuts::Action::System(shortcuts::action::System::Screenshot)),
+            "the old screenshot tool is still bound"
+        );
+    }
+
     /// Super+Tab is the workspace switch, not a second Alt+Tab.
     #[test]
     fn super_tab_switches_workspaces() {

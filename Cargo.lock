@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "cosmic-settings-config"
 version = "0.1.0"
-source = "git+https://github.com/playtron-os/cosmic-settings-daemon#e683b5b7b8e155f0d3293cf3d555df9b883d8a48"
+source = "git+https://github.com/playtron-os/cosmic-settings-daemon#74a6e01e7c59aa02e6247cc0f6b4854c799dce61"
 dependencies = [
  "cosmic-config",
  "ron 0.11.0",
@@ -6547,7 +6547,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/playtron-os/smithay.git#4b083dd9b0dd399a8a42925133ad3fa98878694c"
+source = "git+https://github.com/playtron-os/smithay.git#ceee9b860761b3a70d3927be0aed97b20c041221"
 dependencies = [
  "aliasable",
  "appendlist",
