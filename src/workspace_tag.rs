@@ -87,6 +87,22 @@ fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
+/// Whether a pid runs in a workspace's agent: `nexus@<id>.service` and every
+/// tool it starts, which stay in its cgroup.
+pub fn is_agent_pid(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(|c| is_agent_cgroup(&c))
+}
+
+/// [`is_agent_pid`] on a cgroup file's contents.
+pub fn is_agent_cgroup(cgroup: &str) -> bool {
+    of_cgroup(cgroup).is_some()
+        && cgroup.split(['/', ':', '\n']).any(|segment| {
+            segment
+                .strip_prefix("nexus@")
+                .is_some_and(|rest| rest.ends_with(".service"))
+        })
+}
+
 pub(crate) fn peer_pid(stream: &UnixStream) -> Option<u32> {
     // SAFETY: `ucred` is written by the kernel; the fd outlives the call.
     unsafe {
@@ -198,6 +214,19 @@ mod tests {
     fn a_dashed_id_is_read_from_the_deepest_slice() {
         let cgroup = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-e2e.slice/workspace-e2e-a.slice/app.scope\n";
         assert_eq!(of_cgroup(cgroup).as_deref(), Some("e2e-a"));
+    }
+
+    #[test]
+    fn nexus_and_its_tools_are_the_agent() {
+        let nexus = "0::/user.slice/user-1000.slice/user@1000.service/workspace.slice/workspace-meridian.slice/nexus@meridian.service";
+        assert!(is_agent_cgroup(nexus));
+        assert!(is_agent_cgroup(&format!("{nexus}/mcp\n")));
+        assert!(!is_agent_cgroup(
+            "0::/user.slice/user@1000.service/workspace-meridian.slice/app-chord.scope"
+        ));
+        assert!(!is_agent_cgroup(
+            "0::/user.slice/user@1000.service/app.slice/nexus@meridian.service"
+        ));
     }
 
     #[test]

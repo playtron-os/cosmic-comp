@@ -782,6 +782,15 @@ fn client_not_sandboxed(client: &Client) -> bool {
         .is_some_and(|client_state| client_state.not_sandboxed())
 }
 
+// A workspace's agent never types: it could answer the person's question for them.
+fn client_may_type(client: &Client) -> bool {
+    client_not_sandboxed(client)
+        && !client
+            .get_data::<ClientState>()
+            .and_then(|client_state| client_state.pid)
+            .is_some_and(crate::workspace_tag::is_agent_pid)
+}
+
 impl State {
     pub fn new(
         dh: &DisplayHandle,
@@ -865,7 +874,7 @@ impl State {
         SecurityContextState::new::<Self, _>(dh, client_has_no_security_context);
         InputMethodManagerState::new::<Self, _>(dh, client_not_sandboxed);
         TextInputManagerState::new::<Self>(dh);
-        VirtualKeyboardManagerState::new::<State, _>(dh, client_not_sandboxed);
+        VirtualKeyboardManagerState::new::<State, _>(dh, client_may_type);
         AlphaModifierState::new::<Self>(dh);
         SinglePixelBufferState::new::<Self>(dh);
         FixesState::new::<Self>(dh);
