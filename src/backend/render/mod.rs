@@ -873,6 +873,7 @@ pub fn cursor_elements<'a, 'frame, R>(
         crate::wayland::handlers::surface_embed::EmbedRenderInfo,
     )],
     scanout_node: Option<DrmNode>,
+    outputs: &[Rectangle<i32, Global>],
     push: &mut dyn FnMut(CosmicElement<R>),
 ) where
     R: AsGlowRenderer,
@@ -894,6 +895,7 @@ pub fn cursor_elements<'a, 'frame, R>(
             Some(ptr) => ptr,
             None => continue,
         };
+        let global = pointer.current_location().as_global();
         let location = pointer.current_location() - output.current_location().to_f64();
 
         if mode != CursorMode::None {
@@ -927,7 +929,7 @@ pub fn cursor_elements<'a, 'frame, R>(
             cursor::draw_dnd_icon(
                 renderer,
                 &dnd_icon.surface,
-                (location + dnd_icon.offset.to_f64()).to_i32_round(),
+                (location + dnd_icon.placed_offset(global, outputs).to_f64()).to_i32_round(),
                 scale,
                 blur_strength,
                 &mut |elem| push(CosmicElement::Dnd(elem)),
@@ -1219,6 +1221,10 @@ where
         return Ok(Vec::new());
     }
     let theme = shell_ref.theme().clone();
+    let output_geos = shell_ref
+        .outputs()
+        .map(|o| o.geometry())
+        .collect::<Vec<_>>();
     // Upstream derives this from a frosted-glass boolean, which reaches only two
     // of the available steps. Ours comes from the blur_intensity config value so
     // the strength is actually adjustable, with the theme flag as the floor.
@@ -1292,6 +1298,7 @@ where
         element_filter == ElementFilter::ExcludeWorkspaceOverview,
         &embedded_children_for_grabbed,
         scanout_node,
+        &output_geos,
         &mut |elem| elements.push(elem),
     );
 

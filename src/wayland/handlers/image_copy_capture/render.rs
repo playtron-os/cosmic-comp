@@ -46,7 +46,7 @@ use crate::{
     },
     shell::{CosmicMappedRenderElement, CosmicSurface, WorkspaceRenderElement},
     state::{Common, KmsNodes, State},
-    utils::prelude::{PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
+    utils::prelude::{OutputExt, PointExt, PointGlobalExt, RectExt, RectLocalExt, SeatExt},
     wayland::{
         handlers::image_copy_capture::{
             SessionData, SessionUserData, constraints_for_output_sized, constraints_for_toplevel,
@@ -769,6 +769,7 @@ pub fn render_window_to_buffer(
         let seat = shell.seats.last_active().clone();
         let pointer = seat.get_pointer().unwrap();
         let pointer_loc = pointer.current_location().to_i32_round().as_global();
+        let outputs = shell.outputs().map(|o| o.geometry()).collect::<Vec<_>>();
         let mut location = None;
         if let Some(element) = shell.element_for_surface(toplevel)
             && pointer
@@ -818,7 +819,11 @@ pub fn render_window_to_buffer(
                 cursor::draw_dnd_icon(
                     renderer,
                     &dnd_icon.surface,
-                    (location + dnd_icon.offset.to_f64()).to_i32_round(),
+                    (location
+                        + dnd_icon
+                            .placed_offset(pointer.current_location().as_global(), &outputs)
+                            .to_f64())
+                    .to_i32_round(),
                     1.0,
                     blur_strength,
                     &mut |elem| {

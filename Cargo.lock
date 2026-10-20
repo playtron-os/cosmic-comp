@@ -1051,7 +1051,6 @@ dependencies = [
  "ron 0.12.2",
  "rust-embed",
  "rustix 1.1.4",
- "sanitize-filename",
  "serde",
  "serde_json",
  "shlex",
@@ -6215,15 +6214,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sanitize-filename"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc984f4f9ceb736a7bb755c3e3bd17dc56370af2600c9780dcc48c66453da34d"
-dependencies = [
- "regex",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6556,7 +6546,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/playtron-os/smithay.git#580ebab23ab3209c8aede71ac87a51bde0292415"
+source = "git+https://github.com/playtron-os/smithay.git#4b083dd9b0dd399a8a42925133ad3fa98878694c"
 dependencies = [
  "aliasable",
  "appendlist",

@@ -5,7 +5,9 @@
 
 use std::collections::HashMap;
 
-use tracing::warn;
+use futures_channel::mpsc::UnboundedSender;
+use futures_util::StreamExt;
+use tracing::{debug, warn};
 use zbus::zvariant::Value;
 
 use super::DBusState;
@@ -39,6 +41,10 @@ trait Notifications {
 )]
 trait SystemToasts {
     fn toast(&self, message: &str, tone: &str) -> zbus::Result<()>;
+
+    fn show_capture(&self, capture: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
+
+    fn capture_drag_over(&self, app: &str) -> zbus::Result<()>;
 }
 
 /// The colour grammar a system toast's dot carries.
@@ -131,6 +137,75 @@ impl DBusState {
                 warn!(?err, %message, "Failed to show a system toast");
             }
         });
+    }
+}
+
+impl DBusState {
+    /// Hand a screenshot or recording to the shell's preview above the dock.
+    /// `unseen` runs instead when nothing previews it, so the file is not lost.
+    pub fn show_capture(
+        &self,
+        handoff: crate::utils::captures::Handoff,
+        unseen: impl FnOnce(&mut crate::state::State, crate::utils::captures::Handoff) + 'static,
+    ) {
+        if !toasts_enabled() {
+            let evlh = self.0.evlh.clone();
+            evlh.insert_idle(move |state| unseen(state, handoff));
+            return;
+        }
+        let state = self.clone();
+        let evlh = self.0.evlh.clone();
+        self.spawn(async move {
+            let sent = async {
+                let conn = state.session_conn().await?;
+                let mut capture: HashMap<&str, Value<'_>> = handoff
+                    .entries
+                    .iter()
+                    .map(|(key, value)| (*key, Value::from(value.as_str())))
+                    .collect();
+                if let Some(ms) = handoff.duration_ms {
+                    capture.insert("duration-ms", Value::from(ms));
+                }
+                SystemToastsProxy::new(conn)
+                    .await?
+                    .show_capture(capture)
+                    .await
+            };
+            if let Err(err) = sent.await {
+                warn!(?err, "Nothing previewed the capture; filing it");
+                evlh.insert_idle(move |state| unseen(state, handoff));
+            }
+        });
+    }
+}
+
+impl DBusState {
+    /// Tell the preview, in order, which app a dragged capture is over (`""` for none).
+    /// The channel closes with the drag.
+    pub fn capture_drag_targets(&self) -> UnboundedSender<String> {
+        let (tell, mut heard) = futures_channel::mpsc::unbounded::<String>();
+        if !toasts_enabled() {
+            return tell;
+        }
+        let state = self.clone();
+        self.spawn(async move {
+            let Ok(conn) = state.session_conn().await else {
+                return;
+            };
+            let Ok(preview) = SystemToastsProxy::new(conn).await else {
+                return;
+            };
+            while let Some(mut app) = heard.next().await {
+                // Only the latest name matters once several are waiting.
+                while let Ok(newer) = heard.try_recv() {
+                    app = newer;
+                }
+                if let Err(err) = preview.capture_drag_over(&app).await {
+                    debug!(?err, "The preview did not take the drag's target");
+                }
+            }
+        });
+        tell
     }
 }
 

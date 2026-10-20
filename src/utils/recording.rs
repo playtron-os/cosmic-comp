@@ -5,6 +5,9 @@
 //! window so the halo can show it, and hears every ending through
 //! `RecordingStopped` — the halo's own stop and a window that closed alike.
 
+use std::path::{Path, PathBuf};
+use std::time::Instant;
+
 use tracing::warn;
 
 use crate::{
@@ -26,7 +29,7 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
         // A request is on the bus; the answer decides.
         Recording::Starting => {}
         Recording::Idle => start(state, surface),
-        Recording::Active { id, .. } => {
+        Recording::Active { id, since, .. } => {
             let surface = surface.clone();
             let stopping = id.clone();
             state
@@ -39,7 +42,7 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
                         return;
                     }
                     match reply {
-                        Ok(path) => finished(state, &surface, &path),
+                        Ok(path) => finished(state, &surface, &path, since),
                         Err(error) => {
                             warn!(%error, "Failed to stop the recording");
                             surface.set_recording(Recording::Idle);
@@ -61,21 +64,22 @@ fn start(state: &mut State, surface: &CosmicSurface) {
         );
         return;
     };
-    let Some(directory) = captures::directory_for(state, surface, CaptureKind::Recording) else {
+    let Some(destination) =
+        captures::Destination::for_surface(state, surface, CaptureKind::Recording)
+    else {
         notify(state, fl!("recording-failed"), "HOME is not set".into());
         return;
     };
-    let mut title = surface.title();
-    if title.trim().is_empty() {
-        title = surface.app_id();
+    // It waits here while its preview is up, as a screenshot does.
+    if let Err(err) = std::fs::create_dir_all(&destination.pending) {
+        notify(state, fl!("recording-failed"), err.to_string());
+        return;
     }
-    if title.trim().is_empty() {
-        title = fl!("recording-app-name");
-    }
-    let path = directory.join(format!(
+    let path = destination.pending.join(format!(
         "{}.mp4",
-        captures::file_stem(&title, &jiff::Zoned::now())
+        captures::capture_stem(CaptureKind::Recording, &jiff::Zoned::now())
     ));
+    write_poster(state, surface, &path);
 
     surface.set_recording(Recording::Starting);
     refresh_halo(state, surface);
@@ -89,7 +93,8 @@ fn start(state: &mut State, surface: &CosmicSurface) {
                 // Only a request still waiting takes the answer; a window
                 // closed meanwhile is Idle and its recording ends on its own.
                 if surface.recording() == Recording::Starting {
-                    surface.set_recording(Recording::Active { id, path });
+                    let since = std::time::Instant::now();
+                    surface.set_recording(Recording::Active { id, path, since });
                     let notification = notification(fl!("recording-started"), String::new());
                     state.common.dbus_state.system_toast_or(
                         fl!("recording-started"),
@@ -115,8 +120,11 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
     let Some(surface) = surface_recording(state, id) else {
         return;
     };
+    let Recording::Active { since, .. } = surface.recording() else {
+        return;
+    };
     if error.is_empty() {
-        finished(state, &surface, path);
+        finished(state, &surface, path, since);
     } else {
         warn!(%id, %error, "Recording ended with an error");
         surface.set_recording(Recording::Idle);
@@ -125,10 +133,60 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
     }
 }
 
-fn finished(state: &mut State, surface: &CosmicSurface, path: &str) {
+/// The window as the recording starts, for the preview to show. Nothing is
+/// lost without it: the preview draws a stand-in.
+fn write_poster(state: &mut State, surface: &CosmicSurface, recording: &Path) {
+    let poster = poster_of(recording);
+    let file = match std::fs::File::create(&poster) {
+        Ok(file) => file,
+        Err(err) => return warn!(?err, "Failed to create the recording's poster"),
+    };
+    crate::utils::screenshot::write_window(state, surface, 1.0, file, move |written| {
+        if let Err(err) = written {
+            warn!(%err, "Failed to write the recording's poster");
+            let _ = std::fs::remove_file(&poster);
+        }
+    });
+}
+
+fn poster_of(recording: &Path) -> PathBuf {
+    recording.with_extension("poster.png")
+}
+
+/// The recording is on disk: hand it to the preview, or file it and say so.
+fn finished(state: &mut State, surface: &CosmicSurface, path: &str, since: Instant) {
     surface.set_recording(Recording::Idle);
     refresh_halo(state, surface);
-    let notification = notification(fl!("recording-stopped"), path.to_owned());
+    let path = PathBuf::from(path);
+    let poster = Some(poster_of(&path)).filter(|p| p.is_file());
+    let Some(destination) =
+        captures::Destination::for_surface(state, surface, CaptureKind::Recording)
+    else {
+        return announce(state, &path);
+    };
+    let app =
+        crate::utils::screenshot::app_name(&surface.app_id()).unwrap_or_else(|| surface.title());
+    let length = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let handoff = destination.handoff(&path, &app, poster.as_deref(), Some(length));
+    state
+        .common
+        .dbus_state
+        .show_capture(handoff, move |state, handoff| {
+            if let Some(poster) = poster {
+                let _ = std::fs::remove_file(poster);
+            }
+            match captures::file_into(&handoff.path, &handoff.save_to) {
+                Ok(filed) => announce(state, &filed),
+                Err(err) => {
+                    warn!(?err, "Failed to file the recording");
+                    announce(state, &handoff.path);
+                }
+            }
+        });
+}
+
+fn announce(state: &State, path: &Path) {
+    let notification = notification(fl!("recording-stopped"), path.display().to_string());
     state.common.dbus_state.system_toast_or(
         fl!("recording-stopped-toast"),
         Tone::Neutral,

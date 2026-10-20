@@ -2,7 +2,7 @@
 
 use crate::{
     shell::focus::target::KeyboardFocusTarget, shell::grabs::SeatMoveGrabState, state::ClientState,
-    utils::prelude::*,
+    utils::prelude::*, wayland::handlers::data_device::get_dnd_icon,
 };
 use calloop::Interest;
 use smithay::{
@@ -325,6 +325,12 @@ impl CompositorHandler for State {
         // schedule a new render
         if let Some(output) = shell.visible_output_for_surface(surface) {
             self.backend.schedule_render(output);
+        }
+        // A drag icon redrawn under a resting pointer shows without waiting for motion.
+        for seat in shell.seats.iter() {
+            if get_dnd_icon(seat).is_some_and(|icon| &icon.surface == surface) {
+                self.backend.schedule_render(&seat.active_output());
+            }
         }
 
         // Start the lock fade-in on the cover's first buffer. Latched per-lock; render

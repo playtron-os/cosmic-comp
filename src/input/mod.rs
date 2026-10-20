@@ -91,6 +91,7 @@ use std::{
 };
 
 pub mod actions;
+pub mod dnd_hover;
 pub mod gestures;
 
 /// Width of the invisible edge grab zone for the `agentos-chat-panel` side panel
@@ -550,6 +551,7 @@ impl State {
                     // so they are computed above instead — including upstream's PR #2568
                     // logical-size clamp.
                     if ptr.is_grabbed() {
+                        dnd_hover::moved(self, &seat, position, &output);
                         if seat
                             .user_data()
                             .get::<ResizeGrabMarker>()
@@ -871,6 +873,9 @@ impl State {
                     }
 
                     drop(shell_guard);
+                    if pointer_grabbed {
+                        dnd_hover::moved(self, &seat, position, &output);
+                    }
 
                     // Update compositor-driven auto-hide cursor tracking.
                     {
@@ -2189,6 +2194,15 @@ impl State {
         let force_quit = game_mode_chord
             && key_matches(Keysym::Escape)
             && shell.game_mode_on_screen(&focused_output);
+        // Escape ends a drag in flight: the drop never happens and the source keeps its data.
+        if key_pressed && key_matches(Keysym::Escape) && dnd_hover::dragging(seat) {
+            seat.supressed_keys().add(&handle, None);
+            drop(shell);
+            if let Some(pointer) = seat.get_pointer() {
+                pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), event.time_msec());
+            }
+            return FilterResult::Intercept(None);
+        }
         if toggle_desktop || force_quit {
             seat.modifiers_shortcut_queue().clear();
             seat.supressed_keys().add(&handle, None);
