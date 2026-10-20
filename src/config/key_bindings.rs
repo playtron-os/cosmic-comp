@@ -163,7 +163,11 @@ mod tests {
             let want = shortcuts::Action::MoveToWorkspace(digit);
             assert_eq!(shortcuts.0.get(&binding), Some(&want), "Super+Alt+{digit}");
             let shifted = shortcuts::Binding::from_str(&format!("Super+Shift+{digit}")).unwrap();
-            assert_ne!(shortcuts.0.get(&shifted), Some(&want), "Super+Shift+{digit}");
+            assert_ne!(
+                shortcuts.0.get(&shifted),
+                Some(&want),
+                "Super+Shift+{digit}"
+            );
         }
         let last = shortcuts::Binding::from_str("Super+Alt+0").unwrap();
         assert_eq!(
