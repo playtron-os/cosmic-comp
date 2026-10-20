@@ -97,6 +97,9 @@ xcursor = "0.3.10"
 xdg = "^3.0"
 xkbcommon = "0.9"
 zbus = "5.14.0"
+# The capture engine's and the notification daemon's D-Bus client crates (MIT).
+agentos-capture-client = { git = "ssh://git@github.com/playtron-os/agentos-capture.git", branch = "feat/capture-client" }
+agentos-notifications-client = { git = "ssh://git@github.com/playtron-os/agentos-notifications.git", branch = "feat/notifications-client" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! Toasts through the freedesktop `org.freedesktop.Notifications` interface,
-//! sent over the compositor's session-bus connection.
+//! and system toasts and capture previews through agentos-notifications' own
+//! client crate, sent over the compositor's session-bus connection.
 
 use std::collections::HashMap;
 
+use agentos_notifications_client::Notifications1Proxy;
 use futures_channel::mpsc::UnboundedSender;
 use futures_util::StreamExt;
 use tracing::{debug, warn};
@@ -32,41 +34,10 @@ trait Notifications {
     ) -> zbus::Result<u32>;
 }
 
-/// The shell's system toasts: a one-line confirmation of something the user
+/// The colour grammar a system toast's dot carries, as agentos-notifications
+/// names it. A system toast is a one-line confirmation of something the user
 /// just did, never a notification (no history, no unread, no sound).
-#[zbus::proxy(
-    interface = "one.playtron.AgentOS.Notifications1",
-    default_service = "one.playtron.AgentOS.Notifications1",
-    default_path = "/one/playtron/AgentOS/Notifications1"
-)]
-trait SystemToasts {
-    fn toast(&self, message: &str, tone: &str) -> zbus::Result<()>;
-
-    fn show_capture(&self, capture: HashMap<&str, Value<'_>>) -> zbus::Result<()>;
-
-    fn capture_drag_over(&self, app: &str) -> zbus::Result<()>;
-}
-
-/// The colour grammar a system toast's dot carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tone {
-    Neutral,
-    /// Work the machine is doing for you.
-    Ai,
-    NeedsYou,
-    Destructive,
-}
-
-impl Tone {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Tone::Neutral => "neutral",
-            Tone::Ai => "ai",
-            Tone::NeedsYou => "needs-you",
-            Tone::Destructive => "destructive",
-        }
-    }
-}
+pub use agentos_notifications_client::Tone;
 
 /// One toast. `app_icon` is a freedesktop icon name.
 #[derive(Debug, Clone)]
@@ -128,9 +99,9 @@ impl DBusState {
         self.spawn(async move {
             let sent = async {
                 let conn = state.session_conn().await?;
-                SystemToastsProxy::new(conn)
+                Notifications1Proxy::new(conn)
                     .await?
-                    .toast(&message, tone.as_str())
+                    .toast(&message, tone)
                     .await
             };
             if let Err(err) = sent.await {
@@ -158,17 +129,9 @@ impl DBusState {
         self.spawn(async move {
             let sent = async {
                 let conn = state.session_conn().await?;
-                let mut capture: HashMap<&str, Value<'_>> = handoff
-                    .entries
-                    .iter()
-                    .map(|(key, value)| (*key, Value::from(value.as_str())))
-                    .collect();
-                if let Some(ms) = handoff.duration_ms {
-                    capture.insert("duration-ms", Value::from(ms));
-                }
-                SystemToastsProxy::new(conn)
+                Notifications1Proxy::new(conn)
                     .await?
-                    .show_capture(capture)
+                    .show_capture(&handoff.capture)
                     .await
             };
             if let Err(err) = sent.await {
@@ -192,7 +155,7 @@ impl DBusState {
             let Ok(conn) = state.session_conn().await else {
                 return;
             };
-            let Ok(preview) = SystemToastsProxy::new(conn).await else {
+            let Ok(preview) = Notifications1Proxy::new(conn).await else {
                 return;
             };
             while let Some(mut app) = heard.next().await {
@@ -258,12 +221,6 @@ async fn send(state: &DBusState, notification: &Notification) -> zbus::Result<()
 mod tests {
     use super::*;
     use crate::fl;
-
-    #[test]
-    fn tones_go_by_the_names_the_daemon_reads() {
-        let names = [Tone::Neutral, Tone::Ai, Tone::NeedsYou, Tone::Destructive].map(Tone::as_str);
-        assert_eq!(names, ["neutral", "ai", "needs-you", "destructive"]);
-    }
 
     #[test]
     fn the_system_names_itself_from_os_release() {
