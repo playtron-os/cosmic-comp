@@ -36,7 +36,7 @@ pub fn display_configuration(
             .ok()
     }) {
         if let Some(enc) = conn.current_encoder()
-            && let Some(crtc) = device.get_encoder(enc)?.crtc()
+            && let Some(crtc) = device.get_encoder(enc).ok().and_then(|enc| enc.crtc())
         {
             // If is is connected we found a mapping
             if conn.state() == ConnectorState::Connected {
@@ -75,7 +75,27 @@ pub fn display_configuration(
         map.entry(conn.handle()).or_insert(None);
     }
 
-    // And then cleanup
+    // Tidying up is best effort: a failed commit must not hide which connectors went away, or an
+    // unplugged output would stay on the desktop.
+    if let Err(err) = clear_foreign_planes(device, &cleanup) {
+        warn!(
+            ?err,
+            "Failed to clear planes left by the previous DRM master"
+        );
+    }
+    if let Err(err) = disable_crtcs(device, &cleanup) {
+        warn!(
+            ?err,
+            ?cleanup,
+            "Failed to disable the CRTCs of unplugged connectors"
+        );
+    }
+
+    Ok(map)
+}
+
+/// Disables the cursor and overlay planes on the CRTCs we keep, such as a previous DRM master left.
+fn clear_foreign_planes(device: &mut DrmDevice, cleanup: &[crtc::Handle]) -> Result<()> {
     if device.is_atomic() {
         let mut req = AtomicModeReq::new();
         let mut has_changes = false;
@@ -109,14 +129,12 @@ pub fn display_configuration(
             device.atomic_commit(AtomicCommitFlags::ALLOW_MODESET, req)?;
         }
     } else {
-        for crtc in res_handles.crtcs() {
+        for crtc in device.resource_handles()?.crtcs() {
             #[allow(deprecated)]
             let _ = device.set_cursor(*crtc, Option::<&DumbBuffer>::None);
         }
     }
-    disable_crtcs(device, &cleanup)?;
-
-    Ok(map)
+    Ok(())
 }
 
 /// Disables the given CRTCs and detaches their connectors/planes.
@@ -336,6 +354,27 @@ pub fn set_max_bpc(dev: &impl ControlDevice, conn: connector::Handle, bpc: u32) 
         property::Value::UnsignedRange(val) => val as u32,
         _ => unreachable!(),
     })
+}
+
+/// `DRM_MODE_LINK_STATUS_BAD`: the driver lost the link to the sink, which receives no pixels.
+const LINK_STATUS_BAD: u64 = 1;
+const LINK_STATUS_GOOD: u64 = 0;
+
+/// Whether the driver marked the connector's link bad. Drivers without the property never do.
+pub fn link_status_bad(dev: &impl ControlDevice, conn: connector::Handle) -> bool {
+    get_property_val(dev, conn, "link-status").is_ok_and(|(val_type, val)| {
+        matches!(
+            val_type.convert_value(val),
+            property::Value::Enum(Some(status)) if status.value() == LINK_STATUS_BAD
+        )
+    })
+}
+
+/// Asks for a modeset that trains the link again. A legacy property write is an atomic commit
+/// that may modeset, so it retrains with the current mode, and fails if that mode no longer fits.
+pub fn retrain_link(dev: &impl ControlDevice, conn: connector::Handle) -> Result<()> {
+    dev.set_property(conn, get_prop(dev, conn, "link-status")?, LINK_STATUS_GOOD)?;
+    Ok(())
 }
 
 pub fn panel_orientation(dev: &impl ControlDevice, conn: connector::Handle) -> Result<Transform> {
