@@ -9,7 +9,7 @@
 //! while it can dictate, and the compositor follows it with [`host_present`].
 
 use futures_util::{Stream, StreamExt};
-use zbus::fdo::DBusProxy;
+use zbus::fdo::{DBusProxy, RequestNameFlags};
 use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
 
@@ -137,7 +137,11 @@ impl Host {
     /// Claims the name on a connection of its own, so dropping the host closes it and
     /// gives the binding back to apps. Fails while another host holds the name.
     pub async fn claim(builder: zbus::connection::Builder<'_>) -> zbus::Result<Self> {
-        let connection = builder.name(HOST_NAME)?.build().await?;
+        let connection = builder.build().await?;
+        // Never queued: a second host would think it hosts while the first does.
+        connection
+            .request_name_with_flags(HOST_NAME, RequestNameFlags::DoNotQueue.into())
+            .await?;
         Ok(Self { connection })
     }
 

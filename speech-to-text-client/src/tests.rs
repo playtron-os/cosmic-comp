@@ -5,6 +5,7 @@
 use super::*;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 struct PrivateBus {
@@ -13,34 +14,29 @@ struct PrivateBus {
     dir: std::path::PathBuf,
 }
 
-impl PrivateBus {
-    fn start() -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "speech-to-text-client-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let config = dir.join("bus.conf");
-        std::fs::write(
-            &config,
-            format!(
-                r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+/// Listens in /tmp: a long temp dir would overflow the socket path.
+const BUS_CONFIG: &str = r#"<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
 <busconfig>
   <type>session</type>
-  <listen>unix:dir={}</listen>
+  <listen>unix:tmpdir=/tmp</listen>
   <auth>EXTERNAL</auth>
   <policy context="default">
     <allow send_destination="*" eavesdrop="true"/>
     <allow eavesdrop="true"/>
     <allow own="*"/>
   </policy>
-</busconfig>"#,
-                dir.display()
-            ),
-        )
-        .unwrap();
+</busconfig>"#;
+
+impl PrivateBus {
+    fn start() -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("speech-to-text-client-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("bus.conf");
+        std::fs::write(&config, BUS_CONFIG).unwrap();
         let mut daemon = Command::new("dbus-daemon")
             .arg(format!("--config-file={}", config.display()))
             .args(["--nofork", "--print-address=1"])
@@ -51,6 +47,7 @@ impl PrivateBus {
         BufReader::new(daemon.stdout.take().unwrap())
             .read_line(&mut address)
             .unwrap();
+        assert!(!address.trim().is_empty(), "the private bus did not start");
         Self {
             daemon,
             address: address.trim().to_owned(),
@@ -59,7 +56,8 @@ impl PrivateBus {
     }
 
     fn builder(&self) -> zbus::connection::Builder<'static> {
-        zbus::connection::Builder::address(self.address.as_str()).unwrap()
+        zbus::connection::Builder::address(self.address.as_str())
+            .unwrap_or_else(|err| panic!("{err}: {:?}", self.address))
     }
 
     async fn connect(&self) -> zbus::Connection {
