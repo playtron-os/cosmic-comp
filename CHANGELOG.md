@@ -1,3 +1,17 @@
+# [1.58.0](https://github.com/playtron-os/cosmic-comp/compare/v1.57.2...v1.58.0) (2026-10-20)
+
+
+### Bug Fixes
+
+* **dnd:** keep the drag icon on screen ([131b8d8](https://github.com/playtron-os/cosmic-comp/commit/131b8d8a78dfa3449b450c787128f240d73d9e9b))
+
+
+### Features
+
+* **capture:** hand captures to the shell's preview ([37a6c15](https://github.com/playtron-os/cosmic-comp/commit/37a6c157de49646435c8bf1cf076eedfa8702c36))
+* **capture:** name the app a dragged capture is over ([5316ac3](https://github.com/playtron-os/cosmic-comp/commit/5316ac3901a2652b3157ebc0e6e9f4dc5f9d3b2c))
+* **input:** hold Ctrl+Space for speech to text ([5defdc1](https://github.com/playtron-os/cosmic-comp/commit/5defdc14c6174e877b422a4826f48c8a3fe26f83))
+
 ## [1.57.2](https://github.com/playtron-os/cosmic-comp/compare/v1.57.1...v1.57.2) (2026-10-19)
 
 
