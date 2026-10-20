@@ -138,6 +138,8 @@ impl Host {
     /// gives the binding back to apps. Fails while another host holds the name.
     pub async fn claim(builder: zbus::connection::Builder<'_>) -> zbus::Result<Self> {
         let connection = builder.build().await?;
+        // Nothing is served under the name; an empty server keeps zbus from warning so.
+        let _ = connection.object_server();
         // Never queued: a second host would think it hosts while the first does.
         connection
             .request_name_with_flags(HOST_NAME, RequestNameFlags::DoNotQueue.into())
