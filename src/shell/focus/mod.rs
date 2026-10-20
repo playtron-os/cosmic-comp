@@ -295,6 +295,9 @@ impl Shell {
                 })
             })
             .collect::<Vec<_>>();
+        // A drag that rested over a window raised it; the focused window
+        // takes the front back only once the drag ends.
+        let dragging = self.seats.iter().any(crate::input::dnd_hover::dragging);
 
         // An app's own tool window taking focus must not make its parent look
         // inactive. Server-side decorations hide when a window deactivates, so
@@ -327,8 +330,10 @@ impl Shell {
                 .sets
                 .get_mut(&output)
                 .unwrap();
-            for focused in focused_windows.iter() {
-                raise_with_children(&mut set.sticky_layer, focused);
+            if !dragging {
+                for focused in focused_windows.iter() {
+                    raise_with_children(&mut set.sticky_layer, focused);
+                }
             }
             for window in set.sticky_layer.mapped() {
                 window.set_activated(looks_active(window));
@@ -358,8 +363,10 @@ impl Shell {
                 fs.surface.set_activated(is_focused);
                 fs.surface.send_configure();
             }
-            for focused in focused_windows.iter() {
-                raise_with_children(&mut workspace.floating_layer, focused);
+            if !dragging {
+                for focused in focused_windows.iter() {
+                    raise_with_children(&mut workspace.floating_layer, focused);
+                }
             }
             for window in workspace.mapped() {
                 window.set_activated(looks_active(window));
@@ -497,6 +504,16 @@ fn update_focus_state(
         } else {
             seat.set_focused_output(None);
         };
+    }
+}
+
+impl Shell {
+    /// Bring `mapped` to the front of its workspace without moving keyboard
+    /// focus, as a drag passing over windows needs.
+    pub fn raise_without_focus(&mut self, mapped: &CosmicMapped) {
+        if let Some(workspace) = self.space_for_mut(mapped) {
+            raise_with_children(&mut workspace.floating_layer, mapped);
+        }
     }
 }
 

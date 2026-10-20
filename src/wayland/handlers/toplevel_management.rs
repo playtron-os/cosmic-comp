@@ -140,6 +140,15 @@ impl ToplevelManagementHandler for State {
                 }
             }
 
+            // Mid-drag (the dock's icon held under a file), the window only
+            // comes forward: a focus change would end the drag, and the drop
+            // focuses whatever takes it.
+            if crate::input::dnd_hover::dragging(&seat) {
+                if let KeyboardFocusTarget::Element(mapped) = &target {
+                    self.common.shell.write().raise_without_focus(mapped);
+                }
+                return;
+            }
             Shell::set_focus(self, Some(&target), &seat, None, false);
             return;
         }

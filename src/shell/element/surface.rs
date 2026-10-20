@@ -262,6 +262,8 @@ pub enum Recording {
     Active {
         id: String,
         path: PathBuf,
+        /// When the recorder said it started, for the preview's length.
+        since: std::time::Instant,
     },
 }
 

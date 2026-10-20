@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use crate::{state::State, utils::prelude::SeatExt};
+use crate::{
+    state::State,
+    utils::prelude::{PointExt, SeatExt},
+};
 use smithay::{
     input::{
         Seat,
@@ -67,6 +70,7 @@ impl WaylandDndGrabHandler for State {
         serial: smithay::utils::Serial,
         type_: GrabType,
     ) {
+        crate::input::dnd_hover::started(&seat);
         let user_data = seat.user_data();
         user_data.insert_if_missing_threadsafe::<Mutex<Option<DnDIcon>>, _>(Default::default);
 
@@ -118,15 +122,21 @@ impl WaylandDndGrabHandler for State {
 impl DndGrabHandler for State {
     fn dropped(
         &mut self,
-        _target: Option<DndTarget<'_, Self>>,
-        _validated: bool,
+        target: Option<DndTarget<'_, Self>>,
+        validated: bool,
         seat: Seat<Self>,
-        _location: Point<f64, Logical>,
+        location: Point<f64, Logical>,
     ) {
         clear_dnd_icon(&seat);
+        if validated && target.is_some() {
+            crate::input::dnd_hover::dropped(self, &seat, location.as_global());
+        } else {
+            crate::input::dnd_hover::ended(self, &seat);
+        }
     }
 
     fn cancelled(&mut self, seat: Seat<Self>, _location: Point<f64, Logical>) {
+        crate::input::dnd_hover::ended(self, &seat);
         // A cancelled grab (e.g. the source destroying its data source) never drops, so this is
         // the only chance to drop the icon. Clients commonly keep the icon surface alive for the
         // next drag, so relying on it dying would leave it painted on the cursor.

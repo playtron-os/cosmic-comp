@@ -56,10 +56,12 @@ struct Capture {
     title: String,
 }
 
-/// What the worker produced: the PNG, and where it was written if anywhere.
+/// What the worker produced: the PNG, where it was written if anywhere, and
+/// the name of the app it shows.
 struct Encoded {
     png: Vec<u8>,
     saved: Option<PathBuf>,
+    app: String,
 }
 
 /// Render `surface` alone, at `scale`, into pixels.
@@ -121,6 +123,12 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
     state.schedule_all_outputs();
 
     let seat = state.common.shell.read().seats.last_active().clone();
+    let destination = captures::Destination::for_surface(state, surface, CaptureKind::Screenshot);
+    if destination.is_none() {
+        warn!("HOME is not set; the screenshot is only copied");
+    }
+    let delivered_to = destination.clone();
+    let app_id = surface.app_id();
     let (tx, rx) = channel::channel::<Encoded>();
     // The worker sends once and hangs up; the source removes itself on hangup.
     let token = Rc::new(Cell::new(None));
@@ -129,7 +137,7 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
         .common
         .event_loop_handle
         .insert_source(rx, move |event, _, state| match event {
-            Event::Msg(encoded) => deliver(state, &seat, encoded),
+            Event::Msg(encoded) => deliver(state, &seat, encoded, delivered_to.as_ref()),
             Event::Closed => {
                 if let Some(token) = source_token.take() {
                     state.common.event_loop_handle.remove(token);
@@ -144,16 +152,15 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
         }
     }
 
-    let directory = captures::directory_for(state, surface, CaptureKind::Screenshot);
-    if directory.is_none() {
-        warn!("HOME is not set; the screenshot is only copied");
-    }
     let spawned = std::thread::Builder::new()
         .name("screenshot-encode".into())
         .spawn(move || match encode(&capture) {
             Ok(png) => {
-                let saved = directory.and_then(|directory| save(&directory, &capture.title, &png));
-                let _ = tx.send(Encoded { png, saved });
+                // The preview holds it until it is wanted; without one it is filed at once.
+                let stem = captures::capture_stem(CaptureKind::Screenshot, &jiff::Zoned::now());
+                let saved = destination.and_then(|d| save(&d.pending, &stem, &png));
+                let app = app_name(&app_id).unwrap_or(capture.title);
+                let _ = tx.send(Encoded { png, saved, app });
             }
             Err(err) => warn!(?err, "Failed to encode screenshot"),
         });
@@ -162,13 +169,42 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
     }
 }
 
-/// Back on the compositor thread: offer the PNG on the clipboard and toast.
-fn deliver(state: &mut State, seat: &Seat<State>, encoded: Encoded) {
+/// The name the window's app goes by, from its desktop entry.
+pub fn app_name(app_id: &str) -> Option<String> {
+    crate::utils::desktop_action::for_app(app_id)
+        .and_then(|app| app.name)
+        .filter(|name| !name.trim().is_empty())
+}
+
+/// Back on the compositor thread: offer the PNG on the clipboard and hand the
+/// file to the preview above the dock.
+fn deliver(
+    state: &mut State,
+    seat: &Seat<State>,
+    encoded: Encoded,
+    destination: Option<&captures::Destination>,
+) {
     crate::clipboard::set_compositor_clipboard(state, seat, PNG_MIME.to_owned(), encoded.png);
-    let message = match &encoded.saved {
-        Some(_) => fl!("screenshot-saved"),
-        None => fl!("screenshot-saved-to-clipboard"),
+    let (Some(path), Some(destination)) = (encoded.saved, destination) else {
+        toast(state, fl!("screenshot-saved-to-clipboard"));
+        return;
     };
+    let handoff = destination.handoff(&path, &encoded.app, None, None);
+    state
+        .common
+        .dbus_state
+        .show_capture(handoff, |state, handoff| {
+            match captures::file_into(&handoff.path, &handoff.save_to) {
+                Ok(_) => toast(state, fl!("screenshot-saved")),
+                Err(err) => {
+                    warn!(?err, "Failed to file the screenshot");
+                    toast(state, fl!("screenshot-saved-to-clipboard"));
+                }
+            }
+        });
+}
+
+fn toast(state: &State, message: String) {
     let notification = Notification {
         app_name: fl!("screenshot-app-name"),
         app_icon: NOTIFICATION_ICON.to_owned(),
@@ -254,9 +290,9 @@ fn encode(capture: &Capture) -> anyhow::Result<Vec<u8>> {
     Ok(png)
 }
 
-/// Write `png` into `directory`, named from the window title and the time. A
-/// name that is taken gets a counter rather than replacing the earlier capture.
-fn save(directory: &Path, title: &str, png: &[u8]) -> Option<PathBuf> {
+/// Write `png` into `directory` as `stem`. A name that is taken gets a counter
+/// rather than replacing the earlier capture.
+fn save(directory: &Path, stem: &str, png: &[u8]) -> Option<PathBuf> {
     if let Err(err) = std::fs::create_dir_all(directory) {
         warn!(
             ?err,
@@ -265,9 +301,8 @@ fn save(directory: &Path, title: &str, png: &[u8]) -> Option<PathBuf> {
         );
         return None;
     }
-    let stem = captures::file_stem(title, &jiff::Zoned::now());
     let created = (0..NAME_ATTEMPTS).find_map(|attempt| {
-        let path = directory.join(file_name(&stem, attempt));
+        let path = directory.join(file_name(stem, attempt));
         match std::fs::File::create_new(&path) {
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => None,
             result => Some(result.map(|file| (file, path))),

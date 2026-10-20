@@ -566,11 +566,11 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 /// Macro for timing a block and storing it in a duration variable.
 ///
 /// Usage:
-/// ```ignore
+/// ```
+/// # use std::time::Duration;
 /// let mut dur = Duration::ZERO;
-/// profile_phase!(dur, {
-///     // ... code to time ...
-/// });
+/// let sum = cosmic_comp::profile_phase!(dur, { 1 + 1 });
+/// assert_eq!(sum, 2);
 /// ```
 #[macro_export]
 macro_rules! profile_phase {
