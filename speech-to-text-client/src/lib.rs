@@ -7,11 +7,17 @@
 //! The compositor takes the binding only while a host owns [`HOST_NAME`]. Without one
 //! the key goes to the focused app untouched, so a host claims the name with [`Host`]
 //! while it can dictate, and the compositor follows it with [`host_present`].
+//!
+//! An app that shows dictation in its own field takes the holds over its windows with
+//! [`claim_inline`]; the host then never hears them (see [`INLINE_INTERFACE`]).
 
 use futures_util::{Stream, StreamExt};
 use zbus::fdo::{DBusProxy, RequestNameFlags};
 use zbus::names::BusName;
 use zbus::object_server::SignalEmitter;
+
+mod inline;
+pub use inline::{INLINE_INTERFACE, Inline, InlineClaims, claim_inline};
 
 /// The compositor's name.
 pub const BUS_NAME: &str = "one.playtron.SpeechToText1";
@@ -78,8 +84,12 @@ impl Hold {
         if header.interface()?.as_str() != INTERFACE {
             return None;
         }
+        Self::from_body(header.member()?.as_str(), message)
+    }
+
+    fn from_body(member: &str, message: &zbus::Message) -> Option<Self> {
         let body = message.body();
-        match header.member()?.as_str() {
+        match member {
             "Started" => {
                 let (session, app_id): (u32, String) = body.deserialize().ok()?;
                 Some(Self::Started { session, app_id })

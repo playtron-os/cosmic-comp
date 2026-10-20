@@ -214,3 +214,167 @@ fn other_messages_are_not_holds() {
     );
     assert_eq!(Hold::Cancelled(4).session(), 4);
 }
+
+/// A compositor serving both interfaces, as the real one does.
+async fn compositor(bus: &PrivateBus, claims: &InlineClaims) -> zbus::Connection {
+    bus.builder()
+        .serve_at(OBJECT_PATH, Announcer)
+        .unwrap()
+        .serve_at(OBJECT_PATH, Inline::new(claims.clone()))
+        .unwrap()
+        .name(BUS_NAME)
+        .unwrap()
+        .build()
+        .await
+        .unwrap()
+}
+
+/// Waits for state another task changes, or panics rather than hang.
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if done() {
+            return;
+        }
+        async_io::Timer::after(Duration::from_millis(10)).await;
+    }
+    panic!("{what} did not happen within 5 s");
+}
+
+#[test]
+fn a_claimed_apps_holds_reach_it_and_never_the_host() {
+    let bus = PrivateBus::start();
+    zbus::block_on(async {
+        let claims = InlineClaims::default();
+        let compositor = compositor(&bus, &claims).await;
+        let mut host = Box::pin(holds(&bus.connect().await).await.unwrap());
+        let mut app = Box::pin(
+            claim_inline(bus.builder(), "one.playtron.Game")
+                .await
+                .unwrap(),
+        );
+        assert!(claims.claimed("one.playtron.Game"));
+        assert!(!claims.claimed("one.playtron.Mail"));
+
+        let emitter = SignalEmitter::new(&compositor, OBJECT_PATH).unwrap();
+        let started = Hold::Started {
+            session: 1,
+            app_id: "one.playtron.Game".into(),
+        };
+        started.emit_inline(&emitter).await.unwrap();
+        Hold::Finished(1).emit_inline(&emitter).await.unwrap();
+        let elsewhere = Hold::Started {
+            session: 2,
+            app_id: "one.playtron.Mail".into(),
+        };
+        elsewhere.emit(&emitter).await.unwrap();
+
+        assert_eq!(next(&mut app).await, started);
+        assert_eq!(next(&mut app).await, Hold::Finished(1));
+        // The host's first hold is the unclaimed one: the claimed hold passed it by.
+        assert_eq!(next(&mut host).await, elsewhere);
+    });
+}
+
+#[test]
+fn another_apps_claimed_holds_pass_by() {
+    let bus = PrivateBus::start();
+    zbus::block_on(async {
+        let claims = InlineClaims::default();
+        let compositor = compositor(&bus, &claims).await;
+        let mut game = Box::pin(
+            claim_inline(bus.builder(), "one.playtron.Game")
+                .await
+                .unwrap(),
+        );
+        let _notes = claim_inline(bus.builder(), "one.playtron.Notes")
+            .await
+            .unwrap();
+
+        let emitter = SignalEmitter::new(&compositor, OBJECT_PATH).unwrap();
+        let theirs = Hold::Started {
+            session: 1,
+            app_id: "one.playtron.Notes".into(),
+        };
+        let ours = Hold::Started {
+            session: 2,
+            app_id: "one.playtron.Game".into(),
+        };
+        for hold in [theirs, Hold::Cancelled(1), ours.clone(), Hold::Cancelled(2)] {
+            hold.emit_inline(&emitter).await.unwrap();
+        }
+        assert_eq!(next(&mut game).await, ours);
+        assert_eq!(next(&mut game).await, Hold::Cancelled(2));
+    });
+}
+
+#[test]
+fn a_claim_ends_with_its_stream() {
+    let bus = PrivateBus::start();
+    zbus::block_on(async {
+        let claims = InlineClaims::default();
+        let _compositor = compositor(&bus, &claims).await;
+        let app = claim_inline(bus.builder(), "one.playtron.Game")
+            .await
+            .unwrap();
+        let other = claim_inline(bus.builder(), "one.playtron.Game")
+            .await
+            .unwrap();
+        drop(app);
+        // The other instance still claims the app id.
+        async_io::Timer::after(Duration::from_millis(200)).await;
+        assert!(claims.claimed("one.playtron.Game"));
+        drop(other);
+        eventually("forgetting the last claim", || {
+            !claims.claimed("one.playtron.Game")
+        })
+        .await;
+    });
+}
+
+#[test]
+fn a_claim_can_be_released_and_needs_an_app_id() {
+    let bus = PrivateBus::start();
+    zbus::block_on(async {
+        let claims = InlineClaims::default();
+        let _compositor = compositor(&bus, &claims).await;
+        let app = bus.connect().await;
+        let call = |method: &'static str, app_id: &'static str| {
+            let app = app.clone();
+            async move {
+                app.call_method(
+                    Some(BUS_NAME),
+                    OBJECT_PATH,
+                    Some(INLINE_INTERFACE),
+                    method,
+                    &(app_id,),
+                )
+                .await
+            }
+        };
+        call("Claim", "one.playtron.Game").await.unwrap();
+        assert!(claims.claimed("one.playtron.Game"));
+        call("Release", "one.playtron.Game").await.unwrap();
+        assert!(!claims.claimed("one.playtron.Game"));
+        assert!(call("Claim", "").await.is_err());
+        assert!(!claims.claimed(""));
+    });
+}
+
+#[test]
+fn inline_steps_are_read_only_from_their_interface() {
+    let message = zbus::Message::signal(OBJECT_PATH, INLINE_INTERFACE, "Started")
+        .unwrap()
+        .build(&(5u32, "one.playtron.Game"))
+        .unwrap();
+    let started = Hold::Started {
+        session: 5,
+        app_id: "one.playtron.Game".into(),
+    };
+    assert_eq!(Hold::from_inline_message(&message), Some(started));
+    assert_eq!(Hold::from_message(&message), None);
+    let message = zbus::Message::signal(OBJECT_PATH, INTERFACE, "Finished")
+        .unwrap()
+        .build(&(5u32,))
+        .unwrap();
+    assert_eq!(Hold::from_inline_message(&message), None);
+}

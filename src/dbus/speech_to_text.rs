@@ -6,14 +6,17 @@
 //! compositor tells the desktop's dictation host when a hold starts, finishes or is
 //! called off. Recording, transcribing and typing the words into the field are the
 //! host's, through input-method-v2. With no host on the bus the binding is not ours:
-//! the key goes to the focused app.
+//! the key goes to the focused app. A hold over an app that claimed its holds goes to
+//! that app alone, which dictates into its own field.
 
 use calloop::LoopHandle;
 use cosmic_settings_config::shortcuts;
 use futures_executor::ThreadPool;
 use futures_util::StreamExt;
 use smithay::input::keyboard::{Keysym, ModifiersState};
-use speech_to_text_client::{Announcer, BUS_NAME, HOST_NAME, Hold, OBJECT_PATH};
+use speech_to_text_client::{
+    Announcer, BUS_NAME, HOST_NAME, Hold, Inline, InlineClaims, OBJECT_PATH,
+};
 use tracing::{debug, warn};
 use zbus::object_server::SignalEmitter;
 
@@ -31,17 +34,27 @@ pub enum KeyOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Held {
     session: u32,
+    /// Over an app that claimed its holds.
+    inline: bool,
     key: Keysym,
     modifiers: shortcuts::Modifiers,
 }
 
 #[derive(Debug)]
 pub struct SpeechToText {
-    events: futures_channel::mpsc::UnboundedSender<Hold>,
+    events: futures_channel::mpsc::UnboundedSender<Step>,
     hold: Option<Held>,
     last_session: u32,
     /// Whether a dictation host owns its name, so the binding is ours to take.
     host: bool,
+    claims: InlineClaims,
+}
+
+/// A hold's step, and whether it goes to the app that claimed the window instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Step {
+    hold: Hold,
+    inline: bool,
 }
 
 impl SpeechToText {
@@ -56,10 +69,12 @@ impl SpeechToText {
             warn!(?err, "Failed to follow the dictation host");
         }
 
-        let (events, mut queue) = futures_channel::mpsc::unbounded::<Hold>();
+        let (events, mut queue) = futures_channel::mpsc::unbounded::<Step>();
         let follower = executor.clone();
+        let claims = InlineClaims::default();
+        let served = claims.clone();
         executor.spawn_ok(async move {
-            let conn = match serve().await {
+            let conn = match serve(served).await {
                 Ok(conn) => conn,
                 Err(err) => {
                     warn!(
@@ -71,24 +86,33 @@ impl SpeechToText {
             };
             debug!("Serving {BUS_NAME}");
             follower.spawn_ok(follow_host(conn.clone(), presence));
-            while let Some(hold) = queue.next().await {
+            while let Some(Step { hold, inline }) = queue.next().await {
                 let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) else {
                     continue;
                 };
-                if let Err(err) = hold.emit(&emitter).await {
-                    warn!(?err, ?hold, "Failed to signal Speech to Text");
+                let sent = if inline {
+                    hold.emit_inline(&emitter).await
+                } else {
+                    hold.emit(&emitter).await
+                };
+                if let Err(err) = sent {
+                    warn!(?err, ?hold, inline, "Failed to signal Speech to Text");
                 }
             }
         });
-        Self::with_events(events)
+        Self::with_events(events, claims)
     }
 
-    fn with_events(events: futures_channel::mpsc::UnboundedSender<Hold>) -> Self {
+    fn with_events(
+        events: futures_channel::mpsc::UnboundedSender<Step>,
+        claims: InlineClaims,
+    ) -> Self {
         Self {
             events,
             hold: None,
             last_session: 0,
             host: false,
+            claims,
         }
     }
 
@@ -115,7 +139,7 @@ impl SpeechToText {
     }
 
     /// The binding was pressed over `app_id`. A binding without a key cannot be held,
-    /// and nothing is held without a host to listen.
+    /// and nothing is held without a host, even over an app that claimed its holds.
     pub fn start(&mut self, binding: &shortcuts::Binding, app_id: String) {
         let Some(key) = binding.key else {
             return;
@@ -124,8 +148,10 @@ impl SpeechToText {
             return;
         }
         self.last_session = self.last_session.wrapping_add(1);
+        let inline = self.claims.claimed(&app_id);
         self.hold = Some(Held {
             session: self.last_session,
+            inline,
             key,
             modifiers: binding.modifiers.clone(),
         });
@@ -178,18 +204,21 @@ impl SpeechToText {
     }
 
     fn end(&mut self, hold: Hold) {
-        self.hold = None;
         self.send(hold);
+        self.hold = None;
     }
 
+    /// Every step of a hold goes where its start went.
     fn send(&self, hold: Hold) {
-        let _ = self.events.unbounded_send(hold);
+        let inline = self.hold.as_ref().is_some_and(|held| held.inline);
+        let _ = self.events.unbounded_send(Step { hold, inline });
     }
 }
 
-async fn serve() -> zbus::Result<zbus::Connection> {
+async fn serve(claims: InlineClaims) -> zbus::Result<zbus::Connection> {
     zbus::connection::Builder::session()?
         .serve_at(OBJECT_PATH, Announcer)?
+        .serve_at(OBJECT_PATH, Inline::new(claims))?
         .name(BUS_NAME)?
         .build()
         .await
@@ -227,19 +256,27 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    fn speech() -> (SpeechToText, futures_channel::mpsc::UnboundedReceiver<Hold>) {
-        let (events, queue) = futures_channel::mpsc::unbounded();
-        let mut speech = SpeechToText::with_events(events);
+    type Queue = futures_channel::mpsc::UnboundedReceiver<Step>;
+
+    fn speech() -> (SpeechToText, Queue) {
+        let (mut speech, queue) = without_host();
         speech.set_host(true);
         (speech, queue)
     }
 
-    fn without_host() -> (SpeechToText, futures_channel::mpsc::UnboundedReceiver<Hold>) {
+    fn without_host() -> (SpeechToText, Queue) {
         let (events, queue) = futures_channel::mpsc::unbounded();
-        (SpeechToText::with_events(events), queue)
+        (
+            SpeechToText::with_events(events, InlineClaims::default()),
+            queue,
+        )
     }
 
-    fn sent(queue: &mut futures_channel::mpsc::UnboundedReceiver<Hold>) -> Vec<Hold> {
+    fn sent(queue: &mut Queue) -> Vec<Hold> {
+        std::iter::from_fn(|| queue.try_recv().ok().map(|step| step.hold)).collect()
+    }
+
+    fn steps(queue: &mut Queue) -> Vec<Step> {
         std::iter::from_fn(|| queue.try_recv().ok()).collect()
     }
 
@@ -409,6 +446,52 @@ mod tests {
     fn a_host_leaving_between_holds_announces_nothing() {
         let (mut speech, mut queue) = speech();
         speech.set_host(false);
+        assert!(sent(&mut queue).is_empty());
+    }
+
+    #[test]
+    fn a_hold_over_a_claimed_app_goes_to_it_alone() {
+        let (mut speech, mut queue) = speech();
+        speech.claims.add("one.playtron.Game", ":1.7");
+        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        speech.key(false, true, Keysym::space, &ctrl(true));
+        speech.start(&ctrl_space(), "one.playtron.Mail".into());
+        speech.key(true, false, Keysym::Escape, &ctrl(true));
+        let step = |hold, inline| Step { hold, inline };
+        let started = |session, app_id: &str| Hold::Started {
+            session,
+            app_id: app_id.into(),
+        };
+        assert_eq!(
+            steps(&mut queue),
+            [
+                step(started(1, "one.playtron.Game"), true),
+                step(Hold::Finished(1), true),
+                step(started(2, "one.playtron.Mail"), false),
+                step(Hold::Cancelled(2), false),
+            ]
+        );
+    }
+
+    /// A host leaving mid-hold cancels a claimed hold where it started, too.
+    #[test]
+    fn a_claimed_hold_is_cancelled_inline_when_the_host_goes() {
+        let (mut speech, mut queue) = speech();
+        speech.claims.add("one.playtron.Game", ":1.7");
+        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        speech.set_host(false);
+        let inline: Vec<bool> = steps(&mut queue).iter().map(|s| s.inline).collect();
+        assert_eq!(inline, [true, true]);
+    }
+
+    /// The claim does not take the binding: with no host, Ctrl+Space stays the app's.
+    #[test]
+    fn without_a_host_a_claimed_app_still_gets_the_key() {
+        let (mut speech, mut queue) = without_host();
+        speech.claims.add("one.playtron.Game", ":1.7");
+        assert!(speech.passes_through(&shortcuts::Action::SpeechToText));
+        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        assert!(!speech.is_holding());
         assert!(sent(&mut queue).is_empty());
     }
 }
