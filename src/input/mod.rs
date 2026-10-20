@@ -2092,6 +2092,17 @@ impl State {
             raw_syms.contains(&binding_key) || latin_sym.is_some_and(|sym| sym == binding_key)
         };
 
+        if self.common.speech_to_text.is_holding() {
+            let pressed = event.state() == KeyState::Pressed;
+            let speech = &mut self.common.speech_to_text;
+            let is_binding_key = speech.held_key().is_some_and(key_matches);
+            let outcome = speech.key(pressed, is_binding_key, handle.modified_sym(), modifiers);
+            if outcome == crate::dbus::speech_to_text::KeyOutcome::Swallow {
+                seat.supressed_keys().add(&handle, None);
+                return FilterResult::Intercept(None);
+            }
+        }
+
         let mut shell = self.common.shell.write();
         if !modifiers.logo {
             shell.set_halo_overview(false);

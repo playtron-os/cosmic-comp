@@ -1227,6 +1227,15 @@ impl State {
                 }
             }
 
+            Action::SpeechToText => {
+                let app_id = match seat.get_keyboard().unwrap().current_focus() {
+                    Some(KeyboardFocusTarget::Element(mapped)) => mapped.active_window().app_id(),
+                    Some(KeyboardFocusTarget::Fullscreen(surface)) => surface.app_id(),
+                    _ => String::new(),
+                };
+                self.common.speech_to_text.start(&pattern, app_id);
+            }
+
             Action::FocusHalo => {
                 let shell = self.common.shell.read();
                 if !crate::shell::element::header_bar::uses_halo_header(shell.theme()) {

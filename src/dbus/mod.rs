@@ -23,6 +23,7 @@ mod name_owners;
 pub mod notifications;
 mod power;
 pub mod runs;
+pub mod speech_to_text;
 
 #[derive(Clone, Debug)]
 pub struct DBusState(Rc<DBusStateInner>);

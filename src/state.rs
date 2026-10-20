@@ -426,6 +426,7 @@ pub struct Common {
     pub overlap_notify_state: OverlapNotifyState,
     pub a11y_state: A11yState,
     pub game_mode_bridge: crate::dbus::game_mode::GameModeBridge,
+    pub speech_to_text: crate::dbus::speech_to_text::SpeechToText,
     pub launcher_key: crate::dbus::game_mode::LauncherKey,
     pub dbus_state: DBusState,
     pub keyboard_layout_state: KeyboardLayoutState,
@@ -938,6 +939,7 @@ impl State {
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
         crate::dbus::workspaces::init(&handle, &async_executor);
         crate::dbus::runs::init(&handle, &async_executor);
+        let speech_to_text = crate::dbus::speech_to_text::SpeechToText::init(&async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
         // live values to the game-mode `AppFrametimeNs` reader.
         shell.write().game_mode_frametime_ns = game_mode_bridge.frametime_handle();
@@ -1037,6 +1039,7 @@ impl State {
                 adaptive_foreground_state,
                 a11y_state,
                 game_mode_bridge,
+                speech_to_text,
                 launcher_key: Default::default(),
                 xwayland_scale: None,
                 xwayland_state: None,
