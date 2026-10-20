@@ -1193,9 +1193,11 @@ impl State {
             | Action::CaptureSelectionClipboard
             | Action::CaptureToolbar
             | Action::StopRecording) => {
-                let installed = super::capture::installed();
+                let program = super::capture::installed_program();
                 let system_actions = &self.common.config.system_actions;
-                if let Some(command) = super::capture::command(&action, installed, system_actions) {
+                if let Some(command) =
+                    super::capture::command(&action, program.as_deref(), system_actions)
+                {
                     self.spawn_command(command);
                 }
             }
