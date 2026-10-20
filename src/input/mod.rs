@@ -2720,6 +2720,11 @@ impl State {
                     continue;
                 }
 
+                // Likewise Speech to Text, while no dictation host is listening.
+                if self.common.speech_to_text.passes_through(action) {
+                    continue;
+                }
+
                 // is this a released (triggered) modifier-only binding?
                 if binding.key.is_none()
                     && event.state() == KeyState::Released

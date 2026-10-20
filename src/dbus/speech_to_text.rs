@@ -1,46 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Speech to Text, `one.playtron.SpeechToText1`.
+//! Speech to Text, `one.playtron.SpeechToText1` (contract in `speech-to-text-client`).
 //!
 //! The binding is held, and its release never reaches the focused client, so the
 //! compositor tells the desktop's dictation host when a hold starts, finishes or is
 //! called off. Recording, transcribing and typing the words into the field are the
-//! host's: Kora's panel, through input-method-v2.
+//! host's, through input-method-v2. With no host on the bus the binding is not ours:
+//! the key goes to the focused app.
 
+use calloop::LoopHandle;
 use cosmic_settings_config::shortcuts;
 use futures_executor::ThreadPool;
 use futures_util::StreamExt;
 use smithay::input::keyboard::{Keysym, ModifiersState};
+use speech_to_text_client::{Announcer, BUS_NAME, HOST_NAME, Hold, OBJECT_PATH};
 use tracing::{debug, warn};
 use zbus::object_server::SignalEmitter;
 
-const BUS_NAME: &str = "one.playtron.SpeechToText1";
-const OBJECT_PATH: &str = "/one/playtron/SpeechToText1";
-
-/// What a hold did, in the order it happened.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Event {
-    Started { session: u32, app_id: String },
-    Finished(u32),
-    Cancelled(u32),
-}
-
-struct Interface;
-
-#[zbus::interface(name = "one.playtron.SpeechToText1")]
-impl Interface {
-    /// The binding went down over `app_id`'s window: start listening.
-    #[zbus(signal)]
-    async fn started(emitter: &SignalEmitter<'_>, session: u32, app_id: &str) -> zbus::Result<()>;
-
-    /// The binding came up, or Enter was pressed: stop listening and type what was heard.
-    #[zbus(signal)]
-    async fn finished(emitter: &SignalEmitter<'_>, session: u32) -> zbus::Result<()>;
-
-    /// Escape or another key was pressed: drop what was heard.
-    #[zbus(signal)]
-    async fn cancelled(emitter: &SignalEmitter<'_>, session: u32) -> zbus::Result<()>;
-}
+use crate::state::State;
 
 /// What the keyboard filter does with a key pressed or released during a hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +29,7 @@ pub enum KeyOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Hold {
+struct Held {
     session: u32,
     key: Keysym,
     modifiers: shortcuts::Modifiers,
@@ -60,15 +37,27 @@ struct Hold {
 
 #[derive(Debug)]
 pub struct SpeechToText {
-    events: futures_channel::mpsc::UnboundedSender<Event>,
-    hold: Option<Hold>,
+    events: futures_channel::mpsc::UnboundedSender<Hold>,
+    hold: Option<Held>,
     last_session: u32,
+    /// Whether a dictation host owns its name, so the binding is ours to take.
+    host: bool,
 }
 
 impl SpeechToText {
-    /// Owns `one.playtron.SpeechToText1` and emits each event in turn.
-    pub fn init(executor: &ThreadPool) -> Self {
-        let (events, mut queue) = futures_channel::mpsc::unbounded::<Event>();
+    /// Owns `one.playtron.SpeechToText1`, emits each hold in turn and follows the host.
+    pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) -> Self {
+        let (presence, heard) = calloop::channel::channel::<bool>();
+        if let Err(err) = handle.insert_source(heard, |event, _, state| {
+            if let calloop::channel::Event::Msg(present) = event {
+                state.common.speech_to_text.set_host(present);
+            }
+        }) {
+            warn!(?err, "Failed to follow the dictation host");
+        }
+
+        let (events, mut queue) = futures_channel::mpsc::unbounded::<Hold>();
+        let follower = executor.clone();
         executor.spawn_ok(async move {
             let conn = match serve().await {
                 Ok(conn) => conn,
@@ -81,30 +70,39 @@ impl SpeechToText {
                 }
             };
             debug!("Serving {BUS_NAME}");
-            while let Some(event) = queue.next().await {
+            follower.spawn_ok(follow_host(conn.clone(), presence));
+            while let Some(hold) = queue.next().await {
                 let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) else {
                     continue;
                 };
-                let sent = match &event {
-                    Event::Started { session, app_id } => {
-                        Interface::started(&emitter, *session, app_id).await
-                    }
-                    Event::Finished(session) => Interface::finished(&emitter, *session).await,
-                    Event::Cancelled(session) => Interface::cancelled(&emitter, *session).await,
-                };
-                if let Err(err) = sent {
-                    warn!(?err, ?event, "Failed to signal Speech to Text");
+                if let Err(err) = hold.emit(&emitter).await {
+                    warn!(?err, ?hold, "Failed to signal Speech to Text");
                 }
             }
         });
         Self::with_events(events)
     }
 
-    fn with_events(events: futures_channel::mpsc::UnboundedSender<Event>) -> Self {
+    fn with_events(events: futures_channel::mpsc::UnboundedSender<Hold>) -> Self {
         Self {
             events,
             hold: None,
             last_session: 0,
+            host: false,
+        }
+    }
+
+    /// Whether the keyboard filter leaves `action`'s binding to the focused app.
+    pub fn passes_through(&self, action: &shortcuts::Action) -> bool {
+        *action == shortcuts::Action::SpeechToText && !self.host
+    }
+
+    /// A host came or went. One leaving mid-hold calls the hold off.
+    pub fn set_host(&mut self, present: bool) {
+        self.host = present;
+        if !present && let Some(hold) = &self.hold {
+            let session = hold.session;
+            self.end(Hold::Cancelled(session));
         }
     }
 
@@ -116,21 +114,22 @@ impl SpeechToText {
         self.hold.as_ref().map(|hold| hold.key)
     }
 
-    /// The binding was pressed over `app_id`. A binding without a key cannot be held.
+    /// The binding was pressed over `app_id`. A binding without a key cannot be held,
+    /// and nothing is held without a host to listen.
     pub fn start(&mut self, binding: &shortcuts::Binding, app_id: String) {
         let Some(key) = binding.key else {
             return;
         };
-        if self.hold.is_some() {
+        if self.hold.is_some() || !self.host {
             return;
         }
         self.last_session = self.last_session.wrapping_add(1);
-        self.hold = Some(Hold {
+        self.hold = Some(Held {
             session: self.last_session,
             key,
             modifiers: binding.modifiers.clone(),
         });
-        self.send(Event::Started {
+        self.send(Hold::Started {
             session: self.last_session,
             app_id,
         });
@@ -151,7 +150,7 @@ impl SpeechToText {
         let session = hold.session;
         if !pressed {
             if is_binding_key || !still_held(&hold.modifiers, modifiers) {
-                self.end(Event::Finished(session));
+                self.end(Hold::Finished(session));
             }
             return KeyOutcome::Pass;
         }
@@ -164,36 +163,56 @@ impl SpeechToText {
         }
         match sym {
             Keysym::Escape => {
-                self.end(Event::Cancelled(session));
+                self.end(Hold::Cancelled(session));
                 KeyOutcome::Swallow
             }
             Keysym::Return | Keysym::KP_Enter => {
-                self.end(Event::Finished(session));
+                self.end(Hold::Finished(session));
                 KeyOutcome::Swallow
             }
             _ => {
-                self.end(Event::Cancelled(session));
+                self.end(Hold::Cancelled(session));
                 KeyOutcome::Pass
             }
         }
     }
 
-    fn end(&mut self, event: Event) {
+    fn end(&mut self, hold: Hold) {
         self.hold = None;
-        self.send(event);
+        self.send(hold);
     }
 
-    fn send(&self, event: Event) {
-        let _ = self.events.unbounded_send(event);
+    fn send(&self, hold: Hold) {
+        let _ = self.events.unbounded_send(hold);
     }
 }
 
 async fn serve() -> zbus::Result<zbus::Connection> {
     zbus::connection::Builder::session()?
-        .serve_at(OBJECT_PATH, Interface)?
+        .serve_at(OBJECT_PATH, Announcer)?
         .name(BUS_NAME)?
         .build()
         .await
+}
+
+/// Tells the loop whenever a dictation host comes or goes.
+async fn follow_host(conn: zbus::Connection, presence: calloop::channel::Sender<bool>) {
+    let mut present = match speech_to_text_client::host_present(&conn).await {
+        Ok(present) => Box::pin(present),
+        Err(err) => {
+            warn!(
+                ?err,
+                "Failed to follow {HOST_NAME}; the binding stays with apps"
+            );
+            return;
+        }
+    };
+    while let Some(now) = present.next().await {
+        debug!(present = now, "Dictation host");
+        if presence.send(now).is_err() {
+            return;
+        }
+    }
 }
 
 fn still_held(binding: &shortcuts::Modifiers, now: &ModifiersState) -> bool {
@@ -208,15 +227,19 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    fn speech() -> (
-        SpeechToText,
-        futures_channel::mpsc::UnboundedReceiver<Event>,
-    ) {
+    fn speech() -> (SpeechToText, futures_channel::mpsc::UnboundedReceiver<Hold>) {
+        let (events, queue) = futures_channel::mpsc::unbounded();
+        let mut speech = SpeechToText::with_events(events);
+        speech.set_host(true);
+        (speech, queue)
+    }
+
+    fn without_host() -> (SpeechToText, futures_channel::mpsc::UnboundedReceiver<Hold>) {
         let (events, queue) = futures_channel::mpsc::unbounded();
         (SpeechToText::with_events(events), queue)
     }
 
-    fn sent(queue: &mut futures_channel::mpsc::UnboundedReceiver<Event>) -> Vec<Event> {
+    fn sent(queue: &mut futures_channel::mpsc::UnboundedReceiver<Hold>) -> Vec<Hold> {
         std::iter::from_fn(|| queue.try_recv().ok()).collect()
     }
 
@@ -241,11 +264,11 @@ mod tests {
         assert_eq!(
             sent(&mut queue),
             [
-                Event::Started {
+                Hold::Started {
                     session: 1,
                     app_id: "one.playtron.Mail".into()
                 },
-                Event::Finished(1)
+                Hold::Finished(1)
             ]
         );
     }
@@ -256,7 +279,7 @@ mod tests {
         speech.start(&ctrl_space(), String::new());
         speech.key(false, false, Keysym::Control_L, &ctrl(false));
         assert!(!speech.is_holding());
-        assert_eq!(sent(&mut queue).last(), Some(&Event::Finished(1)));
+        assert_eq!(sent(&mut queue).last(), Some(&Hold::Finished(1)));
         // The key's own release afterwards belongs to no hold.
         assert_eq!(
             speech.key(false, true, Keysym::space, &ctrl(false)),
@@ -279,8 +302,8 @@ mod tests {
             KeyOutcome::Swallow
         );
         let events = sent(&mut queue);
-        assert_eq!(events[1], Event::Cancelled(1));
-        assert_eq!(events[3], Event::Finished(2));
+        assert_eq!(events[1], Hold::Cancelled(1));
+        assert_eq!(events[3], Hold::Finished(2));
     }
 
     #[test]
@@ -297,7 +320,7 @@ mod tests {
             KeyOutcome::Pass
         );
         assert!(!speech.is_holding());
-        assert_eq!(sent(&mut queue).last(), Some(&Event::Cancelled(1)));
+        assert_eq!(sent(&mut queue).last(), Some(&Hold::Cancelled(1)));
     }
 
     #[test]
@@ -318,5 +341,74 @@ mod tests {
         speech.start(&ctrl_space(), String::new());
         speech.start(&ctrl_space(), String::new());
         assert_eq!(sent(&mut queue).len(), 1);
+    }
+
+    /// Without a host the binding is not the compositor's: Ctrl+Space reaches the app.
+    #[test]
+    fn without_a_host_the_key_passes_through() {
+        let (mut speech, mut queue) = without_host();
+        assert!(speech.passes_through(&shortcuts::Action::SpeechToText));
+        speech.start(&ctrl_space(), "one.playtron.Mail".into());
+        assert!(!speech.is_holding());
+        assert!(sent(&mut queue).is_empty());
+    }
+
+    #[test]
+    fn with_a_host_the_key_is_held() {
+        let (mut speech, mut queue) = speech();
+        assert!(!speech.passes_through(&shortcuts::Action::SpeechToText));
+        speech.start(&ctrl_space(), String::new());
+        assert!(speech.is_holding());
+        assert_eq!(sent(&mut queue).len(), 1);
+    }
+
+    #[test]
+    fn only_speech_to_text_waits_for_a_host() {
+        let (speech, _queue) = without_host();
+        assert!(!speech.passes_through(&shortcuts::Action::WindowCommands));
+    }
+
+    /// A host leaving mid-hold must not leave the hold swallowing keys.
+    #[test]
+    fn the_host_coming_and_going_mid_session() {
+        let (mut speech, mut queue) = without_host();
+        speech.set_host(true);
+        speech.start(&ctrl_space(), String::new());
+        assert!(speech.is_holding());
+
+        speech.set_host(false);
+        assert!(!speech.is_holding());
+        assert!(speech.passes_through(&shortcuts::Action::SpeechToText));
+        assert_eq!(
+            sent(&mut queue),
+            [
+                Hold::Started {
+                    session: 1,
+                    app_id: String::new()
+                },
+                Hold::Cancelled(1)
+            ]
+        );
+        assert_eq!(
+            speech.key(true, false, Keysym::v, &ctrl(true)),
+            KeyOutcome::Pass
+        );
+
+        speech.set_host(true);
+        speech.start(&ctrl_space(), String::new());
+        assert_eq!(
+            sent(&mut queue),
+            [Hold::Started {
+                session: 2,
+                app_id: String::new()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_host_leaving_between_holds_announces_nothing() {
+        let (mut speech, mut queue) = speech();
+        speech.set_host(false);
+        assert!(sent(&mut queue).is_empty());
     }
 }
