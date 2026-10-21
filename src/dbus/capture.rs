@@ -65,7 +65,9 @@ async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {
 /// stopping; nothing here needs it to be running.
 pub(super) async fn watch_stopped(state: DBusState) -> Result<()> {
     let conn = state.session_conn().await?.clone();
-    let proxy = CaptureEngine1Proxy::new(&conn).await.context("recorder proxy")?;
+    let proxy = CaptureEngine1Proxy::new(&conn)
+        .await
+        .context("recorder proxy")?;
     let stream = proxy
         .receive_recording_stopped()
         .await
