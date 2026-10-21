@@ -36,7 +36,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "agentos-capture-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/agentos-capture.git#7da947fb7381c94bb60c8b4b6d1a8e89bea17e52"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
 dependencies = [
  "serde",
  "zbus",
@@ -45,7 +45,7 @@ dependencies = [
 [[package]]
 name = "agentos-notifications-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/agentos-notifications.git#814e317b213493cfd374df36d8f6c18d197a6b74"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
 dependencies = [
  "serde",
  "zbus",
@@ -2279,8 +2279,8 @@ dependencies = [
 [[package]]
 name = "game-mode-client"
 version = "1.0.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
 dependencies = [
- "async-io",
  "futures-util",
  "zbus",
 ]
@@ -6774,8 +6774,8 @@ dependencies = [
 [[package]]
 name = "speech-to-text-client"
 version = "1.1.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
 dependencies = [
- "async-io",
  "futures-util",
  "zbus",
 ]

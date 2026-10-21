@@ -7,7 +7,7 @@ version = "1.59.0"
 rust-version = "1.93"
 
 [workspace]
-members = ["cosmic-comp-config", "game-mode-client", "speech-to-text-client"]
+members = ["cosmic-comp-config"]
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -97,11 +97,11 @@ xcursor = "0.3.10"
 xdg = "^3.0"
 xkbcommon = "0.9"
 zbus = "5.14.0"
-# The capture engine's and the notification daemon's D-Bus client crates (MIT).
-agentos-capture-client = { git = "ssh://git@github.com/playtron-os/agentos-capture.git" }
-agentos-notifications-client = { git = "ssh://git@github.com/playtron-os/agentos-notifications.git" }
-speech-to-text-client = { path = "speech-to-text-client" }
-game-mode-client = { path = "game-mode-client" }
+# Kora's D-Bus contracts, from the client crates in kora-sdk (MIT).
+agentos-capture-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", branch = "feat/first-wave" }
+agentos-notifications-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", branch = "feat/first-wave" }
+speech-to-text-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", branch = "feat/first-wave" }
+game-mode-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", branch = "feat/first-wave" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }
