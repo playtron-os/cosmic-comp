@@ -4733,6 +4733,7 @@ impl Shell {
         }
         // Advance the side-panel spring resize (maximize/restore, presets).
         self.update_layer_resize_animation();
+        self.activate_expired_pending_fade_ins();
         // Clean up completed layer surface fade-ins
         self.cleanup_layer_fade_ins();
         self.cleanup_unlock_fade();
@@ -7334,6 +7335,43 @@ impl Shell {
                 motion,
                 style,
             ));
+        }
+    }
+
+    /// Starts the entrances whose wait for real content ran out with no commit to start them: a
+    /// solid-colour background commits its 1x1 buffer once and never again. Runs every frame while
+    /// an entrance waits, so the first frame past the window starts it.
+    fn activate_expired_pending_fade_ins(&mut self) {
+        if self.pending_layer_opens.is_empty() && self.pending_layer_fade_in.is_empty() {
+            return;
+        }
+        let buffered = self
+            .outputs()
+            .flat_map(|output| {
+                layer_map_for_output(output)
+                    .layers()
+                    .filter(|layer| {
+                        smithay::backend::renderer::utils::with_renderer_surface_state(
+                            layer.wl_surface(),
+                            |state| state.buffer().is_some(),
+                        )
+                        .unwrap_or(false)
+                    })
+                    .map(|layer| layer.wl_surface().id())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let window = self.theme.motion.layer_open * PENDING_CONTENT_TIMEOUT_FACTOR;
+        let now = Instant::now();
+        let mut expired = expired_pending(&self.pending_layer_opens, &buffered, window, now);
+        expired.extend(expired_pending(
+            &self.pending_layer_fade_in,
+            &buffered,
+            window,
+            now,
+        ));
+        for surface_id in expired {
+            self.activate_pending_fade_in(&surface_id, false);
         }
     }
 
@@ -11745,6 +11783,45 @@ mod realm_transition_tests {
         assert_eq!(seed, realm_transition_seed("one", "two"));
         assert_ne!(seed, realm_transition_seed("two", "one"));
         assert!((0.0..=1.0).contains(&seed));
+    }
+}
+
+/// The waiting entrances past `window` whose surface has a buffer to show. One without a buffer
+/// keeps waiting for its first commit, which starts it.
+fn expired_pending<K: Eq + std::hash::Hash + Clone>(
+    pending: &HashMap<K, Instant>,
+    buffered: &[K],
+    window: Duration,
+    now: Instant,
+) -> Vec<K> {
+    pending
+        .iter()
+        .filter(|(id, since)| buffered.contains(id) && now.duration_since(**since) >= window)
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod pending_entrance_tests {
+    use super::expired_pending;
+    use std::{
+        collections::HashMap,
+        time::{Duration, Instant},
+    };
+
+    /// A 1x1 background commits once: past the window it must appear without another commit.
+    #[test]
+    fn a_buffered_surface_appears_once_its_wait_runs_out() {
+        let start = Instant::now();
+        let window = Duration::from_millis(640);
+        let pending = HashMap::from([("swaybg", start), ("no-buffer-yet", start)]);
+        let buffered = ["swaybg"];
+        assert!(expired_pending(&pending, &buffered, window, start + window / 2).is_empty());
+        assert_eq!(
+            expired_pending(&pending, &buffered, window, start + window),
+            vec!["swaybg"],
+            "the surface without a buffer waits for its first commit"
+        );
     }
 }
 
