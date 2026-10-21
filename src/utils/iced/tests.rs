@@ -2,7 +2,7 @@ use super::*;
 use crate::shell::element::header_bar::{
     capture_tray, halo_visibility, header_bar, ssd_header_render_height,
 };
-use icetron_themes::{WindowHeaderStyle, dynamic::DEFAULT_THEME_PAIR};
+use icetron_p::icetron_themes::{WindowHeaderStyle, dynamic::DEFAULT_THEME_PAIR};
 
 struct Header {
     visible: bool,
@@ -750,7 +750,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
     let _clock = test_clock::Frozen::start();
     let at = icetron_p::utils::platform::now();
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
     tokens.duration_fast = 120.0;
     tokens.duration_normal = 120.0;
     let theme = CompTheme::new(Arc::new(tokens), true);
@@ -818,7 +818,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
     assert_eq!(last.bounds, middle.bounds);
     // Native Iced button transitions still read wall time. Stop those independently
     // before checking that the tooltip itself has no remaining frame requests.
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
     tokens.duration_fast = 0.0;
     internal.theme = CompTheme::new(Arc::new(tokens), true);
     step(&mut internal, 536);
@@ -847,7 +847,7 @@ fn halo_tooltip_delay_and_suppression_delegate_fades_to_the_compositor() {
     );
     internal.cursor_pos = None;
     step(&mut internal, 1010);
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*internal.theme);
     tokens.duration_fast = 120.0;
     internal.theme = CompTheme::new(Arc::new(tokens), true);
     internal.cursor_pos = Some((close.x as f64, close.y as f64).into());
@@ -930,7 +930,7 @@ fn the_glyph_tooltip_names_the_palette_binding_over_the_identity_around_it() {
 fn header_transition_requests_frames_with_a_stationary_pointer_then_stops() {
     let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
     let mut theme = theme();
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme);
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*theme);
     tokens.duration_fast = 60_000.0; // Keep the transition in flight without sleeping.
     theme = CompTheme::new(Arc::new(tokens), true);
     let element = IcedElement::new(
@@ -983,7 +983,7 @@ fn header_transition_requests_frames_with_a_stationary_pointer_then_stops() {
             "request must be consumed once"
         );
     }
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme);
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*theme);
     tokens.duration_fast = 0.0;
     internal.theme = CompTheme::new(Arc::new(tokens), true);
     // This test concerns button transitions; leaving also cancels the new tooltip delay.

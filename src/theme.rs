@@ -134,8 +134,8 @@ fn resolve_active_theme_dir() -> Option<PathBuf> {
 
 /// Reload the theme from disk and propagate to the shell.
 fn reload_theme(state: &mut State) {
-    use icetron_themes::color_mode::{Mode, get_color_mode};
-    use icetron_themes::dynamic::DynamicTheme;
+    use icetron_p::icetron_themes::color_mode::{Mode, get_color_mode};
+    use icetron_p::icetron_themes::dynamic::DynamicTheme;
 
     let is_dark = matches!(get_color_mode(), Mode::Dark);
     let theme_name = DynamicTheme::current_theme_name();

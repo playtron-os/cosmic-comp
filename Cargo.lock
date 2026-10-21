@@ -1029,7 +1029,6 @@ dependencies = [
  "iced_widget",
  "icetron-p",
  "icetron-paths",
- "icetron-themes",
  "id_tree",
  "image",
  "indexmap 2.14.2",
@@ -2788,7 +2787,7 @@ dependencies = [
 [[package]]
 name = "iced"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_debug",
@@ -2827,7 +2826,7 @@ dependencies = [
 [[package]]
 name = "iced_core"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "bitflags 2.13.2",
  "bytes",
@@ -2845,7 +2844,7 @@ dependencies = [
 [[package]]
 name = "iced_debug"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "iced_core 0.15.0-dev",
  "iced_futures 0.15.0-dev",
@@ -2868,7 +2867,7 @@ dependencies = [
 [[package]]
 name = "iced_futures"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "futures",
  "iced_core 0.15.0-dev",
@@ -2882,7 +2881,7 @@ dependencies = [
 [[package]]
 name = "iced_graphics"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",
@@ -2904,7 +2903,7 @@ dependencies = [
 [[package]]
 name = "iced_program"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "iced_graphics",
  "iced_runtime",
@@ -2913,7 +2912,7 @@ dependencies = [
 [[package]]
 name = "iced_renderer"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "iced_graphics",
  "iced_tiny_skia",
@@ -2925,7 +2924,7 @@ dependencies = [
 [[package]]
 name = "iced_runtime"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "bytes",
  "iced_core 0.15.0-dev",
@@ -2938,7 +2937,7 @@ dependencies = [
 [[package]]
 name = "iced_tiny_skia"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "bytemuck",
  "cosmic-text 0.18.0",
@@ -2955,7 +2954,7 @@ dependencies = [
 [[package]]
 name = "iced_wgpu"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "as-raw-xcb-connection",
  "bitflags 2.13.2",
@@ -2986,7 +2985,7 @@ dependencies = [
 [[package]]
 name = "iced_widget"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "iced_renderer",
  "log",
@@ -3000,7 +2999,7 @@ dependencies = [
 [[package]]
 name = "iced_winit"
 version = "0.15.0-dev"
-source = "git+https://github.com/playtron-os/iced.git#7c20dc7638cce72200ba72c2e3ade25c1f2f86f1"
+source = "git+https://github.com/playtron-os/iced.git#24b675bf03882155db016a2d61bd704b37ed7d52"
 dependencies = [
  "arboard",
  "iced_debug",
@@ -3019,7 +3018,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#815a56c769516e44ac73bef981676cbd81214387"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#0d1a9f36ee1ce9ee6983d966c2a31f78c94c4b9e"
 dependencies = [
  "bytemuck",
  "bytes",

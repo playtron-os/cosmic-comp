@@ -7,6 +7,8 @@
 use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
+use icetron_p::icetron_themes::icons;
+use icetron_p::icetron_themes::{TextRole, WindowHeaderStyle};
 use icetron_p::prelude::{
     Source, animated_opacity, animated_tooltip, app_header, hairline, halo_close_hover,
     header_height_for, header_render_height_for, measure_text_width, styled_text,
@@ -15,8 +17,6 @@ use icetron_p::{
     animation::transition::ButtonTransition,
     components::{draggable::draggable, icons::icon_svg_inherit_stroked},
 };
-use icetron_themes::icons;
-use icetron_themes::{TextRole, WindowHeaderStyle};
 
 use crate::comp_theme::CompTheme;
 use crate::fl;
@@ -246,7 +246,7 @@ pub enum AppIcon {
 /// of the app, and only the window knows which of its verbs an id names.
 #[derive(Clone, Debug)]
 pub struct TrayEntry<Message> {
-    pub icon: icetron_themes::Icon,
+    pub icon: icetron_p::icetron_themes::Icon,
     pub message: Message,
     pub label: String,
     /// A stateful command that is currently running.
@@ -1187,7 +1187,7 @@ enum HaloButtonRole {
 }
 
 fn halo_button<'a, Message: Clone + 'static>(
-    icon: icetron_themes::Icon,
+    icon: icetron_p::icetron_themes::Icon,
     message: Option<Message>,
     label: impl ToString,
     role: HaloButtonRole,
@@ -1334,8 +1334,8 @@ pub(crate) fn hidden_files(on: bool) -> Vec<TrayEntry<()>> {
 mod snapshot_tests;
 
 #[cfg(test)]
-pub(crate) fn design_halo_style() -> icetron_themes::HaloStyle {
-    icetron_themes::HaloStyle {
+pub(crate) fn design_halo_style() -> icetron_p::icetron_themes::HaloStyle {
+    icetron_p::icetron_themes::HaloStyle {
         overhang: 40.0,
         hot_zone_height: 16.0,
         top_inset: 4.0,
@@ -1350,14 +1350,14 @@ pub(crate) fn design_halo_style() -> icetron_themes::HaloStyle {
         title_font_weight: 500,
         divider_height: 12.0,
         border_width: 0.5,
-        ..icetron_themes::HaloStyle::default()
+        ..icetron_p::icetron_themes::HaloStyle::default()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
+    use icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR;
     use std::sync::Arc;
 
     #[test]

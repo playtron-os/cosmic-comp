@@ -11,12 +11,12 @@ pub static TOOLKIT_CONFIG: LazyLock<RwLock<ToolkitConfig>> =
 
 /// Get the current icon theme name.
 pub fn icon_theme_default() -> String {
-    icetron_themes::icon_theme::get_icon_theme()
+    icetron_p::icetron_themes::icon_theme::get_icon_theme()
 }
 
 /// Set the current icon theme name.
 pub fn icon_theme_set_default(name: String) {
-    icetron_themes::icon_theme::set_icon_theme(name);
+    icetron_p::icetron_themes::icon_theme::set_icon_theme(name);
 }
 
 /// Toolkit-wide configuration (replaces `cosmic::config::CosmicTk`).

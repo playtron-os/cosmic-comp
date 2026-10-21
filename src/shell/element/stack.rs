@@ -897,31 +897,32 @@ impl CosmicStack {
                 let focused = p.activated.load(Ordering::SeqCst);
                 let c = theme.focused_window_border(focused);
                 let thickness = theme.window_border_width() as u8;
-                let border =
-                    if theme.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
-                        IndicatorShader::window_outline(
-                            renderer,
-                            Key::Window(Usage::Border, window_key),
-                            geo.as_local(),
-                            thickness,
-                            radii.unwrap_or([0; 4]),
-                            alpha,
-                            scale.x,
-                            c,
-                            theme.focused_window_ring(focused),
-                        )
-                    } else {
-                        IndicatorShader::focus_element(
-                            renderer,
-                            Key::Window(Usage::Border, window_key),
-                            geo.to_i32_round().as_local(),
-                            thickness,
-                            radii.unwrap_or([0; 4]),
-                            c.a * alpha,
-                            scale.x,
-                            [c.r, c.g, c.b],
-                        )
-                    };
+                let border = if theme.window_header_style()
+                    == icetron_p::icetron_themes::WindowHeaderStyle::Halo
+                {
+                    IndicatorShader::window_outline(
+                        renderer,
+                        Key::Window(Usage::Border, window_key),
+                        geo.as_local(),
+                        thickness,
+                        radii.unwrap_or([0; 4]),
+                        alpha,
+                        scale.x,
+                        c,
+                        theme.focused_window_ring(focused),
+                    )
+                } else {
+                    IndicatorShader::focus_element(
+                        renderer,
+                        Key::Window(Usage::Border, window_key),
+                        geo.to_i32_round().as_local(),
+                        thickness,
+                        radii.unwrap_or([0; 4]),
+                        c.a * alpha,
+                        scale.x,
+                        [c.r, c.g, c.b],
+                    )
+                };
                 push_above(CosmicStackRenderElement::Border(border));
             };
 
@@ -1453,10 +1454,10 @@ impl Decorations<CosmicStackInternal, Message> for DefaultDecorations {
         );
 
         // Window control buttons using icetron styling
-        use icetron_p::prelude::{ghost_button_style, icon_svg};
-        use icetron_themes::icons::{
+        use icetron_p::icetron_themes::icons::{
             COPY as UNMAXIMIZE, MINUS as MINIMIZE, SQUARE as MAXIMIZE, X as CLOSE,
         };
+        use icetron_p::prelude::{ghost_button_style, icon_svg};
 
         let icon_size = theme.ui_size_icon_2xs();
         let btn_size = theme.ui_size_icon_2md();

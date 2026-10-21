@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn raster_reserves_shadow_space_separately_from_body() {
         let theme = CompTheme::new(
-            Arc::new(icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(true)),
+            Arc::new(icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(true)),
             true,
         );
         let body = IcedSize::new(120.0, 24.0);

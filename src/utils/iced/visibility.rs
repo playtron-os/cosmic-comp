@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn a_context_menu_moves_on_the_theme_s_motion() {
-        use icetron_themes::{LayerMotion, MotionCurve, MotionPose};
+        use icetron_p::icetron_themes::{LayerMotion, MotionCurve, MotionPose};
         let mut motion = CompTheme::default().motion;
         assert_eq!(
             Visibility::context_menu(motion),

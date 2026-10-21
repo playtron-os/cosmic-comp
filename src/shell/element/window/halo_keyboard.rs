@@ -94,7 +94,7 @@ impl CosmicWindow {
             return;
         };
         self.set_halo_keyboard(Some(first));
-        icetron_themes::set_focus_visible(true);
+        icetron_p::icetron_themes::set_focus_visible(true);
         if let Some(keyboard) = seat.get_keyboard() {
             keyboard.set_grab(
                 state,

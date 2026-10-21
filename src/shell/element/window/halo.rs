@@ -594,8 +594,8 @@ mod tests {
     /// kept off the output's edges rather than following the click.
     #[test]
     fn the_palette_hangs_centred_under_the_pill_inside_the_output() {
-        let mut theme = icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
-        theme.window_header_style = icetron_themes::WindowHeaderStyle::Halo;
+        let mut theme = icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
+        theme.window_header_style = icetron_p::icetron_themes::WindowHeaderStyle::Halo;
         theme.halo_style = header_bar::design_halo_style();
         let theme = crate::comp_theme::CompTheme::new(std::sync::Arc::new(theme), false);
         let output = Rectangle::<i32, Global>::new((0, 0).into(), (1920, 1080).into());
@@ -625,8 +625,8 @@ mod tests {
     /// output.
     #[test]
     fn a_palette_that_would_leave_the_output_goes_above_the_pill_or_slides_up() {
-        let mut theme = icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
-        theme.window_header_style = icetron_themes::WindowHeaderStyle::Halo;
+        let mut theme = icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(false);
+        theme.window_header_style = icetron_p::icetron_themes::WindowHeaderStyle::Halo;
         theme.halo_style = header_bar::design_halo_style();
         let theme = crate::comp_theme::CompTheme::new(std::sync::Arc::new(theme), false);
         let output = Rectangle::<i32, Global>::new((0, 0).into(), (1920, 1080).into());

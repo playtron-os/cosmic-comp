@@ -9,11 +9,11 @@ use iced_widget::svg::{self, Svg};
 use iced_widget::{self, button, container, row};
 use icetron_p::components::divider::vertical_divider;
 
-const ADD_LINE: &[u8] = icetron_themes::icons::PLUS.bytes;
-const CHEVRONDOWN: &[u8] = icetron_themes::icons::CHEVRON_DOWN.bytes;
-const CLOSE_LINE: &[u8] = icetron_themes::icons::X.bytes;
-const MORE_LINE: &[u8] = icetron_themes::icons::ELLIPSIS.bytes;
-const SUBTRACT_LINE: &[u8] = icetron_themes::icons::MINUS.bytes;
+const ADD_LINE: &[u8] = icetron_p::icetron_themes::icons::PLUS.bytes;
+const CHEVRONDOWN: &[u8] = icetron_p::icetron_themes::icons::CHEVRON_DOWN.bytes;
+const CLOSE_LINE: &[u8] = icetron_p::icetron_themes::icons::X.bytes;
+const MORE_LINE: &[u8] = icetron_p::icetron_themes::icons::ELLIPSIS.bytes;
+const SUBTRACT_LINE: &[u8] = icetron_p::icetron_themes::icons::MINUS.bytes;
 
 use icetron_p::prelude::{ButtonIconSize, ButtonIconType, IconButton, Source, styled_text};
 use keyframe::{ease, functions::Linear};
@@ -499,7 +499,7 @@ impl Program for ZoomProgram {
     }
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
-        // Helper: icon button using icetron_assets SVG bytes
+        // Helper: icon button from icetron-themes SVG bytes
         let icon_color = theme.text_secondary();
         let icon_btn =
             |icon_bytes: &'static [u8], msg: ZoomMessage| -> CompElement<'_, ZoomMessage> {
