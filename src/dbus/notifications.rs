@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use agentos_notifications_client::Notifications1Proxy;
+use kora_notifications_client::Notifications1Proxy;
 use futures_channel::mpsc::UnboundedSender;
 use futures_util::StreamExt;
 use tracing::{debug, warn};
@@ -37,7 +37,7 @@ trait Notifications {
 /// The colour grammar a system toast's dot carries, as agentos-notifications
 /// names it. A system toast is a one-line confirmation of something the user
 /// just did, never a notification (no history, no unread, no sound).
-pub use agentos_notifications_client::Tone;
+pub use kora_notifications_client::Tone;
 
 /// One toast. `app_icon` is a freedesktop icon name.
 #[derive(Debug, Clone)]

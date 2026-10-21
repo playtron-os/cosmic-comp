@@ -1,7 +1,7 @@
 //! The recorder behind the halo's Record: `one.playtron.Capture1`, served by
 //! agentos-capture and started on demand by the bus, through its client crate.
 
-use agentos_capture_client::{Capture1Proxy, Codec, RecordOptions, Source};
+use kora_capture_client::engine::{Capture1Proxy, Codec, RecordOptions, Source};
 use anyhow::{Context, Result};
 use calloop::{InsertError, stream::StreamSource};
 use tracing::debug;

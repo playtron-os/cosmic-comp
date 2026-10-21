@@ -34,24 +34,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "agentos-capture-client"
-version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
-dependencies = [
- "serde",
- "zbus",
-]
-
-[[package]]
-name = "agentos-notifications-client"
-version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
-dependencies = [
- "serde",
- "zbus",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1019,8 +1001,6 @@ dependencies = [
 name = "cosmic-comp"
 version = "1.59.0"
 dependencies = [
- "agentos-capture-client",
- "agentos-notifications-client",
  "anyhow",
  "bitflags 2.13.2",
  "calloop 0.14.4",
@@ -1038,7 +1018,6 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "game-mode-client",
  "glam 0.33.7",
  "i18n-embed",
  "i18n-embed-fl",
@@ -1055,6 +1034,10 @@ dependencies = [
  "indexmap 2.14.2",
  "jiff",
  "keyframe",
+ "kora-capture-client",
+ "kora-game-mode-client",
+ "kora-notifications-client",
+ "kora-stt-client",
  "libc",
  "libdisplay-info",
  "libsystemd",
@@ -1078,7 +1061,6 @@ dependencies = [
  "smallvec",
  "smithay",
  "smithay-egui",
- "speech-to-text-client",
  "thiserror 2.0.20",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",
@@ -2274,15 +2256,6 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
-]
-
-[[package]]
-name = "game-mode-client"
-version = "1.0.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
-dependencies = [
- "futures-util",
- "zbus",
 ]
 
 [[package]]
@@ -3748,6 +3721,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a1886916523694cd6ea3d175f03a1e5010699a2a4cc13696d83d7bea1d80638"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "kora-capture-client"
+version = "0.1.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#bce30a8f8f29c7d4def62f4729042c12481a064f"
+dependencies = [
+ "futures-util",
+ "serde",
+ "zbus",
+]
+
+[[package]]
+name = "kora-game-mode-client"
+version = "1.0.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#bce30a8f8f29c7d4def62f4729042c12481a064f"
+dependencies = [
+ "futures-util",
+ "zbus",
+]
+
+[[package]]
+name = "kora-notifications-client"
+version = "0.1.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#bce30a8f8f29c7d4def62f4729042c12481a064f"
+dependencies = [
+ "serde",
+ "zbus",
+]
+
+[[package]]
+name = "kora-stt-client"
+version = "1.1.0"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#bce30a8f8f29c7d4def62f4729042c12481a064f"
+dependencies = [
+ "futures-util",
+ "zbus",
 ]
 
 [[package]]
@@ -6769,15 +6779,6 @@ dependencies = [
  "web-sys",
  "windows-sys 0.61.2",
  "x11rb",
-]
-
-[[package]]
-name = "speech-to-text-client"
-version = "1.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?branch=feat%2Ffirst-wave#735d12850c005350951416343cd0a69569db0d9e"
-dependencies = [
- "futures-util",
- "zbus",
 ]
 
 [[package]]

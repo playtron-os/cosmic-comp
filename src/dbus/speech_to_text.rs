@@ -14,7 +14,7 @@ use cosmic_settings_config::shortcuts;
 use futures_executor::ThreadPool;
 use futures_util::StreamExt;
 use smithay::input::keyboard::{Keysym, ModifiersState};
-use speech_to_text_client::{
+use kora_stt_client::{
     Announcer, BUS_NAME, HOST_NAME, Hold, Inline, InlineClaims, OBJECT_PATH,
 };
 use tracing::{debug, warn};
@@ -226,7 +226,7 @@ async fn serve(claims: InlineClaims) -> zbus::Result<zbus::Connection> {
 
 /// Tells the loop whenever a dictation host comes or goes.
 async fn follow_host(conn: zbus::Connection, presence: calloop::channel::Sender<bool>) {
-    let mut present = match speech_to_text_client::host_present(&conn).await {
+    let mut present = match kora_stt_client::host_present(&conn).await {
         Ok(present) => Box::pin(present),
         Err(err) => {
             warn!(

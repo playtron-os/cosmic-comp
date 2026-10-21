@@ -44,7 +44,7 @@ use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::workspace::WorkspaceHandle;
 
 // The contract's names, shared with its readers in `game-mode-client`.
-pub use game_mode_client::{BUS_NAME, LAUNCHER_APP_ID, OBJECT_PATH};
+pub use kora_game_mode_client::{BUS_NAME, LAUNCHER_APP_ID, OBJECT_PATH};
 
 #[derive(Debug)]
 pub struct RegisteredGameProcess {
