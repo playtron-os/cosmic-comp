@@ -13,17 +13,25 @@ use tracing::warn;
 
 use crate::backend::render::{
     element::AsGlowRenderer,
-    wayland::{blur_effect::BlurElement, clipped_surface::ClippedSurfaceRenderElement},
+    wayland::{
+        blur_effect::BlurElement, clipped_surface::ClippedSurfaceRenderElement,
+        washed_surface::WashedSurfaceRenderElement,
+    },
 };
 
 pub mod blur_effect;
 pub mod clipped_surface;
+pub mod washed_surface;
+
+#[cfg(test)]
+mod wash_gl_tests;
 
 render_elements! {
     pub SurfaceRenderElement<R> where R: AsGlowRenderer + ImportAll, R::TextureId: Send;
     Blur=BlurElement,
     Clipped=ClippedSurfaceRenderElement<R>,
     Wayland=WaylandSurfaceRenderElement<R>,
+    Washed=WashedSurfaceRenderElement<WaylandSurfaceRenderElement<R>>,
 }
 
 pub fn push_render_elements_from_surface_tree<R>(
