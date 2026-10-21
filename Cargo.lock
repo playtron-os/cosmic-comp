@@ -3018,7 +3018,7 @@ dependencies = [
 [[package]]
 name = "icetron-p"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/icetron-p.git#d107a47a86d993f689f1400da3556bb0f65c36a6"
+source = "git+ssh://git@github.com/playtron-os/icetron-p.git#0d1a9f36ee1ce9ee6983d966c2a31f78c94c4b9e"
 dependencies = [
  "bytemuck",
  "bytes",
