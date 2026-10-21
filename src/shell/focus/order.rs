@@ -297,6 +297,9 @@ fn render_input_order_internal<R: 'static>(
         };
     let has_fullscreen = game_mode_exclusive || (fullscreen.is_some() && !overview_is_open);
 
+    let outgoing_on_top = previous
+        .as_ref()
+        .is_some_and(|(_, _, delta)| delta.outgoing_on_top());
     // Realm transitions stack both scenes; in-realm desktops remain spatial.
     let (previous, current_offset, previous_alpha, current_alpha) = match previous.as_ref() {
         Some((previous, previous_idx, start)) => {
@@ -311,9 +314,12 @@ fn render_input_order_internal<R: 'static>(
 
             if matches!(
                 start,
-                WorkspaceDelta::Crossfade(_) | WorkspaceDelta::Realm { .. }
+                WorkspaceDelta::Crossfade(_)
+                    | WorkspaceDelta::Realm { .. }
+                    | WorkspaceDelta::Fullscreen { .. }
             ) {
                 let (previous_alpha, current_alpha) = match start {
+                    WorkspaceDelta::Fullscreen { .. } => (1.0, 1.0),
                     WorkspaceDelta::Crossfade(st) => {
                         let t = (Instant::now().duration_since(*st).as_secs_f32()
                             / shell.theme().motion.game_crossfade.as_secs_f32())
@@ -368,7 +374,9 @@ fn render_input_order_internal<R: 'static>(
                         (spring.value_at(Instant::now().duration_since(*start)) as f32)
                             .clamp(0.0, 1.0),
                     ),
-                    WorkspaceDelta::Crossfade(_) | WorkspaceDelta::Realm { .. } => {
+                    WorkspaceDelta::Crossfade(_)
+                    | WorkspaceDelta::Realm { .. }
+                    | WorkspaceDelta::Fullscreen { .. } => {
                         unreachable!("handled above")
                     }
                 };
@@ -607,39 +615,45 @@ fn render_input_order_internal<R: 'static>(
             );
         }
 
-        // workspace windows (the incoming workspace — fades in during a crossfade)
-        if current_alpha > 0.0 || game_mode_controlled.is_some() {
-            callback(Stage::Workspace {
-                workspace,
-                offset: current_offset,
-                alpha: current_alpha,
-                game_mode_only: game_mode_controlled,
-            })?;
-        }
-
-        // previous workspace windows (the outgoing workspace)
-        if let Some((previous_handle, _, _, offset)) = previous.as_ref()
-            && previous_alpha > 0.0
-        {
-            let Some(workspace) = shell.space_to_render(previous_handle) else {
-                return ControlFlow::Break(Err(OutputNoMode));
-            };
-            let game_mode_only = gaming_crossfade
-                .then(|| workspace.get_fullscreen(seat))
-                .flatten()
-                .filter(|f| crate::dbus::game_mode::app_id_of(&f.surface) != 0)
-                .map(|f| GameModeView {
-                    base: &f.surface,
-                    children: &[],
-                    presentation: None,
-                });
-            if !gaming_crossfade || game_mode_only.is_some() {
-                callback(Stage::Workspace {
-                    workspace,
-                    offset: *offset,
-                    alpha: previous_alpha,
-                    game_mode_only,
-                })?;
+        // Workspace windows, the one on top first: the incoming one, except while a window
+        // shrinks out of fullscreen over the desktop it returns to.
+        for outgoing in [outgoing_on_top, !outgoing_on_top] {
+            if !outgoing {
+                // the incoming workspace — fades in during a crossfade
+                if current_alpha > 0.0 || game_mode_controlled.is_some() {
+                    callback(Stage::Workspace {
+                        workspace,
+                        offset: current_offset,
+                        alpha: current_alpha,
+                        game_mode_only: game_mode_controlled,
+                    })?;
+                }
+                continue;
+            }
+            // the outgoing workspace
+            if let Some((previous_handle, _, _, offset)) = previous.as_ref()
+                && previous_alpha > 0.0
+            {
+                let Some(workspace) = shell.space_to_render(previous_handle) else {
+                    return ControlFlow::Break(Err(OutputNoMode));
+                };
+                let game_mode_only = gaming_crossfade
+                    .then(|| workspace.get_fullscreen(seat))
+                    .flatten()
+                    .filter(|f| crate::dbus::game_mode::app_id_of(&f.surface) != 0)
+                    .map(|f| GameModeView {
+                        base: &f.surface,
+                        children: &[],
+                        presentation: None,
+                    });
+                if !gaming_crossfade || game_mode_only.is_some() {
+                    callback(Stage::Workspace {
+                        workspace,
+                        offset: *offset,
+                        alpha: previous_alpha,
+                        game_mode_only,
+                    })?;
+                }
             }
         }
     }
