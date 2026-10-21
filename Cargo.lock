@@ -36,7 +36,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "agentos-capture-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/agentos-capture.git?branch=feat%2Fcapture-client#a0fea766ba0fc84536e092d671b55c50859a9840"
+source = "git+ssh://git@github.com/playtron-os/agentos-capture.git#7da947fb7381c94bb60c8b4b6d1a8e89bea17e52"
 dependencies = [
  "serde",
  "zbus",
@@ -45,7 +45,7 @@ dependencies = [
 [[package]]
 name = "agentos-notifications-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/agentos-notifications.git?branch=feat%2Fnotifications-client#2fb2687dcbb73d4a981860a854ba6c52e9942e9f"
+source = "git+ssh://git@github.com/playtron-os/agentos-notifications.git#814e317b213493cfd374df36d8f6c18d197a6b74"
 dependencies = [
  "serde",
  "zbus",
