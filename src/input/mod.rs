@@ -91,6 +91,7 @@ use std::{
 };
 
 pub mod actions;
+pub mod capture;
 pub mod dnd_hover;
 pub mod gestures;
 
@@ -2717,6 +2718,11 @@ impl State {
                         shortcuts::Action::NextRealm | shortcuts::Action::PreviousRealm
                     )
                 {
+                    continue;
+                }
+
+                // Likewise Speech to Text, while no dictation host is listening.
+                if self.common.speech_to_text.passes_through(action) {
                     continue;
                 }
 

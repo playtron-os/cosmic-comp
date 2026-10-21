@@ -3,11 +3,11 @@ authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
 name = "cosmic-comp"
-version = "1.58.0"
+version = "1.59.0"
 rust-version = "1.93"
 
 [workspace]
-members = ["cosmic-comp-config"]
+members = ["cosmic-comp-config", "speech-to-text-client"]
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -100,6 +100,7 @@ zbus = "5.14.0"
 # The capture engine's and the notification daemon's D-Bus client crates (MIT).
 agentos-capture-client = { git = "ssh://git@github.com/playtron-os/agentos-capture.git", branch = "feat/capture-client" }
 agentos-notifications-client = { git = "ssh://git@github.com/playtron-os/agentos-notifications.git", branch = "feat/notifications-client" }
+speech-to-text-client = { path = "speech-to-text-client" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }

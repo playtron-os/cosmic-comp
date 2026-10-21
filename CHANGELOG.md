@@ -1,3 +1,20 @@
+# [1.59.0](https://github.com/playtron-os/cosmic-comp/compare/v1.58.0...v1.59.0) (2026-10-20)
+
+
+### Bug Fixes
+
+* **dbus:** claim the dictation host name without a zbus warning ([4def1c4](https://github.com/playtron-os/cosmic-comp/commit/4def1c4eb86980b8d76ce1efecdff49db6b2ee09))
+* **dbus:** let the SDK's streams outlive the borrowed connection ([a141284](https://github.com/playtron-os/cosmic-comp/commit/a14128491bd36d6042757449072f5cfc18db8c18))
+* **dbus:** refuse a second dictation host instead of queueing it ([05b52ed](https://github.com/playtron-os/cosmic-comp/commit/05b52edf02b3b821983774a9a95226ae9057134e))
+* **input:** leave Ctrl+Space to apps without a dictation host ([a1b7220](https://github.com/playtron-os/cosmic-comp/commit/a1b722071aabb3f84a4e83d941a00fc98b9df2a9))
+
+
+### Features
+
+* **input:** let KORA_CAPTURE_PROGRAM name the capture tool ([c01a7d2](https://github.com/playtron-os/cosmic-comp/commit/c01a7d233fd78fa6c7a1227f86d6c6a03f11c775))
+* **input:** move windows to a workspace with Super+Alt+digit ([d6afbff](https://github.com/playtron-os/cosmic-comp/commit/d6afbff3dcc81e3e80125b676666667758bdf32a))
+* **input:** run the screen capture shortcuts ([f5d84bc](https://github.com/playtron-os/cosmic-comp/commit/f5d84bc03d22d53c35dc1a8cb1fb39b10e102b88))
+
 # [1.58.0](https://github.com/playtron-os/cosmic-comp/compare/v1.57.2...v1.58.0) (2026-10-20)
 
 

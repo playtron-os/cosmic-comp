@@ -1,0 +1,13 @@
+[package]
+name = "speech-to-text-client"
+version = "1.0.0"
+edition = "2024"
+license = "MIT"
+description = "one.playtron.SpeechToText1: the compositor's Speech to Text holds, and the dictation host's name"
+
+[dependencies]
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+zbus = "5.14.0"
+
+[dev-dependencies]
+async-io = "2.6"
