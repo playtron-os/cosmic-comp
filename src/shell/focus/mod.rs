@@ -12,7 +12,7 @@ use smithay::{
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Point, SERIAL_COUNTER, Serial},
     wayland::{
-        pointer_constraints::with_pointer_constraint,
+        pointer_constraints::{PointerConstraint, with_pointer_constraint},
         seat::WaylandFocus,
         selection::{data_device::set_data_device_focus, primary_selection::set_primary_focus},
         shell::wlr_layer::{KeyboardInteractivity, Layer},
@@ -28,6 +28,7 @@ use self::target::{KeyboardFocusTarget, WindowGroup};
 use super::{SeatExt, grabs::SeatMoveGrabState, layout::floating::FloatingLayout};
 
 pub(crate) mod order;
+mod pointer_sync;
 pub mod target;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -871,24 +872,63 @@ pub(crate) fn update_focus_target(
 
 fn update_pointer_focus(state: &mut State, seat: &Seat<State>) {
     if let Some(pointer) = seat.get_pointer() {
-        let output = seat.active_output();
-        let position = pointer.current_location().as_global();
+        let mut output = seat.active_output();
+        let mut position = pointer.current_location().as_global();
 
-        let shell = state.common.shell.write();
+        let mut shell = state.common.shell.write();
+        // An output change, such as a larger scale, can leave the pointer outside every output.
+        let outputs = shell.outputs().cloned().collect::<Vec<_>>();
+        let geometries = outputs
+            .iter()
+            .map(|output| output.geometry().to_f64())
+            .collect::<Vec<_>>();
+        let clamped = pointer_sync::clamp_into(position, &geometries);
+        if let Some((index, point)) = clamped {
+            debug!(from = ?position, to = ?point, "pointer brought back onto an output");
+            output = outputs[index].clone();
+            position = point;
+            seat.set_active_output(&output);
+            shell.update_pointer_position(position.to_local(&output), &output);
+        }
         let under = State::surface_under(position, &output, &shell)
             .map(|(target, pos)| (target, pos.as_logical()));
         drop(shell);
 
-        if pointer.current_focus().as_ref() != under.as_ref().map(|(target, _)| target) {
+        let last = mem::replace(
+            &mut *seat
+                .user_data()
+                .get_or_insert(pointer_sync::LastPointerUnder::default)
+                .0
+                .lock()
+                .unwrap(),
+            under.clone(),
+        );
+        let focus_changed =
+            pointer.current_focus().as_ref() != under.as_ref().map(|(target, _)| target);
+        // A locked pointer keeps its surface-local position, wherever the surface goes.
+        let moved = pointer_sync::moved_under(last.as_ref(), under.as_ref())
+            && !under
+                .as_ref()
+                .and_then(|(target, _)| target.wl_surface())
+                .is_some_and(|surface| {
+                    with_pointer_constraint(&surface, &pointer, |constraint| {
+                        constraint.is_some_and(|constraint| {
+                            constraint.is_active()
+                                && matches!(&*constraint, PointerConstraint::Locked(_))
+                        })
+                    })
+                });
+        if clamped.is_some() || focus_changed || moved {
             pointer.motion(
                 state,
                 under,
                 &MotionEvent {
-                    location: pointer.current_location(),
+                    location: position.as_logical(),
                     serial: SERIAL_COUNTER.next_serial(),
                     time: state.common.clock.now().as_millis(),
                 },
             );
+            pointer.frame(state);
         }
     }
 }
