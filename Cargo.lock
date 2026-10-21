@@ -1018,6 +1018,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
+ "game-mode-client",
  "glam 0.33.7",
  "i18n-embed",
  "i18n-embed-fl",
@@ -2253,6 +2254,15 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "game-mode-client"
+version = "1.0.0"
+dependencies = [
+ "async-io",
+ "futures-util",
+ "zbus",
 ]
 
 [[package]]

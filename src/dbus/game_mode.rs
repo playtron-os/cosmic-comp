@@ -43,10 +43,8 @@ use crate::state::State;
 use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::workspace::WorkspaceHandle;
 
-/// Well-known bus name cosmic-comp owns for gaming control.
-const BUS_NAME: &str = "one.playtron.GameMode";
-/// The single object path; one object, one interface (no ObjectManager needed).
-const OBJECT_PATH: &str = "/one/playtron/GameMode";
+// The contract's names, shared with its readers in `game-mode-client`.
+pub use game_mode_client::{BUS_NAME, LAUNCHER_APP_ID, OBJECT_PATH};
 
 #[derive(Debug)]
 pub struct RegisteredGameProcess {
@@ -95,14 +93,6 @@ pub struct RenderSizeRequest {
     pub sent_at: Instant,
     pub reconciled: bool,
 }
-
-/// App id the launcher shell presents as. `FocusedAppId == LAUNCHER_APP_ID`
-/// means the launcher is in focus (i.e. not in a game).
-///
-/// A game window reports this via its own `STEAM_GAME` atom. The launcher,
-/// however, is a native Wayland toplevel and can't carry an X11 atom, so it is
-/// instead recognized by its Wayland `app_id` (see [`LAUNCHER_APP_IDS`]).
-pub const LAUNCHER_APP_ID: u32 = 769;
 
 /// Wayland `app_id`s (xdg_toplevel app_id, or X11 WM_CLASS) recognized as the
 /// launcher shell, matched case-insensitively as a fallback when a focused
