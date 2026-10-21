@@ -1,9 +1,9 @@
-//! The recorder behind the halo's Record: `one.playtron.Capture1`, served by
-//! agentos-capture and started on demand by the bus, through its client crate.
+//! The recorder behind the halo's Record: `one.playtron.CaptureEngine1`, served by
+//! kora-capture-engine and started on demand by the bus, through its client crate.
 
-use agentos_capture_client::{Capture1Proxy, Codec, RecordOptions, Source};
 use anyhow::{Context, Result};
 use calloop::{InsertError, stream::StreamSource};
+use kora_capture_client::engine::{CaptureEngine1Proxy, Codec, RecordOptions, Source};
 use tracing::debug;
 
 use super::DBusState;
@@ -43,7 +43,7 @@ impl DBusState {
 
 async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
-    let proxy = Capture1Proxy::new(conn).await?;
+    let proxy = CaptureEngine1Proxy::new(conn).await?;
     let options = RecordOptions {
         codec: Some(Codec::Auto),
         ..RecordOptions::default()
@@ -55,7 +55,7 @@ async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<
 
 async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
-    let proxy = Capture1Proxy::new(conn).await?;
+    let proxy = CaptureEngine1Proxy::new(conn).await?;
     proxy.stop_recording(id).await
 }
 
@@ -65,7 +65,7 @@ async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {
 /// stopping; nothing here needs it to be running.
 pub(super) async fn watch_stopped(state: DBusState) -> Result<()> {
     let conn = state.session_conn().await?.clone();
-    let proxy = Capture1Proxy::new(&conn).await.context("recorder proxy")?;
+    let proxy = CaptureEngine1Proxy::new(&conn).await.context("recorder proxy")?;
     let stream = proxy
         .receive_recording_stopped()
         .await

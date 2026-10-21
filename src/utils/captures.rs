@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use agentos_notifications_client as preview;
+use kora_notifications_client as preview;
 
 use crate::{shell::element::CosmicSurface, state::State};
 
