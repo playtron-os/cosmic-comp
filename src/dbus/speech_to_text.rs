@@ -13,10 +13,8 @@ use calloop::LoopHandle;
 use cosmic_settings_config::shortcuts;
 use futures_executor::ThreadPool;
 use futures_util::StreamExt;
+use kora_stt_client::{Announcer, BUS_NAME, HOST_NAME, Hold, Inline, InlineClaims, OBJECT_PATH};
 use smithay::input::keyboard::{Keysym, ModifiersState};
-use kora_stt_client::{
-    Announcer, BUS_NAME, HOST_NAME, Hold, Inline, InlineClaims, OBJECT_PATH,
-};
 use tracing::{debug, warn};
 use zbus::object_server::SignalEmitter;
 

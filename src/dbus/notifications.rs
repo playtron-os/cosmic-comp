@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 
-use kora_notifications_client::Notifications1Proxy;
 use futures_channel::mpsc::UnboundedSender;
 use futures_util::StreamExt;
+use kora_notifications_client::Notifications1Proxy;
 use tracing::{debug, warn};
 use zbus::zvariant::Value;
 
