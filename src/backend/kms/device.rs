@@ -144,6 +144,11 @@ pub struct InnerDevice {
 
     /// Device-wide plane-scanout allowance currently pushed to all surfaces.
     pub frame_flags: FrameFlags,
+
+    /// Retrains of each connector whose link the driver marked bad, since it last held.
+    pub link_retrains: HashMap<connector::Handle, u32>,
+    /// Connectors still reported connected, taken down because their link would not train.
+    pub link_down: HashSet<connector::Handle>,
 }
 
 impl fmt::Debug for InnerDevice {
@@ -161,6 +166,8 @@ impl fmt::Debug for InnerDevice {
             .field("active_leases", &self.active_leases)
             .field("active_clients", &self.active_clients.len())
             .field("frame_flags", &self.frame_flags)
+            .field("link_retrains", &self.link_retrains)
+            .field("link_down", &self.link_down)
             .finish()
     }
 }
@@ -315,7 +322,18 @@ impl State {
         Ok(wl_outputs)
     }
 
+    /// Handles a change the kernel reported, or a resumed session.
     pub fn device_changed(&mut self, dev: dev_t) -> Result<Vec<Output>> {
+        // The monitor behind a link that would not train may be back.
+        if let Ok(node) = DrmNode::from_dev_id(dev)
+            && let Some(device) = self.backend.kms().drm_devices.get_mut(&node)
+        {
+            device.inner.link_down.clear();
+        }
+        self.update_device(dev)
+    }
+
+    fn update_device(&mut self, dev: dev_t) -> Result<Vec<Output>> {
         if !self.backend.kms().session.is_active() {
             return Ok(Vec::new());
         }
@@ -329,6 +347,14 @@ impl State {
             let backend = self.backend.kms();
             if let Some(device) = backend.drm_devices.get_mut(&drm_node) {
                 let mut changes = device.enumerate_surfaces()?;
+                // Still connected, but its sink gets no pixels: it leaves like an unplugged one.
+                for conn in device.check_links(&changes.removed) {
+                    changes.added.retain(|(c, _)| *c != conn);
+                    changes.stale.retain(|(c, _)| *c != conn);
+                    if !changes.removed.contains(&conn) {
+                        changes.removed.push(conn);
+                    }
+                }
                 // A stale output is taken down in full and set up again with its current EDID.
                 let stale = changes
                     .stale
@@ -422,8 +448,12 @@ impl State {
             .output_configuration_state
             .add_heads(outputs_added.iter());
 
+        let removed_any = !outputs_removed.is_empty();
         for output in outputs_removed {
             self.common.remove_output(&output);
+        }
+        if removed_any {
+            self.keep_pointers_on_outputs();
         }
 
         self.backend.kms().refresh_used_devices()?;
@@ -455,7 +485,7 @@ impl State {
             .common
             .event_loop_handle
             .insert_source(timer, move |_, _, state| {
-                match state.device_changed(dev) {
+                match state.update_device(dev) {
                     Ok(added) if !added.is_empty() => {
                         if let Err(err) = state.refresh_output_config() {
                             warn!("Unable to load output config: {:#}", err);
@@ -757,6 +787,8 @@ impl State {
             self.common.startup_done.clone(),
             &self.common.clock,
         )?;
+        // The outputs left may have moved, out from under a pointer that was kept on them.
+        self.keep_pointers_on_outputs();
         self.common.refresh();
         Ok(())
     }
@@ -897,6 +929,8 @@ impl Device {
                 active_clients,
 
                 frame_flags: FrameFlags::DEFAULT,
+                link_retrains: HashMap::new(),
+                link_down: HashSet::new(),
             },
 
             texture_formats,
@@ -921,31 +955,20 @@ impl Device {
             )
             .collect::<HashMap<connector::Handle, crtc::Handle>>();
 
-        let added = config
-            .iter()
-            .filter(|(conn, maybe)| match (surfaces.get(conn), maybe) {
-                (Some(current_crtc), Some(new_crtc)) => current_crtc != new_crtc,
-                // see `removed`
-                (Some(_), None) => true,
-                // if we already know about it, we don't consider it added
-                (None, _) => !self.inner.outputs.contains_key(conn),
-            })
-            .map(|(conn, crtc)| (*conn, *crtc))
-            .collect::<Vec<_>>();
+        // A connector that is gone, or that is back after a lost link, starts over.
+        self.inner
+            .link_retrains
+            .retain(|conn, _| config.contains_key(conn));
+        self.inner
+            .link_down
+            .retain(|conn| config.contains_key(conn));
 
-        let removed = self
-            .inner
-            .outputs
-            .iter()
-            .filter(|(conn, _)| match config.get(conn) {
-                Some(Some(c)) => surfaces.get(conn).is_some_and(|crtc| c != crtc),
-                // if don't have a crtc, we need to drop the surface if it exists.
-                // so it needs to be in both `removed` AND `added`.
-                Some(None) => surfaces.contains_key(conn),
-                _ => true,
-            })
-            .map(|(conn, _)| *conn)
-            .collect::<Vec<_>>();
+        let (added, removed) = connector_changes(
+            &config,
+            &surfaces,
+            &self.inner.outputs.keys().copied().collect::<HashSet<_>>(),
+            &self.inner.link_down,
+        );
 
         // An output set up before its EDID read, or whose monitor was swapped behind a dock
         // without a disconnect, keeps its old name and modes until it is set up again.
@@ -967,6 +990,42 @@ impl Device {
             removed,
             stale,
         })
+    }
+
+    /// Retrains every output whose link the driver marked bad, and returns those that stay bad:
+    /// their connector still reads connected, but nothing receives the picture.
+    fn check_links(&mut self, leaving: &[connector::Handle]) -> Vec<connector::Handle> {
+        let mut lost = Vec::new();
+        let connectors = self
+            .inner
+            .surfaces
+            .values()
+            .map(|surface| surface.connector)
+            .filter(|conn| !leaving.contains(conn))
+            .collect::<Vec<_>>();
+        for conn in connectors {
+            let drm = self.drm.device();
+            if !drm_helpers::link_status_bad(drm, conn) {
+                self.inner.link_retrains.remove(&conn);
+                continue;
+            }
+            let retrains = self.inner.link_retrains.entry(conn).or_default();
+            if retrain_bad_link(retrains, || drm_helpers::retrain_link(drm, conn)) {
+                warn!(
+                    ?conn,
+                    retrains = *retrains,
+                    "Link marked bad, retraining it"
+                );
+            } else {
+                warn!(
+                    ?conn,
+                    "Link stays bad, taking the output down until the next hotplug"
+                );
+                self.inner.link_down.insert(conn);
+                lost.push(conn);
+            }
+        }
+        lost
     }
 
     pub fn lock(&mut self) -> LockedDevice<'_> {
@@ -1509,6 +1568,63 @@ fn populate_modes(
     Ok(())
 }
 
+/// Which connectors to set up and which to take down, from the kernel's connector to CRTC map.
+fn connector_changes(
+    config: &HashMap<connector::Handle, Option<crtc::Handle>>,
+    surfaces: &HashMap<connector::Handle, crtc::Handle>,
+    outputs: &HashSet<connector::Handle>,
+    link_down: &HashSet<connector::Handle>,
+) -> (
+    Vec<(connector::Handle, Option<crtc::Handle>)>,
+    Vec<connector::Handle>,
+) {
+    let added = config
+        .iter()
+        .filter(|(conn, maybe)| match (surfaces.get(conn), maybe) {
+            (Some(current_crtc), Some(new_crtc)) => current_crtc != new_crtc,
+            // see `removed`
+            (Some(_), None) => true,
+            // if we already know about it, we don't consider it added
+            (None, _) => !outputs.contains(conn) && !link_down.contains(conn),
+        })
+        .map(|(conn, crtc)| (*conn, *crtc))
+        .collect::<Vec<_>>();
+
+    let removed = outputs
+        .iter()
+        .filter(|conn| match config.get(conn) {
+            Some(Some(c)) => surfaces.get(conn).is_some_and(|crtc| c != crtc),
+            // if don't have a crtc, we need to drop the surface if it exists.
+            // so it needs to be in both `removed` AND `added`.
+            Some(None) => surfaces.contains_key(conn),
+            _ => true,
+        })
+        .copied()
+        .collect::<Vec<_>>();
+
+    (added, removed)
+}
+
+/// Retrains before an output whose link keeps failing is taken down.
+const MAX_LINK_RETRAINS: u32 = 2;
+
+/// Retrains a bad link, unless it failed to hold that often already. False: give the output up.
+fn retrain_bad_link(retrains: &mut u32, retrain: impl FnOnce() -> Result<()>) -> bool {
+    if *retrains >= MAX_LINK_RETRAINS {
+        return false;
+    }
+    match retrain() {
+        Ok(()) => {
+            *retrains += 1;
+            true
+        }
+        Err(err) => {
+            warn!(?err, "Failed to retrain a bad link");
+            false
+        }
+    }
+}
+
 /// A dock can report a monitor before its EDID reads, and the fallback modes and "Unknown" layout
 /// it would get are saved for every later plug.
 fn edid_pending(drm: &impl ControlDevice, conn: connector::Handle, retries: u32) -> bool {
@@ -1537,4 +1653,83 @@ fn is_internal_connector(drm: &impl ControlDevice, conn: connector::Handle) -> b
                 | connector::Interface::DSI
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::reexports::drm::control::from_u32;
+
+    fn conn(id: u32) -> connector::Handle {
+        from_u32(id).unwrap()
+    }
+
+    fn crtc(id: u32) -> crtc::Handle {
+        from_u32(id).unwrap()
+    }
+
+    /// Two outputs set up: connector 50 on CRTC 10 and connector 51 on CRTC 11.
+    fn two_outputs() -> (
+        HashMap<connector::Handle, crtc::Handle>,
+        HashSet<connector::Handle>,
+    ) {
+        (
+            HashMap::from([(conn(50), crtc(10)), (conn(51), crtc(11))]),
+            HashSet::from([conn(50), conn(51)]),
+        )
+    }
+
+    #[test]
+    fn an_unplugged_connector_leaves_and_nothing_is_added() {
+        let (surfaces, outputs) = two_outputs();
+        // The kernel's map lists only connected connectors.
+        let config = HashMap::from([(conn(50), Some(crtc(10)))]);
+        let (added, removed) = connector_changes(&config, &surfaces, &outputs, &HashSet::new());
+        assert!(added.is_empty());
+        assert_eq!(removed, [conn(51)]);
+    }
+
+    #[test]
+    fn a_connector_plugged_back_in_is_set_up_again() {
+        let (mut surfaces, mut outputs) = two_outputs();
+        surfaces.remove(&conn(51));
+        outputs.remove(&conn(51));
+        let config = HashMap::from([(conn(50), Some(crtc(10))), (conn(51), Some(crtc(11)))]);
+        let (added, removed) = connector_changes(&config, &surfaces, &outputs, &HashSet::new());
+        assert_eq!(added, [(conn(51), Some(crtc(11)))]);
+        assert!(removed.is_empty());
+    }
+
+    /// A connector taken down for its link waits for the kernel's next event, not our retry.
+    #[test]
+    fn a_connector_whose_link_failed_is_not_set_up_again() {
+        let (mut surfaces, mut outputs) = two_outputs();
+        surfaces.remove(&conn(51));
+        outputs.remove(&conn(51));
+        let config = HashMap::from([(conn(50), Some(crtc(10))), (conn(51), Some(crtc(11)))]);
+        let link_down = HashSet::from([conn(51)]);
+        let (added, removed) = connector_changes(&config, &surfaces, &outputs, &link_down);
+        assert!(added.is_empty());
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn a_bad_link_is_retrained_twice_then_given_up() {
+        let mut retrains = 0;
+        assert!(retrain_bad_link(&mut retrains, || Ok(())));
+        assert!(retrain_bad_link(&mut retrains, || Ok(())));
+        assert!(!retrain_bad_link(&mut retrains, || {
+            panic!("a third retrain would only blank the screen again")
+        }));
+    }
+
+    /// The kernel refuses the modeset when the mode no longer fits what the link can carry.
+    #[test]
+    fn a_link_that_cannot_be_retrained_is_given_up_at_once() {
+        let mut retrains = 0;
+        assert!(!retrain_bad_link(&mut retrains, || Err(anyhow::anyhow!(
+            "Invalid argument"
+        ))));
+        assert_eq!(retrains, 0);
+    }
 }
