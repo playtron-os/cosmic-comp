@@ -114,6 +114,11 @@ pub trait LayerSurfaceVisibilityHandler {
     /// Set a surface's hidden state in the Shell
     fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool);
 
+    /// Show a surface whose controller is gone, leaving keyboard focus where it is.
+    /// Clients drop the controller just before the surface, so focusing it would
+    /// move focus onto a surface about to die.
+    fn release_surface(&mut self, surface_id: ObjectId);
+
     /// Hide with no animation, for a surface that has never been on screen.
     ///
     /// The client is telling us something we cannot see for ourselves: there is
@@ -244,8 +249,7 @@ where
             zcosmic_layer_surface_visibility_v1::Request::Destroy => {
                 // When controller is destroyed, make surface visible again
                 if let Ok(surface) = data.surface.upgrade() {
-                    let surface_id = surface.id();
-                    state.set_surface_hidden(surface_id, false);
+                    state.release_surface(surface.id());
                 }
             }
             zcosmic_layer_surface_visibility_v1::Request::SetHidden => {
@@ -355,3 +359,7 @@ macro_rules! delegate_layer_surface_visibility {
         ] => $crate::wayland::protocols::layer_surface_visibility::LayerSurfaceVisibilityState);
     };
 }
+
+#[cfg(test)]
+#[path = "layer_surface_visibility_tests.rs"]
+mod tests;

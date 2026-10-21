@@ -51,7 +51,7 @@ use smithay::{
         PointerAxisEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
         TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent,
     },
-    desktop::{PopupKeyboardGrab, WindowSurfaceType, utils::under_from_surface_tree},
+    desktop::{PopupPointerGrab, WindowSurfaceType, utils::under_from_surface_tree},
     input::{
         Seat,
         keyboard::{FilterResult, KeysymHandle, ModifiersState},
@@ -2119,10 +2119,13 @@ impl State {
         let pointer = seat.get_pointer().unwrap();
         // We're only interested in filtering keyboard grabs if we initiated them.
         // The easiest way to check that is to check the type of the grab.
-        let keyboard_grabbed = keyboard.with_grab(|_serial, grab| {
-            grab.is::<SwapWindowGrab>() || grab.is::<PopupKeyboardGrab<State>>()
-        }) == Some(true);
-        let is_grabbed = keyboard_grabbed || pointer.is_grabbed();
+        let keyboard_grabbed =
+            keyboard.with_grab(|_serial, grab| grab.is::<SwapWindowGrab>()) == Some(true);
+        // Escape belongs to a client's popup, which closes itself. Ending its grab here
+        // swallowed the key and left the popup open.
+        let pointer_grabbed =
+            pointer.with_grab(|_serial, grab| !grab.is::<PopupPointerGrab<State>>()) == Some(true);
+        let is_grabbed = keyboard_grabbed || pointer_grabbed;
 
         let current_focus = keyboard.current_focus();
         //this should fall back to active output since there may not be a focused output
