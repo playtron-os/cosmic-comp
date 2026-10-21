@@ -1,3 +1,25 @@
+# [1.60.0](https://github.com/playtron-os/cosmic-comp/compare/v1.59.0...v1.60.0) (2026-10-21)
+
+
+### Bug Fixes
+
+* **fullscreen:** grow a window into fullscreen instead of sliding desktops ([9bd55ee](https://github.com/playtron-os/cosmic-comp/commit/9bd55eeee5a15b85616ea9c9aa521ec7bdcf1054))
+* **game-mode:** say when another desktop is in front ([7e87e8c](https://github.com/playtron-os/cosmic-comp/commit/7e87e8c5280a3cd1e62da41a604c454b54630ece))
+* **halo:** wear the workspace's palette colour in either mode ([0d8e12e](https://github.com/playtron-os/cosmic-comp/commit/0d8e12e9b54d86769083c7f83879094b8d5da001))
+* **kms:** start on monitors still reading their EDID ([bc1f903](https://github.com/playtron-os/cosmic-comp/commit/bc1f90330762abb2b260418b752629d0d69a5013))
+* **kms:** take a monitor switched away off the desktop ([d84e2f3](https://github.com/playtron-os/cosmic-comp/commit/d84e2f3a2a34df6fcd2325b52c94cd1fd1f48ec4))
+* **pointer:** tell clients where the pointer is after the layout moves ([d54a30e](https://github.com/playtron-os/cosmic-comp/commit/d54a30ea3b7a2b5fe6dd1d816dcde315be988ee3))
+* **shell:** show a layer whose only buffer is a placeholder ([62ed942](https://github.com/playtron-os/cosmic-comp/commit/62ed9423c07cbaca8e26644955db895dbe077b3c))
+* **switch-banner:** draw the banner on a glass pill so it reads anywhere ([bf8daf1](https://github.com/playtron-os/cosmic-comp/commit/bf8daf1ee36b50f717f69d39aa3b8652a3f58139))
+
+
+### Features
+
+* **dbus:** add a client crate for reading game mode ([512d961](https://github.com/playtron-os/cosmic-comp/commit/512d96163845739e2660440a135bc21b3d1973f1))
+* **dbus:** let an app take the dictation holds over its own windows ([263a72b](https://github.com/playtron-os/cosmic-comp/commit/263a72bbe61a64c7c16ef1409763d12f11c7f00a))
+* **halo:** fill a window dragged to the top edge ([735033b](https://github.com/playtron-os/cosmic-comp/commit/735033bf3a97503176e7de3642eb746a304bfa9c))
+* wear the workspace colour on the desktop and across a switch ([4773baa](https://github.com/playtron-os/cosmic-comp/commit/4773baac83a2bb5383e34f4aeda770b93e2dea87))
+
 # [1.59.0](https://github.com/playtron-os/cosmic-comp/compare/v1.58.0...v1.59.0) (2026-10-20)
 
 
