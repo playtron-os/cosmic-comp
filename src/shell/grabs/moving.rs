@@ -459,10 +459,13 @@ const SNAP_RANGE: i32 = 32;
 const SNAP_RANGE_MAXIMIZE: i32 = 22;
 const SNAP_RANGE_TOP: i32 = 16;
 const HALO_SNAP_RANGE: i32 = 24;
+/// The pointer has to reach the top edge: the pill of a window held at the top sits about
+/// 20px down, so a wider band would fill a window the user only meant to park there.
+const HALO_FILL_RANGE: i32 = 4;
 
 impl SnappingZone {
-    /// WINDOW-CHROME: a Halo window snaps to a side only, within 24px of it.
-    pub fn halo_side(
+    /// WINDOW-CHROME: a Halo window snaps to a side within 24px of it, and fills at the top edge.
+    pub fn halo_zone(
         point: Point<i32, Local>,
         output_geometry: Rectangle<i32, Local>,
     ) -> Option<Self> {
@@ -472,6 +475,8 @@ impl SnappingZone {
             Some(SnappingZone::Left)
         } else if point.x >= output_geometry.loc.x + output_geometry.size.w - HALO_SNAP_RANGE {
             Some(SnappingZone::Right)
+        } else if point.y < output_geometry.loc.y + HALO_FILL_RANGE {
+            Some(SnappingZone::Maximize)
         } else {
             None
         }
@@ -666,7 +671,7 @@ impl MoveGrab {
                     .to_local(&current_output)
                     .to_i32_floor();
                 grab_state.snapping_zone = if self.window.halo_clearance() > 0 {
-                    SnappingZone::halo_side(point, output_geometry)
+                    SnappingZone::halo_zone(point, output_geometry)
                 } else {
                     [
                         SnappingZone::Maximize,
@@ -1351,16 +1356,36 @@ mod tests {
     use smithay::utils::{Point, Rectangle};
 
     #[test]
-    fn a_halo_window_snaps_to_a_side_only_within_24px() {
+    fn a_halo_window_snaps_to_a_side_within_24px() {
         let output = Rectangle::<i32, Local>::new((0, 0).into(), (1920, 1080).into());
         let at = |x, y| Point::<i32, Local>::from((x, y));
-        let side = |x, y| SnappingZone::halo_side(at(x, y), output);
-        assert_eq!(side(23, 500), Some(SnappingZone::Left));
-        assert_eq!(side(24, 500), None);
-        assert_eq!(side(1896, 500), Some(SnappingZone::Right));
-        assert_eq!(side(1895, 500), None);
-        assert_eq!(side(960, 2), None, "the top edge does not fill");
-        assert_eq!(side(5, 5), Some(SnappingZone::Left), "a corner is its side");
-        assert_eq!(side(-1, 500), None);
+        let zone = |x, y| SnappingZone::halo_zone(at(x, y), output);
+        assert_eq!(zone(23, 500), Some(SnappingZone::Left));
+        assert_eq!(zone(24, 500), None);
+        assert_eq!(zone(1896, 500), Some(SnappingZone::Right));
+        assert_eq!(zone(1895, 500), None);
+        assert_eq!(zone(5, 5), Some(SnappingZone::Left), "a corner is its side");
+        assert_eq!(zone(-1, 500), None);
+    }
+
+    #[test]
+    fn a_halo_window_fills_at_the_top_edge_only() {
+        let output = Rectangle::<i32, Local>::new((0, 0).into(), (1920, 1080).into());
+        let at = |x, y| Point::<i32, Local>::from((x, y));
+        let zone = |x, y| SnappingZone::halo_zone(at(x, y), output);
+        assert_eq!(zone(960, 0), Some(SnappingZone::Maximize));
+        assert_eq!(zone(960, 3), Some(SnappingZone::Maximize));
+        assert_eq!(
+            zone(960, 20),
+            None,
+            "a pill held at the top is not the edge"
+        );
+        assert_eq!(zone(960, 1079), None, "the bottom edge does nothing");
+        // A second output below the first: its own top edge counts, in its own coordinates.
+        let lower = Rectangle::<i32, Local>::new((0, 1080).into(), (1920, 1080).into());
+        assert_eq!(
+            SnappingZone::halo_zone(at(960, 1081), lower),
+            Some(SnappingZone::Maximize)
+        );
     }
 }
