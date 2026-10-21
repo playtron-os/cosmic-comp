@@ -14,12 +14,8 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer, LayerSurfaceCachedState};
 use wayland_backend::server::ObjectId;
 
-impl LayerSurfaceVisibilityHandler for State {
-    fn layer_surface_visibility_state(&self) -> &LayerSurfaceVisibilityState {
-        &self.common.layer_surface_visibility_state
-    }
-
-    fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
+impl State {
+    fn change_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool, take_focus: bool) {
         let mut shell = self.common.shell.write();
         shell.set_surface_hidden(surface_id.clone(), hidden);
 
@@ -136,7 +132,7 @@ impl LayerSurfaceVisibilityHandler for State {
                 };
                 Shell::set_focus(self, target.as_ref(), &seat, None, false);
             }
-        } else {
+        } else if take_focus {
             // Surface becoming visible — grant keyboard focus if it has
             // exclusive/on-demand interactivity on a Top or Overlay layer
             // (e.g. the launcher overlay).
@@ -168,6 +164,20 @@ impl LayerSurfaceVisibilityHandler for State {
                 Shell::set_focus(self, Some(&target), &seat, None, false);
             }
         }
+    }
+}
+
+impl LayerSurfaceVisibilityHandler for State {
+    fn layer_surface_visibility_state(&self) -> &LayerSurfaceVisibilityState {
+        &self.common.layer_surface_visibility_state
+    }
+
+    fn set_surface_hidden(&mut self, surface_id: ObjectId, hidden: bool) {
+        self.change_surface_hidden(surface_id, hidden, true);
+    }
+
+    fn release_surface(&mut self, surface_id: ObjectId) {
+        self.change_surface_hidden(surface_id, false, false);
     }
 
     fn set_surface_hidden_immediately(&mut self, surface_id: ObjectId) {
