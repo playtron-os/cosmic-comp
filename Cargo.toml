@@ -45,11 +45,11 @@ iced_graphics = { git = "https://github.com/playtron-os/iced.git" }
 iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
 iced_tiny_skia = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image"] }
 iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image", "advanced"] }
-icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git" }
+# The icetron widget subset; icetron-themes comes through it as `icetron_p::icetron_themes`.
+icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git", features = ["themes-dynamic", "themes-color-mode"] }
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 shlex = "2"
 icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git", rev = "2c8bf4051a24ae61afa4ed9729e841a8fee709ad" }
-icetron-themes = { git = "ssh://git@github.com/playtron-os/icetron-themes.git", features = ["dynamic", "color-mode"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
@@ -249,11 +249,6 @@ smithay = { git = "https://github.com/playtron-os/smithay.git" }
 #iced_wgpu = { path = "../iced/wgpu" }
 #iced_widget = { path = "../iced/widget" }
 #iced_winit = { path = "../iced/winit" }
-
-#[patch."ssh://git@github.com/playtron-os/icetron.git"]
-#icetron = { path = "../icetron-storybook/vendor/icetron/crates/icetron" }
-#icetron_assets = { path = "../icetron-storybook/vendor/icetron/crates/icetron-assets" }
-#icetron_utils = { path = "../icetron-storybook/vendor/icetron/crates/icetron-utils" }
 
 #[patch."ssh://git@github.com/playtron-os/icetron-themes.git"]
 #icetron-themes = { path = "../icetron-themes/crates/icetron-themes" }

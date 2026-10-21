@@ -18,16 +18,16 @@ use iced_core::{
 use iced_runtime::Task;
 use iced_widget::{self, Column, Row, Space, button, container, svg::Svg};
 
-const ARROW_RIGHT_S_LINE: &[u8] = icetron_themes::icons::CHEVRON_RIGHT.bytes;
-const CHECK_LINE: &[u8] = icetron_themes::icons::CHECK.bytes;
+const ARROW_RIGHT_S_LINE: &[u8] = icetron_p::icetron_themes::icons::CHEVRON_RIGHT.bytes;
+const CHECK_LINE: &[u8] = icetron_p::icetron_themes::icons::CHECK.bytes;
 
 use icetron_p::components::{
     dropdown::DropdownVariant,
     menu_card::{self, SubmenuRow},
 };
+use icetron_p::icetron_themes::Icon;
 use icetron_p::prelude::styled_text;
 use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown, halo_ask_footer, matching};
-use icetron_themes::Icon;
 use smithay::{
     backend::{
         input::{ButtonState, KeyState, Keycode, TouchSlot},
@@ -2116,7 +2116,7 @@ impl PaletteKeyboardGrab {
             return false;
         };
         if state == KeyState::Pressed {
-            icetron_themes::set_focus_visible(true);
+            icetron_p::icetron_themes::set_focus_visible(true);
             element.queue_message(message);
             element.force_update();
         }

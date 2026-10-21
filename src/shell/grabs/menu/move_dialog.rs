@@ -6,8 +6,8 @@ use icetron_p::components::buttons::{Button, ButtonSize, ButtonType};
 use icetron_p::components::divider::rule;
 use icetron_p::components::focus_ring::focus_ring;
 use icetron_p::components::shadow::with_elevation_shadow;
+use icetron_p::icetron_themes::{TextRole, icons};
 use icetron_p::prelude::{icon_svg, styled_text};
-use icetron_themes::{TextRole, icons};
 
 use super::Message;
 use crate::{comp_theme::CompTheme, utils::iced::CompElement};
@@ -84,7 +84,7 @@ pub fn view<'a>(dialog: &'a MoveDialog, theme: &'a CompTheme) -> CompElement<'a,
     let ring = |target: Target, button: Button<'a, Message>| -> CompElement<'a, Message> {
         focus_ring(button, &**theme)
             .radius(theme.radii_sm())
-            .force_shown(focused == target && icetron_themes::get_focus_visible())
+            .force_shown(focused == target && icetron_p::icetron_themes::get_focus_visible())
             .into()
     };
 

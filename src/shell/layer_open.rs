@@ -24,7 +24,7 @@
 
 use crate::backend::render::animations::motion;
 use icetron_p::animation::{easing, spring::Spring};
-use icetron_themes::{LayerMotion, MotionCurve, MotionPose};
+use icetron_p::icetron_themes::{LayerMotion, MotionCurve, MotionPose};
 use std::time::{Duration, Instant};
 use wayland_backend::server::ObjectId;
 

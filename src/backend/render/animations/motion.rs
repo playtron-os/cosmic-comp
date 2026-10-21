@@ -5,11 +5,9 @@
 //! source instead of ad-hoc `Duration`s and per-feature copies of the same
 //! bezier solver.
 //!
-//! This mirrors the app-side design tokens exposed by `icetron-themes`
-//! (`duration_*`, `ease_*`, `spring_*`) so the compositor and the first-party
-//! icetron apps share one motion language. The compositor cannot link
-//! `icetron-themes` (separate crate graph), so these values are hand-synced from
-//! the same design source — keep them in step when the design tokens change.
+//! The values are the active theme's `icetron-themes` tokens (`duration_*`,
+//! `ease_*`, `spring_*`), reached through icetron-p, so the compositor and the
+//! icetron apps share one motion language.
 //!
 //! Springs are evaluated by the analytic engine in [`super::spring`]
 //! (Niri/libadwaita), parameterized as `SpringParams::new(damping_ratio,
@@ -19,7 +17,7 @@
 
 use std::time::Duration;
 
-use icetron_themes::{LayerMotion, ThemeInterface};
+use icetron_p::icetron_themes::{LayerMotion, ThemeInterface};
 
 pub use super::spring::{Spring, SpringParams};
 

@@ -5,7 +5,7 @@ use iced_core::{Color, Font, Pixels, Rectangle, Size, mouse, renderer::Style};
 use iced_graphics::{Viewport, damage};
 use iced_runtime::{UserInterface, user_interface};
 use iced_tiny_skia::{Layer, Renderer};
-use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
+use icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR;
 use std::sync::Arc;
 
 #[test]
@@ -181,7 +181,7 @@ fn fill_keeps_its_glyph_and_label_in_every_state_and_emits_its_action() {
         }
     }
     let _clock = test_clock::Frozen::start();
-    let mut tokens = icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
+    let mut tokens = icetron_p::icetron_themes::dynamic::DynamicTheme::from_theme(&*theme());
     tokens.duration_fast = 0.0;
     let theme = CompTheme::new(Arc::new(tokens), true);
     let fill = crate::fl!("halo-fill");
@@ -330,7 +330,7 @@ fn render(
     static FONTS: std::sync::Once = std::sync::Once::new();
     FONTS.call_once(|| {
         let mut fonts = iced_graphics::text::font_system().write().unwrap();
-        for data in icetron_themes::fonts::ALL {
+        for data in icetron_p::icetron_themes::fonts::ALL {
             fonts.load_font(std::borrow::Cow::Borrowed(*data));
         }
     });
@@ -619,7 +619,7 @@ fn the_identity_uses_the_label_and_caption_roles() {
             .find(|(source, _)| source == wanted)
             .map(|(_, size)| *size)
     };
-    use icetron_themes::TextRole;
+    use icetron_p::icetron_themes::TextRole;
     assert_eq!(
         size("Files"),
         Some(theme.text_styles().role(TextRole::Label).font_size)

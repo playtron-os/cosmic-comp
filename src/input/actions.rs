@@ -1222,7 +1222,7 @@ impl State {
                     return;
                 }
                 // Opened from the keyboard, so its focus ring shows, as :focus-visible would.
-                icetron_themes::set_focus_visible(true);
+                icetron_p::icetron_themes::set_focus_visible(true);
                 let handle = &self.common.event_loop_handle;
                 match seat.get_keyboard().unwrap().current_focus() {
                     Some(KeyboardFocusTarget::Element(mapped)) => {

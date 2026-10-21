@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use cosmic_settings_config::shortcuts;
+use icetron_p::icetron_themes::{Icon, icons};
 use icetron_p::prelude::{HaloCommand, HaloCommandGroup, PinOutcome};
-use icetron_themes::{Icon, icons};
 
 use crate::dbus::notifications::Tone;
 use crate::fl;

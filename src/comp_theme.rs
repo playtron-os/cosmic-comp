@@ -9,9 +9,10 @@
 //! active theme package (e.g., `icetron-theme-playtron`).
 
 use iced_core::{Background, Border, Color};
-use icetron_themes::ThemeInterface;
-use icetron_themes::color::mix_oklch;
-use icetron_themes::dynamic::{DEFAULT_THEME_PAIR, DynamicTheme};
+use icetron_p::icetron_themes::ThemeInterface;
+use icetron_p::icetron_themes::color::mix_oklch;
+use icetron_p::icetron_themes::dynamic::{DEFAULT_THEME_PAIR, DynamicTheme};
+use icetron_p::utils::color::ws_slot_for;
 use std::ops::Deref;
 use std::sync::Arc;
 use tracing::info;
@@ -94,7 +95,7 @@ impl CompTheme {
     /// Load the current system theme (brand + color mode from disk).
     /// Falls back to the embedded playtron dark theme if nothing is configured.
     pub fn from_current() -> Self {
-        use icetron_themes::color_mode::{Mode, get_color_mode};
+        use icetron_p::icetron_themes::color_mode::{Mode, get_color_mode};
 
         let mode = get_color_mode();
         let is_dark = matches!(mode, Mode::Dark);
@@ -186,7 +187,9 @@ impl CompTheme {
     /// WindowFrame's Halo focus treatment; other chrome styles keep their border.
     pub(crate) fn focused_window_border(&self, focused: bool) -> Color {
         let border = self.window_border_color();
-        if focused && self.window_header_style() == icetron_themes::WindowHeaderStyle::Halo {
+        if focused
+            && self.window_header_style() == icetron_p::icetron_themes::WindowHeaderStyle::Halo
+        {
             mix_oklch(border, self.halo_accent(), FRAME_FOCUS_WEIGHT)
         } else {
             border
@@ -202,13 +205,13 @@ impl CompTheme {
     }
 
     pub(crate) fn focused_window_ring(&self, focused: bool) -> Option<Color> {
-        (focused && self.window_header_style() == icetron_themes::WindowHeaderStyle::Halo).then(
-            || {
+        (focused
+            && self.window_header_style() == icetron_p::icetron_themes::WindowHeaderStyle::Halo)
+            .then(|| {
                 let mut accent = self.halo_accent();
                 accent.a *= FRAME_RING_ALPHA;
                 accent
-            },
-        )
+            })
     }
 
     pub fn on_accent_color(&self) -> Color {
@@ -345,43 +348,10 @@ pub struct WindowHintColor {
     pub blue: f32,
 }
 
-/// The palette slot nearest `color` by hue, or by lightness for a grey: the
-/// rule icetron's `ws_slot_for` gives every app's workspace mark.
-fn ws_slot_for(color: Color, palette: &[Color]) -> Option<usize> {
-    const ACHROMATIC: f32 = 0.04;
-    let lightness = |c: Color| (c.r + c.g + c.b) / 3.0;
-    let (hue, chroma) = hue_of(color);
-    let distance = |entry: &Color| {
-        if chroma < ACHROMATIC {
-            return (lightness(*entry) - lightness(color)).abs();
-        }
-        let apart = (hue_of(*entry).0 - hue).abs();
-        apart.min(360.0 - apart)
-    };
-    (0..palette.len()).min_by(|a, b| distance(&palette[*a]).total_cmp(&distance(&palette[*b])))
-}
-
-fn hue_of(c: Color) -> (f32, f32) {
-    let max = c.r.max(c.g).max(c.b);
-    let min = c.r.min(c.g).min(c.b);
-    let chroma = max - min;
-    if chroma <= f32::EPSILON {
-        return (0.0, 0.0);
-    }
-    let hue = if (max - c.r).abs() <= f32::EPSILON {
-        60.0 * ((c.g - c.b) / chroma).rem_euclid(6.0)
-    } else if (max - c.g).abs() <= f32::EPSILON {
-        60.0 * ((c.b - c.r) / chroma + 2.0)
-    } else {
-        60.0 * ((c.r - c.g) / chroma + 4.0)
-    };
-    (hue, chroma)
-}
-
 #[cfg(test)]
 mod focus_border_tests {
     use super::*;
-    use icetron_themes::WindowHeaderStyle;
+    use icetron_p::icetron_themes::WindowHeaderStyle;
 
     fn theme(style: WindowHeaderStyle) -> CompTheme {
         let mut tokens = DEFAULT_THEME_PAIR.load(true);
@@ -500,10 +470,10 @@ mod focus_border_tests {
     #[test]
     fn near_grey_border_keeps_the_accent_hue() {
         let border = Color::from_rgba8(233, 238, 250, 0.10);
-        let jade = icetron_themes::color::oklch(0.71, 0.135, 159.0);
+        let jade = icetron_p::icetron_themes::color::oklch(0.71, 0.135, 159.0);
         let mixed = mix_oklch(border, jade, 0.45);
         // Chromium: color-mix(in oklch, oklch(0.71 0.135 159) 45%, rgba(233, 238, 250, 0.1)).
-        let expected = icetron_themes::color::oklch(0.736_464, 0.121_924, 159.0);
+        let expected = icetron_p::icetron_themes::color::oklch(0.736_464, 0.121_924, 159.0);
         for (actual, want) in [
             (mixed.r, expected.r),
             (mixed.g, expected.g),

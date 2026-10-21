@@ -2,7 +2,7 @@ use super::*;
 use iced_core::{Color, Font, Pixels, Size as IcedSize, renderer::Style};
 use iced_graphics::Viewport;
 use iced_runtime::{UserInterface, user_interface};
-use icetron_themes::dynamic::DEFAULT_THEME_PAIR;
+use icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR;
 
 fn exit_test_grab(
     seat: &Seat<State>,
