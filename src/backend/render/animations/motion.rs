@@ -154,6 +154,11 @@ impl Motion {
         cubic_bezier_cp(t, self.panel_ease_cp)
     }
 
+    /// Eased `--ease-out-expo` factor at progress `t`, the panel slide's curve.
+    pub fn ease_out_expo(&self, t: f32) -> f32 {
+        cubic_bezier_cp(t, self.panel_ease_cp)
+    }
+
     /// Eased `--ease-in-out` factor at progress `t`.
     pub fn ease_in_out(&self, t: f32) -> f32 {
         cubic_bezier_cp(t, self.ease_in_out_cp)

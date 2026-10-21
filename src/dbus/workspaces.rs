@@ -33,6 +33,8 @@ pub struct ActiveWorkspace {
     pub name: String,
     /// Retained independently of transition rendering for workspace styling.
     pub accent: Option<[f32; 3]>,
+    /// The glyph chosen in Hive; `None` takes the renderer's default for its id.
+    pub icon: Option<String>,
 }
 
 /// What the compositor knows about the registry.
@@ -52,6 +54,8 @@ pub enum Registry {
         /// deleted, and goes with it — `running` cannot say that, since a
         /// workspace going cold leaves it too.
         known: Vec<String>,
+        /// Every listed workspace's colour, for a picture of a desktop that is not on screen.
+        accents: std::collections::HashMap<String, [f32; 3]>,
     },
 }
 
@@ -163,6 +167,10 @@ async fn read(conn: &zbus::Connection) -> Registry {
         .map(|(row_id, ..)| row_id.clone())
         .collect();
     let known: Vec<String> = rows.iter().map(|(row_id, ..)| row_id.clone()).collect();
+    let accents = rows
+        .iter()
+        .filter_map(|(row_id, _, accent, ..)| Some((row_id.clone(), parse_accent(accent)?)))
+        .collect();
 
     // "Nothing active" comes back as an empty string; taken at face value it
     // would tag every client with an id nothing can match.
@@ -171,17 +179,36 @@ async fn read(conn: &zbus::Connection) -> Registry {
             active: None,
             running,
             known,
+            accents,
         };
     }
 
     let row = rows.iter().find(|(row_id, ..)| *row_id == id);
     let accent = row.and_then(|(_, _, accent, ..)| parse_accent(accent));
     let name = row.map(|(_, name, ..)| name.clone()).unwrap_or_default();
+    // A registry from before icons were kept has none to give.
+    let icon = conn
+        .call_method(Some(DEST), PATH, Some(DEST), "Icons", &())
+        .await
+        .ok()
+        .and_then(|reply| {
+            reply
+                .body()
+                .deserialize::<std::collections::HashMap<String, String>>()
+                .ok()
+        })
+        .and_then(|mut icons| icons.remove(&id));
 
     Registry::Present {
-        active: Some(ActiveWorkspace { id, name, accent }),
+        active: Some(ActiveWorkspace {
+            id,
+            name,
+            accent,
+            icon,
+        }),
         running,
         known,
+        accents,
     }
 }
 
