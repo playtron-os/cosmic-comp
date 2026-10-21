@@ -1,3 +1,11 @@
+## [1.60.1](https://github.com/playtron-os/cosmic-comp/compare/v1.60.0...v1.60.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **focus:** don't focus a hidden layer surface as it is destroyed ([b4dfe20](https://github.com/playtron-os/cosmic-comp/commit/b4dfe204e1cfa22f90581fc583f17332b6b9f822))
+* **input:** leave Escape to a client's popup ([f139a76](https://github.com/playtron-os/cosmic-comp/commit/f139a76f703a2c7d2dd015c1ddc0edbecb3229f7))
+
 # [1.60.0](https://github.com/playtron-os/cosmic-comp/compare/v1.59.0...v1.60.0) (2026-10-21)
 
 
