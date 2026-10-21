@@ -461,6 +461,58 @@ impl State {
         Ok(outputs_added)
     }
 
+    /// Sets up the monitors held back for their EDID, for a start where nothing else came up: the
+    /// compositor cannot start without an output, and the retries replace each once its EDID reads.
+    pub fn add_outputs_without_edid(&mut self) -> Vec<Output> {
+        let mut added = Vec::new();
+        let backend = self.backend.kms();
+        let nodes = backend
+            .connector_retries
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        for node in nodes {
+            let Some(device) = backend.drm_devices.get_mut(&node) else {
+                continue;
+            };
+            let changes = match device.enumerate_surfaces() {
+                Ok(changes) => changes,
+                Err(err) => {
+                    warn!(?err, "Failed to enumerate outputs held back for their EDID");
+                    continue;
+                }
+            };
+            let mut w = self.common.shell.read().global_space().size.w as u32;
+            for (conn, maybe_crtc) in changes.added {
+                warn!(?conn, "Starting on an output without its EDID");
+                match device.inner.connector_added(
+                    device.drm.device_mut(),
+                    backend.primary_node.clone(),
+                    conn,
+                    maybe_crtc,
+                    (w, 0),
+                    &self.common.event_loop_handle,
+                    self.common.config.dynamic_conf.screen_filter().clone(),
+                    self.common.shell.clone(),
+                    self.common.startup_done.clone(),
+                ) {
+                    Ok((output, should_expose)) => {
+                        if should_expose {
+                            w += output.geometry().size.w as u32;
+                            added.push(output.clone());
+                        }
+                        device.inner.outputs.insert(conn, output);
+                    }
+                    Err(err) => warn!(?err, "Failed to initialize output"),
+                }
+            }
+        }
+        self.common
+            .output_configuration_state
+            .add_heads(added.iter());
+        added
+    }
+
     /// A connector that is connected but cannot be set up yet, such as a dock still reading its
     /// EDID, sends no further event, so without a retry it waits for a replug.
     fn schedule_connector_retry(&mut self, node: DrmNode, dev: dev_t, failed: bool) {

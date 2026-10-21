@@ -158,6 +158,9 @@ pub fn init_backend(
             Err(err) => warn!("Failed to add device {}: {:?}", path.display(), err),
         }
     }
+    if outputs.is_empty() {
+        outputs.extend(state.add_outputs_without_edid());
+    }
 
     if let Err(err) = state.select_primary_gpu(dh) {
         warn!("Failed to determine primary gpu: {}", err);
