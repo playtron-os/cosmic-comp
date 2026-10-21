@@ -151,6 +151,7 @@ pub mod header_bar;
 pub mod resize_indicator;
 pub mod stack_hover;
 pub mod swap_indicator;
+pub mod switch_banner;
 
 #[cfg(feature = "debug")]
 use egui_plot::{Corner, Legend, Plot, PlotPoints, Polygon};

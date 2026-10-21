@@ -180,8 +180,13 @@ impl CompTheme {
     /// Settings draw its mark: the registry keeps one dark-mode hex for every mode.
     pub fn halo_accent(&self) -> Color {
         self.workspace_accent
-            .and_then(|accent| ws_slot_for(accent, &self.ws_palette()))
-            .map_or_else(|| self.theme.atmosphere(), |slot| self.ws_color(slot))
+            .and_then(|accent| self.workspace_color(accent))
+            .unwrap_or_else(|| self.theme.atmosphere())
+    }
+
+    /// A registry accent as its palette slot draws in this colour mode, or `None` with no slot.
+    pub fn workspace_color(&self, accent: Color) -> Option<Color> {
+        ws_slot_for(accent, &self.ws_palette()).map(|slot| self.ws_color(slot))
     }
 
     /// WindowFrame's Halo focus treatment; other chrome styles keep their border.

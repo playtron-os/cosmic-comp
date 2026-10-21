@@ -524,6 +524,11 @@ pub struct Shell {
     /// It is distinct from `active_realm`, which is a map key and is never empty.
     active_workspace: Option<String>,
     active_workspace_name: Option<String>,
+    active_workspace_icon: Option<String>,
+    /// Every workspace's colour as the registry keeps it, one value for both modes.
+    workspace_accents: HashMap<String, iced_core::Color>,
+    /// The banner and colour wash of the realm switch playing, if any.
+    switch_announcement: Option<element::switch_banner::SwitchAnnouncement>,
 
     /// Whether a workspace registry is answering right now.
     ///
@@ -3342,6 +3347,62 @@ impl Shell {
         self.active_workspace_name = name.filter(|name| !name.is_empty());
     }
 
+    pub fn set_active_workspace_icon(&mut self, icon: Option<String>) {
+        self.active_workspace_icon = icon;
+    }
+
+    pub fn set_workspace_accents(&mut self, accents: HashMap<String, [f32; 3]>) {
+        self.workspace_accents = accents
+            .into_iter()
+            .map(|(id, [r, g, b])| (id, iced_core::Color::from_rgb(r, g, b)))
+            .collect();
+    }
+
+    /// The colour washed over `realm`'s wallpaper: its own, so a preview of a
+    /// desktop elsewhere already looks as it will on arrival. None outside workspaces.
+    pub fn desktop_wash(&self, realm: &str) -> Option<iced_core::Color> {
+        self.workspace_accents
+            .get(realm)
+            .and_then(|accent| self.theme.workspace_color(*accent))
+    }
+
+    /// Start the banner and wash for the realm switch that just began, once the
+    /// registry has said where it leads. Reduced motion shows neither.
+    pub fn announce_realm_switch(&mut self, evlh: &LoopHandle<'static, State>) {
+        self.switch_announcement = None;
+        let Some(transition) = self.realm_transition.as_ref() else {
+            return;
+        };
+        if self.theme.reduced_motion {
+            return;
+        }
+        let Some(id) = self.active_workspace.clone() else {
+            return;
+        };
+        let banner = element::switch_banner::SwitchBanner::new(
+            &id,
+            self.active_workspace_name.clone().unwrap_or_default(),
+            self.desktop_wash(&id),
+            self.active_workspace_icon.as_deref(),
+        );
+        let banner = banner.into_element(self.outputs().cloned(), evlh.clone(), self.theme.clone());
+        self.switch_announcement = Some(element::switch_banner::SwitchAnnouncement::new(
+            banner,
+            self.theme.halo_accent(),
+            transition.forward,
+            transition.started,
+            realm_transition_duration(transition.animation, self.theme.motion),
+        ));
+    }
+
+    /// The switch's banner and wash, while it plays, with how far through it is.
+    pub fn switch_announcement(
+        &self,
+    ) -> Option<(&element::switch_banner::SwitchAnnouncement, f32)> {
+        let announcement = self.switch_announcement.as_ref()?;
+        Some((announcement, announcement.progress()?))
+    }
+
     pub fn set_workspace_accent(&mut self, accent: Option<iced_core::Color>, realm_changed: bool) {
         if self.theme.workspace_accent == accent && !realm_changed {
             return;
@@ -3496,6 +3557,9 @@ impl Shell {
             realm_initialized: false,
             active_workspace: None,
             active_workspace_name: None,
+            active_workspace_icon: None,
+            workspace_accents: HashMap::new(),
+            switch_announcement: None,
             workspace_registry: false,
             seats: Seats::new(),
 
@@ -11388,6 +11452,9 @@ impl Shell {
         self.workspaces_mut().set_theme(theme.clone());
 
         // Update transient shell UI elements
+        if let Some(announcement) = &mut self.switch_announcement {
+            announcement.set_theme(theme.clone());
+        }
         if let Some(ref indicator) = self.swap_indicator {
             indicator.set_theme(theme.clone());
         }

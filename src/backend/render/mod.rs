@@ -24,6 +24,7 @@ use crate::{
                 blur_effect::BlurShaders,
                 clipped_surface::{CLIPPING_SHADER, ClippingShader},
                 push_render_elements_from_surface_tree,
+                washed_surface::WashedSurfaceRenderElement,
             },
         },
     },
@@ -91,6 +92,7 @@ use smithay::{
     },
     wayland::{
         compositor::with_states, dmabuf::get_dmabuf, seat::WaylandFocus, session_lock::LockSurface,
+        shell::wlr_layer::Layer as WlrLayer,
     },
 };
 
@@ -202,6 +204,7 @@ pub static OUTLINE_SHADER: &str = include_str!("./shaders/rounded_outline.frag")
 mod outline;
 pub use outline::OutlineElement;
 pub static RECTANGLE_SHADER: &str = include_str!("./shaders/rounded_rectangle.frag");
+pub static SWITCH_WASH_SHADER: &str = include_str!("./shaders/switch_wash.frag");
 pub static POSTPROCESS_SHADER: &str = include_str!("./shaders/offscreen.frag");
 // MERGE: our dual-Kawase / blurred-backdrop shaders (fragment + compute) and the
 // whole `blur` module re-export block are dropped — upstream's `wayland::blur_effect`
@@ -683,6 +686,40 @@ impl BackdropShader {
 }
 
 pub struct PostprocessShader(pub GlesTexProgram);
+
+/// The workspace switch's colour wash, rising from the edge the switch came from.
+pub struct SwitchWashShader(pub GlesPixelProgram);
+
+impl SwitchWashShader {
+    pub fn get<R: AsGlowRenderer>(renderer: &R) -> GlesPixelProgram {
+        thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.glow_renderer()))
+            .get::<SwitchWashShader>()
+            .expect("Custom Shaders not initialized")
+            .0
+            .clone()
+    }
+
+    pub fn element<R: AsGlowRenderer>(
+        renderer: &R,
+        geo: Rectangle<i32, Local>,
+        alpha: f32,
+        color: Color32F,
+        from_bottom: bool,
+    ) -> PixelShaderElement {
+        PixelShaderElement::new(
+            Self::get(renderer),
+            geo.as_logical(),
+            None,
+            alpha,
+            vec![
+                Uniform::new("color", [color.r(), color.g(), color.b()]),
+                Uniform::new("from_bottom", if from_bottom { 1.0 } else { 0.0 }),
+                Uniform::new("reach", crate::shell::element::switch_banner::WASH_REACH),
+            ],
+            Kind::Unspecified,
+        )
+    }
+}
 /// FSR upscaling pass — see `shaders/fsr_easu.frag`.
 pub struct FsrEasuShader(pub GlesTexProgram);
 /// FSR sharpening pass — see `shaders/fsr_rcas.frag`.
@@ -741,6 +778,10 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             && user_data.get::<BackdropShader>().is_some()
             && user_data.get::<shatter::ShatterShader>().is_some()
             && user_data.get::<PostprocessShader>().is_some()
+            && user_data
+                .get::<wayland::washed_surface::DesktopWashShader>()
+                .is_some()
+            && user_data.get::<SwitchWashShader>().is_some()
         {
             return Ok(());
         }
@@ -794,6 +835,21 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
             UniformName::new("border", UniformType::_1f),
         ],
     )?;
+    let desktop_wash_shader = renderer.compile_custom_texture_shader(
+        wayland::washed_surface::DESKTOP_WASH_SHADER,
+        &[
+            UniformName::new("wash_color", UniformType::_3f),
+            UniformName::new("wash_amount", UniformType::_1f),
+        ],
+    )?;
+    let switch_wash_shader = renderer.compile_custom_pixel_shader(
+        SWITCH_WASH_SHADER,
+        &[
+            UniformName::new("color", UniformType::_3f),
+            UniformName::new("from_bottom", UniformType::_1f),
+            UniformName::new("reach", UniformType::_1f),
+        ],
+    )?;
     let shadow_shader = renderer.compile_custom_pixel_shader(
         SHADOW_SHADER,
         &[
@@ -840,6 +896,8 @@ pub fn init_shaders(renderer: &mut GlesRenderer) -> Result<(), GlesError> {
     user_data.insert_if_missing(|| shatter::ShatterShader(shatter_shader));
     user_data.insert_if_missing(|| PostprocessShader(postprocess_shader));
     user_data.insert_if_missing(|| ClippingShader(clipping_shader));
+    user_data.insert_if_missing(|| wayland::washed_surface::DesktopWashShader(desktop_wash_shader));
+    user_data.insert_if_missing(|| SwitchWashShader(switch_wash_shader));
     user_data.insert_if_missing(|| ShadowShader(shadow_shader));
     user_data.insert_if_missing(|| FsrEasuShader(fsr_easu_shader));
     user_data.insert_if_missing(|| FsrRcasShader(fsr_rcas_shader));
@@ -1335,6 +1393,38 @@ where
             );
             elements.push(CosmicElement::from(shatter));
         }
+
+        // Under the shatter, which breaks the screen being left; over everything
+        // arriving. Live output only: a preview is a desktop at rest.
+        if element_filter != ElementFilter::ExcludeTransientShell
+            && let Some((announcement, progress)) = shell_guard.switch_announcement()
+        {
+            let motion = theme.motion;
+            let wash = crate::shell::element::switch_banner::wash_opacity(progress, &motion);
+            if wash > 0.0 {
+                let color = announcement.wash;
+                elements.push(CosmicElement::from(SwitchWashShader::element(
+                    renderer,
+                    output_geo.as_local(),
+                    wash,
+                    Color32F::new(color.r, color.g, color.b, 1.0),
+                    announcement.forward,
+                )));
+            }
+            let alpha = crate::shell::element::switch_banner::banner_opacity(progress, &motion);
+            if alpha > 0.0 {
+                let location = announcement
+                    .banner_location((output_geo.size.w, output_geo.size.h), &theme)
+                    .to_physical_precise_round(scale);
+                announcement.push_banner_elements(
+                    renderer,
+                    location,
+                    Scale::from(scale),
+                    alpha,
+                    &mut |elem| elements.push(CosmicElement::from(elem)),
+                );
+            }
+        }
     }
 
     let shell = shell.read();
@@ -1420,6 +1510,19 @@ where
     // of fading in.
     let popup_fade_in_alphas = shell.layer_fade_in_alphas();
     let popup_hidden = shell.hidden_surfaces().clone();
+    // The wallpaper of the realm being drawn wears that realm's colour.
+    let desktop_wash = shell
+        .desktop_wash(
+            shell
+                .realm_of_handle(&current.0)
+                .unwrap_or_else(|| shell.active_realm()),
+        )
+        .map(|color| {
+            (
+                wayland::washed_surface::DesktopWashShader::get(renderer),
+                color,
+            )
+        });
 
     render_input_order::<()>(&shell, output, previous, current, element_filter, |stage| {
         match stage {
@@ -1807,6 +1910,9 @@ where
                     // First render the layer surface content (plus upstream's frosted
                     // glass backdrop, emitted from the same traversal).
                     let is_sliding = shell.is_layer_sliding(&surface_id);
+                    let wash = desktop_wash
+                        .as_ref()
+                        .filter(|_| layer.layer() == WlrLayer::Background);
                     let mut pre_crop_count = 0usize;
                     let elements_before = elements.len();
                     push_render_elements_from_surface_tree(
@@ -1823,6 +1929,17 @@ where
                         FRAME_TIME_FILTER,
                         &mut |elem| {
                             pre_crop_count += 1;
+                            let elem = match (wash, elem) {
+                                (
+                                    Some((program, color)),
+                                    SurfaceRenderElement::Wayland(surface),
+                                ) => SurfaceRenderElement::Washed(WashedSurfaceRenderElement::new(
+                                    surface,
+                                    program.clone(),
+                                    *color,
+                                )),
+                                (_, elem) => elem,
+                            };
                             elements.extend(
                                 crop_to_output(NamespacedElement::new(elem, namespace).into())
                                     .map(Into::into),

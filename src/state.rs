@@ -1089,6 +1089,8 @@ impl State {
                 shell.set_workspace_registry_present(false);
                 shell.set_active_workspace(None);
                 shell.set_active_workspace_name(None);
+                shell.set_active_workspace_icon(None);
+                shell.set_workspace_accents(Default::default());
                 shell.set_workspace_accent(None, false);
                 self.common.theme.workspace_accent = None;
             }
@@ -1096,11 +1098,14 @@ impl State {
                 active,
                 running,
                 known,
+                accents,
             } => {
                 shell.set_workspace_registry_present(true);
                 let previous = shell.active_workspace().map(ToString::to_string);
                 shell.set_active_workspace(active.as_ref().map(|a| a.id.clone()));
                 shell.set_active_workspace_name(active.as_ref().map(|a| a.name.clone()));
+                shell.set_active_workspace_icon(active.as_ref().and_then(|a| a.icon.clone()));
+                shell.set_workspace_accents(accents);
                 if active.is_none() {
                     shell.set_workspace_accent(None, false);
                     self.common.theme.workspace_accent = None;
@@ -1151,6 +1156,10 @@ impl State {
                     // and a client told of a transition that never runs would
                     // fade out and never come back.
                     if shell.realm_transition_active() {
+                        // Only a switch that just began: a recolour mid-switch keeps its banner.
+                        if previous.as_deref() != Some(active.id.as_str()) {
+                            shell.announce_realm_switch(&self.common.event_loop_handle);
+                        }
                         let duration = crate::shell::realm_transition_duration(
                             animation,
                             shell.theme().motion,
