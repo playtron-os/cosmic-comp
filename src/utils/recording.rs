@@ -1,7 +1,7 @@
-//! The halo's Record: a window's recording through agentos-capture.
+//! The halo's Record: a window's recording through kora-capture-engine.
 //!
 //! The compositor never owns the recorder process. It asks
-//! `one.playtron.Capture1` to start and stop, keeps the recording id on the
+//! `one.playtron.CaptureEngine1` to start and stop, keeps the recording id on the
 //! window so the halo can show it, and hears every ending through
 //! `RecordingStopped` — the halo's own stop and a window that closed alike.
 
