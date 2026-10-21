@@ -789,6 +789,13 @@ pub enum WorkspaceDelta {
     /// switch, where each workspace is a single fullscreen surface (so alpha
     /// blending is exact, with no overlapping-window double-exposure).
     Crossfade(Instant),
+    /// A window going to or leaving a desktop of its own for fullscreen. Nothing slides: both
+    /// desktops stay in place, the fullscreen one on top, while the window grows from or
+    /// shrinks back to its own rectangle.
+    Fullscreen {
+        start: Instant,
+        entering: bool,
+    },
     // InvalidGesture(f64), TODO
     // InvalidGestureEnd(Instant, Spring), TODO
 }
@@ -822,6 +829,13 @@ impl WorkspaceDelta {
         WorkspaceDelta::Crossfade(Instant::now())
     }
 
+    pub fn new_fullscreen(entering: bool) -> Self {
+        WorkspaceDelta::Fullscreen {
+            start: Instant::now(),
+            entering,
+        }
+    }
+
     pub fn is_animating(&self) -> bool {
         matches!(
             self,
@@ -829,6 +843,18 @@ impl WorkspaceDelta {
                 | WorkspaceDelta::GestureEnd { .. }
                 | WorkspaceDelta::Crossfade(_)
                 | WorkspaceDelta::Realm { .. }
+                | WorkspaceDelta::Fullscreen { .. }
+        )
+    }
+
+    /// Whether the desktop being left is drawn over the one being shown.
+    pub fn outgoing_on_top(&self) -> bool {
+        matches!(
+            self,
+            WorkspaceDelta::Fullscreen {
+                entering: false,
+                ..
+            }
         )
     }
 }
@@ -1432,6 +1458,11 @@ impl WorkspaceSet {
                     if Instant::now().duration_since(st).as_millis() as f32
                         >= self.theme.motion.game_crossfade.as_millis() as f32
                     {
+                        self.previously_active = None;
+                    }
+                }
+                WorkspaceDelta::Fullscreen { start, .. } => {
+                    if start.elapsed() >= self.theme.motion.fullscreen {
                         self.previously_active = None;
                     }
                 }
@@ -11040,7 +11071,7 @@ impl Shell {
         let _ = self.activate(
             &output,
             idx,
-            WorkspaceDelta::new_shortcut(),
+            WorkspaceDelta::new_fullscreen(true),
             workspace_state,
         );
         self.refresh_removable(workspace_state);
@@ -11210,7 +11241,7 @@ impl Shell {
             let _ = self.activate(
                 &output,
                 idx,
-                WorkspaceDelta::new_shortcut(),
+                WorkspaceDelta::new_fullscreen(false),
                 workspace_state,
             );
         }

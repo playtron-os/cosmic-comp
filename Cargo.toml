@@ -7,7 +7,7 @@ version = "1.59.0"
 rust-version = "1.93"
 
 [workspace]
-members = ["cosmic-comp-config", "speech-to-text-client"]
+members = ["cosmic-comp-config", "game-mode-client", "speech-to-text-client"]
 
 [dependencies]
 anyhow = { version = "1.0.102", features = ["backtrace"] }
@@ -101,6 +101,7 @@ zbus = "5.14.0"
 agentos-capture-client = { git = "ssh://git@github.com/playtron-os/agentos-capture.git" }
 agentos-notifications-client = { git = "ssh://git@github.com/playtron-os/agentos-notifications.git" }
 speech-to-text-client = { path = "speech-to-text-client" }
+game-mode-client = { path = "game-mode-client" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }

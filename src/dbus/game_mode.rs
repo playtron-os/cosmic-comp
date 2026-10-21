@@ -43,10 +43,8 @@ use crate::state::State;
 use crate::utils::prelude::OutputExt;
 use crate::wayland::protocols::workspace::WorkspaceHandle;
 
-/// Well-known bus name cosmic-comp owns for gaming control.
-const BUS_NAME: &str = "one.playtron.GameMode";
-/// The single object path; one object, one interface (no ObjectManager needed).
-const OBJECT_PATH: &str = "/one/playtron/GameMode";
+// The contract's names, shared with its readers in `game-mode-client`.
+pub use game_mode_client::{BUS_NAME, LAUNCHER_APP_ID, OBJECT_PATH};
 
 #[derive(Debug)]
 pub struct RegisteredGameProcess {
@@ -95,14 +93,6 @@ pub struct RenderSizeRequest {
     pub sent_at: Instant,
     pub reconciled: bool,
 }
-
-/// App id the launcher shell presents as. `FocusedAppId == LAUNCHER_APP_ID`
-/// means the launcher is in focus (i.e. not in a game).
-///
-/// A game window reports this via its own `STEAM_GAME` atom. The launcher,
-/// however, is a native Wayland toplevel and can't carry an X11 atom, so it is
-/// instead recognized by its Wayland `app_id` (see [`LAUNCHER_APP_IDS`]).
-pub const LAUNCHER_APP_ID: u32 = 769;
 
 /// Wayland `app_id`s (xdg_toplevel app_id, or X11 WM_CLASS) recognized as the
 /// launcher shell, matched case-insensitively as a fallback when a focused
@@ -311,6 +301,8 @@ pub struct GameModeShared {
     pub active_app_id: u32,
     /// The app currently focused (the game, the launcher shell, or 0).
     pub focused_app_id: u32,
+    /// Whether game mode's desktop is the one its output shows.
+    pub on_screen: bool,
     pub overlay_visible: bool,
 
     // Tunables
@@ -746,6 +738,7 @@ impl GameModeBridge {
                 let iface = iref.get().await;
                 let _ = iface.focused_app_id_changed(&e).await;
                 let _ = iface.overlay_visible_changed(&e).await;
+                let _ = iface.on_screen_changed(&e).await;
             }
         });
     }
@@ -1072,6 +1065,12 @@ impl GameModeInterface {
     #[zbus(property)]
     async fn overlay_visible(&self) -> bool {
         self.io.with_shared(|s| s.overlay_visible)
+    }
+
+    /// False while another desktop or Kora workspace is in front, without leaving game mode.
+    #[zbus(property)]
+    async fn on_screen(&self) -> bool {
+        self.io.with_shared(|s| s.on_screen)
     }
 
     // ── tunables (read; set via the methods above) ──
@@ -1488,7 +1487,7 @@ impl State {
 
         // Focused app id: the `STEAM_GAME` app id of the focused window (0 if it
         // is untagged — e.g. a native Wayland toplevel; see `LAUNCHER_APP_ID`).
-        let mut focused_app_id = shell
+        let focused_app_id = shell
             .seats
             .last_active()
             .get_keyboard()
@@ -1501,18 +1500,19 @@ impl State {
                 _ => 0,
             })
             .unwrap_or(0);
-        // In game mode the game (or an active overlay grab) is what's focused —
-        // fall back to it when the live keyboard focus doesn't resolve (e.g. the
-        // compositor's VT isn't foreground), so `FocusedAppId` tracks the game
-        // rather than reading 0.
-        if active && focused_app_id == 0 {
-            focused_app_id = shell
+        let on_screen = active
+            && shell
                 .game_mode
-                .input_grab
+                .output
                 .as_ref()
-                .map(app_id_of)
-                .unwrap_or(active_app_id);
-        }
+                .is_some_and(|output| shell.game_mode_on_screen(output));
+        let shown_app_id = shell
+            .game_mode
+            .input_grab
+            .as_ref()
+            .map(app_id_of)
+            .unwrap_or(active_app_id);
+        let focused_app_id = reported_focus(focused_app_id, on_screen, shown_app_id);
 
         // Report caps for the output the GAME is on (not just the first output),
         // so refresh rate / VRR / external are correct on multi-monitor setups.
@@ -1550,7 +1550,7 @@ impl State {
         let (state_changed, focus_changed, caps_changed) = {
             let mut s = bridge.shared().lock().unwrap();
             let state_changed = s.active != active || s.active_app_id != active_app_id;
-            let focus_changed = s.focused_app_id != focused_app_id;
+            let focus_changed = s.focused_app_id != focused_app_id || s.on_screen != on_screen;
             let caps_changed = s.refresh_rates != refresh_rates
                 || s.display_refresh_rate != display_refresh_rate
                 || s.display_external != display_external
@@ -1561,6 +1561,7 @@ impl State {
             s.active = active;
             s.active_app_id = active_app_id;
             s.focused_app_id = focused_app_id;
+            s.on_screen = on_screen;
             s.refresh_rates = refresh_rates;
             s.display_refresh_rate = display_refresh_rate;
             s.display_external = display_external;
@@ -3078,6 +3079,16 @@ pub(crate) fn focus_target_for(
         .map(|m| KeyboardFocusTarget::from(m.clone()))
 }
 
+/// `FocusedAppId`: the focused window's app id, 0 when untagged. Only while game mode is on
+/// screen does a focus that resolves to nothing (the VT in the background) mean its app.
+fn reported_focus(focused: u32, on_screen: bool, shown: u32) -> u32 {
+    if on_screen && focused == 0 {
+        shown
+    } else {
+        focused
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3231,6 +3242,15 @@ mod tests {
         }
     }
 
+    /// Another desktop in front must not read as the game: Playserve routes the pad by it.
+    #[test]
+    fn focus_off_screen_is_the_focused_window() {
+        assert_eq!(reported_focus(0, true, LAUNCHER_APP_ID), LAUNCHER_APP_ID);
+        assert_eq!(reported_focus(1234, true, LAUNCHER_APP_ID), 1234);
+        assert_eq!(reported_focus(0, false, LAUNCHER_APP_ID), 0);
+        assert_eq!(reported_focus(5678, false, LAUNCHER_APP_ID), 5678);
+    }
+
     #[test]
     fn launcher_key_taps_only_without_a_chord() {
         let mut key = LauncherKey::default();
@@ -3311,6 +3331,7 @@ mod tests {
                 "Active",
                 "ActiveAppId",
                 "FocusedAppId",
+                "OnScreen",
                 "FpsLimit",
                 "Tearing",
                 "Vrr",

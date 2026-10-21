@@ -94,6 +94,7 @@ pub mod actions;
 pub mod capture;
 pub mod dnd_hover;
 pub mod gestures;
+mod output_bounds;
 
 /// Width of the invisible edge grab zone for the `agentos-chat-panel` side panel
 /// (logical px): a left press within this distance of the panel's inner edge starts a

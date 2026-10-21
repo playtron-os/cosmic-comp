@@ -33,6 +33,7 @@ fn with_workspaces(
     );
     let mut theme = crate::comp_theme::CompTheme::default();
     theme.motion.game_crossfade = Duration::from_secs(60);
+    theme.motion.fullscreen = Duration::from_secs(60);
     let mut set = WorkspaceSet::new(
         &mut state.update(),
         &output,
@@ -97,4 +98,39 @@ fn reselecting_the_incoming_workspace_does_not_cancel_its_fade() {
         assert!(matches!(set.previously_active,
             Some((0, WorkspaceDelta::Crossfade(original))) if original == start));
     });
+}
+
+/// Fullscreen onto a desktop of its own: nothing slides, and both desktops stay up for as
+/// long as the window takes to grow.
+#[test]
+fn a_fullscreen_switch_keeps_both_desktops_for_the_fullscreen_motion() {
+    with_workspaces(2, |set, state, _| {
+        set.activate(1, WorkspaceDelta::new_fullscreen(true), &mut state.update())
+            .unwrap();
+        set.refresh();
+        assert!(matches!(
+            set.previously_active,
+            Some((0, WorkspaceDelta::Fullscreen { entering: true, .. }))
+        ));
+
+        set.previously_active = Some((
+            0,
+            WorkspaceDelta::Fullscreen {
+                start: Instant::now() - Duration::from_secs(61),
+                entering: true,
+            },
+        ));
+        set.refresh();
+        assert!(set.previously_active.is_none());
+        assert_eq!(set.active, 1);
+    });
+}
+
+/// Leaving, the fullscreen desktop stays on top, so the window shrinks over its home.
+#[test]
+fn only_leaving_fullscreen_draws_the_outgoing_desktop_on_top() {
+    assert!(WorkspaceDelta::new_fullscreen(false).outgoing_on_top());
+    assert!(!WorkspaceDelta::new_fullscreen(true).outgoing_on_top());
+    assert!(!WorkspaceDelta::new_shortcut().outgoing_on_top());
+    assert!(!WorkspaceDelta::new_crossfade().outgoing_on_top());
 }

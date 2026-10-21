@@ -37,7 +37,7 @@ pub struct CompTheme {
     /// Motion tokens (durations, easing curves, springs) resolved from `theme`.
     /// Read by every animation instead of hardcoded constants.
     pub motion: crate::backend::render::animations::motion::Motion,
-    /// Accent of the workspace currently on screen; brand accent is the fallback.
+    /// The registry's colour for the workspace on screen; brand accent is the fallback.
     pub workspace_accent: Option<Color>,
     /// The user asked for less motion: status marks hold still.
     pub reduced_motion: bool,
@@ -175,9 +175,12 @@ impl CompTheme {
         self.theme.primary()
     }
 
+    /// The workspace's palette slot in this colour mode, as the panel, Hive and
+    /// Settings draw its mark: the registry keeps one dark-mode hex for every mode.
     pub fn halo_accent(&self) -> Color {
         self.workspace_accent
-            .unwrap_or_else(|| self.theme.atmosphere())
+            .and_then(|accent| ws_slot_for(accent, &self.ws_palette()))
+            .map_or_else(|| self.theme.atmosphere(), |slot| self.ws_color(slot))
     }
 
     /// WindowFrame's Halo focus treatment; other chrome styles keep their border.
@@ -342,6 +345,39 @@ pub struct WindowHintColor {
     pub blue: f32,
 }
 
+/// The palette slot nearest `color` by hue, or by lightness for a grey: the
+/// rule icetron's `ws_slot_for` gives every app's workspace mark.
+fn ws_slot_for(color: Color, palette: &[Color]) -> Option<usize> {
+    const ACHROMATIC: f32 = 0.04;
+    let lightness = |c: Color| (c.r + c.g + c.b) / 3.0;
+    let (hue, chroma) = hue_of(color);
+    let distance = |entry: &Color| {
+        if chroma < ACHROMATIC {
+            return (lightness(*entry) - lightness(color)).abs();
+        }
+        let apart = (hue_of(*entry).0 - hue).abs();
+        apart.min(360.0 - apart)
+    };
+    (0..palette.len()).min_by(|a, b| distance(&palette[*a]).total_cmp(&distance(&palette[*b])))
+}
+
+fn hue_of(c: Color) -> (f32, f32) {
+    let max = c.r.max(c.g).max(c.b);
+    let min = c.r.min(c.g).min(c.b);
+    let chroma = max - min;
+    if chroma <= f32::EPSILON {
+        return (0.0, 0.0);
+    }
+    let hue = if (max - c.r).abs() <= f32::EPSILON {
+        60.0 * ((c.g - c.b) / chroma).rem_euclid(6.0)
+    } else if (max - c.g).abs() <= f32::EPSILON {
+        60.0 * ((c.b - c.r) / chroma + 2.0)
+    } else {
+        60.0 * ((c.r - c.g) / chroma + 4.0)
+    };
+    (hue, chroma)
+}
+
 #[cfg(test)]
 mod focus_border_tests {
     use super::*;
@@ -352,6 +388,27 @@ mod focus_border_tests {
         tokens.window_header_style = style;
         tokens.window_border_color = Color::from_rgba(0.96, 0.94, 0.96, 0.08);
         CompTheme::new(Arc::new(tokens), true)
+    }
+
+    // The design's workspace hues for each mode, as Kora's theme carries them.
+    fn hued(dark: bool) -> CompTheme {
+        let hex: [u32; 7] = if dark {
+            [
+                0xe97c86, 0xe3874d, 0x92af47, 0x45bb82, 0x00b9b4, 0x00b4d7, 0xd87ebd,
+            ]
+        } else {
+            [
+                0xe16171, 0xd96d1b, 0x779500, 0x009f66, 0x009a95, 0x0097b6, 0xce65b1,
+            ]
+        };
+        let mut tokens = DEFAULT_THEME_PAIR.load(dark);
+        tokens.window_header_style = WindowHeaderStyle::Halo;
+        tokens.window_border_color = Color::from_rgba(0.96, 0.94, 0.96, 0.08);
+        tokens.ws_palette = Some(hex.map(|h| {
+            let [_, r, g, b] = h.to_be_bytes();
+            Color::from_rgb8(r, g, b)
+        }));
+        CompTheme::new(Arc::new(tokens), dark)
     }
 
     #[test]
@@ -365,22 +422,38 @@ mod focus_border_tests {
 
     #[test]
     fn halo_focus_uses_workspace_accent_with_prototype_opacities() {
-        let mut theme = theme(WindowHeaderStyle::Halo);
+        let mut theme = hued(true);
         let neutral = theme.focused_window_border(false);
-        let blue = Color::from_rgb(0.0, 0.4, 1.0);
-        theme.workspace_accent = Some(blue);
+        theme.workspace_accent = Some(Color::from_rgb(0.0, 0.4, 1.0));
+        let azure = theme.ws_color(5);
         let focused = theme.focused_window_border(true);
         // Alpha is stored in 8 bits, as Chromium stores it.
         assert!((focused.a - (0.60 + 0.40 * neutral.a)).abs() <= 0.5 / 255.0);
         assert_ne!(focused, neutral);
         assert_eq!(
             theme.focused_window_ring(true),
-            Some(Color { a: 0.30, ..blue })
+            Some(Color { a: 0.30, ..azure })
         );
         assert_eq!(theme.focused_window_ring(false), None);
         theme.workspace_accent = Some(Color::from_rgb(1.0, 0.3, 0.0));
         assert_ne!(theme.focused_window_border(true), focused);
         assert_eq!(theme.focused_window_border(false), neutral);
+    }
+
+    // The registry keeps a dark-mode hex, or a colour off the palette (GameFrame's
+    // violet); the Halo must still wear the hue the workspace's mark wears.
+    #[test]
+    fn the_workspace_colour_is_its_palette_slot_in_either_mode() {
+        for dark in [true, false] {
+            let mut theme = hued(dark);
+            theme.workspace_accent = Some(Color::from_rgb8(0xe9, 0x7c, 0x86));
+            assert_eq!(theme.halo_accent(), theme.ws_color(0), "dark: {dark}");
+            theme.workspace_accent = Some(Color::from_rgb8(0x8b, 0x5c, 0xf6));
+            assert_eq!(theme.halo_accent(), theme.ws_color(6), "dark: {dark}");
+        }
+        let mut light = hued(false);
+        light.workspace_accent = Some(Color::from_rgb8(0xe9, 0x7c, 0x86));
+        assert_eq!(light.halo_accent(), Color::from_rgb8(0xe1, 0x61, 0x71));
     }
 
     #[test]
