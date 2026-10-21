@@ -34,6 +34,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agentos-capture-client"
+version = "0.1.0"
+source = "git+ssh://git@github.com/playtron-os/agentos-capture.git#7da947fb7381c94bb60c8b4b6d1a8e89bea17e52"
+dependencies = [
+ "serde",
+ "zbus",
+]
+
+[[package]]
+name = "agentos-notifications-client"
+version = "0.1.0"
+source = "git+ssh://git@github.com/playtron-os/agentos-notifications.git#814e317b213493cfd374df36d8f6c18d197a6b74"
+dependencies = [
+ "serde",
+ "zbus",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1001,6 +1019,8 @@ dependencies = [
 name = "cosmic-comp"
 version = "1.59.0"
 dependencies = [
+ "agentos-capture-client",
+ "agentos-notifications-client",
  "anyhow",
  "bitflags 2.13.2",
  "calloop 0.14.4",

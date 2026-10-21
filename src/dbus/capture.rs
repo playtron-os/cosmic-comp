@@ -1,34 +1,13 @@
 //! The recorder behind the halo's Record: `one.playtron.Capture1`, served by
-//! agentos-capture and started on demand by the bus.
+//! agentos-capture and started on demand by the bus, through its client crate.
 
-use std::collections::HashMap;
-
+use agentos_capture_client::{Capture1Proxy, Codec, RecordOptions, Source};
 use anyhow::{Context, Result};
 use calloop::{InsertError, stream::StreamSource};
 use tracing::debug;
-use zbus::zvariant::Value;
 
 use super::DBusState;
 use crate::state::State;
-
-#[zbus::proxy(
-    interface = "one.playtron.Capture1",
-    default_service = "one.playtron.Capture1",
-    default_path = "/one/playtron/Capture1"
-)]
-trait Capture1 {
-    fn start_recording(
-        &self,
-        source: HashMap<&str, Value<'_>>,
-        path: &str,
-        options: HashMap<&str, Value<'_>>,
-    ) -> zbus::Result<String>;
-
-    fn stop_recording(&self, id: &str) -> zbus::Result<String>;
-
-    #[zbus(signal)]
-    fn recording_stopped(&self, id: String, path: String, error: String) -> zbus::Result<()>;
-}
 
 /// The recorder's answer, back on the compositor thread.
 pub type Reply = Result<String, String>;
@@ -65,9 +44,13 @@ impl DBusState {
 async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
     let proxy = Capture1Proxy::new(conn).await?;
-    let source = HashMap::from([("toplevel", Value::from(identifier))]);
-    let options = HashMap::from([("codec", Value::from("auto"))]);
-    proxy.start_recording(source, path, options).await
+    let options = RecordOptions {
+        codec: Some(Codec::Auto),
+        ..RecordOptions::default()
+    };
+    proxy
+        .start_recording(&Source::toplevel(identifier), path, &options)
+        .await
 }
 
 async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {

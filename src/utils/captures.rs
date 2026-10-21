@@ -10,6 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use agentos_notifications_client as preview;
+
 use crate::{shell::element::CosmicSurface, state::State};
 
 /// Same variable and values as kora-workspaces' `DefaultRoot`: `home`/`HOME`
@@ -47,10 +49,10 @@ impl CaptureKind {
         }
     }
 
-    pub const fn preview_kind(self) -> &'static str {
+    pub const fn preview_kind(self) -> preview::CaptureKind {
         match self {
-            CaptureKind::Screenshot => "image",
-            CaptureKind::Recording => "video",
+            CaptureKind::Screenshot => preview::CaptureKind::Image,
+            CaptureKind::Recording => preview::CaptureKind::Video,
         }
     }
 }
@@ -178,43 +180,31 @@ impl Destination {
         duration_ms: Option<u64>,
     ) -> Handoff {
         let text = |p: &Path| p.to_string_lossy().into_owned();
-        let mut entries = vec![
-            ("path", text(path)),
-            ("uri", file_uri(&self.seen_inside(path))),
-            ("kind", self.kind.preview_kind().to_string()),
-            ("app", app.to_string()),
-            ("save-to", text(&self.save_to)),
-            ("downloads", text(&self.home.join("Downloads"))),
-            ("workspace", self.workspace.clone().unwrap_or_default()),
-        ];
-        if let Some(poster) = poster {
-            entries.push(("poster", text(poster)));
-        }
         Handoff {
             path: path.to_path_buf(),
             save_to: self.save_to.clone(),
-            entries,
-            duration_ms,
+            capture: preview::Capture {
+                path: text(path),
+                uri: Some(file_uri(&self.seen_inside(path))),
+                kind: self.kind.preview_kind(),
+                app: Some(app.to_string()),
+                save_to: text(&self.save_to),
+                downloads: Some(text(&self.home.join("Downloads"))),
+                workspace: self.workspace.clone(),
+                poster: poster.map(text),
+                duration_ms,
+            },
         }
     }
 }
 
-/// A capture on its way to the preview: the `ShowCapture` dictionary, and
-/// where the file goes if nobody previews it.
+/// A capture on its way to the preview, and where the file goes if nobody
+/// previews it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Handoff {
     pub path: PathBuf,
     pub save_to: PathBuf,
-    pub entries: Vec<(&'static str, String)>,
-    pub duration_ms: Option<u64>,
-}
-
-impl Handoff {
-    pub fn get(&self, key: &str) -> Option<&str> {
-        self.entries
-            .iter()
-            .find_map(|(k, v)| (*k == key).then_some(v.as_str()))
-    }
+    pub capture: preview::Capture,
 }
 
 /// `file://` and the path, percent-encoded where a URI needs it.
@@ -335,18 +325,18 @@ mod tests {
             dest.seen_inside(&file),
             Path::new("/home/u/.local/share/kora/captures/Screen Recording 1.mp4")
         );
-        let handoff = dest.handoff(&file, "Slate", None, Some(5400));
+        let capture = dest.handoff(&file, "Slate", None, Some(5400)).capture;
         assert_eq!(
-            handoff.get("uri"),
+            capture.uri.as_deref(),
             Some("file:///home/u/.local/share/kora/captures/Screen%20Recording%201.mp4")
         );
         assert_eq!(
-            handoff.get("downloads"),
+            capture.downloads.as_deref(),
             Some("/home/u/Workspaces/work/Downloads")
         );
-        assert_eq!(handoff.get("workspace"), Some("work"));
-        assert_eq!(handoff.get("kind"), Some("video"));
-        assert_eq!(handoff.duration_ms, Some(5400));
+        assert_eq!(capture.workspace.as_deref(), Some("work"));
+        assert_eq!(capture.kind, preview::CaptureKind::Video);
+        assert_eq!(capture.duration_ms, Some(5400));
 
         let outside = Destination::new(CaptureKind::Screenshot, home, None, false, None);
         assert_eq!(
