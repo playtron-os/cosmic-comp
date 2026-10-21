@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use calloop::LoopHandle;
-use iced_core::{Alignment, Color, Length};
+use iced_core::{Alignment, Background, Border, Color, Length, Padding};
 use iced_widget::{container, row};
 use icetron_p::icetron_themes::{Icon, TextRole};
 use icetron_p::prelude::{EntityMark, EntityMarkSize, styled_text, workspace_icon};
@@ -29,6 +29,8 @@ use crate::{
 /// The band mirrors the taskbar pill off the opposite edge: the pill's height
 /// (the design's `TASKBAR_HEIGHT`; there is no token), at its margin.
 const BAND_HEIGHT: f32 = 40.0;
+
+const PILL_RADIUS: u8 = (BAND_HEIGHT / 2.0) as u8;
 
 /// How far the wash reaches from its edge: `transparent 55%`.
 pub const WASH_REACH: f32 = 0.55;
@@ -137,8 +139,15 @@ impl SwitchAnnouncement {
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
-        self.banner
-            .push_render_elements(renderer, location, scale, alpha, [0; 4], push, None);
+        self.banner.push_render_elements(
+            renderer,
+            location,
+            scale,
+            alpha,
+            [PILL_RADIUS; 4],
+            push,
+            None,
+        );
     }
 }
 
@@ -183,6 +192,9 @@ impl Program for SwitchBanner {
     }
 
     fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, Self::Message> {
+        // Not in the design: a glass pill keeps the name and glyph legible over
+        // any wallpaper, light mode's dark text included.
+        let glass = theme.glass_glance();
         row![
             EntityMark::workspace(self.color, Some(self.icon))
                 .size(EntityMarkSize::S32)
@@ -197,8 +209,40 @@ impl Program for SwitchBanner {
         .align_y(Alignment::Center)
         .apply(container)
         .height(Length::Fixed(BAND_HEIGHT))
+        // The mark sits concentric in the pill's rounded end.
+        .padding(Padding {
+            top: 0.0,
+            right: theme.spacing_3(),
+            bottom: 0.0,
+            left: (BAND_HEIGHT - EntityMarkSize::S32.px()) / 2.0,
+        })
         .align_y(Alignment::Center)
+        .class(Box::new(move |_: &iced_core::Theme| container::Style {
+            background: Some(Background::Color(glass)),
+            border: Border {
+                radius: (BAND_HEIGHT / 2.0).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+            as Box<dyn Fn(&iced_core::Theme) -> container::Style>)
         .into()
+    }
+
+    // The pill's own outline, so the glass blurs what is behind it and nothing else.
+    fn backdrop_blur(
+        &self,
+        theme: &CompTheme,
+        size: Size<i32, Logical>,
+        _layers: &[iced_tiny_skia::Layer],
+        _radii: [u8; 4],
+    ) -> Option<(iced_core::Rectangle, [u8; 4])> {
+        theme.header_backdrop_blur().then(|| {
+            (
+                iced_core::Rectangle::with_size(iced_core::Size::new(size.w as f32, size.h as f32)),
+                [PILL_RADIUS; 4],
+            )
+        })
     }
 }
 
@@ -307,14 +351,18 @@ mod tests {
     }
 
     #[test]
-    fn the_band_holds_the_workspace_mark_then_its_name_in_the_chrome_text_colour() {
+    fn the_pill_holds_the_workspace_mark_then_its_name_in_the_chrome_text_colour() {
         let crimson = Color::from_rgb8(0xe9, 0x7c, 0x86);
         let banner = SwitchBanner::new("ws-a", "Driftlands".into(), Some(crimson), Some("swords"));
         for dark in [true, false] {
+            let theme = DEFAULT_THEME_PAIR.load(dark);
+            let glass =
+                icetron_p::icetron_themes::ThemeInterface::glass_glance(&theme).into_rgba8();
+            let mode = if dark { "dark" } else { "light" };
             for scale in [1.0, 1.5] {
                 let (pixels, (width, height)) = raster(&banner, dark, scale);
-                assert_eq!(height, BAND_HEIGHT, "the band is the pill's height");
-                assert!(width > 32.0 + 8.0, "the caption follows the mark");
+                assert_eq!(height, BAND_HEIGHT, "the pill is the band's height");
+                assert!(width > 40.0 + 8.0, "the caption follows the mark");
                 let at = |x: f32, y: f32| {
                     let p = pixels
                         .pixel((x * scale) as u32, (y * scale) as u32)
@@ -323,23 +371,66 @@ mod tests {
                     // BGRA, as the compositor uploads it.
                     [p.blue(), p.green(), p.red(), p.alpha()]
                 };
-                // The mark's ring is the workspace colour at 28% over nothing.
-                let ring = at(16.0, (BAND_HEIGHT - 32.0) / 2.0 + 0.6);
-                let [r, g, b, _] = crimson.into_rgba8();
+                let near = |a: [u8; 4], b: [u8; 4], by: u8| {
+                    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= by)
+                };
+                let pill = at(width - 4.0, height / 2.0);
                 assert!(
-                    ring[3] > 20
-                        && ring[0].abs_diff(r) < 12
-                        && ring[1].abs_diff(g) < 12
-                        && ring[2].abs_diff(b) < 12,
-                    "ring {ring:?} in {} mode at {scale}x",
-                    if dark { "dark" } else { "light" }
+                    near(pill, glass, 3),
+                    "pill {pill:?} is the glass {glass:?} in {mode} mode at {scale}x"
                 );
-                // Something is written after the mark and the gap.
+                assert_eq!(at(0.5, 0.5)[3], 0, "the pill's ends are round");
+                // The mark's ring leans to the workspace's colour, off the glass.
+                let ring = at(height / 2.0, (BAND_HEIGHT - 32.0) / 2.0 + 0.6);
+                let [r, g, b, _] = crimson.into_rgba8();
+                let off = |c: [u8; 4]| {
+                    u32::from(c[0].abs_diff(r))
+                        + u32::from(c[1].abs_diff(g))
+                        + u32::from(c[2].abs_diff(b))
+                };
+                assert!(
+                    off(ring) < off(pill),
+                    "ring {ring:?} in {mode} mode at {scale}x"
+                );
+                // The name is written on the glass after the mark and the gap.
                 let inked = (0..(height * scale) as u32).any(|y| {
-                    ((48.0 * scale) as u32..(width * scale) as u32)
-                        .any(|x| pixels.pixel(x, y).unwrap().alpha() > 128)
+                    ((48.0 * scale) as u32..((width - 12.0) * scale) as u32).any(|x| {
+                        let p = pixels.pixel(x, y).unwrap().demultiply();
+                        !near([p.blue(), p.green(), p.red(), p.alpha()], pill, 60)
+                    })
                 });
-                assert!(inked, "the name is drawn");
+                assert!(inked, "the name is drawn in {mode} mode at {scale}x");
+            }
+        }
+    }
+
+    /// The pill exists so the name reads over any wallpaper: check it on black and on white.
+    #[test]
+    fn the_name_reads_on_the_pill_over_a_black_or_a_white_wallpaper() {
+        use icetron_p::icetron_themes::ThemeInterface;
+        let luminance = |c: Color| {
+            let lin = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+        };
+        let over = |top: Color, under: f32| Color {
+            r: top.r * top.a + under * (1.0 - top.a),
+            g: top.g * top.a + under * (1.0 - top.a),
+            b: top.b * top.a + under * (1.0 - top.a),
+            a: 1.0,
+        };
+        for dark in [true, false] {
+            let theme = DEFAULT_THEME_PAIR.load(dark);
+            let text = luminance(theme.text_primary());
+            for wallpaper in [0.0, 1.0] {
+                let ground = luminance(over(theme.glass_glance(), wallpaper));
+                let ratio = (text.max(ground) + 0.05) / (text.min(ground) + 0.05);
+                assert!(ratio >= 3.0, "{ratio:.2}:1 in dark={dark} over {wallpaper}");
             }
         }
     }
