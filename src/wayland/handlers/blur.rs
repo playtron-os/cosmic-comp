@@ -99,6 +99,14 @@ impl BlurHandler for State {
                 })
                 .unwrap_or_default();
 
+            // Index-matched like the radii: a client fading a card out inside its
+            // surface fades the card's backdrop with it.
+            pending.region_opacity = blur
+                .data
+                .as_ref()
+                .and_then(|data| data.region_opacity.clone())
+                .unwrap_or_default();
+
             // Saturation, tint and border, which the KDE protocol carries from
             // its version 3. These were parsed into `CacheableBlurState` but
             // never reached the renderer, so a kwin client asking for them got

@@ -52,6 +52,9 @@ pub struct ComputedBlurRegionCachedState {
     /// A shorter vec leaves the remaining rects on their integer rect, which is
     /// also what an older client that never sends it gets.
     pub region_geometry: Vec<Rectangle<f64, Logical>>,
+    /// How strongly each rect's backdrop is drawn, 0 to 1, index-matched to
+    /// `blur_region`. A rect with an entry is faded by the client alone.
+    pub region_opacity: Vec<f32>,
     /// Saturation applied to the blurred backdrop, matching CSS
     /// `backdrop-filter: saturate()`.
     ///

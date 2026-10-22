@@ -158,6 +158,12 @@ fn fade_alpha(since: Instant) -> f32 {
     t * t * (3. - 2. * t)
 }
 
+/// How strongly a rect's backdrop is drawn: the client's opacity where it sent
+/// one, since it fades the content drawn over the rect, else the arrival fade.
+fn rect_strength(opacity: Option<f32>, first_seen: Instant) -> f32 {
+    opacity.unwrap_or_else(|| fade_alpha(first_seen))
+}
+
 /// Lower bound of the radius-to-strength map: ~1px is effectively no blur.
 const BLUR_RADIUS_MIN_PX: f32 = 1.0;
 /// Upper bound: ~100px is full strength, larger values clamp here.
@@ -742,15 +748,19 @@ impl BlurElement {
             );
 
             let local = surface_local(geometry, rect_geo);
+            let opacity = blur.region_opacity.get(idx).copied();
             let (first_seen, needs_redraws) =
                 first_seen_for(&previously_seen, local, surface_is_new, now);
-            if needs_redraws {
+            if needs_redraws && opacity.is_none() {
                 // Claim redraws for the whole fade: nothing else will schedule
                 // the frames it needs to advance.
                 schedule_blur_fade(now);
             }
             seen_now.push((local, first_seen));
-            let rect_alpha = alpha * fade_alpha(first_seen);
+            let rect_alpha = alpha * rect_strength(opacity, first_seen);
+            if rect_alpha <= 0. {
+                continue;
+            }
 
             let element = Self::internal(
                 renderer,
@@ -1415,7 +1425,8 @@ fn render_blur(
 #[cfg(test)]
 mod tests {
     use super::{
-        BLUR_FADE_IN, BlurState, fade_alpha, first_seen_for, physical_rect_snapped, surface_local,
+        BLUR_FADE_IN, BlurState, fade_alpha, first_seen_for, physical_rect_snapped, rect_strength,
+        surface_local,
     };
     use smithay::utils::{Buffer, Logical, Rectangle, Size};
 
@@ -1604,6 +1615,20 @@ mod tests {
 
         assert!(fade_alpha(first_seen) < 0.01, "starts transparent");
         assert!(needs_redraws, "the fade needs frames to advance it");
+    }
+
+    /// A toast fading out inside its surface took a full-strength backdrop
+    /// with it until it was gone; the client's opacity now sets the strength.
+    #[test]
+    fn a_rect_the_client_fades_follows_its_opacity() {
+        let settled = Instant::now() - BLUR_FADE_IN;
+        assert_eq!(rect_strength(Some(0.25), settled), 0.25);
+        assert_eq!(
+            rect_strength(Some(0.75), Instant::now()),
+            0.75,
+            "no fade-in on top"
+        );
+        assert_eq!(rect_strength(None, settled), 1.);
     }
 
     /// Later frames of a new surface inherit its already-finished start.
