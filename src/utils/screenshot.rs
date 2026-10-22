@@ -105,6 +105,16 @@ pub fn write_window(
     }
 }
 
+/// `WindowCaptured` from the recorder: another app took a still of the window
+/// `identifier`, so it flashes as it does for the halo's own Screenshot.
+pub fn captured_elsewhere(state: &mut State, identifier: &str) {
+    let Some(surface) = crate::utils::recording::surface_with_identifier(state, identifier) else {
+        return;
+    };
+    surface.start_screenshot_flash();
+    state.schedule_all_outputs();
+}
+
 pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
     let capture = capture(state, surface, 1.0);
     let mut capture = match capture {

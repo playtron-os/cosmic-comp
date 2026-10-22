@@ -98,10 +98,10 @@ xdg = "^3.0"
 xkbcommon = "0.9"
 zbus = "5.14.0"
 # Kora's D-Bus contracts, from the client crates in kora-sdk (MIT).
-kora-capture-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "aec9fa4ae6d158c8a960fb48664214248d2420de" }
-kora-notifications-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "aec9fa4ae6d158c8a960fb48664214248d2420de" }
-kora-stt-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "aec9fa4ae6d158c8a960fb48664214248d2420de" }
-kora-game-mode-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "aec9fa4ae6d158c8a960fb48664214248d2420de" }
+kora-capture-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
+kora-notifications-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
+kora-stt-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
+kora-game-mode-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }

@@ -16,7 +16,7 @@ use crate::{
     shell::element::{CosmicSurface, surface::Recording},
     state::State,
     utils::captures::{self, CaptureKind},
-    wayland::protocols::toplevel_info::foreign_toplevel_identifier,
+    wayland::protocols::toplevel_info::{foreign_toplevel_identifier, mapped_toplevel_identifier},
 };
 
 /// A freedesktop icon name for the toasts.
@@ -29,6 +29,21 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
         // A request is on the bus; the answer decides.
         Recording::Starting => {}
         Recording::Idle => start(state, surface),
+        // The app that started it hears RecordingStopped and files the result.
+        Recording::Watched { id } => {
+            let surface = surface.clone();
+            state
+                .common
+                .dbus_state
+                .stop_recording(id, move |state, reply| {
+                    if let Err(error) = reply {
+                        warn!(%error, "Failed to stop another app's recording");
+                        notify(state, fl!("recording-failed"), error);
+                    }
+                    surface.set_recording(Recording::Idle);
+                    refresh_halo(state, &surface);
+                });
+        }
         Recording::Active { id, since, .. } => {
             let surface = surface.clone();
             let stopping = id.clone();
@@ -120,8 +135,15 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
     let Some(surface) = surface_recording(state, id) else {
         return;
     };
-    let Recording::Active { since, .. } = surface.recording() else {
-        return;
+    let since = match surface.recording() {
+        Recording::Active { since, .. } => since,
+        // Its own app announces how it ended; the halo only lets go.
+        Recording::Watched { .. } => {
+            surface.set_recording(Recording::Idle);
+            refresh_halo(state, &surface);
+            return;
+        }
+        Recording::Idle | Recording::Starting => return,
     };
     if error.is_empty() {
         finished(state, &surface, path, since);
@@ -194,9 +216,48 @@ fn announce(state: &State, path: &Path) {
     );
 }
 
+/// `WindowRecordingStarted` from the recorder: another app records the window
+/// `identifier`, so its halo shows Record on, as if it had been pressed.
+pub fn started_elsewhere(state: &mut State, id: &str, identifier: &str) {
+    let Some(surface) = surface_with_identifier(state, identifier) else {
+        return;
+    };
+    // The halo's own request hears the same signal; its answer decides.
+    if surface.recording() != Recording::Idle {
+        return;
+    }
+    surface.set_recording(Recording::Watched { id: id.to_owned() });
+    refresh_halo(state, &surface);
+}
+
 /// Whether `surface` is recording as `id` right now.
 fn carries(surface: &CosmicSurface, id: &str) -> bool {
-    matches!(surface.recording(), Recording::Active { id: ref active, .. } if active == id)
+    match surface.recording() {
+        Recording::Active { id: active, .. } | Recording::Watched { id: active } => active == id,
+        Recording::Idle | Recording::Starting => false,
+    }
+}
+
+/// The window the recorder knows as `identifier`, mapped or fullscreen.
+pub fn surface_with_identifier(state: &State, identifier: &str) -> Option<CosmicSurface> {
+    let named = |surface: &CosmicSurface| {
+        foreign_toplevel_identifier(surface)
+            .or_else(|| mapped_toplevel_identifier(surface))
+            .is_some_and(|known| known == identifier)
+    };
+    let shell = state.common.shell.read();
+    shell
+        .mapped()
+        .flat_map(|mapped| mapped.windows().map(|(window, _)| window))
+        .find(named)
+        .or_else(|| {
+            shell
+                .workspaces()
+                .spaces()
+                .flat_map(|workspace| workspace.get_fullscreen_surfaces())
+                .map(|fullscreen| fullscreen.surface.clone())
+                .find(named)
+        })
 }
 
 /// The window whose recording carries `id`, mapped or fullscreen.

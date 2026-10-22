@@ -105,6 +105,12 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
             );
         }
     });
+    let windows = state.clone();
+    state.spawn(async move {
+        if let Err(err) = capture::watch_windows(windows).await {
+            warn!(?err, "Not following other apps' window captures");
+        }
+    });
     Ok(())
 }
 
