@@ -7,7 +7,7 @@
     SPDX-License-Identifier: LGPL-2.1-or-later
   ]]></copyright>
 
-  <interface name="org_kde_kwin_blur_manager" version="5">
+  <interface name="org_kde_kwin_blur_manager" version="6">
     <description summary="blur manager">
       This interface allows a client to request blur effect for a surface.
     </description>
@@ -28,7 +28,7 @@
     </request>
   </interface>
 
-  <interface name="org_kde_kwin_blur" version="5">
+  <interface name="org_kde_kwin_blur" version="6">
     <description summary="blur interface">
       This interface allows a client to specify a blur region for a surface.
     </description>
@@ -173,6 +173,35 @@
         exactly as version 4 did.
       </description>
       <arg name="geometry" type="array" summary="four fixed-point int32 (x, y, width, height) per region rectangle"/>
+    </request>
+
+    <!-- Version 6 additions -->
+    <request name="set_region_opacity" since="6">
+      <description summary="set how strongly each rectangle of the blur region is drawn">
+        Set the opacity of the backdrop behind the individual rectangles of the
+        blur region, so a surface fading something out inside itself can fade
+        its backdrop with it. Without this the backdrop stays at full strength
+        until the rectangle is removed from the region, and it is left behind
+        as a frosted shape with nothing drawn over it.
+
+        The argument is an array of 32-bit unsigned integers, one per rectangle,
+        each a fixed-point number with 8 bits of fractional precision (multiply
+        by 256): 0 hides the backdrop, 256 draws it at full strength, and larger
+        values are clamped to 256. They are ordered to match the rectangles
+        added to the wl_region passed to set_region. Rectangles without a
+        corresponding entry (a shorter array) are drawn at full strength.
+
+        A rectangle given an opacity is faded by the client alone: the
+        compositor does not add a fade of its own when the rectangle first
+        appears.
+
+        The opacities pair with the region committed in the same cycle: like
+        set_region, this is pending state applied on the next commit, and the
+        two requests may be sent in either order within a cycle. A commit that
+        carries a region but no opacities draws every rectangle at full
+        strength, exactly as version 5 did.
+      </description>
+      <arg name="opacity" type="array" summary="one fixed-point uint32 opacity per region rectangle"/>
     </request>
   </interface>
 </protocol>

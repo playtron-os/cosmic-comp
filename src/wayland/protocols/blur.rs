@@ -53,6 +53,10 @@ pub struct BlurRegionData {
     /// a fractional position or under a scale animation gets a backdrop that
     /// matches the shape it draws rather than one rounded away from it.
     pub region_geometry: Option<Vec<Rectangle<f64, Logical>>>,
+    /// How strongly each rect's backdrop is drawn, 0 to 1, index-matched to
+    /// `region` (a shorter vec leaves the remaining rects at full strength).
+    /// `None` when the client didn't send `set_region_opacity`.
+    pub region_opacity: Option<Vec<f32>>,
     /// Custom blur radius in pixels. If None, the compositor default is used.
     pub radius: Option<f32>,
     /// Backdrop saturation multiplier (1.0 = unchanged). If None, no saturation
@@ -98,6 +102,7 @@ pub struct BlurData {
     pending_region: Mutex<Option<Vec<Rectangle<i32, Logical>>>>,
     pending_region_radii: Mutex<Option<Vec<[f32; 4]>>>,
     pending_region_geometry: Mutex<Option<Vec<Rectangle<f64, Logical>>>>,
+    pending_region_opacity: Mutex<Option<Vec<f32>>>,
     pending_radius: Mutex<Option<f32>>,
     pending_saturation: Mutex<Option<f32>>,
     pending_tint: Mutex<Option<f32>>,
@@ -121,7 +126,7 @@ impl BlurState {
             + 'static,
     {
         let global =
-            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(5, ());
+            dh.create_global::<D, org_kde_kwin_blur_manager::OrgKdeKwinBlurManager, _>(6, ());
         BlurState { global }
     }
 
@@ -187,6 +192,7 @@ where
                     pending_region: Mutex::new(None),
                     pending_region_radii: Mutex::new(None),
                     pending_region_geometry: Mutex::new(None),
+                    pending_region_opacity: Mutex::new(None),
                     pending_radius: Mutex::new(None),
                     pending_saturation: Mutex::new(None),
                     pending_tint: Mutex::new(None),
@@ -234,6 +240,7 @@ where
                 let pending_region = data.pending_region.lock().unwrap().take();
                 let pending_region_radii = data.pending_region_radii.lock().unwrap().take();
                 let pending_region_geometry = data.pending_region_geometry.lock().unwrap().take();
+                let pending_region_opacity = data.pending_region_opacity.lock().unwrap().take();
                 let pending_radius = data.pending_radius.lock().unwrap().take();
                 let pending_saturation = data.pending_saturation.lock().unwrap().take();
                 let pending_tint = data.pending_tint.lock().unwrap().take();
@@ -263,6 +270,7 @@ where
                         region: pending_region,
                         region_radii: pending_region_radii,
                         region_geometry: pending_region_geometry,
+                        region_opacity: pending_region_opacity,
                         radius: pending_radius,
                         saturation: pending_saturation,
                         tint: pending_tint,
@@ -312,6 +320,11 @@ where
                 // Both this and the region are pending state consumed by the next
                 // commit, so the client may send them in either order.
                 *data.pending_region_radii.lock().unwrap() = Some(radii);
+            }
+            org_kde_kwin_blur::Request::SetRegionOpacity { opacity } => {
+                let opacity = parse_region_opacity(&opacity);
+                tracing::trace!(rect_count = opacity.len(), "Blur SetRegionOpacity");
+                *data.pending_region_opacity.lock().unwrap() = Some(opacity);
             }
             org_kde_kwin_blur::Request::Release => {
                 // Release is a destructor for the blur *object*, NOT an unset.
@@ -387,6 +400,15 @@ fn parse_region_geometry(bytes: &[u8]) -> Vec<Rectangle<f64, Logical>> {
         .collect()
 }
 
+/// Parse a `set_region_opacity` array: one native-endian `u32` per region rect,
+/// fixed-point with 8 fractional bits, clamped to 0..=1.
+fn parse_region_opacity(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(std::mem::size_of::<u32>())
+        .map(|b| (u32::from_ne_bytes([b[0], b[1], b[2], b[3]]) as f32 / 256.0).min(1.0))
+        .collect()
+}
+
 /// Helper function to get the blur state for a surface
 pub fn get_blur_state(surface: &WlSurface) -> Option<CacheableBlurState> {
     Some(with_states(surface, |surface_data| {
@@ -456,10 +478,17 @@ pub(crate) use delegate_blur;
 
 #[cfg(test)]
 mod tests {
-    use super::parse_region_radii;
+    use super::{parse_region_opacity, parse_region_radii};
 
     fn wl_array(radii: &[u32]) -> Vec<u8> {
         radii.iter().flat_map(|r| r.to_ne_bytes()).collect()
+    }
+
+    #[test]
+    fn parses_one_opacity_per_rect_clamped_to_full() {
+        let mut bytes = wl_array(&[0, 128, 256, 9999]);
+        bytes.push(1);
+        assert_eq!(parse_region_opacity(&bytes), vec![0.0, 0.5, 1.0, 1.0]);
     }
 
     #[test]
