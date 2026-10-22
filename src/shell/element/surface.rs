@@ -265,6 +265,9 @@ pub enum Recording {
         /// When the recorder said it started, for the preview's length.
         since: std::time::Instant,
     },
+    /// Another app records this window through the recorder: the halo shows
+    /// it and can stop it, and that app files the result.
+    Watched { id: String },
 }
 
 #[derive(Default)]

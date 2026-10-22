@@ -90,3 +90,40 @@ pub(super) async fn watch_stopped(state: DBusState) -> Result<()> {
         .context("add RecordingStopped to the event loop")?;
     Ok(())
 }
+
+/// Follow another app's stills and recordings of a window (Kora Capture's), so
+/// that window's halo plays them as if its own buttons had.
+pub(super) async fn watch_windows(state: DBusState) -> Result<()> {
+    let conn = state.session_conn().await?.clone();
+    let proxy = CaptureEngine1Proxy::new(&conn)
+        .await
+        .context("recorder proxy")?;
+    let captured = proxy
+        .receive_window_captured()
+        .await
+        .context("subscribe to WindowCaptured")?;
+    let started = proxy
+        .receive_window_recording_started()
+        .await
+        .context("subscribe to WindowRecordingStarted")?;
+    let evlh = &state.0.evlh;
+    evlh.insert_source(StreamSource::new(captured).unwrap(), |signal, _, state| {
+        let Some(Ok(args)) = signal.as_ref().map(|s| s.args()) else {
+            return;
+        };
+        debug!(window = %args.identifier, "window captured");
+        crate::utils::screenshot::captured_elsewhere(state, &args.identifier);
+    })
+    .map_err(|InsertError { error, .. }| error)
+    .context("add WindowCaptured to the event loop")?;
+    evlh.insert_source(StreamSource::new(started).unwrap(), |signal, _, state| {
+        let Some(Ok(args)) = signal.as_ref().map(|s| s.args()) else {
+            return;
+        };
+        debug!(id = %args.id, window = %args.identifier, "window recording started");
+        crate::utils::recording::started_elsewhere(state, &args.id, &args.identifier);
+    })
+    .map_err(|InsertError { error, .. }| error)
+    .context("add WindowRecordingStarted to the event loop")?;
+    Ok(())
+}
