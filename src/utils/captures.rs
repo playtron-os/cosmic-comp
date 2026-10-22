@@ -38,7 +38,10 @@ impl CaptureKind {
     }
 
     const fn default_dir(self) -> &'static str {
-        "Captures"
+        match self {
+            CaptureKind::Screenshot => "Captures/Screenshots",
+            CaptureKind::Recording => "Captures/Recordings",
+        }
     }
 
     /// What a file of this kind is called before its time.
@@ -271,19 +274,19 @@ mod tests {
         };
         assert_eq!(
             dir(CaptureKind::Screenshot, None, false, None),
-            Path::new("/home/u/Captures")
+            Path::new("/home/u/Captures/Screenshots")
         );
         assert_eq!(
             dir(CaptureKind::Recording, Some("meridian"), false, None),
-            Path::new("/home/u/Workspaces/meridian/Captures")
+            Path::new("/home/u/Workspaces/meridian/Captures/Recordings")
         );
         assert_eq!(
             dir(CaptureKind::Screenshot, Some("default"), false, None),
-            Path::new("/home/u/Workspaces/default/Captures")
+            Path::new("/home/u/Workspaces/default/Captures/Screenshots")
         );
         assert_eq!(
             dir(CaptureKind::Screenshot, Some("default"), true, None),
-            Path::new("/home/u/Captures")
+            Path::new("/home/u/Captures/Screenshots")
         );
         assert!(default_root_is_home(Some("home")));
         assert!(default_root_is_home(Some("HOME")));
@@ -306,7 +309,7 @@ mod tests {
         );
         assert_eq!(
             dir(CaptureKind::Screenshot, None, ""),
-            Path::new("/home/u/Captures")
+            Path::new("/home/u/Captures/Screenshots")
         );
         assert_eq!(CaptureKind::Recording.env(), "COSMIC_RECORDING_DIR");
     }
@@ -319,7 +322,10 @@ mod tests {
             dest.pending,
             Path::new("/home/u/Workspaces/work/.local/share/kora/captures")
         );
-        assert_eq!(dest.save_to, Path::new("/home/u/Workspaces/work/Captures"));
+        assert_eq!(
+            dest.save_to,
+            Path::new("/home/u/Workspaces/work/Captures/Recordings")
+        );
         let file = dest.pending.join("Screen Recording 1.mp4");
         assert_eq!(
             dest.seen_inside(&file),
