@@ -1,3 +1,16 @@
+# [1.61.0](https://github.com/playtron-os/cosmic-comp/compare/v1.60.1...v1.61.0) (2026-10-22)
+
+
+### Bug Fixes
+
+* **capture:** file screenshots and recordings in their own folders ([6c60433](https://github.com/playtron-os/cosmic-comp/commit/6c6043320cb953318408ec118119e7b4de64ed60))
+* **toplevel-info:** keep a window's place when it is shown again ([155943b](https://github.com/playtron-os/cosmic-comp/commit/155943b01bd2cce54db41d09c8284b8aae676b50))
+
+
+### Features
+
+* **halo:** play the capture effects when another app captures a window ([99b0a66](https://github.com/playtron-os/cosmic-comp/commit/99b0a6659ad7abfedfd95b884b0ef981564dc9d8))
+
 ## [1.60.1](https://github.com/playtron-os/cosmic-comp/compare/v1.60.0...v1.60.1) (2026-10-21)
 
 
