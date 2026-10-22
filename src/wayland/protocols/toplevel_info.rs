@@ -747,7 +747,10 @@ where
                     }
                     changed = true;
                 } else if geometry_changed && let Some(geo) = geometry {
+                    // Clients apply a new place on `done`; without it a window moved by a
+                    // scale or mode change keeps its old place for them.
                     instance.geometry(&wl_output, geo.loc.x, geo.loc.y, geo.size.w, geo.size.h);
+                    changed = true;
                 }
             }
         }
