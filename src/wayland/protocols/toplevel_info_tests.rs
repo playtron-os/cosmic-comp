@@ -128,3 +128,49 @@ fn hide_show_and_parking_keep_identity_but_actual_unmap_does_not() {
     model.info.new_toplevel(&window, &model.workspaces);
     assert_ne!(foreign_toplevel_identifier(&window).unwrap(), original);
 }
+
+#[test]
+fn a_window_shown_again_keeps_its_output_and_workspace() {
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
+    use cosmic_protocols::workspace::v2::server::zcosmic_workspace_handle_v2;
+    let display = smithay::reexports::wayland_server::Display::<Model>::new().unwrap();
+    let dh = display.handle();
+    let mut model = Model {
+        info: ToplevelInfoState::new(&dh, |_| true),
+        workspaces: WorkspaceState::new(&dh, |_| true),
+    };
+    let output = Output::new(
+        "eDP-test".into(),
+        PhysicalProperties {
+            size: (300, 200).into(),
+            subpixel: Subpixel::Unknown,
+            make: "test".into(),
+            model: "test".into(),
+            serial_number: String::new(),
+        },
+    );
+    let workspace = {
+        let mut update = model.workspaces.update();
+        let group = update.create_workspace_group();
+        update
+            .create_workspace(
+                &group,
+                zcosmic_workspace_handle_v2::TilingState::FloatingOnly,
+                None,
+            )
+            .unwrap()
+    };
+    let window = TestWindow::default();
+    model.info.new_toplevel(&window, &model.workspaces);
+    toplevel_enter_output(&window, &output);
+    toplevel_enter_workspace(&window, &workspace);
+
+    // A realm switch hides the window and shows it again; it never left its place.
+    model.info.set_visible(&model.workspaces, |_| false);
+    model.info.set_visible(&model.workspaces, |_| true);
+
+    let state = window.user_data().get::<ToplevelState>().unwrap();
+    let state = state.lock().unwrap();
+    assert_eq!(state.outputs, vec![output]);
+    assert!(state.in_workspace(&workspace));
+}
