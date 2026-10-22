@@ -1,3 +1,15 @@
+# [1.62.0](https://github.com/playtron-os/cosmic-comp/compare/v1.61.0...v1.62.0) (2026-10-22)
+
+
+### Bug Fixes
+
+* **toplevel-info:** commit a window's new place with done ([b2cb43a](https://github.com/playtron-os/cosmic-comp/commit/b2cb43ae31a9b4720660b0815ba528dfee1b0b64))
+
+
+### Features
+
+* **blur:** fade each blurred rect with the opacity its client sends ([b0939be](https://github.com/playtron-os/cosmic-comp/commit/b0939bed0e95dca832f8ac993362ea86327e54af))
+
 # [1.61.0](https://github.com/playtron-os/cosmic-comp/compare/v1.60.1...v1.61.0) (2026-10-22)
 
 
