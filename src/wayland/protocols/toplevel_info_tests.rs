@@ -131,8 +131,8 @@ fn hide_show_and_parking_keep_identity_but_actual_unmap_does_not() {
 
 #[test]
 fn a_window_shown_again_keeps_its_output_and_workspace() {
-    use smithay::output::{Output, PhysicalProperties, Subpixel};
     use cosmic_protocols::workspace::v2::server::zcosmic_workspace_handle_v2;
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
     let display = smithay::reexports::wayland_server::Display::<Model>::new().unwrap();
     let dh = display.handle();
     let mut model = Model {
