@@ -409,9 +409,15 @@ where
             if let Some(handle) = state_inner.foreign_handle.take() {
                 self.foreign_toplevel_list.remove_toplevel(&handle);
             }
+            // The window keeps its outputs and workspaces: the shell reports them only
+            // as they change, so a window shown again would otherwise have no place.
             let identifier = state_inner.identifier.take();
+            let outputs = std::mem::take(&mut state_inner.outputs);
+            let workspaces = std::mem::take(&mut state_inner.workspaces);
             *state_inner = ToplevelStateInner {
                 identifier,
+                outputs,
+                workspaces,
                 ..Default::default()
             };
             self.dirty = true;
