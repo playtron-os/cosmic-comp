@@ -1069,6 +1069,53 @@ pub fn cursor_elements<'a, 'frame, R>(
     }
 }
 
+/// Every seat's pointer on `output`, the default one too, for a capture that asks for it.
+fn capture_pointer_elements<R>(
+    renderer: &mut R,
+    shell: &Arc<parking_lot::RwLock<Shell>>,
+    zoom_state: Option<&ZoomState>,
+    now: Time<Monotonic>,
+    output: &Output,
+) -> Vec<CosmicElement<R>>
+where
+    R: AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+    CosmicMappedRenderElement<R>: RenderElement<R>,
+{
+    let shell_ref = shell.read();
+    let seats = shell_ref.seats.iter().cloned().collect::<Vec<_>>();
+    let theme = shell_ref.theme().clone();
+    let outputs = shell_ref
+        .outputs()
+        .map(|o| o.geometry())
+        .collect::<Vec<_>>();
+    std::mem::drop(shell_ref);
+    let blur_strength =
+        wayland::blur_effect::configured_blur_strength(theme.header_backdrop_blur());
+
+    let mut pointers = Vec::new();
+    cursor_elements(
+        renderer,
+        seats.iter(),
+        zoom_state,
+        &theme,
+        blur_strength,
+        now,
+        output,
+        CursorMode::All,
+        true,
+        &[],
+        None,
+        &outputs,
+        &mut |elem| {
+            if matches!(elem, CosmicElement::Cursor(_)) {
+                pointers.push(elem);
+            }
+        },
+    );
+    pointers
+}
+
 #[cfg(not(feature = "debug"))]
 pub type EguiState = ();
 
@@ -2827,7 +2874,19 @@ where
 
     match result {
         Ok((res, mut elements)) => {
-            for (session, frame) in output.take_pending_frames() {
+            let frames = output.take_pending_frames();
+            // The host window draws the default pointer, so the frame lacks it, and it
+            // holds any other pointer whether a capture asked for one or not.
+            let pointer_drawn = elements
+                .iter()
+                .any(|elem| matches!(elem, CosmicElement::Cursor(_)));
+            let pointers = if !pointer_drawn && frames.iter().any(|(s, _)| s.draw_cursor()) {
+                capture_pointer_elements(renderer, shell, zoom_state.as_ref(), now, output)
+            } else {
+                Vec::new()
+            };
+            for (session, frame) in frames {
+                let redraw = session.draw_cursor() != pointer_drawn;
                 if let Some(pending_image_copy_data) = render_session(
                     renderer,
                     session.user_data().get::<SessionData>().unwrap(),
@@ -2867,6 +2926,31 @@ where
                         } else {
                             None
                         };
+
+                        if redraw {
+                            let drawn = pointers
+                                .iter()
+                                .filter(|_| session.draw_cursor())
+                                .chain(
+                                    elements
+                                        .iter()
+                                        .filter(|elem| !matches!(elem, CosmicElement::Cursor(_))),
+                                )
+                                .collect::<Vec<_>>();
+                            let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
+                                let mut dmabuf_clone = dmabuf.clone();
+                                let mut fb = renderer
+                                    .bind(&mut dmabuf_clone)
+                                    .map_err(RenderError::Rendering)?;
+                                dt.render_output(renderer, &mut fb, age, &drawn, *CLEAR_COLOR)?
+                            } else {
+                                let fb =
+                                    offscreen.expect("shm buffers should have offscreen target");
+                                dt.render_output(renderer, fb, age, &drawn, *CLEAR_COLOR)?
+                            };
+                            let buffers = render_element_buffers(renderer, &elements);
+                            return Ok((res, buffers));
+                        }
 
                         let res = dt.damage_output(age, &elements)?;
 
