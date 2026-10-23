@@ -1,3 +1,10 @@
+## [1.62.1](https://github.com/playtron-os/cosmic-comp/compare/v1.62.0...v1.62.1) (2026-10-23)
+
+
+### Bug Fixes
+
+* **config:** honor distribution overrides of system actions ([9c053a1](https://github.com/playtron-os/cosmic-comp/commit/9c053a114eba1497fec4d3cd9e2a778a8ffc39f2))
+
 # [1.62.0](https://github.com/playtron-os/cosmic-comp/compare/v1.61.0...v1.62.0) (2026-10-22)
 
 
