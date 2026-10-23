@@ -10,6 +10,7 @@ use crate::{
     backend::render::{
         BackdropShader, Key,
         animations::motion::Motion,
+        capture_exclusion,
         element::AsGlowRenderer,
         shadow::ShadowShader,
         wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
@@ -1315,6 +1316,10 @@ impl CosmicSurface {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
                 for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+                    // With its shadow: a capture shows what is under it.
+                    if capture_exclusion::leaves_out_surface(popup.wl_surface()) {
+                        continue;
+                    }
                     // Check for compositor-driven tooltip position override
                     let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
                         popup.wl_surface(),

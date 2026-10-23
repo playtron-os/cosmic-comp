@@ -34,7 +34,7 @@ use smithay::{
 use tracing::warn;
 
 use crate::{
-    backend::render::{RendererRef, element::AsGlowRenderer},
+    backend::render::{RendererRef, capture_exclusion::CapturePass, element::AsGlowRenderer},
     dbus::notifications::{Notification, Tone},
     fl,
     shell::element::CosmicSurface,
@@ -245,6 +245,7 @@ where
         bbox_from_surface_tree(&window.wl_surface().unwrap(), (0, 0))
             .to_physical_precise_down(scale);
     let mut elements = Vec::new();
+    let _capture = CapturePass::begin();
     window.push_render_elements(
         renderer,
         (-bbox.loc.x, -bbox.loc.y).into(),

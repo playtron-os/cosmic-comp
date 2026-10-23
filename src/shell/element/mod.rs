@@ -1,6 +1,6 @@
 use crate::shell::element::surface::PopupShadow;
 use crate::{
-    backend::render::element::AsGlowRenderer,
+    backend::render::{capture_exclusion, element::AsGlowRenderer},
     state::State,
     utils::{
         iced::{IcedElementInternal, IcedRenderElement},
@@ -322,6 +322,14 @@ impl CosmicMapped {
             CosmicMappedInternal::Window(win) => win.surface(),
             _ => unreachable!(),
         }
+    }
+
+    /// Whether the capture being drawn leaves out the shown window, with the
+    /// header, shadow and focus ring drawn for it.
+    pub fn left_out_of_capture(&self) -> bool {
+        self.active_window()
+            .wl_surface()
+            .is_some_and(|surface| capture_exclusion::leaves_out_surface(&surface))
     }
 
     pub fn has_active_window(&self, window: &CosmicSurface) -> bool {
@@ -805,7 +813,7 @@ impl CosmicMapped {
         CosmicMappedRenderElement<R>: RenderElement<R>,
         C: From<CosmicMappedRenderElement<R>>,
     {
-        if !self.element.alive() {
+        if !self.element.alive() || self.left_out_of_capture() {
             return None;
         }
 
@@ -850,6 +858,9 @@ impl CosmicMapped {
         R::TextureId: Send + Clone + 'static,
         CosmicMappedRenderElement<R>: RenderElement<R>,
     {
+        if self.left_out_of_capture() {
+            return;
+        }
         #[cfg(feature = "debug")]
         if let Some(debug) = self.debug.lock().unwrap().as_mut() {
             let window = self.active_window();
