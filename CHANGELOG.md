@@ -1,3 +1,12 @@
+## [1.62.2](https://github.com/playtron-os/cosmic-comp/compare/v1.62.1...v1.62.2) (2026-10-23)
+
+
+### Bug Fixes
+
+* **halo:** place header tooltips on screen with their own corner ([1cdf670](https://github.com/playtron-os/cosmic-comp/commit/1cdf670305b1e43a4782c604649d9924090c4144))
+* **halo:** record windows with the pointer ([75924c0](https://github.com/playtron-os/cosmic-comp/commit/75924c0e47243354615c827cac01e5222b7018e3))
+* **winit:** give nested output captures the pointer they ask for ([57eeb6a](https://github.com/playtron-os/cosmic-comp/commit/57eeb6a04c0798b4acca560f0190fc7adb64775a))
+
 ## [1.62.1](https://github.com/playtron-os/cosmic-comp/compare/v1.62.0...v1.62.1) (2026-10-23)
 
 
