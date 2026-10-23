@@ -3291,8 +3291,8 @@ where
 }
 
 /// Where a fullscreen `window` goes on an output. A game's fixed-size window, such
-/// as its launcher, keeps its size: stretched, its chrome spans the screen while its
-/// content stays in a corner. Game mode then scales it like any smaller game.
+/// as its launcher, keeps its size, centered: stretched, its chrome spans the screen
+/// while its content stays in a corner.
 pub fn fullscreen_rect(
     window: &CosmicSurface,
     output: Rectangle<i32, Global>,

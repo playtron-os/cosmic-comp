@@ -1695,7 +1695,7 @@ impl State {
             if let Some(game) = game {
                 // Launcher resolution is managed by its normal fullscreen configure.
                 let game_app_id = app_id_of(&game);
-                let want_scale = game_app_id != LAUNCHER_APP_ID;
+                let want_scale = scales_to_output(&game);
                 let mut shell = self.common.shell.write();
                 let (spoof_w, spoof_h, mode) = shell.game_mode_scaling;
                 let sharpness = shell.game_mode_sharpness;
@@ -2796,6 +2796,13 @@ fn is_game_surface(surface: &CosmicSurface) -> bool {
 /// Whether `surface` carries a game's id, not the launcher's.
 pub fn is_game_window(surface: &CosmicSurface) -> bool {
     !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// Whether game mode may scale `surface` to the output. The launcher and a window
+/// held to a fixed size show 1:1, centered: a fixed window's own popups are placed
+/// in its unscaled coordinates, so scaling it would leave them out of place.
+pub fn scales_to_output(surface: &CosmicSurface) -> bool {
+    app_id_of(surface) != LAUNCHER_APP_ID && surface.fixed_size().is_none()
 }
 
 /// The game game mode shows (0 for none), for decoration checks that run without the shell.
