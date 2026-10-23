@@ -44,8 +44,10 @@ impl DBusState {
 async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
     let proxy = CaptureEngine1Proxy::new(conn).await?;
+    // A recording shows the pointer, as Kora Capture's do by default.
     let options = RecordOptions {
         codec: Some(Codec::Auto),
+        cursor: true,
         ..RecordOptions::default()
     };
     proxy
