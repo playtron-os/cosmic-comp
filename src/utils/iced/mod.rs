@@ -104,6 +104,7 @@ use crate::backend::render::{
     element::AsGlowRenderer,
     wayland::blur_effect::{BlurElement, BlurState, configured_blur_strength},
 };
+use crate::utils::prelude::{OutputExt, SizeExt};
 
 // --- Theme ---
 pub use crate::comp_theme::CompTheme;
@@ -1969,6 +1970,12 @@ impl<P: Program + Send + 'static> IcedElement<P> {
                 request_redraw(output);
             }
         }
+        // The smallest output the owner is on, so the chip fits whichever one draws it.
+        let output = internal_ref
+            .outputs
+            .iter()
+            .map(|output| output.geometry().size.as_logical().to_f64())
+            .reduce(|a, b| (a.w.min(b.w), a.h.min(b.h)).into());
         // Tooltips have their own fade lifetime. Let an outgoing chip finish
         // even as the Halo fades/slides away; still inherit window-level alpha.
         internal_ref.tooltip.push(
@@ -1977,6 +1984,7 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             location.to_f64(),
             scale * internal_ref.additional_scale,
             internal_ref.additional_scale,
+            output,
             alpha,
             push_above,
         );

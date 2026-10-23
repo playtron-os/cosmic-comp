@@ -94,7 +94,7 @@ fn rasterize(label: &str, body: IcedSize, theme: &CompTheme, scale: f64) -> Opti
     let content: CompElement<'_, ()> = iced_widget::container(with_elevation_shadow(
         chip,
         &theme.shadow_popover_deep(),
-        Some(theme.radii_sm()),
+        Some(theme.tooltip_radius()),
     ))
     .padding(padding)
     .into();
@@ -238,6 +238,7 @@ impl Surface {
         origin: Point<f64, Physical>,
         scale: Scale<f64>,
         additional_scale: f64,
+        output: Option<Size<f64, Logical>>,
         parent_alpha: f32,
         push: &mut dyn FnMut(IcedRenderElement<R>),
     ) where
@@ -251,11 +252,34 @@ impl Surface {
                 origin,
                 scale,
                 additional_scale,
+                output,
                 parent_alpha,
                 push,
             );
         }
     }
+}
+
+/// The output being drawn on, in the owner's iced coordinates: `origin` is where the owner
+/// sits on it, so a tooltip can flip and slide against the screen, not the owner's bounds.
+fn output_area(
+    origin: Point<f64, Physical>,
+    scale: Scale<f64>,
+    additional_scale: f64,
+    size: Size<f64, Logical>,
+) -> IcedRectangle {
+    IcedRectangle::new(
+        IcedPoint::new((-origin.x / scale.x) as f32, (-origin.y / scale.y) as f32),
+        IcedSize::new(
+            (size.w / additional_scale) as f32,
+            (size.h / additional_scale) as f32,
+        ),
+    )
+}
+
+/// The backdrop's corner must be the chip's own, or blurred backdrop shows past it.
+fn backdrop_radius(theme: &CompTheme, additional_scale: f64) -> u8 {
+    (theme.tooltip_radius() as f64 * additional_scale).round() as u8
 }
 
 impl Tip {
@@ -271,6 +295,7 @@ impl Tip {
         origin: Point<f64, Physical>,
         scale: Scale<f64>,
         additional_scale: f64,
+        output: Option<Size<f64, Logical>>,
         parent_alpha: f32,
         push: &mut dyn FnMut(IcedRenderElement<R>),
     ) where
@@ -282,7 +307,10 @@ impl Tip {
             return;
         }
         let report = &self.report;
-        let body = report.bounds;
+        let body = match output {
+            Some(size) => report.bounds_within(output_area(origin, scale, additional_scale, size)),
+            None => report.bounds,
+        };
         if self
             .content
             .as_ref()
@@ -336,7 +364,7 @@ impl Tip {
         )
         .upscale(additional_scale);
         let element_origin = origin.to_logical(scale).upscale(additional_scale);
-        let radius = (theme.radii_sm() as f64 * additional_scale).round() as u8;
+        let radius = backdrop_radius(theme, additional_scale);
         match BlurElement::from_state_with_appearance(
             renderer,
             &mut self.blur,
@@ -368,6 +396,7 @@ mod tests {
                 height: 24.0,
             },
             opacity: 1.0,
+            ..TooltipReport::default()
         }
     }
 
@@ -508,6 +537,7 @@ mod tests {
                     (80.0, 80.0).into(),
                     scale.into(),
                     1.0,
+                    None,
                     0.8,
                     &mut |e| elements.push(e),
                 );
@@ -623,6 +653,63 @@ mod tests {
             assert_eq!(
                 raster.physical_size.w,
                 (raster.logical_size.width as f64 * scale).round() as i32
+            );
+        }
+    }
+
+    /// A Halo header is too short to flip in, so its tooltip was clamped over the header and,
+    /// at the top of the screen, cut off. Placed on the output it goes below, inside the screen.
+    #[test]
+    fn header_tooltips_are_placed_on_the_output() {
+        use icetron_p::prelude::TooltipAnchor;
+        let report = TooltipReport {
+            label: "Close".into(),
+            bounds: IcedRectangle::new(IcedPoint::new(40.0, 4.0), IcedSize::new(240.0, 48.0)),
+            opacity: 1.0,
+            anchor: TooltipAnchor {
+                trigger: IcedRectangle::new(
+                    IcedPoint::new(100.0, 10.0),
+                    IcedSize::new(120.0, 20.0),
+                ),
+                position: iced_widget::tooltip::Position::Bottom,
+                gap: 6.0,
+                margin: 4.0,
+                slide: 0.0,
+            },
+        };
+        // A maximized window at 150%: the header's top sits 6px above the output.
+        let output = output_area(
+            (150.0, -9.0).into(),
+            1.5.into(),
+            1.0,
+            (1280.0, 720.0).into(),
+        );
+        assert_eq!(
+            output,
+            IcedRectangle::new(IcedPoint::new(-100.0, 6.0), IcedSize::new(1280.0, 720.0))
+        );
+        assert_eq!(report.bounds_within(output).y, 36.0);
+        // Its trigger 20px from the output's right edge: the chip slides back inside.
+        let output = output_area(
+            (1650.0, 0.0).into(),
+            1.5.into(),
+            1.0,
+            (1280.0, 720.0).into(),
+        );
+        let placed = report.bounds_within(output);
+        assert_eq!(placed.x + placed.width, output.x + output.width - 4.0);
+    }
+
+    #[test]
+    fn backdrop_takes_the_chips_corner() {
+        let theme = CompTheme::new(
+            Arc::new(icetron_p::icetron_themes::dynamic::DEFAULT_THEME_PAIR.load(true)),
+            true,
+        );
+        for zoom in [1.0, 2.0] {
+            assert_eq!(
+                backdrop_radius(&theme, zoom),
+                (theme.tooltip_radius() as f64 * zoom).round() as u8
             );
         }
     }
