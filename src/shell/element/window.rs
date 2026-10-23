@@ -690,7 +690,16 @@ impl CosmicWindowInternal {
 
     /// returns if the window has any current or pending server-side decorations
     pub fn has_ssd(&self, pending: bool) -> bool {
-        !self.window.is_decorated(pending)
+        !self.window.is_decorated(pending) && !self.too_small_for_halo()
+    }
+
+    /// An X11 helper smaller than the Halo pill would sit under its own header.
+    fn too_small_for_halo(&self) -> bool {
+        self.window.x11_surface().is_some() && self.uses_halo_header() && {
+            let min = super::header_bar::halo_min_window_size(&self.theme.lock().unwrap());
+            let size = self.window.geometry().size;
+            size.w < min.w || size.h < min.h
+        }
     }
 
     /// returns if the window is currently tiled
