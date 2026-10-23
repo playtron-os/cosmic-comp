@@ -31,7 +31,7 @@ use smithay::{
             utils::{draw_render_elements, with_renderer_surface_state},
         },
     },
-    desktop::space::SpaceElement,
+    desktop::{layer_map_for_output, space::SpaceElement},
     input::{
         keyboard::{KeyboardHandle, ModifiersState},
         pointer::{CursorIcon, PointerHandle},
@@ -186,6 +186,7 @@ impl State {
 
                     data.common.update_xwayland_settings();
                     data.common.update_xwayland_primary_output();
+                    data.common.update_x11_workarea();
                 }
                 XWaylandEvent::Error => {
                     if let Some(mut xwayland_state) = data.common.xwayland_state.take() {
@@ -602,6 +603,34 @@ impl Common {
         }
     }
 
+    /// Tell every X server which part of the screen panels leave free, so X
+    /// clients maximize within it rather than under the panels.
+    pub fn update_x11_workarea(&mut self) {
+        if self.xwayland_states().all(|xstate| xstate.xwm.is_none()) {
+            return;
+        }
+        let workarea = {
+            let shell = self.shell.read();
+            let outputs = shell
+                .outputs()
+                .map(|output| {
+                    let geometry = output.geometry().as_logical();
+                    let zone = layer_map_for_output(output).non_exclusive_zone();
+                    (geometry, Rectangle::new(geometry.loc + zone.loc, zone.size))
+                })
+                .collect::<Vec<_>>();
+            x11_workarea(&outputs)
+        };
+        for xstate in self.xwayland_states_mut() {
+            let Some(xwm) = xstate.xwm.as_mut() else {
+                continue;
+            };
+            if let Err(err) = xwm.set_workarea(workarea) {
+                warn!(wm_id = ?xwm.id(), ?err, "Failed to update _NET_WORKAREA.");
+            }
+        }
+    }
+
     #[profiling::function]
     pub fn update_x11_stacking_order(&mut self) {
         if self.xwayland_states().all(|xstate| xstate.xwm.is_none()) {
@@ -861,6 +890,39 @@ impl Common {
 
         self.output_configuration_state.update();
     }
+}
+
+/// `_NET_WORKAREA` for outputs given as (output, the part of it that exclusive
+/// zones leave free), in global logical coordinates. X has one work area for the
+/// whole root, so an edge of the outputs' bounding box moves in only where the
+/// outputs that reach it reserve space.
+fn x11_workarea(
+    outputs: &[(Rectangle<i32, Logical>, Rectangle<i32, Logical>)],
+) -> Option<Rectangle<i32, Logical>> {
+    let bounds = outputs
+        .iter()
+        .map(|(output, _)| *output)
+        .reduce(|bounds, output| bounds.merge(output))?;
+    let (bounds_right, bounds_bottom) =
+        (bounds.loc.x + bounds.size.w, bounds.loc.y + bounds.size.h);
+    let (mut left, mut top) = (bounds.loc.x.max(0), bounds.loc.y.max(0));
+    let (mut right, mut bottom) = (bounds_right.max(0), bounds_bottom.max(0));
+    for (output, usable) in outputs {
+        if output.loc.x == bounds.loc.x {
+            left = left.max(usable.loc.x);
+        }
+        if output.loc.y == bounds.loc.y {
+            top = top.max(usable.loc.y);
+        }
+        if output.loc.x + output.size.w == bounds_right {
+            right = right.min(usable.loc.x + usable.size.w);
+        }
+        if output.loc.y + output.size.h == bounds_bottom {
+            bottom = bottom.min(usable.loc.y + usable.size.h);
+        }
+    }
+    (right > left && bottom > top)
+        .then(|| Rectangle::from_extremities((left, top), (right, bottom)))
 }
 
 impl XwmHandler for State {
@@ -1237,6 +1299,12 @@ impl XwmHandler for State {
             .filter(|mapped| !mapped.is_minimized())
             .cloned()
         {
+            // A maximized window lives in the floating layer, but keeps the zone it
+            // was given: Wine asks for the whole monitor when the window restores.
+            if mapped.maximized_state.lock().unwrap().is_some() {
+                let _ = window.configure(None);
+                return;
+            }
             let is_transient = window.is_transient_for().is_some();
 
             // Find current geometry only for floating windows
@@ -1809,5 +1877,41 @@ impl State {
         if let Some(x11) = window.x11_surface().cloned() {
             self.update_game_mode_input_grab(&x11);
         }
+    }
+}
+
+#[cfg(test)]
+mod workarea_tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    // The test laptop: 2560x1440 at 150%, 1707x960 logical, with the panel's 52 px
+    // exclusive zone at the bottom. Its maximized windows (10 px gaps, 40 px header
+    // row: 2531x1287+15+60 in X's pixels) lie within the work area, which smithay
+    // scales to 2560x1362, so Wine maximizes above the panel and asks for no more.
+    #[test]
+    fn workarea_at_fractional_scale_leaves_out_the_panel() {
+        let laptop = (rect(0, 0, 1707, 960), rect(0, 0, 1707, 908));
+        let workarea = x11_workarea(&[laptop]).unwrap();
+        assert_eq!(workarea, rect(0, 0, 1707, 908));
+        let maximized = rect(10, 40, 1687, 858);
+        assert_eq!(workarea.intersection(maximized), Some(maximized));
+    }
+
+    // X has one work area: an edge moves in only where the outputs that reach it
+    // reserve space, so one output's panel does not cut a taller neighbour short.
+    #[test]
+    fn workarea_spans_outputs_and_keeps_unreserved_edges() {
+        let left = (rect(0, 0, 1920, 1080), rect(0, 0, 1920, 1040));
+        let right = (rect(1920, 0, 1920, 1080), rect(1920, 30, 1920, 1050));
+        assert_eq!(x11_workarea(&[left, right]), Some(rect(0, 30, 3840, 1010)));
+
+        let taller = (rect(1920, 0, 2560, 1440), rect(1920, 0, 2560, 1440));
+        assert_eq!(x11_workarea(&[left, taller]), Some(rect(0, 0, 4480, 1440)));
+
+        assert_eq!(x11_workarea(&[]), None);
     }
 }
