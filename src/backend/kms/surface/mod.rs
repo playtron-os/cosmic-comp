@@ -3,7 +3,7 @@
 use crate::{
     backend::render::{
         CLEAR_COLOR, CursorMode, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
-        PostprocessShader, PostprocessState,
+        PostprocessShader, PostprocessState, capture_exclusion,
         element::{AsGlowRenderer, CosmicElement, DamageElement},
         init_shaders, output_elements, release_thread_user_data, thread_user_data,
     },
@@ -13,7 +13,9 @@ use crate::{
     utils::prelude::*,
     wayland::handlers::{
         compositor::recursive_frame_time_estimation,
-        image_copy_capture::{FrameHolder, PendingImageCopyData, SessionData, submit_buffer},
+        image_copy_capture::{
+            FrameHolder, PendingImageCopyData, SessionData, render_output_capture, submit_buffer,
+        },
     },
 };
 
@@ -1627,6 +1629,7 @@ impl SurfaceThreadState {
         // collection. The gpu_profiler `blur_*` FrameProfile fields consequently stay
         // at their defaults (no separate blur phase to time on this thread any more).
         let elements_phase_start = std::time::Instant::now();
+        capture_exclusion::take_drew_excluded();
         let mut elements = output_elements(
             Some(&render_node),
             &mut renderer,
@@ -1643,6 +1646,7 @@ impl SurfaceThreadState {
         .map_err(|err| {
             anyhow::format_err!("Failed to accumulate elements for rendering: {:?}", err)
         })?;
+        let drew_excluded = capture_exclusion::take_drew_excluded();
         profile.elements_duration = elements_phase_start.elapsed();
         profile.element_count = elements.len();
 
@@ -1883,6 +1887,18 @@ impl SurfaceThreadState {
         // we can't use the elements after `compositor.render_frame`,
         // so let's collect everything we need for screencopy now
         let mut has_cursor_mode_none = false;
+        // The screen shows surfaces its captures leave out, so they are drawn on their own.
+        let excluding_frames = if self.mirroring.is_none() && drew_excluded {
+            render_excluding_captures(
+                &mut renderer,
+                (render_node, self.target_node),
+                &self.shell,
+                &self.clock,
+                &self.output,
+            )
+        } else {
+            Vec::new()
+        };
         let frames = if self.mirroring.is_none() {
             take_screencopy_frames(&self.output, &elements, &mut has_cursor_mode_none)
         } else {
@@ -2358,6 +2374,14 @@ impl SurfaceThreadState {
                                 tracing::warn!(?err, "Failed to screencopy");
                             }
                         }
+                        let transform = self.output.current_transform();
+                        for data in excluding_frames {
+                            if frame_result.is_empty {
+                                data.frame.success(transform, data.damage, now);
+                            } else {
+                                let _ = tx.send(data);
+                            }
+                        }
 
                         if self.mirroring.is_none() {
                             // If postprocessing, use states from first render
@@ -2385,6 +2409,9 @@ impl SurfaceThreadState {
                     Err(err) => {
                         for (_session, frame, _) in frames {
                             frame.fail(CaptureFailureReason::Unknown);
+                        }
+                        for data in excluding_frames {
+                            data.frame.fail(CaptureFailureReason::Unknown);
                         }
                         // Cleanup texture cache even on error to prevent dmabuf leaks
                         if let Ok(devices) = self.api.devices_mut() {
@@ -2628,6 +2655,55 @@ fn get_surface_dmabuf_feedback(
         overlay_scanout_feedback,
         primary_scanout_feedback,
     }
+}
+
+/// Draw the output's pending captures without the surfaces they leave out, to
+/// be answered once the frame is queued.
+fn render_excluding_captures(
+    renderer: &mut GlMultiRenderer<'_>,
+    nodes: (DrmNode, DrmNode),
+    shell: &Arc<parking_lot::RwLock<Shell>>,
+    clock: &Clock<Monotonic>,
+    output: &Output,
+) -> Vec<PendingImageCopyData> {
+    let frames = output.take_pending_frames();
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    let (render_node, target_node) = nodes;
+    let elements = {
+        let _capture = capture_exclusion::CapturePass::begin();
+        output_elements(
+            Some(&render_node),
+            renderer,
+            shell,
+            clock.now(),
+            output,
+            CursorMode::All,
+            None,
+            Some(target_node),
+        )
+    };
+    let elements = match elements {
+        Ok(elements) => elements,
+        Err(err) => {
+            warn!(?err, "Failed to collect capture elements");
+            for (_, frame) in frames {
+                frame.fail(CaptureFailureReason::Unknown);
+            }
+            return Vec::new();
+        }
+    };
+    let transform = output.current_transform();
+    frames
+        .into_iter()
+        .filter_map(|(session, frame)| {
+            render_output_capture(renderer, &session, frame, transform, &elements)
+                .inspect_err(|err| warn!(?err, "Failed to draw a capture"))
+                .ok()
+                .flatten()
+        })
+        .collect()
 }
 
 fn take_screencopy_frames(

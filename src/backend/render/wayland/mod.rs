@@ -12,6 +12,7 @@ use smithay::{
 use tracing::warn;
 
 use crate::backend::render::{
+    capture_exclusion::leaves_out,
     element::AsGlowRenderer,
     wayland::{
         blur_effect::BlurElement, clipped_surface::ClippedSurfaceRenderElement,
@@ -63,6 +64,10 @@ pub fn push_render_elements_from_surface_tree<R>(
         main_surface,
         location,
         |_, states, location| {
+            // A surface left out of a capture takes its subsurfaces with it.
+            if leaves_out(states) {
+                return TraversalAction::SkipChildren;
+            }
             let mut location = *location;
             let data = states.data_map.get::<RendererSurfaceStateUserData>();
 
@@ -78,6 +83,9 @@ pub fn push_render_elements_from_surface_tree<R>(
             }
         },
         |surface, states, location| {
+            if leaves_out(states) {
+                return;
+            }
             let mut location = *location;
             let kind = kind.eval(states);
             let data = states.data_map.get::<RendererSurfaceStateUserData>();

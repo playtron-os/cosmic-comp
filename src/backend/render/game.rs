@@ -166,6 +166,9 @@ where
     R::TextureId: Send + Clone + 'static,
 {
     let wl = surface.wl_surface()?;
+    if super::capture_exclusion::leaves_out_surface(&wl) {
+        return None;
+    }
     import_surface_tree(renderer, &wl).ok()?;
     let scale = source_scale(surface);
     let bbox = surface.bbox();

@@ -38,6 +38,7 @@ use tracing::warn;
 use crate::{
     backend::render::{
         CLEAR_COLOR, CursorMode, ElementFilter, RendererRef,
+        capture_exclusion::CapturePass,
         cursor::{self, CursorRenderElement},
         element::{AsGlowRenderer, CosmicElement, DamageElement},
         render_workspace,
@@ -256,6 +257,46 @@ where
     }
 }
 
+/// Draw an output capture from `elements` instead of copying the screen, which
+/// shows surfaces its captures leave out.
+pub fn render_output_capture<R>(
+    renderer: &mut R,
+    session: &SessionRef,
+    frame: Frame,
+    transform: Transform,
+    elements: &[CosmicElement<R>],
+) -> Result<Option<PendingImageCopyData>, DTError<R::Error>>
+where
+    R: AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+    CosmicElement<R>: RenderElement<R>,
+{
+    let draw_cursor = session.draw_cursor();
+    let drawn = elements
+        .iter()
+        .filter(|elem| draw_cursor || !matches!(elem, CosmicElement::Cursor(_)))
+        .collect::<Vec<_>>();
+    render_session(
+        renderer,
+        session.user_data().get::<SessionData>().unwrap(),
+        frame,
+        transform,
+        |buffer, renderer, offscreen, dt, _age, _additional_damage| {
+            // Copies of the screen fill this buffer without the session's damage
+            // tracking, so it is drawn whole.
+            let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
+                let mut dmabuf = dmabuf.clone();
+                let mut fb = renderer.bind(&mut dmabuf).map_err(DTError::Rendering)?;
+                dt.render_output(renderer, &mut fb, 0, &drawn, *CLEAR_COLOR)?
+            } else {
+                let fb = offscreen.expect("shm buffers should have an offscreen target");
+                dt.render_output(renderer, fb, 0, &drawn, *CLEAR_COLOR)?
+            };
+            Ok((res, render_element_buffers(renderer, elements)))
+        },
+    )
+}
+
 /// Draw a session's frame, handing it back instead when nothing changed, for
 /// a caller that would rather wait for something to.
 pub fn render_session_holding<F, R>(
@@ -432,6 +473,7 @@ pub fn render_workspace_to_buffer(
         CosmicMappedRenderElement<R>: RenderElement<R>,
         WorkspaceRenderElement<R>: RenderElement<R>,
     {
+        let _capture = CapturePass::begin();
         let cursor_mode = if draw_cursor {
             CursorMode::All
         } else {
@@ -750,6 +792,7 @@ pub fn render_window_to_buffer(
         CosmicElement<R>: RenderElement<R>,
         CosmicMappedRenderElement<R>: RenderElement<R>,
     {
+        let _capture = CapturePass::begin();
         let mut elements: Vec<_> = additional_damage
             .into_iter()
             .filter_map(|rect| {

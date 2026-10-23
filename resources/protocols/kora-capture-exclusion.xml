@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="kora_capture_exclusion_v1">
+  <copyright><![CDATA[
+    Copyright © 2026 Playtron
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  ]]></copyright>
+
+  <description summary="leave a surface out of screen captures">
+    This protocol lets a client leave one of its own surfaces out of screen
+    captures and recordings while it stays on screen: a tooltip that should
+    not end up in a screenshot of what it points at, for example.
+
+    Exclusion is opt-in per surface. Nothing is excluded by default, and no
+    surface is excluded because of its role.
+
+    A client can only name its own surfaces, and a surface it leaves out still
+    shows on screen, so the protocol can hide nothing from the user.
+
+    Warning! The protocol described in this file is currently in the testing
+    phase. Backward compatible changes may be added together with the
+    corresponding interface version bump. Backward incompatible changes can
+    only be done by creating a new major version of the extension.
+  </description>
+
+  <interface name="kora_capture_exclusion_manager_v1" version="1">
+    <description summary="capture exclusion for surfaces">
+      A global to get a capture exclusion object for a surface.
+    </description>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+        summary="the surface already has a capture exclusion object"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Informs the server that the client will no longer use this global.
+        Exclusion objects already created stay in effect.
+      </description>
+    </request>
+
+    <request name="get_surface_exclusion">
+      <description summary="get the capture exclusion object of a surface">
+        Creates the object that leaves the surface out of captures. The
+        surface starts included. A surface has at most one such object at a
+        time: asking for a second raises already_constructed.
+      </description>
+      <arg name="id" type="new_id" interface="kora_surface_capture_exclusion_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="kora_surface_capture_exclusion_v1" version="1">
+    <description summary="leaves one surface out of captures">
+      While excluded, the surface and its subsurfaces are drawn on screen but
+      left out of every capture the compositor makes: of an output, of a
+      workspace, and of a toplevel the surface belongs to. Anything the
+      compositor draws for the surface, such as its shadow or the blur behind
+      it, is left out with it, so a capture shows what is underneath. The
+      pointer and drag icons follow the capture's own cursor option instead.
+
+      The surface's popups are not excluded with it; they have their own
+      objects.
+
+      Once the surface is destroyed, requests other than destroy do nothing.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop excluding the surface">
+        The surface is included in captures again from its next commit.
+      </description>
+    </request>
+
+    <request name="set_excluded">
+      <description summary="leave the surface out of captures, or put it back">
+        Zero includes the surface in captures; any other value leaves it out.
+
+        This is double-buffered state, applied on the next wl_surface.commit
+        (for a synchronized subsurface, when its parent's state is applied).
+      </description>
+      <arg name="excluded" type="uint" summary="non-zero to leave the surface out"/>
+    </request>
+  </interface>
+</protocol>
