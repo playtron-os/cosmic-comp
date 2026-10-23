@@ -308,6 +308,7 @@ impl State {
 
         self.common.update_xwayland_settings();
         self.common.update_xwayland_primary_output();
+        self.common.update_x11_workarea();
     }
 
     /// The server died, or never came up: clear it away and wait for the next

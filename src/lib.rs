@@ -704,6 +704,7 @@ fn refresh(state: &mut State) {
     RealmState::refresh(state);
     IdentityState::refresh(state);
     state.common.update_x11_stacking_order();
+    state.common.update_x11_workarea();
     KeyboardLayoutState::refresh(state);
     state.last_refresh = LastRefresh::At(Instant::now());
 }
