@@ -9,7 +9,8 @@ use std::{
 use crate::{
     backend::render::cursor::{Cursor, load_cursor_env, load_cursor_theme},
     shell::{
-        CosmicSurface, PendingWindow, Shell, focus::target::KeyboardFocusTarget, grabs::ReleaseMode,
+        CosmicSurface, PendingWindow, Shell, focus::target::KeyboardFocusTarget, fullscreen_rect,
+        grabs::ReleaseMode,
     },
     state::State,
     utils::prelude::*,
@@ -1290,7 +1291,32 @@ impl XwmHandler for State {
         let mut shell = self.common.shell.write();
 
         if window.is_fullscreen() {
-            let _ = window.configure(None);
+            // A game's window kept at its fixed size that turns resizable (going
+            // fullscreen itself) now fills the output, and the reverse. A render-size
+            // request owns the geometry instead.
+            let target = shell.workspaces().spaces().find_map(|ws| {
+                ws.get_fullscreen_surfaces()
+                    .find(|f| f.surface == window)
+                    .map(|f| {
+                        let rect = fullscreen_rect(&f.surface, ws.output().geometry());
+                        (f.surface.clone(), rect)
+                    })
+            });
+            let spoofed = shell
+                .game_mode
+                .spoof_requested
+                .as_ref()
+                .is_some_and(|request| request.surface == window);
+            match target {
+                Some((surface, rect))
+                    if !spoofed && rect.size.as_logical() != window.geometry().size =>
+                {
+                    surface.set_geometry(rect, 0);
+                }
+                _ => {
+                    let _ = window.configure(None);
+                }
+            }
             return;
         }
 

@@ -1790,7 +1790,7 @@ impl Workspace {
         loop_handle: &smithay::reexports::calloop::LoopHandle<'static, State>,
     ) {
         window.set_fullscreen(true);
-        window.set_geometry(self.output.geometry(), 0);
+        window.set_geometry(fullscreen_rect(window, self.output.geometry()), 0);
         window.send_configure();
         window.output_enter(
             &self.output,
@@ -3287,6 +3287,52 @@ where
 {
     fn from(elem: TextureRenderElement<GlesTexture>) -> Self {
         WorkspaceRenderElement::Texture(elem)
+    }
+}
+
+/// Where a fullscreen `window` goes on an output. A game's fixed-size window, such
+/// as its launcher, keeps its size, centered: stretched, its chrome spans the screen
+/// while its content stays in a corner.
+pub fn fullscreen_rect(
+    window: &CosmicSurface,
+    output: Rectangle<i32, Global>,
+) -> Rectangle<i32, Global> {
+    let fixed = window
+        .fixed_size()
+        .filter(|_| crate::dbus::game_mode::is_game_window(window));
+    centered_fixed(fixed.map(|size| size.as_global()), output)
+}
+
+fn centered_fixed(
+    fixed: Option<Size<i32, Global>>,
+    output: Rectangle<i32, Global>,
+) -> Rectangle<i32, Global> {
+    match fixed {
+        Some(size) if size.w <= output.size.w && size.h <= output.size.h => Rectangle::new(
+            output.loc + Point::from(((output.size.w - size.w) / 2, (output.size.h - size.h) / 2)),
+            size,
+        ),
+        _ => output,
+    }
+}
+
+#[cfg(test)]
+mod fullscreen_rect_tests {
+    use super::*;
+
+    #[test]
+    fn a_fixed_window_keeps_its_size_centered() {
+        let output = Rectangle::new(Point::from((100, 0)), Size::from((1707, 960)));
+        assert_eq!(
+            centered_fixed(Some(Size::from((640, 400))), output),
+            Rectangle::new(Point::from((633, 280)), Size::from((640, 400)))
+        );
+        assert_eq!(centered_fixed(None, output), output, "resizable");
+        assert_eq!(
+            centered_fixed(Some(Size::from((1920, 400))), output),
+            output,
+            "wider than the output"
+        );
     }
 }
 

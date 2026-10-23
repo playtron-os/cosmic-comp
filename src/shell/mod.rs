@@ -3966,8 +3966,7 @@ impl Shell {
         else {
             return;
         };
-        let scale =
-            crate::dbus::game_mode::app_id_of(&game) != crate::dbus::game_mode::LAUNCHER_APP_ID;
+        let scale = crate::dbus::game_mode::scales_to_output(&game);
         let (_, _, mode) = self.game_mode_scaling;
         let sharpness = self.game_mode_sharpness;
         let filter = self.game_mode_filter;
