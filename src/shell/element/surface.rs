@@ -377,6 +377,19 @@ impl CosmicSurface {
         }
     }
 
+    /// The app this window's client was launched as, for a window that sets no app id; see
+    /// [`crate::launch_scope`].
+    pub fn launched_app(&self) -> Option<String> {
+        let WindowSurface::Wayland(toplevel) = self.0.underlying_surface() else {
+            return None;
+        };
+        let client = toplevel.wl_surface().client()?;
+        client
+            .get_data::<crate::state::ClientState>()?
+            .launched_app
+            .clone()
+    }
+
     /// Steam app id (`STEAM_GAME` X11 property) for this surface, if set. Only
     /// XWayland windows carry it; native Wayland toplevels return `None`.
     pub fn steam_appid(&self) -> Option<u32> {

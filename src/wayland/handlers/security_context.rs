@@ -41,6 +41,10 @@ impl SecurityContextHandler for State {
 
                 let workspace = crate::workspace_tag::of_stream(&client_stream);
                 let pid = crate::workspace_tag::peer_pid(&client_stream);
+                let launched_app = security_context
+                    .app_id
+                    .clone()
+                    .or_else(|| pid.and_then(crate::launch_scope::of_pid));
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
@@ -48,6 +52,7 @@ impl SecurityContextHandler for State {
                         security_context: Some(security_context.clone()),
                         advertised_drm_node: drm_node,
                         workspace,
+                        launched_app,
                         ..new_state
                     }),
                 ) {
