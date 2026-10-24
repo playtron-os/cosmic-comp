@@ -99,6 +99,7 @@ use crate::{
 };
 
 pub mod auto_hide;
+pub mod edge_reveal;
 pub mod element;
 pub mod focus;
 pub mod grabs;
@@ -4907,6 +4908,27 @@ impl Shell {
         })
     }
 
+    /// Game mode shows a game, not its launcher: only a game holds the whole screen.
+    pub fn game_mode_shows_game(&self) -> bool {
+        edge_reveal::game_mode_shows_game(self.game_mode.active, self.game_mode.app_id)
+    }
+
+    /// Whether both edge reveals hold back over the fullscreen window on `output`.
+    pub fn reveals_held_back_on(&self, output: &Output) -> bool {
+        let (Some(workspace), Some(seat)) =
+            (self.active_space(output), self.seats.last_active_checked())
+        else {
+            return false;
+        };
+        let game = self.game_mode_shows_game()
+            && self.game_mode.output.as_ref() == Some(output)
+            && self.game_mode.workspace == Some(workspace.handle);
+        let constrained = workspace
+            .get_fullscreen(seat)
+            .is_some_and(|fullscreen| fullscreen.halo.pointer_constrained(Some(seat)));
+        edge_reveal::reveals_held_back(game, constrained)
+    }
+
     /// Whether a fullscreen window currently holds the screen on `output`.
     ///
     /// Merely existing is not enough. Focusing another window on the same
@@ -4918,7 +4940,7 @@ impl Shell {
         let Some(workspace) = self.active_space(output) else {
             return false;
         };
-        if self.game_mode.active
+        if self.game_mode_shows_game()
             && self.game_mode.output.as_ref() == Some(output)
             && self.game_mode.workspace == Some(workspace.handle)
         {
@@ -4956,7 +4978,7 @@ impl Shell {
         };
         auto_hide::ScreenOwnership {
             // A settled fullscreen game holds the output whatever has focus.
-            game_mode_exclusive: self.game_mode.active
+            game_mode_exclusive: self.game_mode_shows_game()
                 && workspace
                     .fullscreen_surfaces
                     .iter()
@@ -5071,7 +5093,7 @@ impl Shell {
                         crate::wayland::protocols::layer_auto_hide::get_surface_edge_zone(
                             layer.wl_surface(),
                         );
-                    if edge_zone == 0 {
+                    if edge_zone == 0 || self.reveals_held_back_on(output) {
                         return None;
                     }
                     let local_geo = layer_map.layer_geometry(layer)?;
