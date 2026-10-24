@@ -98,6 +98,11 @@ where
     ) {
         data_init.init(resource, ());
     }
+
+    // A shell component's, never a boxed app's.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        crate::state::client_not_sandboxed(&client)
+    }
 }
 
 impl<D> Dispatch<cosmic_session_hold_manager_v1::CosmicSessionHoldManagerV1, (), D>
