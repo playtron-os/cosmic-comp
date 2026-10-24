@@ -1,6 +1,8 @@
+use crate::backend::render::game::GameFilter;
 use crate::backend::render::wayland::SurfaceRenderElement;
 use crate::shell::focus::FocusTarget;
 use crate::shell::focus::order::GameModeView;
+use crate::shell::game_group::{self, GroupTransform, Helper, Placement};
 use crate::shell::layout::tiling::RestoreTilingState;
 use crate::wayland::handlers::xdg_activation::ActivationContext;
 use crate::{
@@ -1303,6 +1305,20 @@ impl Workspace {
         // Children stack above the base, so they are hit-tested first (topmost =
         // last in the set), exactly matching the order `render` emits them in.
         for child in view.children.iter() {
+            if let Some(placement) = self.placed_child(view.base, child) {
+                if child
+                    .0
+                    .surface_under(
+                        placement.window_point(location),
+                        WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                    )
+                    .is_some()
+                    && let Some(mapped) = self.element_for_surface(child)
+                {
+                    return Some(KeyboardFocusTarget::from(mapped.clone()));
+                }
+                continue;
+            }
             let Some((mapped, relative)) = self.controlled_child_at(view, child, location) else {
                 continue;
             };
@@ -1375,22 +1391,7 @@ impl Workspace {
         fullscreen: &FullscreenSurface,
         location: Point<f64, Local>,
     ) -> (Point<f64, Local>, (f64, f64)) {
-        let output_scale = self.output.current_scale().fractional_scale();
-        let geometry = if fullscreen.scale_mode == crate::dbus::game_mode::ScalingMode::Integer {
-            crate::backend::render::game::integer_rect(
-                &fullscreen.surface,
-                self.output
-                    .geometry()
-                    .size
-                    .as_logical()
-                    .to_physical_precise_round(output_scale),
-            )
-            .to_f64()
-            .to_logical(output_scale)
-            .as_local()
-        } else {
-            self.fullscreen_geometry_for(fullscreen).to_f64()
-        };
+        let geometry = self.presented_rect(fullscreen);
         let bbox = fullscreen.surface.bbox();
         let src = bbox.size;
         let scale = if fullscreen.scale_to.is_some() && src.w > 0 && src.h > 0 {
@@ -1407,6 +1408,124 @@ impl Workspace {
                 + bbox.loc.as_local().to_f64(),
             scale,
         )
+    }
+
+    /// Where a controlled fullscreen surface is drawn, as `render` places it.
+    fn presented_rect(&self, fullscreen: &FullscreenSurface) -> Rectangle<f64, Local> {
+        let output_scale = self.output.current_scale().fractional_scale();
+        if fullscreen.scale_mode == crate::dbus::game_mode::ScalingMode::Integer {
+            crate::backend::render::game::integer_rect(
+                &fullscreen.surface,
+                self.output
+                    .geometry()
+                    .size
+                    .as_logical()
+                    .to_physical_precise_round(output_scale),
+            )
+            .to_f64()
+            .to_logical(output_scale)
+            .as_local()
+        } else {
+            self.fullscreen_geometry_for(fullscreen).to_f64()
+        }
+    }
+
+    /// The transform game mode draws the X11 window group of `base` through, while it
+    /// moves or scales `base` (see [`GroupTransform`]).
+    pub fn game_group(&self, base: &CosmicSurface) -> Option<GroupTransform> {
+        let fullscreen = self
+            .fullscreen_surfaces
+            .iter()
+            .find(|f| f.ended_at.is_none() && &f.surface == base)?;
+        fullscreen.scale_to?;
+        let origin = base.x11_surface()?.last_configure().loc.as_global();
+        let presented = self.presented_rect(fullscreen).to_global(&self.output);
+        GroupTransform::new(
+            origin.to_f64(),
+            base.bbox().size,
+            presented,
+            self.output.geometry().to_f64(),
+        )
+        .filter(|transform| !transform.is_identity())
+    }
+
+    /// Where a helper window of `base`'s game is drawn, when it follows the game: only around
+    /// a fixed-size `base`, which sits centred like the screen. Around a render-size game in
+    /// the screen's corner they stay where they are.
+    pub fn placed_child(&self, base: &CosmicSurface, child: &CosmicSurface) -> Option<Placement> {
+        base.fixed_size()?;
+        let x11 = child.x11_surface()?;
+        let loc = x11.last_configure().loc.as_global();
+        let asked = Helper::of(x11).map_or(loc, |helper| helper.asked);
+        let size = child.bbox().size.as_global();
+        Some(
+            self.game_group(base)?
+                .one_to_one(asked, Rectangle::new(loc, size)),
+        )
+    }
+
+    /// The windows of `base`'s game a menu or tooltip can open from, topmost first: its
+    /// placed helpers, then the game itself.
+    pub fn game_windows(
+        &self,
+        base: &CosmicSurface,
+        children: &[CosmicSurface],
+    ) -> Option<Vec<Placement>> {
+        let group = self.game_group(base)?;
+        let mut windows = children
+            .iter()
+            .filter_map(|child| self.placed_child(base, child))
+            .collect::<Vec<_>>();
+        windows.push(group.base());
+        Some(windows)
+    }
+
+    /// Where a menu or tooltip of the game at `rect` (its X11 geometry) is drawn: with the
+    /// window of `windows` (see [`Self::game_windows`]) it opened from.
+    pub fn game_popup_place(
+        &self,
+        windows: &[Placement],
+        rect: Rectangle<i32, Global>,
+    ) -> Option<Placement> {
+        Some(game_group::owner(windows, rect)?.popup(rect, self.output.geometry().to_f64()))
+    }
+
+    /// How `base` is filtered as it is scaled, so the game's menus look the same.
+    pub fn game_filter(&self, base: &CosmicSurface) -> Option<GameFilter> {
+        use crate::dbus::game_mode::ScalingMode;
+        let fullscreen = self
+            .fullscreen_surfaces
+            .iter()
+            .find(|f| f.ended_at.is_none() && &f.surface == base)?;
+        fullscreen.scale_to?;
+        let output_scale = self.output.current_scale().fractional_scale();
+        let destination = self
+            .presented_rect(fullscreen)
+            .size
+            .as_logical()
+            .to_physical(output_scale);
+        let source = fullscreen
+            .surface
+            .bbox()
+            .size
+            .to_physical_precise_round::<f64, i32>(crate::backend::render::game::source_scale(base))
+            .to_f64();
+        if source.w <= 0.0 || source.h <= 0.0 {
+            return None;
+        }
+        // Mirrors `render`: a filter that would only shrink the game falls back to linear.
+        let bypass = fullscreen.scale_filter.is_filtered()
+            && fullscreen.scale_mode != ScalingMode::Integer
+            && source.w >= destination.w.round()
+            && source.h >= destination.h.round();
+        Some(GameFilter {
+            shader: (fullscreen.uses_shader() && !bypass).then_some(fullscreen.scale_filter),
+            sharpness: fullscreen.scale_sharpness,
+            pixel_scale: Scale {
+                x: destination.w / source.w,
+                y: destination.h / source.h,
+            },
+        })
     }
 
     pub fn controlled_surface_scale(&self, surface: &CosmicSurface) -> Option<(f64, f64)> {
@@ -1433,6 +1552,15 @@ impl Workspace {
         }
         // Children first (topmost last-in-set), mirroring `render`'s stacking.
         for child in view.children.iter() {
+            if let Some(placement) = self.placed_child(view.base, child) {
+                if let Some((target, offset)) = child.focus_under(
+                    placement.window_point(location),
+                    WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+                ) {
+                    return Some((target, placement.to_screen(offset)));
+                }
+                continue;
+            }
             let Some((mapped, relative)) = self.controlled_child_at(view, child, location) else {
                 continue;
             };
@@ -2604,6 +2732,23 @@ impl Workspace {
             // children are emitted first, topmost last-in-the-set first.
             let mut lower_elements = Vec::new();
             for child in view.children.iter() {
+                if let Some(placement) = self.placed_child(view.base, child) {
+                    let origin = placement.render_origin(&self.output, output_scale);
+                    child.push_render_elements(
+                        renderer,
+                        origin,
+                        output_scale.into(),
+                        window_alpha,
+                        None,
+                        scanout_node,
+                        false,
+                        [0; 4],
+                        0,
+                        &mut |elem| push(WorkspaceRenderElement::OverrideRedirect(elem)),
+                        None,
+                    );
+                    continue;
+                }
                 let Some(mapped) = self
                     .mapped()
                     .find(|m| m.windows().any(|(surface, _)| &surface == child))
@@ -3333,6 +3478,39 @@ mod fullscreen_rect_tests {
             output,
             "wider than the output"
         );
+    }
+
+    /// A dialog the game centres on the screen stays centred once its group is scaled.
+    #[test]
+    fn a_fixed_windows_group_scales_about_the_output_centre() {
+        use crate::dbus::game_mode::ScalingMode;
+        let output = Rectangle::new(Point::from((100, 0)), Size::from((1707, 960)));
+        let size = Size::from((427, 267));
+        let placed = centered_fixed(Some(size), output);
+        for mode in [ScalingMode::Fit, ScalingMode::Integer, ScalingMode::Fill] {
+            let fit = Workspace::scaling_rect(size.as_logical(), output.size.as_local(), mode)
+                .unwrap()
+                .to_f64();
+            let presented = Rectangle::new(
+                Point::from((fit.loc.x + 100.0, fit.loc.y)),
+                Size::from((fit.size.w, fit.size.h)),
+            );
+            let group = GroupTransform::new(
+                placed.loc.to_f64(),
+                size.as_logical(),
+                presented,
+                output.to_f64(),
+            )
+            .unwrap();
+            let centre = Point::<f64, Global>::from((100.0 + 1707.0 / 2.0, 480.0));
+            let drawn = group.to_screen(centre);
+            // Within one game pixel: placing the window rounds by half a pixel.
+            let (dx, dy) = ((drawn.x - centre.x).abs(), (drawn.y - centre.y).abs());
+            assert!(
+                dx <= group.scale.x && dy <= group.scale.y,
+                "{mode:?}: {drawn:?}"
+            );
+        }
     }
 }
 

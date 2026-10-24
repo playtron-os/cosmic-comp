@@ -122,7 +122,7 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/playtron-os/smithay.git"
-rev = "f8fe59cd411e8f8f0d282a9c658442c3d0989289"
+rev = "5e25ab2e8172b6264af8f3d7f334e264c589acce"
 default-features = false
 features = [
     "backend_drm",
@@ -237,7 +237,7 @@ cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings
 # Last revision before the InputTime migration; our Smithay fork still uses u32
 # event timestamps. Keep debug builds on the matching API until Smithay migrates.
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "f34d50913003e0d62b0fb8999baf763d0960e3ef" }
-smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "f8fe59cd411e8f8f0d282a9c658442c3d0989289" }
+smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "5e25ab2e8172b6264af8f3d7f334e264c589acce" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
 #iced = { path = "../iced" }
