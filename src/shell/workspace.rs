@@ -1457,10 +1457,15 @@ impl Workspace {
             return None;
         }
         let (surface_point, scale) = self.controlled_surface_transform(fullscreen, location);
-        if let Some((target, offset)) = fullscreen.halo.focus_under(
+        let game = crate::shell::edge_reveal::game_mode_shows_game(
+            true,
+            Some(crate::dbus::game_mode::app_id_of(view.base)),
+        );
+        if let Some((target, offset)) = fullscreen.halo.focus_under_in_game_mode(
             location.as_logical(),
             WindowSurfaceType::TOPLEVEL,
             Some(seat),
+            game,
         ) {
             return Some((target, offset.as_local().to_global(&self.output)));
         }
