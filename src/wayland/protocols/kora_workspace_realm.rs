@@ -140,6 +140,11 @@ where
         let resource = data_init.init(resource, ());
         state.realm_state_mut().instances.push(resource);
     }
+
+    // A shell component's, never a boxed app's.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        crate::state::client_not_sandboxed(&client)
+    }
 }
 
 impl<D> Dispatch<KoraWorkspaceRealmManagerV1, (), D> for RealmState

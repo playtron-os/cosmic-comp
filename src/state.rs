@@ -387,6 +387,7 @@ pub struct Common {
     pub layer_surface_placement_state: LayerSurfacePlacementState,
     pub tooltip_state: TooltipManagerState,
     pub data_device_state: DataDeviceState,
+    pub display_grants: crate::display_grants::DisplayGrants,
     pub clipboard_state: crate::clipboard::ClipboardState,
     pub dmabuf_state: DmabufState,
     pub special_action_state: SpecialActionState,
@@ -777,7 +778,7 @@ pub fn client_has_no_security_context(client: &Client) -> bool {
         .is_none_or(|client_state| client_state.security_context.is_none())
 }
 
-fn client_not_sandboxed(client: &Client) -> bool {
+pub fn client_not_sandboxed(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|client_state| client_state.not_sandboxed())
@@ -798,6 +799,9 @@ impl State {
             .unwrap();
 
         let clock = Clock::new();
+        // Read by every guarded global's filter; see `display_grants`.
+        let display_grants = crate::display_grants::DisplayGrants::default();
+        use crate::display_grants::Class;
         let config = Config::load(&handle);
         let reduced_motion = config.cosmic_conf.reduced_motion;
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
@@ -836,13 +840,19 @@ impl State {
         let presentation_state = PresentationState::new::<Self>(dh, clock.id() as u32);
         let primary_selection_state = PrimarySelectionState::new::<Self>(dh);
         let cosmic_image_capture_source_state =
-            CosmicImageCaptureSourceState::new::<Self, _>(dh, client_not_sandboxed);
-        let output_capture_source_state =
-            OutputCaptureSourceState::new_with_filter::<State, _>(dh, client_not_sandboxed);
-        let toplevel_capture_source_state =
-            ToplevelCaptureSourceState::new_with_filter::<State, _>(dh, client_not_sandboxed);
-        let image_copy_capture_state =
-            ImageCopyCaptureState::new_with_filter::<Self, _>(dh, client_not_sandboxed);
+            CosmicImageCaptureSourceState::new::<Self, _>(dh, display_grants.filter(Class::Screen));
+        let output_capture_source_state = OutputCaptureSourceState::new_with_filter::<State, _>(
+            dh,
+            display_grants.filter(Class::Screen),
+        );
+        let toplevel_capture_source_state = ToplevelCaptureSourceState::new_with_filter::<State, _>(
+            dh,
+            display_grants.filter(Class::Screen),
+        );
+        let image_copy_capture_state = ImageCopyCaptureState::new_with_filter::<Self, _>(
+            dh,
+            display_grants.filter(Class::Screen),
+        );
         let surface_embed_state = SurfaceEmbedManagerState::new_with_filter::<Self, CosmicSurface, _>(
             dh,
             client_not_sandboxed,
@@ -866,7 +876,7 @@ impl State {
         SecurityContextState::new::<Self, _>(dh, client_has_no_security_context);
         InputMethodManagerState::new::<Self, _>(dh, client_not_sandboxed);
         TextInputManagerState::new::<Self>(dh);
-        VirtualKeyboardManagerState::new::<State, _>(dh, client_not_sandboxed);
+        VirtualKeyboardManagerState::new::<State, _>(dh, display_grants.filter(Class::Input));
         AlphaModifierState::new::<Self>(dh);
         SinglePixelBufferState::new::<Self>(dh);
         FixesState::new::<Self>(dh);
@@ -887,12 +897,12 @@ impl State {
         let ext_data_control_state = ExtDataControlState::new::<Self, _>(
             dh,
             Some(&primary_selection_state),
-            client_not_sandboxed,
+            display_grants.filter(Class::Clipboard),
         );
         let wlr_data_control_state = WlrDataControlState::new::<Self, _>(
             dh,
             Some(&primary_selection_state),
-            client_not_sandboxed,
+            display_grants.filter(Class::Clipboard),
         );
 
         let shell = Arc::new(parking_lot::RwLock::new(Shell::new(&config)));
@@ -917,7 +927,7 @@ impl State {
             manager.replace_icon_sizes([24, 32, 48, 64]);
             manager
         };
-        let toplevel_info_state = ToplevelInfoState::new(dh, client_not_sandboxed);
+        let toplevel_info_state = ToplevelInfoState::new(dh, display_grants.filter(Class::Screen));
         let toplevel_management_state = ToplevelManagementState::new::<State, _>(
             dh,
             vec![
@@ -927,7 +937,7 @@ impl State {
                 ManagementCapabilities::Minimize,
                 ManagementCapabilities::MoveToWorkspace,
             ],
-            client_not_sandboxed,
+            display_grants.filter(Class::Input),
         );
         let workspace_state = WorkspaceState::new(dh, client_not_sandboxed);
 
@@ -938,6 +948,7 @@ impl State {
         let async_executor = ThreadPool::builder().pool_size(1).create().unwrap();
         let game_mode_bridge = crate::dbus::game_mode::init(&handle, &async_executor);
         crate::dbus::workspaces::init(&handle, &async_executor);
+        crate::dbus::display_grants::init(&handle, &async_executor);
         crate::dbus::runs::init(&handle, &async_executor);
         let speech_to_text =
             crate::dbus::speech_to_text::SpeechToText::init(&handle, &async_executor);
@@ -992,6 +1003,7 @@ impl State {
                 layer_surface_placement_state,
                 tooltip_state,
                 data_device_state,
+                display_grants,
                 clipboard_state: crate::clipboard::ClipboardState::default(),
                 dmabuf_state,
                 special_action_state,
