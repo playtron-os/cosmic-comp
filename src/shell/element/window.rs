@@ -367,24 +367,33 @@ fn resolve_app_icon(app_id: &str) -> Option<super::header_bar::AppIcon> {
         return Some(prescale_icon_from_path(&path.to_string_lossy()));
     }
 
-    // 3. Direct pixmap lookup, the name as written first: Zoom ships only `pixmaps/Zoom.png`.
-    for dir in crate::utils::xdg_dirs::data_dirs("pixmaps") {
-        for name in [app_id, lower.as_str()] {
-            for ext in &["png", "svg", "xpm"] {
+    // 3. Direct pixmap lookup
+    let pixmap = pixmap_in(&crate::utils::xdg_dirs::data_dirs("pixmaps"), app_id)?;
+    Some(prescale_icon_from_path(&pixmap.to_string_lossy()))
+}
+
+/// `name`'s file in the first of `dirs` that has one, the name as written before its
+/// lowercase: Zoom ships only `pixmaps/Zoom.png`.
+fn pixmap_in(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path::PathBuf> {
+    let lower = name.to_lowercase();
+    for dir in dirs {
+        for name in [name, lower.as_str()] {
+            for ext in ["png", "svg", "xpm"] {
                 let pixmap = dir.join(format!("{name}.{ext}"));
                 if pixmap.exists() {
-                    return Some(prescale_icon_from_path(&pixmap.to_string_lossy()));
+                    return Some(pixmap);
                 }
             }
         }
     }
-
     None
 }
 
 /// The icon a desktop entry names, for an app whose icon is not called after its app id, such
 /// as 1Password (`com.onepassword.OnePassword`, icon `1password`).
-fn entry_icon(app: Option<&crate::utils::desktop_action::DesktopApp>) -> Option<super::header_bar::AppIcon> {
+fn entry_icon(
+    app: Option<&crate::utils::desktop_action::DesktopApp>,
+) -> Option<super::header_bar::AppIcon> {
     resolve_app_icon(app?.icon.as_deref()?)
 }
 
@@ -3176,6 +3185,18 @@ mod tests {
             strip_override_key("X-Playtron-ForcedTitleExtra=x", "ForcedTitle"),
             None
         );
+    }
+
+    #[test]
+    fn a_pixmap_is_found_by_its_names_own_case() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-pixmaps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Zoom.png"), b"png").unwrap();
+        std::fs::write(dir.join("firefox.png"), b"png").unwrap();
+        let dirs = [dir.clone()];
+        assert_eq!(pixmap_in(&dirs, "Zoom"), Some(dir.join("Zoom.png")));
+        assert_eq!(pixmap_in(&dirs, "Firefox"), Some(dir.join("firefox.png")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
