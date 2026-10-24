@@ -101,6 +101,7 @@ use crate::{
 pub mod auto_hide;
 pub mod element;
 pub mod focus;
+pub mod game_group;
 pub mod grabs;
 pub mod layer_open;
 pub mod layer_resize_anim;
@@ -8012,6 +8013,20 @@ impl Shell {
         } = self.pending_windows.remove(pos);
 
         self.tag_game_surface(&window);
+        // A window of the game shown around a fixed-size window opens where the game put
+        // it: game mode draws it through the game's transform (`Workspace::game_group`).
+        let game_child_at = self
+            .game_mode
+            .game_surface
+            .as_ref()
+            .zip(self.game_mode.app_id)
+            .filter(|(base, app_id)| {
+                self.game_mode.active
+                    && base.fixed_size().is_some()
+                    && crate::dbus::game_mode::is_game_child(base, *app_id, &window)
+            })
+            .and_then(|_| window.x11_surface())
+            .map(|x| x.last_configure().loc.as_global());
 
         // Check if this window is embedded - if so, we need to place it on the same
         // output/workspace as the parent window to ensure proper embedding
@@ -8422,6 +8437,9 @@ impl Shell {
                         None
                     }
                 });
+            let initial_position = game_child_at
+                .map(|loc| loc.to_local(&output))
+                .or(initial_position);
             if quick_access {
                 // Full height at the width it asked for: game mode draws it down the
                 // output's right edge, not as a window the floating layer sizes.

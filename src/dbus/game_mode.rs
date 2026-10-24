@@ -1704,7 +1704,7 @@ impl State {
                 // Render at the requested size and let the presentation rect scale it up. Sent
                 // once per surface and size, or a client keeping its own size never settles.
                 if (spoof_w > 0 || shell.game_mode.spoof_requested.is_some())
-                    && want_scale
+                    && takes_render_size(&game)
                     && game.x11_surface().is_none_or(client_fullscreen)
                 {
                     // The request is in pixels and the geometry is logical, so divide by the
@@ -2798,11 +2798,16 @@ pub fn is_game_window(surface: &CosmicSurface) -> bool {
     !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
 }
 
-/// Whether game mode may scale `surface` to the output. The launcher and a window
-/// held to a fixed size show 1:1, centered: a fixed window's own popups are placed
-/// in its unscaled coordinates, so scaling it would leave them out of place.
+/// Whether game mode may scale `surface` to the output. The launcher shows 1:1; a
+/// window held to a fixed size scales with its popups as one group (`shell::game_group`).
 pub fn scales_to_output(surface: &CosmicSurface) -> bool {
-    app_id_of(surface) != LAUNCHER_APP_ID && surface.fixed_size().is_none()
+    app_id_of(surface) != LAUNCHER_APP_ID
+}
+
+/// Whether game mode may configure `surface` to a render size. A fixed-size window keeps
+/// its size: it would stretch its own chrome and leave its content where it was.
+fn takes_render_size(surface: &CosmicSurface) -> bool {
+    scales_to_output(surface) && surface.fixed_size().is_none()
 }
 
 /// The game game mode shows (0 for none), for decoration checks that run without the shell.

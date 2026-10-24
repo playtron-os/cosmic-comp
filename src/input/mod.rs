@@ -3202,18 +3202,26 @@ impl State {
                             ))));
                         }
                     }
-                    Stage::OverrideRedirect { surface, location } => {
+                    Stage::OverrideRedirect {
+                        surface,
+                        location,
+                        group,
+                    } => {
+                        // A window drawn through the game's group transform is hit where it is
+                        // drawn; event delivery undoes the scale (`client_coordinates`).
+                        let point = group.map_or(global_pos, |group| group.to_game(global_pos));
                         if let Some((_, surface_loc)) = surface.surface_under(
-                            global_pos.as_logical(),
+                            point.as_logical(),
                             location.as_logical(),
                             WindowSurfaceType::ALL,
                         ) {
+                            let surface_loc = surface_loc.as_global().to_f64();
                             return ControlFlow::Break(Ok(Some((
                                 PointerFocusTarget::X11Surface {
                                     surface: surface.clone(),
                                     toplevel: None,
                                 },
-                                surface_loc.as_global().to_f64(),
+                                group.map_or(surface_loc, |group| group.to_screen(surface_loc)),
                             ))));
                         }
                     }

@@ -54,6 +54,8 @@ pub enum Stage<'a> {
     OverrideRedirect {
         surface: &'a X11Surface,
         location: Point<i32, Global>,
+        /// Set for the game's own windows while game mode moves or scales the game.
+        group: Option<crate::shell::game_group::GroupTransform>,
     },
     StickyPopups(&'a FloatingLayout),
     Sticky(&'a FloatingLayout),
@@ -99,37 +101,39 @@ pub struct GameModeView<'a> {
     pub children: &'a [CosmicSurface],
     pub presentation: Option<&'a crate::backend::render::game::GamePresentation>,
 }
-/// Whether an override-redirect window may render while strict game-mode control
-/// is in effect for this workspace.
+/// What an override-redirect window is to the game that game mode shows.
 ///
-/// Override-redirect windows were the one un-filtered path left: they bypass the
-/// window manager, and the emission loop only checked that they intersect the
-/// output — so an unrelated app's tooltip or menu painted straight over the
-/// fullscreen game, the exact inverse of the game's own dialogs being hidden.
-///
-/// Allowed: gaming overlays (`STEAM_OVERLAY` / `GAMESCOPE_EXTERNAL_OVERLAY` — the
-/// Steam overlay, MangoHud), and windows belonging to the game itself, i.e. its
-/// own Wine/CEF dropdowns and tooltips. Only same-process windows may composite
-/// over the game, and 1x1 stubs never do.
-fn game_mode_allows_override(
-    view: Option<GameModeView<'_>>,
+/// Override-redirect windows bypass the window manager, so an unrelated app's tooltip or
+/// menu would paint straight over the fullscreen game. Gaming overlays
+/// (`STEAM_OVERLAY` / `GAMESCOPE_EXTERNAL_OVERLAY`) may, and so may the game's own
+/// windows (same process or `STEAM_GAME` id, never 1x1 stubs): its Wine/CEF menus and tooltips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverrideRole {
+    Unrelated,
+    Overlay,
+    Game,
+}
+
+pub fn game_override_role(
+    base: &CosmicSurface,
     game_app_id: Option<u32>,
     or: &X11Surface,
-) -> bool {
-    let Some(view) = view else {
-        // Not under strict control — unchanged behavior.
-        return true;
-    };
+) -> OverrideRole {
     if or.steam_overlay().is_some_and(|v| v != 0) || or.external_overlay().is_some_and(|v| v != 0) {
-        return true;
+        return OverrideRole::Overlay;
     }
     let size = or.last_configure().size;
     if size.w <= 1 || size.h <= 1 {
-        return false;
+        return OverrideRole::Unrelated;
     }
-    let base_pid = view.base.pid();
-    (base_pid.is_some() && or.pid() == base_pid)
+    let base_pid = base.pid();
+    if (base_pid.is_some() && CosmicSurface::x11_pid(or) == base_pid)
         || (game_app_id.is_some() && or.steam_game() == game_app_id)
+    {
+        OverrideRole::Game
+    } else {
+        OverrideRole::Unrelated
+    }
 }
 
 pub fn render_input_order<R: Default + 'static>(
@@ -430,24 +434,39 @@ fn render_input_order_internal<R: 'static>(
         // overlay redirect windows
         // they need to be over sticky windows, because they could be popups of sticky windows,
         // and we can't differenciate that.
-        for (surface, location) in shell
+        for (surface, location, group) in shell
             .override_redirect_windows
             .iter()
             .rev()
-            .filter(|or| {
-                (*or)
-                    .last_configure()
-                    .as_global()
-                    .intersection(output.geometry())
-                    .is_some()
+            .filter_map(|or| {
+                let rect = or.last_configure().as_global();
+                // Not under strict control, every window renders as it is.
+                let Some(view) = game_mode_controlled else {
+                    return Some((or, rect, None));
+                };
+                match game_override_role(view.base, shell.game_mode.app_id, or) {
+                    OverrideRole::Unrelated => None,
+                    OverrideRole::Overlay => Some((or, rect, None)),
+                    // The game's menus and tooltips move and scale with its window.
+                    OverrideRole::Game => Some((
+                        or,
+                        rect,
+                        workspace.game_group_member(view.base, rect.size.as_logical(), false),
+                    )),
+                }
             })
-            .filter(|or| {
-                game_mode_allows_override(game_mode_controlled, shell.game_mode.app_id, or)
+            .filter(|(_, rect, group)| {
+                let drawn = group.map_or(rect.to_f64(), |group| group.window_rect(*rect));
+                drawn.intersection(output.geometry().to_f64()).is_some()
             })
-            .filter(|or| shell.x11_in_active_workspace(or))
-            .map(|or| (or, or.last_configure().loc.as_global()))
+            .filter(|(or, ..)| shell.x11_in_active_workspace(or))
+            .map(|(or, rect, group)| (or, rect.loc, group))
         {
-            callback(Stage::OverrideRedirect { surface, location })?;
+            callback(Stage::OverrideRedirect {
+                surface,
+                location,
+                group,
+            })?;
         }
 
         // sticky window popups — suppressed under an exclusive game so nothing
