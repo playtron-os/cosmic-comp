@@ -738,15 +738,20 @@ fn layer_popups<'a>(
         move |(surface, location, alpha)| {
             let location_clone = location;
             let surface_clone = surface.clone();
-            PopupManager::popups_for_surface(surface.wl_surface()).map(
+            PopupManager::popups_for_surface(surface.wl_surface()).filter_map(
                 move |(popup, popup_offset)| {
                     let standard_offset = (popup_offset - popup.geometry().loc).as_global();
                     let standard_location = location_clone + standard_offset;
 
-                    // Check for compositor-driven tooltip position override
-                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
-                        popup.wl_surface(),
-                    );
+                    // Check for compositor-driven tooltip position override; a tooltip off
+                    // its parent or in its show delay is neither drawn nor under the pointer.
+                    let tooltip_override =
+                        match crate::wayland::protocols::tooltip::get_tooltip_position(
+                            popup.wl_surface(),
+                        ) {
+                            None => None,
+                            Some(placement) => Some(placement.shown(std::time::Instant::now())?),
+                        };
 
                     tracing::trace!(
                         "[tooltip-layer-render] popup has_override={} standard_loc=({},{})",
@@ -791,7 +796,7 @@ fn layer_popups<'a>(
                         standard_location
                     };
 
-                    (surface_clone.clone(), popup, final_location, alpha)
+                    Some((surface_clone.clone(), popup, final_location, alpha))
                 },
             )
         },

@@ -112,13 +112,31 @@ pub struct TooltipOverrideData {
     pub show_at: Option<std::time::Instant>,
 }
 
+/// Where the compositor draws a tooltip popup instead of its xdg_popup position.
+#[derive(Debug, Clone, Copy)]
+pub enum TooltipPlacement {
+    /// The pointer is off the parent surface.
+    Hidden,
+    At(TooltipOverrideData),
+}
+
+impl TooltipPlacement {
+    /// Where to draw the tooltip at `now`; `None` while it is out of sight.
+    pub fn shown(self, now: std::time::Instant) -> Option<TooltipOverrideData> {
+        match self {
+            Self::At(data) if data.show_at.is_none_or(|at| now >= at) => Some(data),
+            _ => None,
+        }
+    }
+}
+
 /// Per-surface tooltip position override.
 /// When set, the rendering pipeline uses this global position instead of
 /// the standard xdg_popup-computed position.
-pub struct TooltipPositionOverride(pub Mutex<Option<TooltipOverrideData>>);
+pub struct TooltipPositionOverride(pub Mutex<Option<TooltipPlacement>>);
 
 /// Get the tooltip position override for a surface, if any.
-pub fn get_tooltip_position(surface: &WlSurface) -> Option<TooltipOverrideData> {
+pub fn get_tooltip_position(surface: &WlSurface) -> Option<TooltipPlacement> {
     let result = with_states(surface, |states| {
         states
             .data_map
@@ -155,12 +173,23 @@ pub fn set_tooltip_position(
         let data = states
             .data_map
             .get_or_insert_threadsafe(|| TooltipPositionOverride(Mutex::new(None)));
-        *data.0.lock().unwrap() = Some(TooltipOverrideData {
+        *data.0.lock().unwrap() = Some(TooltipPlacement::At(TooltipOverrideData {
             position,
             parent_relative,
             anchor,
             show_at,
-        });
+        }));
+    });
+}
+
+/// Keep a tooltip out of sight until the pointer is over its parent again.
+pub fn hide_tooltip(surface: &WlSurface) {
+    tracing::debug!("[tooltip] hide_tooltip surface={:?}", surface.id());
+    with_states(surface, |states| {
+        let data = states
+            .data_map
+            .get_or_insert_threadsafe(|| TooltipPositionOverride(Mutex::new(None)));
+        *data.0.lock().unwrap() = Some(TooltipPlacement::Hidden);
     });
 }
 
@@ -342,7 +371,7 @@ impl TooltipManagerState {
                             + std::time::Duration::from_millis(reg.show_delay_ms as u64),
                     );
                 }
-                clear_tooltip_position(&reg.tooltip_surface);
+                hide_tooltip(&reg.tooltip_surface);
             }
         }
     }
@@ -440,6 +469,14 @@ where
                 );
 
                 let tooltip_state = state.tooltip_state();
+                // A tooltip shows only while the pointer is over its parent.
+                if tooltip_state
+                    .cached_cursor
+                    .as_ref()
+                    .is_none_or(|cursor| cursor.surface_id != parent_surface.id())
+                {
+                    hide_tooltip(&tooltip_surface);
+                }
                 let reg = TooltipRegistration {
                     tooltip_surface,
                     parent_surface,
@@ -606,3 +643,7 @@ macro_rules! delegate_tooltip {
         ] => $crate::wayland::protocols::tooltip::TooltipManagerState);
     };
 }
+
+#[cfg(test)]
+#[path = "tooltip_tests.rs"]
+mod tests;
