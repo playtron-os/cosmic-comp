@@ -243,6 +243,16 @@ impl PointerFocusTarget {
                 toplevel: Some(surface),
                 ..
             } => surface,
+            // The game's menus scale with it.
+            Self::X11Surface {
+                surface,
+                toplevel: None,
+            } if shell.game_mode.active => {
+                return match crate::shell::focus::order::game_popup_scale(shell, surface) {
+                    Some(scale) => Point::from((point.x / scale.x, point.y / scale.y)),
+                    None => point,
+                };
+            }
             _ => return point,
         };
         if !shell.game_mode.active || shell.game_mode.game_surface.as_ref() != Some(surface) {

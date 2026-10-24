@@ -17,7 +17,9 @@ use crate::{
         LastModifierChange, SeatExt, Trigger,
         element::window::{begin_pointer_hover_check, finalize_pointer_hover},
         focus::{
-            Stage, render_input_order,
+            Stage,
+            order::ScaledPopup,
+            render_input_order,
             target::{KeyboardFocusTarget, PointerFocusTarget},
         },
         grabs::{ReleaseMode, ResizeEdge},
@@ -3202,18 +3204,36 @@ impl State {
                             ))));
                         }
                     }
-                    Stage::OverrideRedirect { surface, location } => {
-                        if let Some((_, surface_loc)) = surface.surface_under(
-                            global_pos.as_logical(),
-                            location.as_logical(),
-                            WindowSurfaceType::ALL,
-                        ) {
+                    Stage::OverrideRedirect {
+                        surface,
+                        location,
+                        scaled,
+                    } => {
+                        // A menu drawn at the game's scale is hit where it is drawn; event
+                        // delivery undoes the scale (`client_coordinates`).
+                        let hit = match scaled {
+                            Some(ScaledPopup { placement, .. }) => surface
+                                .surface_under(
+                                    placement.window_point(global_pos),
+                                    (0, 0),
+                                    WindowSurfaceType::ALL,
+                                )
+                                .map(|(_, offset)| placement.to_screen(offset.to_f64())),
+                            None => surface
+                                .surface_under(
+                                    global_pos.as_logical(),
+                                    location.as_logical(),
+                                    WindowSurfaceType::ALL,
+                                )
+                                .map(|(_, loc)| loc.as_global().to_f64()),
+                        };
+                        if let Some(surface_loc) = hit {
                             return ControlFlow::Break(Ok(Some((
                                 PointerFocusTarget::X11Surface {
                                     surface: surface.clone(),
                                     toplevel: None,
                                 },
-                                surface_loc.as_global().to_f64(),
+                                surface_loc,
                             ))));
                         }
                     }

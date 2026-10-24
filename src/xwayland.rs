@@ -644,7 +644,7 @@ impl Common {
             let active_output = seat.active_output();
 
             // front to back, given that is how the workspace enumerates
-            shell
+            let mut order = shell
                 .workspaces()
                 .sets
                 .iter()
@@ -732,7 +732,22 @@ impl Common {
                                 }),
                         )
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // Game mode draws the game's own windows above it, focused or not: X11 must
+            // agree, or the focused game would cover them and the menus mapped before them.
+            if let Some(base) = shell.game_mode.game_surface.as_ref()
+                && shell.game_mode.active
+                && order.contains(base)
+            {
+                let children = &shell.game_mode.children;
+                order.retain(|surface| !children.contains(surface));
+                let at = order
+                    .iter()
+                    .position(|surface| surface == base)
+                    .unwrap_or(0);
+                order.splice(at..at, children.iter().cloned());
+            }
+            order
         };
 
         for xstate in self.xwayland_states_mut() {
@@ -1331,6 +1346,9 @@ impl XwmHandler for State {
             if !refit_fullscreen(&shell, &window, false) {
                 let _ = window.configure(None);
             }
+            return;
+        }
+        if shell.game_helper_configure(&window, x, y, w, h) {
             return;
         }
 

@@ -1,7 +1,10 @@
 //! Cached game presentation in physical pixels.
 
 use smithay::{desktop::space::SpaceElement, wayland::seat::WaylandFocus};
-use std::borrow::{Borrow, BorrowMut};
+use std::{
+    borrow::{Borrow, BorrowMut},
+    sync::Mutex,
+};
 
 use smithay::{
     backend::renderer::{
@@ -20,9 +23,11 @@ use smithay::{
             with_renderer_surface_state,
         },
     },
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{
         Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform, user_data::UserDataMap,
     },
+    xwayland::X11Surface,
 };
 
 use super::{element::AsGlowRenderer, fsr, nis, thread_user_data};
@@ -67,17 +72,68 @@ impl GameFrame {
 pub fn source_scale(surface: &CosmicSurface) -> Scale<f64> {
     surface
         .wl_surface()
-        .and_then(|wl| {
-            with_renderer_surface_state(&wl, |state| {
-                let view = state.view()?;
-                (view.dst.w > 0 && view.dst.h > 0).then_some(Scale {
-                    x: view.src.size.w * state.buffer_scale() as f64 / view.dst.w as f64,
-                    y: view.src.size.h * state.buffer_scale() as f64 / view.dst.h as f64,
-                })
-            })
-            .flatten()
+        .map_or(Scale::from(1.0), |wl| tree_source_scale(&wl))
+}
+
+fn tree_source_scale(wl: &WlSurface) -> Scale<f64> {
+    with_renderer_surface_state(wl, |state| {
+        let view = state.view()?;
+        (view.dst.w > 0 && view.dst.h > 0).then_some(Scale {
+            x: view.src.size.w * state.buffer_scale() as f64 / view.dst.w as f64,
+            y: view.src.size.h * state.buffer_scale() as f64 / view.dst.h as f64,
         })
-        .unwrap_or(Scale::from(1.0))
+    })
+    .flatten()
+    .unwrap_or(Scale::from(1.0))
+}
+
+/// How game mode filters a game it scales, for its menus to look the same.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GameFilter {
+    /// The filter `prepare` runs, or `None` for a plain linear scale.
+    pub shader: Option<ScalingMode>,
+    pub sharpness: f32,
+    /// Destination pixels per source pixel of the game's window.
+    pub pixel_scale: Scale<f64>,
+}
+
+#[derive(Debug, Default)]
+struct PopupFrame(Mutex<Option<GameFrame>>);
+
+/// One of the game's menus at `destination`, through the game's filter.
+pub fn prepare_popup<R>(
+    renderer: &mut R,
+    surface: &X11Surface,
+    filter: &GameFilter,
+    destination: Point<i32, Physical>,
+    output_scale: f64,
+) -> Option<GameFrameElement>
+where
+    R: AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    let wl = surface.wl_surface()?;
+    let bbox = surface.bbox();
+    let source: Size<i32, Physical> = bbox.size.to_physical_precise_round(tree_source_scale(&wl));
+    // From the game's pixel scale, so a menu at a whole scale is exactly whole pixels too.
+    let size = Size::from((
+        (f64::from(source.w) * filter.pixel_scale.x).round() as i32,
+        (f64::from(source.h) * filter.pixel_scale.y).round() as i32,
+    ));
+    let frame = surface
+        .user_data()
+        .get_or_insert_threadsafe(PopupFrame::default);
+    prepare_tree(
+        &mut frame.0.lock().unwrap(),
+        renderer,
+        &wl,
+        bbox,
+        Rectangle::new(destination, size),
+        output_scale,
+        filter.shader?,
+        filter.sharpness,
+        1.0,
+    )
 }
 
 pub fn integer_rect(
@@ -166,16 +222,43 @@ where
     R::TextureId: Send + Clone + 'static,
 {
     let wl = surface.wl_surface()?;
-    import_surface_tree(renderer, &wl).ok()?;
-    let scale = source_scale(surface);
-    let bbox = surface.bbox();
+    prepare_tree(
+        slot,
+        renderer,
+        &wl,
+        surface.bbox(),
+        destination,
+        output_scale,
+        mode,
+        sharpness,
+        alpha,
+    )
+}
+
+fn prepare_tree<R>(
+    slot: &mut Option<GameFrame>,
+    renderer: &mut R,
+    wl: &WlSurface,
+    bbox: Rectangle<i32, Logical>,
+    destination: Rectangle<i32, Physical>,
+    output_scale: f64,
+    mode: ScalingMode,
+    sharpness: f32,
+    alpha: f32,
+) -> Option<GameFrameElement>
+where
+    R: AsGlowRenderer,
+    R::TextureId: Send + Clone + 'static,
+{
+    import_surface_tree(renderer, wl).ok()?;
+    let scale = tree_source_scale(wl);
     let src_size: Size<i32, Physical> = bbox.size.to_physical_precise_round(scale);
     if src_size.w <= 0 || src_size.h <= 0 || destination.is_empty() {
         return None;
     }
     let origin = (Point::<i32, Logical>::from((0, 0)) - bbox.loc).to_physical_precise_round(scale);
     let elements: Vec<WaylandSurfaceRenderElement<R>> =
-        render_elements_from_surface_tree(renderer, &wl, origin, scale, 1.0, Kind::Unspecified);
+        render_elements_from_surface_tree(renderer, wl, origin, scale, 1.0, Kind::Unspecified);
     if elements.is_empty() {
         return None;
     }
@@ -329,7 +412,7 @@ where
             .add([Rectangle::from_size(cache.target.size())]);
     }
     let texture = TextureRenderElement::from_texture_with_damage(
-        Id::from_wayland_resource(wl.as_ref()),
+        Id::from_wayland_resource(wl),
         context,
         destination.loc.to_f64(),
         cache.target.clone(),

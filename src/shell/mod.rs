@@ -74,6 +74,8 @@ use smithay::{
 };
 use tracing::error;
 
+use self::game_group::Helper;
+
 use crate::{
     backend::render::animations::{
         motion::Motion,
@@ -434,6 +436,9 @@ pub struct GameMode {
     /// hidden. FRONT-TO-BACK (topmost first), matching `Workspace::mapped()`;
     /// recomputed by `refresh_game_mode_state`.
     pub children: Vec<CosmicSurface>,
+    /// Helper windows X11 has beside a scaled game rather than where they asked
+    /// (`Shell::place_game_helpers`).
+    pub helpers: Vec<X11Surface>,
     /// The output the game is fullscreened on — display caps (refresh rate, VRR
     /// / tearing support, external) are reported for THIS output, not just the
     /// first one, so they're correct on multi-monitor setups.
@@ -3974,6 +3979,148 @@ impl Shell {
         for ws in self.workspaces_mut().spaces_mut() {
             ws.set_fullscreen_scale_to(&game, scale, mode, filter, sharpness);
         }
+    }
+
+    /// Puts each helper window of a fixed-size game that game mode scales where X11 can
+    /// give it the pointer without covering the game (see `GroupTransform::helper_spot`);
+    /// game mode still draws it where the game asked. One that no longer follows a scaled
+    /// game goes back where it asked. Returns the windows it moved.
+    pub fn place_game_helpers(&mut self) -> Vec<X11Surface> {
+        let mut moves = Vec::new();
+        let mut placed = Vec::new();
+        let base = self
+            .game_mode
+            .game_surface
+            .clone()
+            .filter(|base| self.game_mode.active && base.fixed_size().is_some())
+            .zip(self.game_mode.app_id);
+        let space = base.and_then(|(base, app_id)| {
+            let ws = self
+                .workspaces()
+                .spaces()
+                .find(|ws| ws.get_fullscreen_surfaces().any(|f| f.surface == base))?;
+            Some((ws, ws.game_group(&base)?, base, app_id))
+        });
+        if let Some((ws, group, base, app_id)) = space {
+            let helpers = ws
+                .mapped()
+                .map(|mapped| mapped.active_window())
+                .filter(|surface| {
+                    crate::dbus::game_mode::is_game_child(&base, app_id, surface)
+                        && ws.is_floating(surface)
+                })
+                .filter_map(|surface| surface.x11_surface().cloned())
+                .filter(|x11| !x11.is_override_redirect())
+                .collect::<Vec<_>>();
+            let mut rects = helpers
+                .iter()
+                .map(|x11| x11.last_configure().as_global().to_f64())
+                .collect::<Vec<_>>();
+            let area = ws.output().geometry();
+            for (i, x11) in helpers.into_iter().enumerate() {
+                let current = x11.last_configure().as_global();
+                let helper = Helper::of(&x11).unwrap_or(Helper::at(current.loc));
+                let spot = if helper.insists() {
+                    helper.asked
+                } else {
+                    let drawn = group.one_to_one(helper.asked, current).drawn;
+                    let others = rects
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, rect)| *rect)
+                        .collect::<Vec<_>>();
+                    group.helper_spot(
+                        area,
+                        drawn,
+                        current.size,
+                        helper.asked,
+                        current.loc,
+                        &others,
+                    )
+                };
+                rects[i] = Rectangle::new(spot, current.size).to_f64();
+                Helper::set(&x11, Some(helper));
+                if spot != current.loc {
+                    tracing::debug!(target: crate::logger::GAMING_TARGET, ?current, ?spot, asked = ?helper.asked, insists = helper.insists(), "game helper placed in X11");
+                    moves.push((x11.clone(), spot));
+                }
+                placed.push(x11);
+            }
+        }
+        for x11 in std::mem::take(&mut self.game_mode.helpers) {
+            if placed.contains(&x11) {
+                continue;
+            }
+            if let Some(helper) = Helper::of(&x11).filter(|_| x11.alive()) {
+                moves.push((x11.clone(), helper.asked));
+            }
+            Helper::set(&x11, None);
+        }
+        self.game_mode.helpers = placed;
+
+        let mut moved = Vec::new();
+        for (x11, to) in moves {
+            let delta = to - x11.last_configure().loc.as_global();
+            let Some(mapped) = self.element_for_surface(&x11).cloned() else {
+                continue;
+            };
+            let Some(ws) = self.space_for_mut(&mapped) else {
+                continue;
+            };
+            let Some(geometry) = ws
+                .element_geometry(&mapped)
+                .filter(|_| delta != Point::default())
+            else {
+                continue;
+            };
+            let loc = geometry.loc + delta.as_logical().as_local();
+            mapped.set_geometry(Rectangle::new(loc, geometry.size).to_global(ws.output()));
+            ws.floating_layer
+                .space
+                .map_element(mapped, loc.as_logical(), false);
+            moved.push(x11);
+        }
+        moved
+    }
+
+    /// A helper window of a scaled game asking to move or resize: game mode draws it where it
+    /// asks and X11 keeps it beside the game. Whether `window` was one.
+    pub fn game_helper_configure(
+        &mut self,
+        window: &X11Surface,
+        x: Option<i32>,
+        y: Option<i32>,
+        w: Option<u32>,
+        h: Option<u32>,
+    ) -> bool {
+        let Some(helper) = Helper::of(window) else {
+            return false;
+        };
+        let current = window.last_configure().as_global();
+        let requested = Point::from((x.unwrap_or(current.loc.x), y.unwrap_or(current.loc.y)));
+        Helper::set(window, Some(helper.request(current, requested)));
+        let size = Size::from((
+            w.map_or(current.size.w, |w| w as i32),
+            h.map_or(current.size.h, |h| h as i32),
+        ));
+        if size != current.size
+            && let Some(mapped) = self.element_for_surface(window).cloned()
+            && let Some(ws) = self.space_for(&mapped)
+            && let Some(geometry) = ws.element_geometry(&mapped)
+        {
+            let grow = (size.w - current.size.w, size.h - current.size.h);
+            let geometry = Rectangle::new(
+                geometry.loc,
+                (geometry.size.w + grow.0, geometry.size.h + grow.1).into(),
+            );
+            mapped.set_geometry(geometry.to_global(ws.output()));
+        }
+        if !self.place_game_helpers().contains(window) && size == current.size {
+            // Nothing moved: X11 still needs an answer.
+            let _ = window.configure(None);
+        }
+        true
     }
 
     /// Whether a window that is being mapped belongs to game mode, and should
@@ -8013,8 +8160,8 @@ impl Shell {
         } = self.pending_windows.remove(pos);
 
         self.tag_game_surface(&window);
-        // A window of the game shown around a fixed-size window opens where the game put
-        // it: game mode draws it through the game's transform (`Workspace::game_group`).
+        // A window of the game shown around a fixed-size window is drawn where the game put
+        // it, through the game's transform (`Workspace::placed_child`).
         let game_child_at = self
             .game_mode
             .game_surface
@@ -8026,7 +8173,11 @@ impl Shell {
                     && crate::dbus::game_mode::is_game_child(base, *app_id, &window)
             })
             .and_then(|_| window.x11_surface())
-            .map(|x| x.last_configure().loc.as_global());
+            .map(|x| {
+                let at = x.last_configure().loc.as_global();
+                Helper::set(x, Some(Helper::at(at)));
+                at
+            });
 
         // Check if this window is embedded - if so, we need to place it on the same
         // output/workspace as the parent window to ensure proper embedding
@@ -8551,6 +8702,9 @@ impl Shell {
                 &output,
                 workspace_handle,
             );
+        }
+        if game_child_at.is_some() {
+            self.place_game_helpers();
         }
 
         new_target

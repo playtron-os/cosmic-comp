@@ -1860,6 +1860,10 @@ impl State {
                 );
                 shell.game_mode.children = children;
             }
+            // The game's scale or its helpers may have changed since they were placed.
+            if !shell.game_mode.children.is_empty() || !shell.game_mode.helpers.is_empty() {
+                shell.place_game_helpers();
+            }
         }
 
         // Focus reconciliation: nothing INVISIBLE may hold the keyboard. A window

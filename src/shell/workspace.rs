@@ -1,7 +1,8 @@
+use crate::backend::render::game::GameFilter;
 use crate::backend::render::wayland::SurfaceRenderElement;
 use crate::shell::focus::FocusTarget;
 use crate::shell::focus::order::GameModeView;
-use crate::shell::game_group::{GroupTransform, Placement};
+use crate::shell::game_group::{self, GroupTransform, Helper, Placement};
 use crate::shell::layout::tiling::RestoreTilingState;
 use crate::wayland::handlers::xdg_activation::ActivationContext;
 use crate::{
@@ -1448,26 +1449,85 @@ impl Workspace {
         .filter(|transform| !transform.is_identity())
     }
 
-    /// Where a popup of `base`'s game at `rect` (its X11 geometry) is drawn, if it follows
-    /// the game. Managed windows follow only a fixed-size `base`, which sits centred like the
-    /// screen; around a render-size game in the screen's corner they stay where they are.
-    pub fn game_group_place(
-        &self,
-        base: &CosmicSurface,
-        rect: Rectangle<i32, Global>,
-        managed: bool,
-    ) -> Option<Placement> {
-        if managed && base.fixed_size().is_none() {
+    /// Where a helper window of `base`'s game is drawn, when it follows the game: only around
+    /// a fixed-size `base`, which sits centred like the screen. Around a render-size game in
+    /// the screen's corner they stay where they are.
+    pub fn placed_child(&self, base: &CosmicSurface, child: &CosmicSurface) -> Option<Placement> {
+        if base.fixed_size().is_none() {
             return None;
         }
-        Some(self.game_group(base)?.place(rect))
+        let x11 = child.x11_surface()?;
+        let loc = x11.last_configure().loc.as_global();
+        let asked = Helper::of(x11).map_or(loc, |helper| helper.asked);
+        let size = child.bbox().size.as_global();
+        Some(
+            self.game_group(base)?
+                .one_to_one(asked, Rectangle::new(loc, size)),
+        )
     }
 
-    /// Where a child of the game is drawn, when it follows the game.
-    pub fn placed_child(&self, base: &CosmicSurface, child: &CosmicSurface) -> Option<Placement> {
-        let loc = child.x11_surface()?.last_configure().loc.as_global();
-        let size = child.bbox().size.as_global();
-        self.game_group_place(base, Rectangle::new(loc, size), true)
+    /// The windows of `base`'s game a menu or tooltip can open from, topmost first: its
+    /// placed helpers, then the game itself.
+    pub fn game_windows(
+        &self,
+        base: &CosmicSurface,
+        children: &[CosmicSurface],
+    ) -> Option<Vec<Placement>> {
+        let group = self.game_group(base)?;
+        let mut windows = children
+            .iter()
+            .filter_map(|child| self.placed_child(base, child))
+            .collect::<Vec<_>>();
+        windows.push(group.base());
+        Some(windows)
+    }
+
+    /// Where a menu or tooltip of the game at `rect` (its X11 geometry) is drawn: with the
+    /// window of `windows` (see [`Self::game_windows`]) it opened from.
+    pub fn game_popup_place(
+        &self,
+        windows: &[Placement],
+        rect: Rectangle<i32, Global>,
+    ) -> Option<Placement> {
+        Some(game_group::owner(windows, rect)?.popup(rect, self.output.geometry().to_f64()))
+    }
+
+    /// How `base` is filtered as it is scaled, so the game's menus look the same.
+    pub fn game_filter(&self, base: &CosmicSurface) -> Option<GameFilter> {
+        use crate::dbus::game_mode::ScalingMode;
+        let fullscreen = self
+            .fullscreen_surfaces
+            .iter()
+            .find(|f| f.ended_at.is_none() && &f.surface == base)?;
+        fullscreen.scale_to?;
+        let output_scale = self.output.current_scale().fractional_scale();
+        let destination = self
+            .presented_rect(fullscreen)
+            .size
+            .as_logical()
+            .to_physical(output_scale);
+        let source = fullscreen
+            .surface
+            .bbox()
+            .size
+            .to_physical_precise_round::<f64, i32>(crate::backend::render::game::source_scale(base))
+            .to_f64();
+        if source.w <= 0.0 || source.h <= 0.0 {
+            return None;
+        }
+        // Mirrors `render`: a filter that would only shrink the game falls back to linear.
+        let bypass = fullscreen.scale_filter.is_filtered()
+            && fullscreen.scale_mode != ScalingMode::Integer
+            && source.w >= destination.w.round()
+            && source.h >= destination.h.round();
+        Some(GameFilter {
+            shader: (fullscreen.uses_shader() && !bypass).then_some(fullscreen.scale_filter),
+            sharpness: fullscreen.scale_sharpness,
+            pixel_scale: Scale {
+                x: destination.w / source.w,
+                y: destination.h / source.h,
+            },
+        })
     }
 
     pub fn controlled_surface_scale(&self, surface: &CosmicSurface) -> Option<(f64, f64)> {
