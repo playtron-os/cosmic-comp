@@ -929,10 +929,13 @@ fn x11_workarea(
 /// Fits a fullscreen window to [`fullscreen_rect`] again: a game's window kept at its
 /// fixed size that turns resizable (going fullscreen itself) fills the output, and the
 /// reverse. A render-size request owns the geometry instead. Whether it reconfigured.
-fn refit_fullscreen(shell: &Shell, window: &X11Surface) -> bool {
+fn refit_fullscreen(shell: &Shell, window: &X11Surface, games_only: bool) -> bool {
     let target = shell.workspaces().spaces().find_map(|ws| {
         ws.get_fullscreen_surfaces()
-            .find(|f| f.surface == *window)
+            .find(|f| {
+                f.surface == *window
+                    && (!games_only || crate::dbus::game_mode::is_game_window(&f.surface))
+            })
             .map(|f| {
                 (
                     f.surface.clone(),
@@ -1041,7 +1044,7 @@ impl XwmHandler for State {
             }
             // Wine drops a fixed size after asking for the new one, so refit then too.
             WmWindowProperty::NormalHints if window.is_fullscreen() => {
-                refit_fullscreen(&self.common.shell.read(), &window);
+                refit_fullscreen(&self.common.shell.read(), &window, true);
             }
             // STEAM_INPUT_FOCUS toggled — grant/release the input grab over the game.
             WmWindowProperty::SteamInputFocus => {
@@ -1325,7 +1328,7 @@ impl XwmHandler for State {
         let mut shell = self.common.shell.write();
 
         if window.is_fullscreen() {
-            if !refit_fullscreen(&shell, &window) {
+            if !refit_fullscreen(&shell, &window, false) {
                 let _ = window.configure(None);
             }
             return;

@@ -3431,7 +3431,7 @@ mod fullscreen_rect_tests {
         );
     }
 
-    /// A dialog the game centres on the screen stays centred once the group is scaled.
+    /// A dialog the game centres on the screen stays centred once its group is scaled.
     #[test]
     fn a_fixed_windows_group_scales_about_the_output_centre() {
         use crate::dbus::game_mode::ScalingMode;
@@ -3450,8 +3450,10 @@ mod fullscreen_rect_tests {
                 GroupTransform::new(placed.loc.to_f64(), size.as_logical(), presented).unwrap();
             let centre = Point::<f64, Global>::from((100.0 + 1707.0 / 2.0, 480.0));
             let drawn = group.to_screen(centre);
+            // Within one game pixel: placing the window rounds by half a pixel.
+            let (dx, dy) = ((drawn.x - centre.x).abs(), (drawn.y - centre.y).abs());
             assert!(
-                (drawn.x - centre.x).abs() <= 2.0 && (drawn.y - centre.y).abs() <= 2.0,
+                dx <= group.scale.x && dy <= group.scale.y,
                 "{mode:?}: {drawn:?}"
             );
         }
