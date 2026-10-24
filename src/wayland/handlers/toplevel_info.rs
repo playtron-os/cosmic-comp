@@ -28,7 +28,11 @@ impl Window for CosmicSurface {
     }
 
     fn app_id(&self) -> String {
-        CosmicSurface::app_id(self)
+        let app_id = CosmicSurface::app_id(self);
+        if !app_id.is_empty() {
+            return app_id;
+        }
+        self.launched_app().unwrap_or_default()
     }
 
     fn is_activated(&self) -> bool {

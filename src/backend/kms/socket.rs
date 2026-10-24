@@ -85,6 +85,7 @@ impl Common {
                         pid,
                         advertised_drm_node: Some(render_node),
                         workspace,
+                        launched_app: pid.and_then(crate::launch_scope::of_pid),
                         ..state.new_client_state()
                     }),
                 ) {
