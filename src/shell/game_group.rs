@@ -107,9 +107,11 @@ impl GroupTransform {
     /// nowhere instead. Only a window drawn away from where X11 has it does this.
     pub fn shadowed(&self, windows: &[Placement], point: Point<f64, Global>) -> bool {
         let at = self.to_game(point);
+        let base = self.base();
+        let mut others = windows.iter().filter(|w| **w != base);
         self.game.contains(at)
-            && !windows.iter().any(|w| w.drawn.contains(point))
-            && windows.iter().any(|w| w.x11.contains(at))
+            && !others.clone().any(|w| w.drawn.contains(point))
+            && others.any(|w| w.x11.contains(at))
     }
 
     /// Where X11 has a helper of `size` drawn at `drawn`, which asked for `asked` and is at
@@ -560,7 +562,7 @@ mod tests {
         let corner = covered.loc + Point::from((covered.size.w, covered.size.h));
         let probe = t.to_screen(corner) - Point::from((1.0, 1.0));
         assert!(!placed.drawn.contains(probe));
-        assert!(t.shadowed(&[placed], probe));
+        assert!(t.shadowed(&[placed, t.base()], probe));
     }
 
     #[test]

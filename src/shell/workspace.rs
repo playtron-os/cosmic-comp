@@ -1453,9 +1453,7 @@ impl Workspace {
     /// a fixed-size `base`, which sits centred like the screen. Around a render-size game in
     /// the screen's corner they stay where they are.
     pub fn placed_child(&self, base: &CosmicSurface, child: &CosmicSurface) -> Option<Placement> {
-        if base.fixed_size().is_none() {
-            return None;
-        }
+        base.fixed_size()?;
         let x11 = child.x11_surface()?;
         let loc = x11.last_configure().loc.as_global();
         let asked = Helper::of(x11).map_or(loc, |helper| helper.asked);
