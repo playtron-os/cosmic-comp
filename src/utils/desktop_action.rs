@@ -58,6 +58,8 @@ pub struct DesktopAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopApp {
     pub name: Option<String>,
+    /// The entry's `Icon`, for an app whose icon is not named after its app id.
+    pub icon: Option<String>,
     pub new_window: Option<NewWindowAction>,
     /// Every action the entry declares, in declaration order, capped at
     /// [`APP_ACTION_CAP`]. Includes the one `new_window` was derived from: the
@@ -81,6 +83,10 @@ impl DesktopApp {
                 .name(&locales)
                 .filter(|name| !name.is_empty())
                 .map(|name| name.to_string()),
+            icon: entry
+                .icon()
+                .filter(|icon| !icon.is_empty())
+                .map(str::to_owned),
             new_window: NewWindowAction::from_entry(entry),
             actions: DesktopAction::all(entry, &locales),
         })
@@ -188,16 +194,22 @@ impl NewWindowAction {
 }
 
 pub fn for_app(app_id: &str) -> Option<DesktopApp> {
+    for_app_in(app_id, super::xdg_dirs::data_dirs("applications"))
+}
+
+fn for_app_in(app_id: &str, dirs: Vec<std::path::PathBuf>) -> Option<DesktopApp> {
     if app_id.is_empty() || app_id.contains('/') {
         return None;
     }
-    let id = app_id.trim_end_matches(".desktop");
-    let dirs = super::xdg_dirs::data_dirs("applications");
-    // A user entry also masks the system entry when it has no New Window action.
-    for dir in &dirs {
-        let path = dir.join(format!("{id}.desktop"));
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return DesktopApp::from_content(&path, &content);
+    let id = app_id.strip_suffix(".desktop").unwrap_or(app_id);
+    // A user entry also masks the system entry when it has no New Window action. An id that
+    // ends in `.desktop`, such as Telegram's `org.telegram.desktop`, is still the file's stem.
+    for name in [app_id, id] {
+        for dir in &dirs {
+            let path = dir.join(format!("{name}.desktop"));
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                return DesktopApp::from_content(&path, &content);
+            }
         }
     }
     let mut seen = HashSet::new();
@@ -273,6 +285,21 @@ mod tests {
                 "[Desktop Entry]\nType=Application\nName=Example App\nIcon=example\nActions=new-window;\n{extra}\n[Desktop Action new-window]\nName=New Window\nExec={exec}\n"
             ),
         )
+    }
+
+    #[test]
+    fn an_app_id_ending_in_desktop_finds_its_entry_and_icon() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-apps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("org.telegram.desktop.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Telegram\nIcon=telegram\nExec=Telegram\n",
+        )
+        .unwrap();
+        let app = for_app_in("org.telegram.desktop", vec![dir.clone()]).unwrap();
+        assert_eq!(app.name.as_deref(), Some("Telegram"));
+        assert_eq!(app.icon.as_deref(), Some("telegram"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
