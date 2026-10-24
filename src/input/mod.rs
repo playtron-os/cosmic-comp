@@ -3202,26 +3202,18 @@ impl State {
                             ))));
                         }
                     }
-                    Stage::OverrideRedirect {
-                        surface,
-                        location,
-                        group,
-                    } => {
-                        // A window drawn through the game's group transform is hit where it is
-                        // drawn; event delivery undoes the scale (`client_coordinates`).
-                        let point = group.map_or(global_pos, |group| group.to_game(global_pos));
+                    Stage::OverrideRedirect { surface, location } => {
                         if let Some((_, surface_loc)) = surface.surface_under(
-                            point.as_logical(),
+                            global_pos.as_logical(),
                             location.as_logical(),
                             WindowSurfaceType::ALL,
                         ) {
-                            let surface_loc = surface_loc.as_global().to_f64();
                             return ControlFlow::Break(Ok(Some((
                                 PointerFocusTarget::X11Surface {
                                     surface: surface.clone(),
                                     toplevel: None,
                                 },
-                                group.map_or(surface_loc, |group| group.to_screen(surface_loc)),
+                                surface_loc.as_global().to_f64(),
                             ))));
                         }
                     }
@@ -3288,6 +3280,11 @@ impl State {
                         // element_under arm above).
                         let under = match game_mode_only {
                             Some(controlled) => {
+                                if crate::shell::focus::order::game_group_shadows(
+                                    shell, workspace, controlled, global_pos,
+                                ) {
+                                    return ControlFlow::Break(Ok(None));
+                                }
                                 workspace.controlled_surface_under(global_pos, controlled, seat)
                             }
                             None => {

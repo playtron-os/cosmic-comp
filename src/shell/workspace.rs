@@ -1,7 +1,7 @@
 use crate::backend::render::wayland::SurfaceRenderElement;
 use crate::shell::focus::FocusTarget;
 use crate::shell::focus::order::GameModeView;
-use crate::shell::game_group::GroupTransform;
+use crate::shell::game_group::{GroupTransform, Placement};
 use crate::shell::layout::tiling::RestoreTilingState;
 use crate::wayland::handlers::xdg_activation::ActivationContext;
 use crate::{
@@ -1304,11 +1304,11 @@ impl Workspace {
         // Children stack above the base, so they are hit-tested first (topmost =
         // last in the set), exactly matching the order `render` emits them in.
         for child in view.children.iter() {
-            if let Some((group, loc)) = self.scaled_child(view.base, child) {
+            if let Some(placement) = self.placed_child(view.base, child) {
                 if child
                     .0
                     .surface_under(
-                        group.window_point(location, loc),
+                        placement.window_point(location),
                         WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                     )
                     .is_some()
@@ -1439,35 +1439,35 @@ impl Workspace {
         fullscreen.scale_to?;
         let origin = base.x11_surface()?.last_configure().loc.as_global();
         let presented = self.presented_rect(fullscreen).to_global(&self.output);
-        GroupTransform::new(origin.to_f64(), base.bbox().size, presented)
-            .filter(|transform| !transform.is_identity())
+        GroupTransform::new(
+            origin.to_f64(),
+            base.bbox().size,
+            presented,
+            self.output.geometry().to_f64(),
+        )
+        .filter(|transform| !transform.is_identity())
     }
 
-    /// The transform a window of `base`'s game with `size` follows, if any. Managed windows
-    /// follow only a fixed-size `base`, which sits centred like the screen, so a window
-    /// centred on the screen stays centred; a render-size game sits in the corner.
-    pub fn game_group_member(
+    /// Where a popup of `base`'s game at `rect` (its X11 geometry) is drawn, if it follows
+    /// the game. Managed windows follow only a fixed-size `base`, which sits centred like the
+    /// screen; around a render-size game in the screen's corner they stay where they are.
+    pub fn game_group_place(
         &self,
         base: &CosmicSurface,
-        size: Size<i32, Logical>,
+        rect: Rectangle<i32, Global>,
         managed: bool,
-    ) -> Option<GroupTransform> {
+    ) -> Option<Placement> {
         if managed && base.fixed_size().is_none() {
             return None;
         }
-        self.game_group(base)
-            .filter(|group| group.fits(size, self.output.geometry().size))
+        Some(self.game_group(base)?.place(rect))
     }
 
-    /// A child of the game drawn through the group transform, with where X11 has it.
-    pub fn scaled_child(
-        &self,
-        base: &CosmicSurface,
-        child: &CosmicSurface,
-    ) -> Option<(GroupTransform, Point<i32, Global>)> {
+    /// Where a child of the game is drawn, when it follows the game.
+    pub fn placed_child(&self, base: &CosmicSurface, child: &CosmicSurface) -> Option<Placement> {
         let loc = child.x11_surface()?.last_configure().loc.as_global();
-        let group = self.game_group_member(base, child.bbox().size, true)?;
-        Some((group, loc))
+        let size = child.bbox().size.as_global();
+        self.game_group_place(base, Rectangle::new(loc, size), true)
     }
 
     pub fn controlled_surface_scale(&self, surface: &CosmicSurface) -> Option<(f64, f64)> {
@@ -1494,13 +1494,12 @@ impl Workspace {
         }
         // Children first (topmost last-in-set), mirroring `render`'s stacking.
         for child in view.children.iter() {
-            if let Some((group, loc)) = self.scaled_child(view.base, child) {
-                // Event delivery undoes the scale (`PointerFocusTarget::client_coordinates`).
+            if let Some(placement) = self.placed_child(view.base, child) {
                 if let Some((target, offset)) = child.focus_under(
-                    group.window_point(location, loc),
+                    placement.window_point(location),
                     WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
                 ) {
-                    return Some((target, group.to_screen(loc.to_f64() + offset.as_global())));
+                    return Some((target, placement.to_screen(offset)));
                 }
                 continue;
             }
@@ -2675,8 +2674,8 @@ impl Workspace {
             // children are emitted first, topmost last-in-the-set first.
             let mut lower_elements = Vec::new();
             for child in view.children.iter() {
-                if let Some((group, loc)) = self.scaled_child(view.base, child) {
-                    let origin = group.render_origin(loc, &self.output, output_scale);
+                if let Some(placement) = self.placed_child(view.base, child) {
+                    let origin = placement.render_origin(&self.output, output_scale);
                     child.push_render_elements(
                         renderer,
                         origin,
@@ -2687,15 +2686,7 @@ impl Workspace {
                         false,
                         [0; 4],
                         0,
-                        &mut |elem| {
-                            push(WorkspaceRenderElement::Fullscreen(
-                                RescaleRenderElement::from_element(
-                                    elem.into(),
-                                    origin,
-                                    group.scale,
-                                ),
-                            ))
-                        },
+                        &mut |elem| push(WorkspaceRenderElement::OverrideRedirect(elem)),
                         None,
                     );
                     continue;
@@ -3446,8 +3437,13 @@ mod fullscreen_rect_tests {
                 Point::from((fit.loc.x + 100.0, fit.loc.y)),
                 Size::from((fit.size.w, fit.size.h)),
             );
-            let group =
-                GroupTransform::new(placed.loc.to_f64(), size.as_logical(), presented).unwrap();
+            let group = GroupTransform::new(
+                placed.loc.to_f64(),
+                size.as_logical(),
+                presented,
+                output.to_f64(),
+            )
+            .unwrap();
             let centre = Point::<f64, Global>::from((100.0 + 1707.0 / 2.0, 480.0));
             let drawn = group.to_screen(centre);
             // Within one game pixel: placing the window rounds by half a pixel.

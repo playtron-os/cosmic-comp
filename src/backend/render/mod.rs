@@ -2097,63 +2097,29 @@ where
                     "overlay stage composed"
                 );
             }
-            Stage::OverrideRedirect {
-                surface,
-                location,
-                group,
-            } => {
+            Stage::OverrideRedirect { surface, location } => {
                 if let Some(wl_surface) = surface.wl_surface() {
                     let mut geometry = surface.geometry().as_global();
                     geometry.loc += location;
 
-                    if let Some(group) = group {
-                        let origin = group.render_origin(location, output, scale);
-                        push_render_elements_from_surface_tree(
-                            renderer,
-                            &wl_surface,
-                            origin,
-                            group.window_rect(geometry).to_local(output).as_logical(),
-                            Scale::from(scale),
-                            1.0,
-                            false,
-                            [0; 4],
-                            None,
-                            blur_strength,
-                            FRAME_TIME_FILTER,
-                            &mut |elem| {
-                                let scaled = WorkspaceRenderElement::Fullscreen(
-                                    RescaleRenderElement::from_element(
-                                        elem.into(),
-                                        origin,
-                                        group.scale,
-                                    ),
-                                );
-                                elements.extend(crop_to_output(scaled).map(Into::into))
-                            },
-                            None,
-                        );
-                    } else {
-                        push_render_elements_from_surface_tree(
-                            renderer,
-                            &wl_surface,
-                            location
-                                .to_local(output)
-                                .as_logical()
-                                .to_physical_precise_round(scale),
-                            geometry.to_local(output).as_logical().to_f64(),
-                            Scale::from(scale),
-                            1.0,
-                            false,
-                            [0; 4],
-                            None,
-                            blur_strength,
-                            FRAME_TIME_FILTER,
-                            &mut |elem| {
-                                elements.extend(crop_to_output(elem.into()).map(Into::into))
-                            },
-                            None,
-                        );
-                    }
+                    push_render_elements_from_surface_tree(
+                        renderer,
+                        &wl_surface,
+                        location
+                            .to_local(output)
+                            .as_logical()
+                            .to_physical_precise_round(scale),
+                        geometry.to_local(output).as_logical().to_f64(),
+                        Scale::from(scale),
+                        1.0,
+                        false,
+                        [0; 4],
+                        None,
+                        blur_strength,
+                        FRAME_TIME_FILTER,
+                        &mut |elem| elements.extend(crop_to_output(elem.into()).map(Into::into)),
+                        None,
+                    );
                 }
             }
             Stage::StickyPopups(layout) => {

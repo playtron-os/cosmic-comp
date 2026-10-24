@@ -8,7 +8,6 @@ use crate::{
     shell::{
         CosmicSurface, CursorGeometry, SeatExt,
         element::{CosmicMapped, CosmicStack, CosmicWindow},
-        focus::order::{OverrideRole, game_override_role},
         layout::tiling::ResizeForkTarget,
         zoom::ZoomFocusTarget,
     },
@@ -235,27 +234,7 @@ impl PointerFocusTarget {
         point: Point<f64, Logical>,
         shell: &Shell,
     ) -> Point<f64, Logical> {
-        match self.game_scale(shell) {
-            Some((x, y)) => Point::from((point.x / x, point.y / y)),
-            None => point,
-        }
-    }
-
-    /// The scale game mode draws this target at: the game's window, and the windows of
-    /// its game it moves and scales with it (`Workspace::game_group`).
-    fn game_scale(&self, shell: &Shell) -> Option<(f64, f64)> {
-        if !shell.game_mode.active {
-            return None;
-        }
-        let base = shell.game_mode.game_surface.as_ref()?;
-        let group = || {
-            let output = shell.game_mode.output.as_ref()?;
-            shell
-                .game_mode_on_screen(output)
-                .then(|| shell.active_space(output))
-                .flatten()
-        };
-        match self {
+        let surface = match self {
             Self::WlSurface {
                 toplevel: Some(PointerFocusToplevel::Surface(surface)),
                 ..
@@ -263,33 +242,18 @@ impl PointerFocusTarget {
             | Self::X11Surface {
                 toplevel: Some(surface),
                 ..
-            } => {
-                if surface == base {
-                    return shell
-                        .workspaces()
-                        .spaces()
-                        .find_map(|ws| ws.controlled_surface_scale(surface));
-                }
-                if !shell.game_mode.children.contains(surface) {
-                    return None;
-                }
-                let (transform, _) = group()?.scaled_child(base, surface)?;
-                Some((transform.scale.x, transform.scale.y))
-            }
-            Self::X11Surface {
-                surface,
-                toplevel: None,
-            } => {
-                let role = game_override_role(base, shell.game_mode.app_id, surface);
-                if role != OverrideRole::Game {
-                    return None;
-                }
-                let size = surface.last_configure().size;
-                let transform = group()?.game_group_member(base, size, false)?;
-                Some((transform.scale.x, transform.scale.y))
-            }
-            _ => None,
+            } => surface,
+            _ => return point,
+        };
+        if !shell.game_mode.active || shell.game_mode.game_surface.as_ref() != Some(surface) {
+            return point;
         }
+        let scale = shell
+            .workspaces()
+            .spaces()
+            .find_map(|ws| ws.controlled_surface_scale(surface))
+            .unwrap_or((1.0, 1.0));
+        Point::from((point.x / scale.0, point.y / scale.1))
     }
 
     // Update image copy cursor position/hotspot for enter/motion event

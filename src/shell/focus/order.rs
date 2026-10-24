@@ -9,7 +9,7 @@ use smithay::{
     },
     output::{Output, OutputNoMode},
     reexports::wayland_server::Resource,
-    utils::{Logical, Point},
+    utils::{Logical, Point, Rectangle},
     wayland::{session_lock::LockSurface, shell::wlr_layer::Layer},
     xwayland::X11Surface,
 };
@@ -21,7 +21,7 @@ use crate::{
     logger::GAMING_TARGET,
     shell::{
         CosmicSurface, SeatExt, Shell, Workspace, WorkspaceDelta,
-        focus::target::KeyboardFocusTarget, layout::floating::FloatingLayout,
+        focus::target::KeyboardFocusTarget, game_group, layout::floating::FloatingLayout,
     },
     utils::{
         geometry::*,
@@ -54,8 +54,6 @@ pub enum Stage<'a> {
     OverrideRedirect {
         surface: &'a X11Surface,
         location: Point<i32, Global>,
-        /// Set for the game's own windows while game mode moves or scales the game.
-        group: Option<crate::shell::game_group::GroupTransform>,
     },
     StickyPopups(&'a FloatingLayout),
     Sticky(&'a FloatingLayout),
@@ -134,6 +132,33 @@ pub fn game_override_role(
     } else {
         OverrideRole::Unrelated
     }
+}
+
+/// Whether `point` is shadowed by the game's popups (see [`game_group::shadowed`]):
+/// pointer input there must reach no window.
+pub fn game_group_shadows(
+    shell: &Shell,
+    workspace: &Workspace,
+    view: GameModeView<'_>,
+    point: Point<f64, Global>,
+) -> bool {
+    let Some(group) = workspace.game_group(view.base) else {
+        return false;
+    };
+    let overrides = shell
+        .override_redirect_windows
+        .iter()
+        .filter(|or| {
+            game_override_role(view.base, shell.game_mode.app_id, or) == OverrideRole::Game
+                && shell.x11_in_active_workspace(or)
+        })
+        .map(|or| group.place(or.last_configure().as_global()));
+    let children = view
+        .children
+        .iter()
+        .filter_map(|child| workspace.placed_child(view.base, child));
+    let placements = overrides.chain(children).collect::<Vec<_>>();
+    game_group::shadowed(&placements, point)
 }
 
 pub fn render_input_order<R: Default + 'static>(
@@ -434,7 +459,7 @@ fn render_input_order_internal<R: 'static>(
         // overlay redirect windows
         // they need to be over sticky windows, because they could be popups of sticky windows,
         // and we can't differenciate that.
-        for (surface, location, group) in shell
+        for (surface, location) in shell
             .override_redirect_windows
             .iter()
             .rev()
@@ -442,31 +467,25 @@ fn render_input_order_internal<R: 'static>(
                 let rect = or.last_configure().as_global();
                 // Not under strict control, every window renders as it is.
                 let Some(view) = game_mode_controlled else {
-                    return Some((or, rect, None));
+                    return Some((or, rect));
                 };
                 match game_override_role(view.base, shell.game_mode.app_id, or) {
                     OverrideRole::Unrelated => None,
-                    OverrideRole::Overlay => Some((or, rect, None)),
-                    // The game's menus and tooltips move and scale with its window.
+                    OverrideRole::Overlay => Some((or, rect)),
+                    // The game's menus and tooltips go where it put them on its scaled window.
                     OverrideRole::Game => Some((
                         or,
-                        rect,
-                        workspace.game_group_member(view.base, rect.size.as_logical(), false),
+                        workspace
+                            .game_group_place(view.base, rect, false)
+                            .map_or(rect, |placed| Rectangle::new(placed.location(), rect.size)),
                     )),
                 }
             })
-            .filter(|(_, rect, group)| {
-                let drawn = group.map_or(rect.to_f64(), |group| group.window_rect(*rect));
-                drawn.intersection(output.geometry().to_f64()).is_some()
-            })
-            .filter(|(or, ..)| shell.x11_in_active_workspace(or))
-            .map(|(or, rect, group)| (or, rect.loc, group))
+            .filter(|(_, rect)| rect.intersection(output.geometry()).is_some())
+            .filter(|(or, _)| shell.x11_in_active_workspace(or))
+            .map(|(or, rect)| (or, rect.loc))
         {
-            callback(Stage::OverrideRedirect {
-                surface,
-                location,
-                group,
-            })?;
+            callback(Stage::OverrideRedirect { surface, location })?;
         }
 
         // sticky window popups — suppressed under an exclusive game so nothing
