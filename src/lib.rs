@@ -63,6 +63,7 @@ pub mod debug;
 pub mod frametrace;
 pub mod hooks;
 pub mod input;
+pub mod launch_scope;
 mod logger;
 pub mod perf;
 pub mod session;
@@ -628,9 +629,11 @@ fn init_wayland_display(
             // the client is inserted the socket is gone and there is no way
             // back to which workspace launched it.
             let workspace = crate::workspace_tag::of_stream(&client_stream);
+            let pid = crate::workspace_tag::peer_pid(&client_stream);
             let client_state = crate::state::ClientState {
-                pid: crate::workspace_tag::peer_pid(&client_stream),
+                pid,
                 workspace,
+                launched_app: pid.and_then(crate::launch_scope::of_pid),
                 ..state.new_client_state()
             };
             match state

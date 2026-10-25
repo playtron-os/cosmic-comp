@@ -198,6 +198,9 @@ pub struct ClientState {
     /// Resolved at connect rather than per surface: a process cannot change the
     /// cgroup it was launched into, so the answer never changes.
     pub workspace: Option<String>,
+    /// The app its process was launched as, from its systemd unit: what a window
+    /// of a client that sets no app id is reported as.
+    pub launched_app: Option<String>,
 }
 unsafe impl Send for ClientState {}
 unsafe impl Sync for ClientState {}
@@ -1190,6 +1193,7 @@ impl State {
             security_context: None,
             // Filled in by the socket sources, which have the peer credentials.
             workspace: None,
+            launched_app: None,
         }
     }
 
