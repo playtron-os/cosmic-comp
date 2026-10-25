@@ -1,7 +1,8 @@
-//! `capture-check show [--exclude] [--no-global]`: a panel-like layer bar, a window and a
-//! tooltip-like popup on it, each one flat colour; prints `ready` once all three are on screen.
-//! `--exclude` leaves the popup out of captures; `--no-global` acts as a client that never
-//! heard of the protocol.
+//! `capture-check show [--exclude] [--unmark] [--no-global]`: a panel-like layer bar, a window
+//! and a drawer on the overlay layer at the right edge, like GameFrame's quick settings, each
+//! one flat colour; prints `ready` once all three are on screen. `--exclude` leaves the drawer
+//! out of captures; `--unmark` then puts it back, as quick settings do once the screenshot
+//! taken from them is answered; `--no-global` acts as a client that never heard of the protocol.
 //!
 //! `capture-check count SHOT`: how many pixels of each colour a capture (PPM) or the X screen
 //! under the nested compositor (XWD) holds.
@@ -20,9 +21,7 @@ use wayland_client::{
         wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
     },
 };
-use wayland_protocols::xdg::shell::client::{
-    xdg_popup, xdg_positioner, xdg_surface, xdg_toplevel, xdg_wm_base,
-};
+use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 #[allow(
@@ -51,28 +50,36 @@ use exclusion::{
 
 const BAR: [u8; 3] = [0x20, 0xc0, 0x40];
 const WINDOW: [u8; 3] = [0x20, 0x50, 0xe0];
-const TOOLTIP: [u8; 3] = [0xe0, 0x20, 0x20];
+const DRAWER: [u8; 3] = [0xe0, 0x20, 0x20];
 const BAR_HEIGHT: u32 = 48;
 const WINDOW_SIZE: (u32, u32) = (640, 400);
-const TOOLTIP_SIZE: (u32, u32) = (240, 64);
+const DRAWER_SIZE: (u32, u32) = (240, 64);
 
+#[derive(Clone, Copy, PartialEq)]
+enum Layer {
+    Bar,
+    Drawer,
+}
+
+/// What a frame callback marks: the drawer's first frame, or its first since it was unmarked.
 #[derive(Clone, Copy)]
-enum Role {
-    Window,
-    Tooltip,
+enum Frame {
+    Drawn,
+    Unmarked,
 }
 
 struct App {
     qh: QueueHandle<App>,
     compositor: wl_compositor::WlCompositor,
     shm: wl_shm::WlShm,
-    wm_base: xdg_wm_base::XdgWmBase,
+    layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
     manager: Option<KoraCaptureExclusionManagerV1>,
     exclude: bool,
+    unmark: bool,
     bar: wl_surface::WlSurface,
     window: wl_surface::WlSurface,
-    window_xdg: xdg_surface::XdgSurface,
-    tooltip: Option<(wl_surface::WlSurface, xdg_popup::XdgPopup)>,
+    drawer: Option<wl_surface::WlSurface>,
+    exclusion: Option<KoraSurfaceCaptureExclusionV1>,
     drawn: (bool, bool, bool),
     // The pools' files stay open until the compositor has their fds.
     files: Vec<File>,
@@ -116,29 +123,30 @@ impl App {
         surface.commit();
     }
 
-    fn open_tooltip(&mut self) {
+    fn open_drawer(&mut self) {
         let surface = self.compositor.create_surface(&self.qh, ());
         if self.exclude {
             match &self.manager {
                 Some(manager) => {
                     let exclusion = manager.get_surface_exclusion(&surface, &self.qh, ());
                     exclusion.set_excluded(1);
+                    self.exclusion = Some(exclusion);
                 }
-                None => eprintln!("no capture exclusion global: the tooltip stays in captures"),
+                None => eprintln!("no capture exclusion global: the drawer stays in captures"),
             }
         }
-        let positioner = self.wm_base.create_positioner(&self.qh, ());
-        positioner.set_size(TOOLTIP_SIZE.0 as i32, TOOLTIP_SIZE.1 as i32);
-        positioner.set_anchor_rect(40, 40, 1, 1);
-        positioner.set_anchor(xdg_positioner::Anchor::TopLeft);
-        positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
-        let xdg = self
-            .wm_base
-            .get_xdg_surface(&surface, &self.qh, Role::Tooltip);
-        let popup = xdg.get_popup(Some(&self.window_xdg), &positioner, &self.qh, ());
-        positioner.destroy();
+        let layer = self.layer_shell.get_layer_surface(
+            &surface,
+            None,
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "capture-check-drawer".into(),
+            &self.qh,
+            Layer::Drawer,
+        );
+        layer.set_anchor(zwlr_layer_surface_v1::Anchor::Right);
+        layer.set_size(DRAWER_SIZE.0, DRAWER_SIZE.1);
         surface.commit();
-        self.tooltip = Some((surface, popup));
+        self.drawer = Some(surface);
     }
 }
 
@@ -147,17 +155,20 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("show") => show(
             args.iter().any(|a| a == "--exclude"),
+            args.iter().any(|a| a == "--unmark"),
             args.iter().any(|a| a == "--no-global"),
         ),
         Some("count") if args.len() == 2 => count(&args[1]),
         _ => {
-            eprintln!("usage: capture-check show [--exclude] [--no-global] | count SHOT");
+            eprintln!(
+                "usage: capture-check show [--exclude] [--unmark] [--no-global] | count SHOT"
+            );
             exit(2);
         }
     }
 }
 
-fn show(exclude: bool, no_global: bool) {
+fn show(exclude: bool, unmark: bool, no_global: bool) {
     let conn = Connection::connect_to_env().expect("no Wayland display");
     let (globals, mut queue) = registry_queue_init::<App>(&conn).expect("registry");
     let qh = queue.handle();
@@ -179,7 +190,7 @@ fn show(exclude: bool, no_global: bool) {
         zwlr_layer_shell_v1::Layer::Top,
         "capture-check-bar".into(),
         &qh,
-        (),
+        Layer::Bar,
     );
     layer.set_anchor(
         zwlr_layer_surface_v1::Anchor::Top
@@ -191,7 +202,7 @@ fn show(exclude: bool, no_global: bool) {
     bar.commit();
 
     let window = compositor.create_surface(&qh, ());
-    let window_xdg = wm_base.get_xdg_surface(&window, &qh, Role::Window);
+    let window_xdg = wm_base.get_xdg_surface(&window, &qh, ());
     let toplevel = window_xdg.get_toplevel(&qh, ());
     toplevel.set_title("capture-check".into());
     toplevel.set_app_id("capture-check".into());
@@ -201,13 +212,14 @@ fn show(exclude: bool, no_global: bool) {
         qh,
         compositor,
         shm,
-        wm_base,
+        layer_shell,
         manager,
         exclude,
+        unmark,
         bar,
         window,
-        window_xdg,
-        tooltip: None,
+        drawer: None,
+        exclusion: None,
         drawn: (false, false, false),
         files: Vec::new(),
     };
@@ -216,7 +228,7 @@ fn show(exclude: bool, no_global: bool) {
     }
 }
 
-/// Pixels of the bar's, the window's and the tooltip's colour in a binary PPM (a capture) or a
+/// Pixels of the bar's, the window's and the drawer's colour in a binary PPM (a capture) or a
 /// 32-bit ZPixmap XWD (what the X server shows, so what is on the nested screen).
 fn count(path: &str) {
     let mut data = Vec::new();
@@ -229,7 +241,7 @@ fn count(path: &str) {
         xwd(&data)
     };
     let n = |rgb: [u8; 3]| pixels.iter().filter(|p| **p == rgb).count();
-    println!("bar={} window={} tooltip={}", n(BAR), n(WINDOW), n(TOOLTIP));
+    println!("bar={} window={} drawer={}", n(BAR), n(WINDOW), n(DRAWER));
 }
 
 fn ppm(data: &[u8]) -> Vec<[u8; 3]> {
@@ -306,16 +318,30 @@ impl Dispatch<xdg_wm_base::XdgWmBase, ()> for App {
     }
 }
 
-impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, Layer> for App {
     fn event(
         app: &mut Self,
         layer: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _: &(),
+        part: &Layer,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
+            zwlr_layer_surface_v1::Event::Configure { serial, .. } if *part == Layer::Drawer => {
+                layer.ack_configure(serial);
+                let Some(surface) = app.drawer.clone() else {
+                    return;
+                };
+                if app.drawn.2 {
+                    surface.commit();
+                    return;
+                }
+                app.drawn.2 = true;
+                // Ready once the compositor has drawn the drawer's first frame.
+                surface.frame(qh, Frame::Drawn);
+                app.draw(&surface, DRAWER_SIZE, DRAWER);
+            }
             zwlr_layer_surface_v1::Event::Configure { serial, width, .. } => {
                 layer.ack_configure(serial);
                 if !app.drawn.0 {
@@ -332,57 +358,54 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for App {
     }
 }
 
-impl Dispatch<xdg_surface::XdgSurface, Role> for App {
+impl Dispatch<xdg_surface::XdgSurface, ()> for App {
     fn event(
         app: &mut Self,
         xdg: &xdg_surface::XdgSurface,
         event: xdg_surface::Event,
-        role: &Role,
+        _: &(),
         _: &Connection,
-        qh: &QueueHandle<Self>,
+        _: &QueueHandle<Self>,
     ) {
         let xdg_surface::Event::Configure { serial } = event else {
             return;
         };
         xdg.ack_configure(serial);
-        match role {
-            Role::Window if !app.drawn.1 => {
-                app.drawn.1 = true;
-                let window = app.window.clone();
-                app.draw(&window, WINDOW_SIZE, WINDOW);
-                app.open_tooltip();
-            }
-            Role::Window => app.window.commit(),
-            Role::Tooltip => {
-                let Some((surface, _)) = app.tooltip.clone() else {
-                    return;
-                };
-                if app.drawn.2 {
-                    surface.commit();
-                    return;
-                }
-                app.drawn.2 = true;
-                // Ready once the compositor has drawn the tooltip's first frame.
-                surface.frame(qh, ());
-                app.draw(&surface, TOOLTIP_SIZE, TOOLTIP);
-            }
+        if app.drawn.1 {
+            app.window.commit();
+            return;
         }
+        app.drawn.1 = true;
+        let window = app.window.clone();
+        app.draw(&window, WINDOW_SIZE, WINDOW);
+        app.open_drawer();
     }
 }
 
-impl Dispatch<wl_callback::WlCallback, ()> for App {
+impl Dispatch<wl_callback::WlCallback, Frame> for App {
     fn event(
-        _: &mut Self,
+        app: &mut Self,
         _: &wl_callback::WlCallback,
         event: wl_callback::Event,
-        _: &(),
+        frame: &Frame,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
-        if let wl_callback::Event::Done { .. } = event {
-            println!("ready");
-            std::io::stdout().flush().ok();
+        let wl_callback::Event::Done { .. } = event else {
+            return;
+        };
+        // Drawn out of captures first, then put back across a later commit.
+        if let (Frame::Drawn, true, Some(exclusion), Some(surface)) =
+            (frame, app.unmark, &app.exclusion, &app.drawer)
+        {
+            exclusion.set_excluded(0);
+            surface.frame(qh, Frame::Unmarked);
+            surface.damage_buffer(0, 0, DRAWER_SIZE.0 as i32, DRAWER_SIZE.1 as i32);
+            surface.commit();
+            return;
         }
+        println!("ready");
+        std::io::stdout().flush().ok();
     }
 }
 
@@ -401,28 +424,11 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for App {
     }
 }
 
-impl Dispatch<xdg_popup::XdgPopup, ()> for App {
-    fn event(
-        _: &mut Self,
-        _: &xdg_popup::XdgPopup,
-        event: xdg_popup::Event,
-        _: &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_popup::Event::PopupDone = event {
-            eprintln!("the compositor dismissed the tooltip");
-            exit(1);
-        }
-    }
-}
-
 delegate_noop!(App: ignore wl_compositor::WlCompositor);
 delegate_noop!(App: ignore wl_shm::WlShm);
 delegate_noop!(App: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(App: ignore wl_buffer::WlBuffer);
 delegate_noop!(App: ignore wl_surface::WlSurface);
-delegate_noop!(App: ignore xdg_positioner::XdgPositioner);
 delegate_noop!(App: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(App: ignore KoraCaptureExclusionManagerV1);
 delegate_noop!(App: ignore KoraSurfaceCaptureExclusionV1);

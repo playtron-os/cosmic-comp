@@ -25,8 +25,8 @@
 
   <description summary="leave a surface out of screen captures">
     This protocol lets a client leave one of its own surfaces out of screen
-    captures and recordings while it stays on screen: a tooltip that should
-    not end up in a screenshot of what it points at, for example.
+    captures and recordings while it stays on screen: a panel with a
+    screenshot button, for the screenshot taken from it, for example.
 
     Exclusion is opt-in per surface. Nothing is excluded by default, and no
     surface is excluded because of its role.

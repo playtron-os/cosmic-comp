@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# A panel-like layer bar and a window stay in a full-screen capture, and a tooltip popup that
-# opted out is left out of it while it stays on screen. Without the flag, or from a client
-# that never binds the global, the tooltip is captured. Runs CC_BIN in tools/headless.
+# A panel-like layer bar and a window stay in a full-screen capture, and a drawer on the overlay
+# layer that marked itself, as GameFrame's quick settings do for their own screenshot, is left
+# out of it while it stays on screen. Once unmarked, without the mark, or from a client that
+# never binds the global, the drawer is captured. Runs CC_BIN in tools/headless.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 hl=$here/../headless/headless.sh
@@ -12,9 +13,9 @@ cargo build --quiet --manifest-path "$here/Cargo.toml"
 bin=$here/target/debug/capture-check
 "$hl" up >/dev/null
 trap '"$hl" down' EXIT
-tooltip=$((240 * 64))
+drawer=$((240 * 64))
 
-# check NAME TOOLTIP_PIXELS_IN_CAPTURE [show args]
+# check NAME DRAWER_PIXELS_IN_CAPTURE [show args]
 check() {
 	local name=$1 want=$2 log shot screen
 	shift 2
@@ -31,11 +32,12 @@ check() {
 	shot=$("$bin" count "$CC_STATE/$name.ppm")
 	screen=$("$bin" count "$CC_STATE/$name.xwd")
 	echo "$name: capture $shot; screen $screen"
-	[[ $shot =~ ^bar=[1-9][0-9]*\ window=[1-9][0-9]*\ tooltip=$want$ ]] || { echo "$name: FAILED (capture)" >&2; exit 1; }
-	[[ $screen == *" tooltip=$tooltip" ]] || { echo "$name: FAILED (screen)" >&2; exit 1; }
+	[[ $shot =~ ^bar=[1-9][0-9]*\ window=[1-9][0-9]*\ drawer=$want$ ]] || { echo "$name: FAILED (capture)" >&2; exit 1; }
+	[[ $screen == *" drawer=$drawer" ]] || { echo "$name: FAILED (screen)" >&2; exit 1; }
 }
 
 check excluded 0 --exclude
-check flagless "$tooltip"
-check no-global "$tooltip" --exclude --no-global
+check unmarked "$drawer" --exclude --unmark
+check flagless "$drawer"
+check no-global "$drawer" --exclude --no-global
 echo "capture exclusion: ok"

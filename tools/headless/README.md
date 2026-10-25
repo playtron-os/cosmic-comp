@@ -121,10 +121,11 @@ window cannot be told from its shadow by pixels.
 ## Capture exclusion
 
 `tools/capture-check/check.sh` runs a client with a panel-like layer bar, a window
-and a tooltip popup on it, each one flat colour, and counts them in a full-screen
-grim capture and in the X screen under the compositor. It fails unless the bar
-and the window are captured, a tooltip marked with `kora_capture_exclusion_v1`
-is on screen but not captured, and an unmarked tooltip, or one from a client
+and a drawer on the overlay layer at the right edge, like GameFrame's quick
+settings, each one flat colour, and counts them in a full-screen grim capture
+and in the X screen under the compositor. It fails unless the bar and the window
+are captured, a drawer marked with `kora_capture_exclusion_v1` is on screen but
+not captured, and a drawer marked then unmarked, never marked, or from a client
 that never binds the global, is captured. It needs `xwd`.
 
 Inside a Kora workspace every client lands in that workspace's realm, which
