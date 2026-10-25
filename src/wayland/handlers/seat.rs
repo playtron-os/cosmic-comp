@@ -68,7 +68,10 @@ impl SeatHandler for State {
         _seat: &smithay::input::Seat<Self>,
         _focused: Option<&Self::KeyboardFocus>,
     ) {
-        crate::display_grants::focus_changed(self);
+        // Smithay calls this holding the keyboard's lock, which replaying keys takes.
+        self.common
+            .event_loop_handle
+            .insert_idle(crate::display_grants::focus_changed);
     }
 
     fn virtual_keyboard_request(
