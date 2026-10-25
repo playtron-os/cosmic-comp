@@ -68,6 +68,19 @@ impl SeatHandler for State {
         _seat: &smithay::input::Seat<Self>,
         _focused: Option<&Self::KeyboardFocus>,
     ) {
+        crate::display_grants::focus_changed(self);
+    }
+
+    fn virtual_keyboard_request(
+        &mut self,
+        client: &smithay::reexports::wayland_server::Client,
+        request: smithay::wayland::pending::Pending<Self>,
+    ) {
+        use crate::display_grants::{Class, Held, ask_of, request as held};
+        let ask = ask_of(Class::Input, request.effect());
+        // A keymap waits behind held keys under the keys' question.
+        let ask = (ask.0, true);
+        held(self, client, ask, Held::Request(request));
     }
 
     fn led_state_changed(&mut self, seat: &smithay::input::Seat<Self>, led_state: LedState) {

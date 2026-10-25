@@ -98,10 +98,11 @@ xdg = "^3.0"
 xkbcommon = "0.9"
 zbus = "5.14.0"
 # Kora's D-Bus contracts, from the client crates in kora-sdk (MIT).
-kora-capture-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
-kora-notifications-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
-kora-stt-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
-kora-game-mode-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "cafc0acf1f87c7a79c3ec55734919e8227b2fa05" }
+kora-capture-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "011428b069e7c282493b5833c4e046571106708f" }
+kora-notifications-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "011428b069e7c282493b5833c4e046571106708f" }
+kora-stt-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "011428b069e7c282493b5833c4e046571106708f" }
+kora-game-mode-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "011428b069e7c282493b5833c4e046571106708f" }
+kora-workspaces-client = { git = "ssh://git@github.com/playtron-os/kora-sdk.git", rev = "011428b069e7c282493b5833c4e046571106708f" }
 memmap2 = "0.9"
 profiling = { version = "1.0" }
 rustix = { version = "1.1.4", features = ["process"] }
@@ -122,6 +123,8 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/playtron-os/smithay.git"
+# Held guarded requests (playtron-os/smithay feat/held-requests); move to master once merged.
+rev = "89f3787e1fa1561680b3a84755634c21cdc6ddf1"
 default-features = false
 features = [
     "backend_drm",
@@ -236,7 +239,7 @@ cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings
 # Last revision before the InputTime migration; our Smithay fork still uses u32
 # event timestamps. Keep debug builds on the matching API until Smithay migrates.
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "f34d50913003e0d62b0fb8999baf763d0960e3ef" }
-smithay = { git = "https://github.com/playtron-os/smithay.git" }
+smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "89f3787e1fa1561680b3a84755634c21cdc6ddf1" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
 #iced = { path = "../iced" }

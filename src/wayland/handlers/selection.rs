@@ -82,6 +82,16 @@ impl State {
 impl SelectionHandler for State {
     type SelectionUserData = SelectionUserData;
 
+    fn data_control_request(
+        &mut self,
+        client: &smithay::reexports::wayland_server::Client,
+        request: smithay::wayland::pending::Pending<Self>,
+    ) {
+        use crate::display_grants::{Class, Held, ask_of};
+        let ask = ask_of(Class::Clipboard, request.effect());
+        crate::display_grants::request(self, client, ask, Held::Request(request));
+    }
+
     fn new_selection(
         &mut self,
         target: SelectionTarget,

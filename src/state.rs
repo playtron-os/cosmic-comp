@@ -233,6 +233,7 @@ impl ClientData for ClientState {
             }
         }
         self.evlh.insert_idle(move |state| {
+            crate::display_grants::client_gone(state, &client_id);
             if let BackendData::Kms(kms_state) = &mut state.backend {
                 for device in kms_state.drm_devices.values_mut() {
                     if device.inner.active_clients.remove(&client_id)
@@ -388,6 +389,7 @@ pub struct Common {
     pub tooltip_state: TooltipManagerState,
     pub data_device_state: DataDeviceState,
     pub display_grants: crate::display_grants::DisplayGrants,
+    pub display_asks: crate::display_grants::DisplayAsks,
     pub clipboard_state: crate::clipboard::ClipboardState,
     pub dmabuf_state: DmabufState,
     pub special_action_state: SpecialActionState,
@@ -927,7 +929,8 @@ impl State {
             manager.replace_icon_sizes([24, 32, 48, 64]);
             manager
         };
-        let toplevel_info_state = ToplevelInfoState::new(dh, display_grants.filter(Class::Screen));
+        let toplevel_info_state =
+            ToplevelInfoState::new(dh, display_grants.filter_open(Class::Screen));
         let toplevel_management_state = ToplevelManagementState::new::<State, _>(
             dh,
             vec![
@@ -937,7 +940,7 @@ impl State {
                 ManagementCapabilities::Minimize,
                 ManagementCapabilities::MoveToWorkspace,
             ],
-            display_grants.filter(Class::Input),
+            display_grants.filter_open(Class::Input),
         );
         let workspace_state = WorkspaceState::new(dh, client_not_sandboxed);
 
@@ -1004,6 +1007,7 @@ impl State {
                 tooltip_state,
                 data_device_state,
                 display_grants,
+                display_asks: Default::default(),
                 clipboard_state: crate::clipboard::ClipboardState::default(),
                 dmabuf_state,
                 special_action_state,

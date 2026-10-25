@@ -326,49 +326,33 @@ impl ImageCopyCaptureHandler for State {
     }
 
     fn frame(&mut self, session: &SessionRef, frame: Frame) {
-        // A frame that is neither succeeded nor failed leaves the client's
-        // buffer permanently in flight, so a vanished source must still answer.
-        match ImageCaptureSourceKind::from_source(&session.source()) {
-            ImageCaptureSourceKind::Output(weak) => {
-                let Some(mut output) = weak.upgrade() else {
-                    frame.fail(CaptureFailureReason::Stopped);
-                    return;
-                };
-
-                output.add_frame(session.clone(), frame);
-                self.backend.schedule_render(&output);
-            }
-            ImageCaptureSourceKind::Workspace(handle) => {
-                render_workspace_to_buffer(self, session, frame, handle)
-            }
-            ImageCaptureSourceKind::Toplevel(toplevel) => {
-                let Some(toplevel) = toplevel.upgrade() else {
-                    frame.fail(CaptureFailureReason::Stopped);
-                    return;
-                };
-
-                render_window_to_buffer(self, session, frame, &toplevel)
-            }
-            ImageCaptureSourceKind::Destroyed => {
-                frame.fail(CaptureFailureReason::Stopped);
-            }
+        // A boxed client's capture waits for its workspace's screen row.
+        match session.client() {
+            Some(client) => crate::display_grants::request(
+                self,
+                &client,
+                (crate::display_grants::Class::Screen, false),
+                crate::display_grants::Held::Frame(session.clone(), frame),
+            ),
+            None => frame.fail(CaptureFailureReason::Stopped),
         }
     }
 
     fn cursor_frame(&mut self, session: &CursorSessionRef, frame: Frame) {
-        if !session.has_cursor() {
-            frame.success(Transform::Normal, Vec::new(), self.common.clock.now());
-            return;
-        }
-
-        let shell = self.common.shell.read();
-        if let Some(seat) = seat_for_wl_pointer(&shell, &session.pointer()).cloned() {
-            drop(shell);
-            render_cursor_to_buffer(self, session, frame, &seat);
+        // The pointer's image and place are the screen row's too.
+        match smithay::reexports::wayland_server::Resource::client(&session.pointer()) {
+            Some(client) => crate::display_grants::request(
+                self,
+                &client,
+                (crate::display_grants::Class::Screen, false),
+                crate::display_grants::Held::Cursor(session.clone(), frame),
+            ),
+            None => frame.fail(CaptureFailureReason::Stopped),
         }
     }
 
     fn frame_aborted(&mut self, frame: FrameRef) {
+        crate::display_grants::frame_aborted(self, &frame);
         self.common.parked_workspace_captures.remove_frame(&frame);
         let shell = self.common.shell.read();
         for mut output in shell.outputs().cloned() {
@@ -428,6 +412,51 @@ impl ImageCopyCaptureHandler for State {
                 }
             }
             ImageCaptureSourceKind::Destroyed => {}
+        }
+    }
+}
+
+/// Carry out a cursor frame its client may capture.
+pub fn capture_cursor(state: &mut State, session: &CursorSessionRef, frame: Frame) {
+    if !session.has_cursor() {
+        frame.success(Transform::Normal, Vec::new(), state.common.clock.now());
+        return;
+    }
+
+    let shell = state.common.shell.read();
+    if let Some(seat) = seat_for_wl_pointer(&shell, &session.pointer()).cloned() {
+        drop(shell);
+        render_cursor_to_buffer(state, session, frame, &seat);
+    }
+}
+
+/// Carry out a frame its client may capture.
+pub fn capture_frame(state: &mut State, session: &SessionRef, frame: Frame) {
+    // A frame that is neither succeeded nor failed leaves the client's
+    // buffer permanently in flight, so a vanished source must still answer.
+    match ImageCaptureSourceKind::from_source(&session.source()) {
+        ImageCaptureSourceKind::Output(weak) => {
+            let Some(mut output) = weak.upgrade() else {
+                frame.fail(CaptureFailureReason::Stopped);
+                return;
+            };
+
+            output.add_frame(session.clone(), frame);
+            state.backend.schedule_render(&output);
+        }
+        ImageCaptureSourceKind::Workspace(handle) => {
+            render_workspace_to_buffer(state, session, frame, handle)
+        }
+        ImageCaptureSourceKind::Toplevel(toplevel) => {
+            let Some(toplevel) = toplevel.upgrade() else {
+                frame.fail(CaptureFailureReason::Stopped);
+                return;
+            };
+
+            render_window_to_buffer(state, session, frame, &toplevel)
+        }
+        ImageCaptureSourceKind::Destroyed => {
+            frame.fail(CaptureFailureReason::Stopped);
         }
     }
 }

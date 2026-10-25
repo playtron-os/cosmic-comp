@@ -29,6 +29,7 @@ pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
     if let Err(err) = handle.insert_source(rx, |event, _, state| {
         if let calloop::channel::Event::Msg(runs) = event {
             crate::shell::element::window::runs::apply(state, runs);
+            crate::display_grants::runs_changed(state);
         }
     }) {
         warn!(?err, "Failed to register the runs channel");
