@@ -1,3 +1,10 @@
+# [1.63.0](https://github.com/playtron-os/cosmic-comp/compare/v1.62.2...v1.63.0) (2026-10-25)
+
+
+### Features
+
+* **toplevel-info:** name a window without app id after its launch ([5d2e8cc](https://github.com/playtron-os/cosmic-comp/commit/5d2e8cc20c7a1c2e6f5239bc57cd86f967679226))
+
 ## [1.62.2](https://github.com/playtron-os/cosmic-comp/compare/v1.62.1...v1.62.2) (2026-10-23)
 
 
