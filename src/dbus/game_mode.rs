@@ -14,7 +14,7 @@
 //   * The compositor pushes state changes + signals back out through
 //     `GameModeBridge`.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1695,7 +1695,7 @@ impl State {
             if let Some(game) = game {
                 // Launcher resolution is managed by its normal fullscreen configure.
                 let game_app_id = app_id_of(&game);
-                let want_scale = game_app_id != LAUNCHER_APP_ID;
+                let want_scale = scales_to_output(&game);
                 let mut shell = self.common.shell.write();
                 let (spoof_w, spoof_h, mode) = shell.game_mode_scaling;
                 let sharpness = shell.game_mode_sharpness;
@@ -2271,6 +2271,7 @@ impl State {
                 ..Default::default()
             };
             shell.refresh_game_scaling();
+            SHOWN_GAME.store(app_id, Ordering::Relaxed);
 
             focus
         };
@@ -2349,6 +2350,7 @@ impl State {
         }
 
         let mut game_mode = std::mem::take(&mut shell.game_mode);
+        SHOWN_GAME.store(0, Ordering::Relaxed);
         // Learned once per client and per root-window change, so the next game
         // still needs them.
         shell.game_mode.controller_pid = game_mode.controller_pid;
@@ -2788,7 +2790,28 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
 }
 
 fn is_game_surface(surface: &CosmicSurface) -> bool {
-    surface.alive() && !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+    surface.alive() && is_game_window(surface)
+}
+
+/// Whether `surface` carries a game's id, not the launcher's.
+pub fn is_game_window(surface: &CosmicSurface) -> bool {
+    !matches!(app_id_of(surface), 0 | LAUNCHER_APP_ID)
+}
+
+/// Whether game mode may scale `surface` to the output. The launcher and a window
+/// held to a fixed size show 1:1, centered: a fixed window's own popups are placed
+/// in its unscaled coordinates, so scaling it would leave them out of place.
+pub fn scales_to_output(surface: &CosmicSurface) -> bool {
+    app_id_of(surface) != LAUNCHER_APP_ID && surface.fixed_size().is_none()
+}
+
+/// The game game mode shows (0 for none), for decoration checks that run without the shell.
+static SHOWN_GAME: AtomicU32 = AtomicU32::new(0);
+
+/// Whether `surface` is a window of the game that game mode is showing.
+pub fn shows_game(surface: &CosmicSurface) -> bool {
+    let shown = SHOWN_GAME.load(Ordering::Relaxed);
+    shown != 0 && shown != LAUNCHER_APP_ID && app_id_of(surface) == shown
 }
 
 /// The client of the launcher's window. Its overlay-layer surface, quick
