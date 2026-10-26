@@ -1346,20 +1346,20 @@ impl CosmicSurface {
                         continue;
                     }
                     // Check for compositor-driven tooltip position override
-                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
-                        popup.wl_surface(),
-                    );
+                    let tooltip_override =
+                        match crate::wayland::protocols::tooltip::get_tooltip_position(
+                            popup.wl_surface(),
+                        ) {
+                            None => None,
+                            // Off its parent or in its show delay, a tooltip pushes no elements.
+                            Some(placement) => match placement.shown(std::time::Instant::now()) {
+                                Some(data) => Some(data),
+                                None => continue,
+                            },
+                        };
 
                     let mut geometry = popup.geometry().to_f64();
                     let offset = if let Some(override_data) = tooltip_override {
-                        // During show-delay the override has a future show_at —
-                        // push no elements so the popup is invisible until then.
-                        if let Some(show_at) = override_data.show_at
-                            && std::time::Instant::now() < show_at
-                        {
-                            continue;
-                        }
-
                         let popup_geo = popup.geometry();
 
                         let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
