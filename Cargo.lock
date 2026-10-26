@@ -999,7 +999,7 @@ dependencies = [
 
 [[package]]
 name = "cosmic-comp"
-version = "1.62.2"
+version = "1.63.0"
 dependencies = [
  "anyhow",
  "bitflags 2.13.2",
@@ -6596,7 +6596,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 [[package]]
 name = "smithay"
 version = "0.7.0"
-source = "git+https://github.com/playtron-os/smithay.git?rev=89f3787e1fa1561680b3a84755634c21cdc6ddf1#89f3787e1fa1561680b3a84755634c21cdc6ddf1"
+source = "git+https://github.com/playtron-os/smithay.git#cf7b7febd33298fd2d000914f72f7f5edf995589"
 dependencies = [
  "aliasable",
  "appendlist",

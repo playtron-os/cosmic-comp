@@ -179,6 +179,8 @@ pub struct CosmicWindowInternal {
     pointer_entered: AtomicU8,
     /// Whether any pointer is currently over the window (header, content, or resize borders).
     pointer_over_window: AtomicBool,
+    /// Swiped in from the top edge by touch: shown until a touch lands elsewhere.
+    touch_revealed: AtomicBool,
     introduced: Mutex<Option<std::time::Instant>>,
     /// A header-only wrapper anchored to an output, not to the fullscreen client geometry.
     fullscreen_output: Option<Mutex<Output>>,
@@ -655,6 +657,7 @@ impl CosmicWindowInternal {
 
     fn halo_revealed(&self) -> bool {
         self.pointer_over_window.load(Ordering::SeqCst)
+            || self.touch_revealed.load(Ordering::SeqCst)
             || halo_overview()
             || self.halo_keyboard.lock().unwrap().is_some()
             || self.introduced_for().is_some_and(|t| {
@@ -690,7 +693,16 @@ impl CosmicWindowInternal {
 
     /// returns if the window has any current or pending server-side decorations
     pub fn has_ssd(&self, pending: bool) -> bool {
-        !self.window.is_decorated(pending)
+        !self.window.is_decorated(pending) && !self.too_small_for_halo()
+    }
+
+    /// An X11 helper smaller than the Halo pill would sit under its own header.
+    fn too_small_for_halo(&self) -> bool {
+        self.window.x11_surface().is_some() && self.uses_halo_header() && {
+            let min = super::header_bar::halo_min_window_size(&self.theme.lock().unwrap());
+            let size = self.window.geometry().size;
+            size.w < min.w || size.h < min.h
+        }
     }
 
     /// returns if the window is currently tiled
@@ -879,6 +891,7 @@ impl CosmicWindow {
                 activated: AtomicBool::new(fullscreen_output.is_some()),
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
+                touch_revealed: AtomicBool::new(false),
                 introduced: Mutex::new(None),
                 fullscreen_output: fullscreen_output.map(Mutex::new),
                 last_title: Mutex::new(last_title),
@@ -1020,21 +1033,22 @@ impl CosmicWindow {
 
     pub fn focus_under(
         &self,
-        mut relative_pos: Point<f64, Logical>,
+        relative_pos: Point<f64, Logical>,
         surface_type: WindowSurfaceType,
         seat: Option<&Seat<State>>,
     ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
-        let has_constraint = if let Some(seat) = seat
-            && let Some(pointer) = seat.get_pointer()
-            && let Some(surface) = self.wl_surface()
-            && with_pointer_constraint(&surface, &pointer, |constraint| {
-                constraint.is_some_and(|c| c.is_active())
-            }) {
-            true
-        } else {
-            false
-        };
+        self.focus_under_in_game_mode(relative_pos, surface_type, seat, false)
+    }
 
+    /// [`Self::focus_under`] for a fullscreen window that game mode may show as its game.
+    pub fn focus_under_in_game_mode(
+        &self,
+        mut relative_pos: Point<f64, Logical>,
+        surface_type: WindowSurfaceType,
+        seat: Option<&Seat<State>>,
+        game_mode_game: bool,
+    ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
+        let has_constraint = self.pointer_constrained(seat);
         let fullscreen_pill = self
             .0
             .with_program(|p| p.fullscreen_output.is_some())
@@ -1044,8 +1058,12 @@ impl CosmicWindow {
         let result = self.0.with_program(|p| {
             if let Some(output) = &p.fullscreen_output {
                 let output = output.lock().unwrap();
-                let enabled =
-                    p.uses_halo_header() && !is_surface_embedded(&p.window) && !has_constraint;
+                let enabled = p.uses_halo_header()
+                    && !is_surface_embedded(&p.window)
+                    && !crate::shell::edge_reveal::reveals_held_back(
+                        game_mode_game,
+                        has_constraint,
+                    );
                 let pill = fullscreen_pill
                     .map(|rect| rect + iced_core::Vector::new(0.0, p.header_origin().y as f32));
                 return (enabled
@@ -1055,6 +1073,7 @@ impl CosmicWindow {
                         output.current_scale().fractional_scale(),
                         pill,
                         p.pointer_over_window.load(Ordering::SeqCst)
+                            || p.touch_revealed.load(Ordering::SeqCst)
                             || p.menu_open.load(Ordering::SeqCst)
                             || p.commands_open.load(Ordering::SeqCst),
                     )
@@ -1119,6 +1138,42 @@ impl CosmicWindow {
         }
 
         result
+    }
+
+    /// Whether this fullscreen window has a Halo the top edge can reveal.
+    pub fn fullscreen_halo_can_reveal(&self) -> bool {
+        self.0.with_program(|p| {
+            p.fullscreen_output.is_some() && p.uses_halo_header() && !is_surface_embedded(&p.window)
+        })
+    }
+
+    pub fn touch_revealed(&self) -> bool {
+        self.0
+            .with_program(|p| p.touch_revealed.load(Ordering::SeqCst))
+    }
+
+    pub fn set_touch_revealed(&self, revealed: bool) {
+        if self
+            .0
+            .with_program(|p| p.touch_revealed.swap(revealed, Ordering::SeqCst))
+            != revealed
+        {
+            self.0.force_update();
+        }
+    }
+
+    /// Whether the window holds the pointer locked or confined.
+    pub fn pointer_constrained(&self, seat: Option<&Seat<State>>) -> bool {
+        if let Some(seat) = seat
+            && let Some(pointer) = seat.get_pointer()
+            && let Some(surface) = self.wl_surface()
+        {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                constraint.is_some_and(|c| c.is_active())
+            })
+        } else {
+            false
+        }
     }
 
     /// Set whether the pointer is currently over this window.

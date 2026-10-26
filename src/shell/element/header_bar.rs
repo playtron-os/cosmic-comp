@@ -206,6 +206,18 @@ pub(crate) fn fullscreen_pill_bottom(theme: &CompTheme) -> i32 {
     (pill_top + f64::from(metrics.pill_height())).ceil() as i32
 }
 
+/// The smallest window a Halo fits on: the pill's height, and the width of its
+/// last tier (identity, commands and close).
+pub(crate) fn halo_min_window_size(
+    theme: &CompTheme,
+) -> smithay::utils::Size<i32, smithay::utils::Logical> {
+    let metrics = theme.halo_style();
+    let width = 3.0 * metrics.control_size
+        + 2.0 * metrics.gap
+        + 2.0 * (metrics.padding_horizontal + metrics.border_width);
+    smithay::utils::Size::from((width.ceil() as i32, metrics.pill_height().ceil() as i32))
+}
+
 pub(crate) fn halo_tier(width: f32, panel: bool) -> u8 {
     if panel {
         4

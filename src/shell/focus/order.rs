@@ -176,6 +176,8 @@ fn render_input_order_internal<R: 'static>(
     if shell.game_mode.active {
         trace!(target: GAMING_TARGET, output = %output.name(), game_mode_exclusive, "gm: exclusivity resolved");
     }
+    // Over the launcher the shell's layers behave as over any fullscreen app.
+    let game_owns_screen = game_mode_exclusive && shell.game_mode_shows_game();
     let gaming_crossfade = game_mode_exclusive
         && shell.game_mode.presentation.has_backdrop()
         && previous
@@ -222,11 +224,11 @@ fn render_input_order_internal<R: 'static>(
     // Overlay-level layer shell, above everything. An exclusive game hides it
     // all but the launcher's own (its quick settings) and the OSD's volume and
     // brightness indicator, which takes no input.
-    let launcher = game_mode_exclusive
+    let launcher = game_owns_screen
         .then(|| crate::dbus::game_mode::launcher_client(shell))
         .flatten();
     let over_game = |layer: &LayerSurface| {
-        !game_mode_exclusive
+        !game_owns_screen
             || launcher.is_some() && layer.wl_surface().client().as_ref() == launcher.as_ref()
             || layer.namespace() == "osd"
                 && layer.cached_state().keyboard_interactivity
@@ -285,7 +287,7 @@ fn render_input_order_internal<R: 'static>(
         .zip(fullscreen)
         .is_some_and(|(target, fullscreen)| target == &fullscreen.surface);
     let overview_is_open = workspace_overview_is_open(output);
-    let has_focused_fullscreen = game_mode_exclusive
+    let has_focused_fullscreen = game_owns_screen
         || if is_active_workspace {
             let current_focus = seat.get_keyboard().unwrap().current_focus();
             matches!(current_focus, Some(KeyboardFocusTarget::Fullscreen(_)))
@@ -738,15 +740,20 @@ fn layer_popups<'a>(
         move |(surface, location, alpha)| {
             let location_clone = location;
             let surface_clone = surface.clone();
-            PopupManager::popups_for_surface(surface.wl_surface()).map(
+            PopupManager::popups_for_surface(surface.wl_surface()).filter_map(
                 move |(popup, popup_offset)| {
                     let standard_offset = (popup_offset - popup.geometry().loc).as_global();
                     let standard_location = location_clone + standard_offset;
 
-                    // Check for compositor-driven tooltip position override
-                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
-                        popup.wl_surface(),
-                    );
+                    // Check for compositor-driven tooltip position override; a tooltip off
+                    // its parent or in its show delay is neither drawn nor under the pointer.
+                    let tooltip_override =
+                        match crate::wayland::protocols::tooltip::get_tooltip_position(
+                            popup.wl_surface(),
+                        ) {
+                            None => None,
+                            Some(placement) => Some(placement.shown(std::time::Instant::now())?),
+                        };
 
                     tracing::trace!(
                         "[tooltip-layer-render] popup has_override={} standard_loc=({},{})",
@@ -791,7 +798,7 @@ fn layer_popups<'a>(
                         standard_location
                     };
 
-                    (surface_clone.clone(), popup, final_location, alpha)
+                    Some((surface_clone.clone(), popup, final_location, alpha))
                 },
             )
         },

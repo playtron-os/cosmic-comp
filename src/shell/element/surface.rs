@@ -10,6 +10,7 @@ use crate::{
     backend::render::{
         BackdropShader, Key,
         animations::motion::Motion,
+        capture_exclusion,
         element::AsGlowRenderer,
         shadow::ShadowShader,
         wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
@@ -375,6 +376,19 @@ impl CosmicSurface {
             }),
             WindowSurface::X11(surface) => surface.class().replace('\0', ""),
         }
+    }
+
+    /// The app this window's client was launched as, for a window that sets no app id; see
+    /// [`crate::launch_scope`].
+    pub fn launched_app(&self) -> Option<String> {
+        let WindowSurface::Wayland(toplevel) = self.0.underlying_surface() else {
+            return None;
+        };
+        let client = toplevel.wl_surface().client()?;
+        client
+            .get_data::<crate::state::ClientState>()?
+            .launched_app
+            .clone()
     }
 
     /// Steam app id (`STEAM_GAME` X11 property) for this surface, if set. Only
@@ -754,8 +768,20 @@ impl CosmicSurface {
 
                 kde_state.or(xdg_state).unwrap_or(true)
             }
-            WindowSurface::X11(surface) => surface.is_decorated(),
+            WindowSurface::X11(surface) => {
+                !x11_wants_halo(
+                    surface.motif_decorations(),
+                    surface.window_type(),
+                    surface.is_override_redirect(),
+                ) || crate::dbus::game_mode::shows_game(self)
+            }
         }
+    }
+
+    /// The size a window holds itself to, when its minimum and maximum match.
+    pub fn fixed_size(&self) -> Option<Size<i32, Logical>> {
+        let min = self.min_size_without_ssd()?;
+        (min.w > 0 && min.h > 0 && self.max_size_without_ssd() == Some(min)).then_some(min)
     }
 
     pub fn try_force_undecorated(&self, enable: bool) {
@@ -1315,21 +1341,25 @@ impl CosmicSurface {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
                 for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+                    // With its shadow: a capture shows what is under it.
+                    if capture_exclusion::leaves_out_surface(popup.wl_surface()) {
+                        continue;
+                    }
                     // Check for compositor-driven tooltip position override
-                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
-                        popup.wl_surface(),
-                    );
+                    let tooltip_override =
+                        match crate::wayland::protocols::tooltip::get_tooltip_position(
+                            popup.wl_surface(),
+                        ) {
+                            None => None,
+                            // Off its parent or in its show delay, a tooltip pushes no elements.
+                            Some(placement) => match placement.shown(std::time::Instant::now()) {
+                                Some(data) => Some(data),
+                                None => continue,
+                            },
+                        };
 
                     let mut geometry = popup.geometry().to_f64();
                     let offset = if let Some(override_data) = tooltip_override {
-                        // During show-delay the override has a future show_at —
-                        // push no elements so the popup is invisible until then.
-                        if let Some(show_at) = override_data.show_at
-                            && std::time::Instant::now() < show_at
-                        {
-                            continue;
-                        }
-
                         let popup_geo = popup.geometry();
 
                         let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {
@@ -1689,6 +1719,59 @@ fn with_toplevel_state<T, F: FnOnce(Option<&smithay::wayland::shell::xdg::Toplev
         toplevel.with_pending_state(|pending| cb(Some(pending)))
     } else {
         toplevel.with_committed_state(cb)
+    }
+}
+
+/// Whether an X11 window gets a Halo: a normal window or dialog that did not
+/// turn its title bar off. Captionless popups ask for a border alone.
+fn x11_wants_halo(
+    motif_decorations: Option<u32>,
+    window_type: Option<WmWindowType>,
+    override_redirect: bool,
+) -> bool {
+    const ALL: u32 = 1;
+    const TITLE: u32 = 1 << 3;
+    // With the "all" bit set, the other bits name what to leave out.
+    let asks_for_title = motif_decorations.is_none_or(|d| (d & ALL != 0) != (d & TITLE != 0));
+    asks_for_title
+        && !override_redirect
+        && window_type.is_none_or(|t| matches!(t, WmWindowType::Normal | WmWindowType::Dialog))
+}
+
+#[cfg(test)]
+mod x11_halo_tests {
+    use super::{WmWindowType, x11_wants_halo};
+
+    #[test]
+    fn only_windows_that_ask_for_a_title_bar_get_a_halo() {
+        let halo = |motif, kind| x11_wants_halo(motif, kind, false);
+        assert!(halo(None, None), "no hints");
+        assert!(
+            halo(Some(0x7a), Some(WmWindowType::Normal)),
+            "a captioned window"
+        );
+        assert!(halo(Some(0x1), None), "all decorations");
+        assert!(!halo(Some(0x0), None), "none");
+        assert!(!halo(Some(0x2), None), "a bordered popup");
+        assert!(!halo(Some(0x1 | 0x8), None), "all but the title");
+    }
+
+    #[test]
+    fn helpers_and_popups_go_without() {
+        let halo = |kind| x11_wants_halo(None, Some(kind), false);
+        assert!(halo(WmWindowType::Dialog));
+        for kind in [
+            WmWindowType::Utility,
+            WmWindowType::Toolbar,
+            WmWindowType::Splash,
+            WmWindowType::DropdownMenu,
+            WmWindowType::PopupMenu,
+            WmWindowType::Tooltip,
+            WmWindowType::Notification,
+        ] {
+            assert!(!halo(kind), "{kind:?}");
+        }
+        assert!(!x11_wants_halo(None, None, true), "override-redirect");
     }
 }
 

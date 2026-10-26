@@ -16,6 +16,7 @@ pub mod drm;
 pub mod halo_header;
 pub mod image_capture_source;
 pub mod keyboard_layout;
+pub mod kora_capture_exclusion;
 pub mod kora_image_capture_size;
 pub mod kora_toplevel_identity;
 pub mod kora_workspace_realm;

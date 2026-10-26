@@ -453,6 +453,15 @@ impl State {
                     }
                     let original_position = position;
                     position += event.delta().as_global();
+                    if let Some(held) = edge_barrier_hold(
+                        &shell,
+                        &seat,
+                        &current_output,
+                        original_position,
+                        position,
+                    ) {
+                        position = held;
+                    }
 
                     let output = shell
                         .outputs()
@@ -1764,6 +1773,26 @@ impl State {
 
                     std::mem::drop(shell);
 
+                    // A touch elsewhere puts away what a swipe revealed; one at an edge may swipe.
+                    {
+                        let mut shell = self.common.shell.write();
+                        shell.release_touch_reveals(under.as_ref().map(|(target, _)| target));
+                        let swipe = shell.edge_swipe_start(&output, position).map(|edge| {
+                            crate::shell::edge_reveal::EdgeSwipe {
+                                slot: i32::from(event.slot()),
+                                edge,
+                                start: position.y,
+                            }
+                        });
+                        *seat
+                            .user_data()
+                            .get_or_insert(|| {
+                                std::sync::Mutex::new(None::<crate::shell::edge_reveal::EdgeSwipe>)
+                            })
+                            .lock()
+                            .unwrap() = swipe;
+                    }
+
                     // Fire dismiss if touch is outside armed surfaces — including a
                     // touch on empty space (`None`), which is outside every group.
                     {
@@ -1834,6 +1863,29 @@ impl State {
                     std::mem::drop(shell);
 
                     let touch = seat.get_touch().unwrap();
+                    let swiped = seat
+                        .user_data()
+                        .get::<std::sync::Mutex<Option<crate::shell::edge_reveal::EdgeSwipe>>>()
+                        .and_then(|swipe| {
+                            let mut swipe = swipe.lock().unwrap();
+                            let done = swipe.filter(|swipe| {
+                                swipe.slot == i32::from(event.slot()) && swipe.swiped(position.y)
+                            });
+                            if done.is_some() {
+                                *swipe = None;
+                            }
+                            done
+                        });
+                    if let Some(swipe) = swiped {
+                        // The swipe was the shell's, not the app's.
+                        self.common
+                            .shell
+                            .write()
+                            .reveal_by_touch(&output, swipe.edge, position.x);
+                        touch.cancel(self);
+                        self.backend.schedule_render(&output);
+                        return;
+                    }
                     touch.motion(
                         self,
                         under,
@@ -1857,6 +1909,15 @@ impl State {
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
                     std::mem::drop(shell);
+                    if let Some(swipe) = seat
+                        .user_data()
+                        .get::<std::sync::Mutex<Option<crate::shell::edge_reveal::EdgeSwipe>>>()
+                    {
+                        let mut swipe = swipe.lock().unwrap();
+                        if swipe.is_some_and(|swipe| swipe.slot == i32::from(event.slot())) {
+                            *swipe = None;
+                        }
+                    }
                     let serial = SERIAL_COUNTER.next_serial();
                     let touch = seat.get_touch().unwrap();
                     touch.up(
@@ -1879,6 +1940,12 @@ impl State {
                     .cloned();
                 if let Some(seat) = maybe_seat {
                     self.common.idle_notifier_state.notify_activity(&seat);
+                    if let Some(swipe) = seat
+                        .user_data()
+                        .get::<std::sync::Mutex<Option<crate::shell::edge_reveal::EdgeSwipe>>>()
+                    {
+                        *swipe.lock().unwrap() = None;
+                    }
                     let touch = seat.get_touch().unwrap();
                     touch.cancel(self);
                 }
@@ -3422,6 +3489,43 @@ impl State {
             }
         }
     }
+}
+
+/// Where to hold the pointer moving `from` → `to` when that crosses an edge of
+/// `output` shared with another output while a reveal waits there.
+fn edge_barrier_hold(
+    shell: &Shell,
+    seat: &Seat<State>,
+    output: &Output,
+    from: Point<f64, Global>,
+    to: Point<f64, Global>,
+) -> Option<Point<f64, Global>> {
+    use crate::shell::edge_reveal::{Edge, EdgeBarrier};
+    let geometry = output.geometry().to_f64();
+    let (top, bottom) = (geometry.loc.y, geometry.loc.y + geometry.size.h);
+    let crossing = [Edge::Bottom, Edge::Top].into_iter().find(|&edge| {
+        edge.past(top, bottom, from.y, to.y) > 0.0
+            && shell
+                .outputs()
+                .any(|other| other != output && other.geometry().to_f64().contains(to))
+            && shell.reveal_armed(output, edge, from.x)
+    });
+    let barrier = seat
+        .user_data()
+        .get_or_insert(|| std::sync::Mutex::new(EdgeBarrier::default()));
+    let mut barrier = barrier.lock().unwrap();
+    let Some(edge) = crossing else {
+        barrier.hold(0.0);
+        return None;
+    };
+    barrier.hold(edge.past(top, bottom, from.y, to.y)).then(|| {
+        let scale = output.current_scale().fractional_scale();
+        let right = (geometry.loc.x + geometry.size.w).next_down();
+        Point::from((
+            to.x.clamp(geometry.loc.x, right),
+            edge.rest(top, bottom, scale),
+        ))
+    })
 }
 
 // Output and workspace sessions for the given output

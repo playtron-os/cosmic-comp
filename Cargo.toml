@@ -3,7 +3,7 @@ authors = ["Victoria Brekenfeld"]
 edition = "2024"
 license = "GPL-3.0-only"
 name = "cosmic-comp"
-version = "1.62.2"
+version = "1.63.0"
 rust-version = "1.93"
 
 [workspace]
@@ -123,8 +123,6 @@ git = "https://github.com/Drakulix/id-tree.git"
 
 [dependencies.smithay]
 git = "https://github.com/playtron-os/smithay.git"
-# Held guarded requests (playtron-os/smithay feat/held-requests); move to master once merged.
-rev = "89f3787e1fa1561680b3a84755634c21cdc6ddf1"
 default-features = false
 features = [
     "backend_drm",
@@ -239,7 +237,7 @@ cosmic-settings-config = { git = "https://github.com/playtron-os/cosmic-settings
 # Last revision before the InputTime migration; our Smithay fork still uses u32
 # event timestamps. Keep debug builds on the matching API until Smithay migrates.
 smithay-egui = { git = "https://github.com/Smithay/smithay-egui.git", rev = "f34d50913003e0d62b0fb8999baf763d0960e3ef" }
-smithay = { git = "https://github.com/playtron-os/smithay.git", rev = "89f3787e1fa1561680b3a84755634c21cdc6ddf1" }
+smithay = { git = "https://github.com/playtron-os/smithay.git" }
 
 #[patch."https://github.com/playtron-os/iced.git"]
 #iced = { path = "../iced" }
