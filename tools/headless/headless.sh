@@ -43,6 +43,8 @@ Environment for `up`:
   CC_THEME    theme to activate from CC_THEMES (default: playtron)
   CC_CLEAR    desktop colour, #RRGGBB (default: #2a2a2e)
   CC_DATA_DIRS extra XDG data dirs (desktop entries, icons) for the compositor and clients
+  CC_BUS_SERVICE  shell command started on the private bus before the compositor (e.g. a
+              stand-in one.playtron.Workspaces1 registry when run inside a Kora workspace)
   TMPDIR      parent of the short-lived runtime dir (socket paths must stay short)
 
 Environment for `run`:
@@ -234,6 +236,14 @@ cmd_up() {
 	EOF
 	setsid dbus-daemon --config-file="$STATE/dbus.conf" --nofork --nopidfile >"$STATE/dbus.log" 2>&1 &
 	echo $! >"$STATE/dbus.pid"
+	# Inside a Kora workspace every client lands in that workspace's realm, shown only while a
+	# registry on the bus calls it active: CC_BUS_SERVICE starts a stand-in before the compositor.
+	if [ -n "${CC_BUS_SERVICE:-}" ]; then
+		wait_for "[ -S $r/bus ]"
+		setsid sh -c "$CC_BUS_SERVICE" >"$STATE/bus-service.log" 2>&1 &
+		echo $! >>"$STATE/dbus.pid"
+		sleep 0.5
+	fi
 
 	start_xvfb "$size"
 	sandbox

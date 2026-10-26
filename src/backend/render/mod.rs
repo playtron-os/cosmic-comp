@@ -91,8 +91,8 @@ use smithay::{
         user_data::UserDataMap,
     },
     wayland::{
-        compositor::with_states, dmabuf::get_dmabuf, seat::WaylandFocus, session_lock::LockSurface,
-        shell::wlr_layer::Layer as WlrLayer,
+        compositor::with_states, dmabuf::get_dmabuf, image_copy_capture::CaptureFailureReason,
+        seat::WaylandFocus, session_lock::LockSurface, shell::wlr_layer::Layer as WlrLayer,
     },
 };
 
@@ -101,6 +101,7 @@ use smithay_egui::EguiState;
 
 pub mod adaptive_foreground;
 pub mod animations;
+pub mod capture_exclusion;
 pub mod cursor;
 pub mod element;
 pub mod gpu_profiler;
@@ -1618,6 +1619,10 @@ where
                 ..
             } => {
                 let popup_wl_surface = popup.wl_surface();
+                // With its shadow: a capture shows what is under it.
+                if capture_exclusion::leaves_out_surface(popup_wl_surface) {
+                    return ControlFlow::Continue(());
+                }
                 let popup_geo = popup.geometry();
 
                 // Fade the whole popup (content + shadow) when it's closing via the
@@ -1733,6 +1738,9 @@ where
                 // Apply auto-hide render offset.
                 // Input hit-testing is also offset (in surface_under)
                 // so hidden surfaces don't intercept clicks.
+                if capture_exclusion::leaves_out_surface(layer.wl_surface()) {
+                    return ControlFlow::Continue(());
+                }
                 let surface_id = layer.wl_surface().id();
                 let layer_geo = layer.bbox();
 
@@ -2727,6 +2735,7 @@ where
         ElementFilter::All
     };
 
+    capture_exclusion::take_drew_excluded();
     let mut postprocess_texture = None;
     let result = if !screen_filter.filter.is_noop() {
         if screen_filter.state.as_ref().is_none_or(|state| {
@@ -2875,6 +2884,34 @@ where
     match result {
         Ok((res, mut elements)) => {
             let frames = output.take_pending_frames();
+            // The screen shows surfaces its captures leave out, so they are drawn on their own.
+            let capture_elements = if capture_exclusion::take_drew_excluded() && !frames.is_empty()
+            {
+                let _capture = capture_exclusion::CapturePass::begin();
+                match workspace_elements(
+                    gpu,
+                    renderer,
+                    shell,
+                    zoom_state.as_ref(),
+                    now,
+                    output,
+                    previous_workspace,
+                    workspace,
+                    cursor_mode,
+                    element_filter,
+                    None,
+                ) {
+                    Ok(elements) => Some(elements),
+                    Err(err) => {
+                        for (_, frame) in frames {
+                            frame.fail(CaptureFailureReason::Unknown);
+                        }
+                        return Err(err);
+                    }
+                }
+            } else {
+                None
+            };
             // The host window draws the default pointer, so the frame lacks it, and it
             // holds any other pointer whether a capture asked for one or not.
             let pointer_drawn = elements
@@ -2886,7 +2923,7 @@ where
                 Vec::new()
             };
             for (session, frame) in frames {
-                let redraw = session.draw_cursor() != pointer_drawn;
+                let redraw = session.draw_cursor() != pointer_drawn || capture_elements.is_some();
                 if let Some(pending_image_copy_data) = render_session(
                     renderer,
                     session.user_data().get::<SessionData>().unwrap(),
@@ -2928,14 +2965,14 @@ where
                         };
 
                         if redraw {
+                            let source = capture_elements.as_ref().unwrap_or(&elements);
                             let drawn = pointers
                                 .iter()
                                 .filter(|_| session.draw_cursor())
-                                .chain(
-                                    elements
-                                        .iter()
-                                        .filter(|elem| !matches!(elem, CosmicElement::Cursor(_))),
-                                )
+                                .chain(source.iter().filter(|elem| {
+                                    session.draw_cursor()
+                                        || !matches!(elem, CosmicElement::Cursor(_))
+                                }))
                                 .collect::<Vec<_>>();
                             let res = if let Ok(dmabuf) = get_dmabuf(buffer) {
                                 let mut dmabuf_clone = dmabuf.clone();
@@ -2948,7 +2985,7 @@ where
                                     offscreen.expect("shm buffers should have offscreen target");
                                 dt.render_output(renderer, fb, age, &drawn, *CLEAR_COLOR)?
                             };
-                            let buffers = render_element_buffers(renderer, &elements);
+                            let buffers = render_element_buffers(renderer, source);
                             return Ok((res, buffers));
                         }
 

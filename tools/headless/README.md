@@ -117,3 +117,17 @@ light, and runs `halo-measure.py` on each shot. `PANEL_BIN` adds the dock and
 window's distance from the usable area's top, against 32, 4 and 40 x scale.
 The overlapping states are measured in dark mode only: light glass over another
 window cannot be told from its shadow by pixels.
+
+## Capture exclusion
+
+`tools/capture-check/check.sh` runs a client with a panel-like layer bar, a window
+and a drawer on the overlay layer at the right edge, like GameFrame's quick
+settings, each one flat colour, and counts them in a full-screen grim capture
+and in the X screen under the compositor. It fails unless the bar and the window
+are captured, a drawer marked with `kora_capture_exclusion_v1` is on screen but
+not captured, and a drawer marked then unmarked, never marked, or from a client
+that never binds the global, is captured. It needs `xwd`.
+
+Inside a Kora workspace every client lands in that workspace's realm, which
+shows only while a registry calls it active: pass a stand-in
+`one.playtron.Workspaces1` service in `CC_BUS_SERVICE`.

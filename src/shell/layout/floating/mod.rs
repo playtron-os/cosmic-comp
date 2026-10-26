@@ -3929,7 +3929,10 @@ impl FloatingLayout {
                 }
 
                 // A Halo window's own frame draws its focus.
-                if indicator_thickness > 0 && elem.halo_clearance() == 0 {
+                if indicator_thickness > 0
+                    && elem.halo_clearance() == 0
+                    && !elem.left_out_of_capture()
+                {
                     let element = IndicatorShader::focus_element(
                         renderer,
                         Key::Window(Usage::FocusIndicator, elem.key()),
