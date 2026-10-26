@@ -26,6 +26,7 @@ pub mod image_copy_capture;
 pub mod input_method;
 pub mod keyboard_layout;
 pub mod keyboard_shortcuts_inhibit;
+pub mod kora_capture_exclusion;
 pub mod kora_image_capture_size;
 pub mod kora_toplevel_identity;
 pub mod kora_workspace_realm;

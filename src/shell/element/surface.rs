@@ -10,6 +10,7 @@ use crate::{
     backend::render::{
         BackdropShader, Key,
         animations::motion::Motion,
+        capture_exclusion,
         element::AsGlowRenderer,
         shadow::ShadowShader,
         wayland::{SurfaceRenderElement, push_render_elements_from_surface_tree},
@@ -375,6 +376,19 @@ impl CosmicSurface {
             }),
             WindowSurface::X11(surface) => surface.class().replace('\0', ""),
         }
+    }
+
+    /// The app this window's client was launched as, for a window that sets no app id; see
+    /// [`crate::launch_scope`].
+    pub fn launched_app(&self) -> Option<String> {
+        let WindowSurface::Wayland(toplevel) = self.0.underlying_surface() else {
+            return None;
+        };
+        let client = toplevel.wl_surface().client()?;
+        client
+            .get_data::<crate::state::ClientState>()?
+            .launched_app
+            .clone()
     }
 
     /// Steam app id (`STEAM_GAME` X11 property) for this surface, if set. Only
@@ -1332,21 +1346,25 @@ impl CosmicSurface {
             WindowSurface::Wayland(toplevel) => {
                 let surface = toplevel.wl_surface();
                 for (popup, popup_offset) in PopupManager::popups_for_surface(surface) {
+                    // With its shadow: a capture shows what is under it.
+                    if capture_exclusion::leaves_out_surface(popup.wl_surface()) {
+                        continue;
+                    }
                     // Check for compositor-driven tooltip position override
-                    let tooltip_override = crate::wayland::protocols::tooltip::get_tooltip_position(
-                        popup.wl_surface(),
-                    );
+                    let tooltip_override =
+                        match crate::wayland::protocols::tooltip::get_tooltip_position(
+                            popup.wl_surface(),
+                        ) {
+                            None => None,
+                            // Off its parent or in its show delay, a tooltip pushes no elements.
+                            Some(placement) => match placement.shown(std::time::Instant::now()) {
+                                Some(data) => Some(data),
+                                None => continue,
+                            },
+                        };
 
                     let mut geometry = popup.geometry().to_f64();
                     let offset = if let Some(override_data) = tooltip_override {
-                        // During show-delay the override has a future show_at —
-                        // push no elements so the popup is invisible until then.
-                        if let Some(show_at) = override_data.show_at
-                            && std::time::Instant::now() < show_at
-                        {
-                            continue;
-                        }
-
                         let popup_geo = popup.geometry();
 
                         let popup_size = if popup_geo.size.w > 0 && popup_geo.size.h > 0 {

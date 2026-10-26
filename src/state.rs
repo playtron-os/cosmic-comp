@@ -28,6 +28,7 @@ use crate::{
             halo_header::HaloHeaderState,
             image_capture_source::CosmicImageCaptureSourceState,
             keyboard_layout::KeyboardLayoutState,
+            kora_capture_exclusion::CaptureExclusionState,
             kora_image_capture_size::CaptureSizeState,
             kora_toplevel_identity::IdentityState,
             kora_workspace_realm::RealmState,
@@ -198,6 +199,9 @@ pub struct ClientState {
     /// Resolved at connect rather than per surface: a process cannot change the
     /// cgroup it was launched into, so the answer never changes.
     pub workspace: Option<String>,
+    /// The app its process was launched as, from its systemd unit: what a window
+    /// of a client that sets no app id is reported as.
+    pub launched_app: Option<String>,
 }
 unsafe impl Send for ClientState {}
 unsafe impl Sync for ClientState {}
@@ -379,6 +383,8 @@ pub struct Common {
     pub realm_state: RealmState,
     pub toplevel_identity_state: IdentityState,
     pub capture_size_state: CaptureSizeState,
+    /// Lets a client leave its own surfaces out of screen captures.
+    pub capture_exclusion_state: CaptureExclusionState,
     /// Tells shell components when a workspace switch is animating, so they can
     /// fade their contents across it instead of swapping mid-animation.
     pub workspace_transition_state: WorkspaceTransitionState,
@@ -814,6 +820,7 @@ impl State {
         let realm_state = RealmState::new::<Self>(dh);
         let toplevel_identity_state = IdentityState::new::<Self>(dh);
         let capture_size_state = CaptureSizeState::new::<Self>(dh);
+        let capture_exclusion_state = CaptureExclusionState::new::<Self>(dh);
         let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let session_hold_state = SessionHoldState::new::<Self>(dh);
@@ -986,6 +993,7 @@ impl State {
                 realm_state,
                 toplevel_identity_state,
                 capture_size_state,
+                capture_exclusion_state,
                 workspace_transition_state,
                 edge_resize_state,
                 session_hold_state,
@@ -1190,6 +1198,7 @@ impl State {
             security_context: None,
             // Filled in by the socket sources, which have the peer credentials.
             workspace: None,
+            launched_app: None,
         }
     }
 

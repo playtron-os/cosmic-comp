@@ -5182,7 +5182,7 @@ fn render_old_tree_windows<R>(
         is_swap_mode,
         |mapped, elem_geometry, geo, alpha, is_minimizing| {
             let radius = mapped.corner_radius(geo.size.as_logical(), indicator_thickness);
-            if is_minimizing && indicator_thickness > 0 {
+            if is_minimizing && indicator_thickness > 0 && !mapped.left_out_of_capture() {
                 push(CosmicMappedRenderElement::FocusIndicator(
                     IndicatorShader::focus_element(
                         renderer,
@@ -5591,7 +5591,10 @@ fn render_new_tree_windows<R>(
                 // A Halo window's own frame draws its focus, as when floating.
                 let halo_frame = matches!(data, Data::Mapped { mapped, .. } if mapped.halo_clearance() > 0)
                     && swap_desc.as_ref().map(|desc| &desc.node) != Some(&node_id);
-                if (indicator_thickness > 0 || data.is_group()) && !halo_frame {
+                // A window left out of the capture takes its ring with it.
+                let left_out =
+                    matches!(data, Data::Mapped { mapped, .. } if mapped.left_out_of_capture());
+                if (indicator_thickness > 0 || data.is_group()) && !halo_frame && !left_out {
                     let mut geo = geo;
 
                     let scale = geo.size.to_f64() / original_geo.size.to_f64();

@@ -250,6 +250,9 @@ where
     R: AsGlowRenderer,
     R::TextureId: Send + Clone + 'static,
 {
+    if super::capture_exclusion::leaves_out_surface(wl) {
+        return None;
+    }
     import_surface_tree(renderer, wl).ok()?;
     let scale = tree_source_scale(wl);
     let src_size: Size<i32, Physical> = bbox.size.to_physical_precise_round(scale);
