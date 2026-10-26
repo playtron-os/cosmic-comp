@@ -1029,21 +1029,22 @@ impl CosmicWindow {
 
     pub fn focus_under(
         &self,
-        mut relative_pos: Point<f64, Logical>,
+        relative_pos: Point<f64, Logical>,
         surface_type: WindowSurfaceType,
         seat: Option<&Seat<State>>,
     ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
-        let has_constraint = if let Some(seat) = seat
-            && let Some(pointer) = seat.get_pointer()
-            && let Some(surface) = self.wl_surface()
-            && with_pointer_constraint(&surface, &pointer, |constraint| {
-                constraint.is_some_and(|c| c.is_active())
-            }) {
-            true
-        } else {
-            false
-        };
+        self.focus_under_in_game_mode(relative_pos, surface_type, seat, false)
+    }
 
+    /// [`Self::focus_under`] for a fullscreen window that game mode may show as its game.
+    pub fn focus_under_in_game_mode(
+        &self,
+        mut relative_pos: Point<f64, Logical>,
+        surface_type: WindowSurfaceType,
+        seat: Option<&Seat<State>>,
+        game_mode_game: bool,
+    ) -> Option<(PointerFocusTarget, Point<f64, Logical>)> {
+        let has_constraint = self.pointer_constrained(seat);
         let fullscreen_pill = self
             .0
             .with_program(|p| p.fullscreen_output.is_some())
@@ -1053,8 +1054,12 @@ impl CosmicWindow {
         let result = self.0.with_program(|p| {
             if let Some(output) = &p.fullscreen_output {
                 let output = output.lock().unwrap();
-                let enabled =
-                    p.uses_halo_header() && !is_surface_embedded(&p.window) && !has_constraint;
+                let enabled = p.uses_halo_header()
+                    && !is_surface_embedded(&p.window)
+                    && !crate::shell::edge_reveal::reveals_held_back(
+                        game_mode_game,
+                        has_constraint,
+                    );
                 let pill = fullscreen_pill
                     .map(|rect| rect + iced_core::Vector::new(0.0, p.header_origin().y as f32));
                 return (enabled
@@ -1128,6 +1133,20 @@ impl CosmicWindow {
         }
 
         result
+    }
+
+    /// Whether the window holds the pointer locked or confined.
+    pub fn pointer_constrained(&self, seat: Option<&Seat<State>>) -> bool {
+        if let Some(seat) = seat
+            && let Some(pointer) = seat.get_pointer()
+            && let Some(surface) = self.wl_surface()
+        {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                constraint.is_some_and(|c| c.is_active())
+            })
+        } else {
+            false
+        }
     }
 
     /// Set whether the pointer is currently over this window.
