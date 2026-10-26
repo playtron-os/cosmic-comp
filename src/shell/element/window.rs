@@ -179,6 +179,8 @@ pub struct CosmicWindowInternal {
     pointer_entered: AtomicU8,
     /// Whether any pointer is currently over the window (header, content, or resize borders).
     pointer_over_window: AtomicBool,
+    /// Swiped in from the top edge by touch: shown until a touch lands elsewhere.
+    touch_revealed: AtomicBool,
     introduced: Mutex<Option<std::time::Instant>>,
     /// A header-only wrapper anchored to an output, not to the fullscreen client geometry.
     fullscreen_output: Option<Mutex<Output>>,
@@ -655,6 +657,7 @@ impl CosmicWindowInternal {
 
     fn halo_revealed(&self) -> bool {
         self.pointer_over_window.load(Ordering::SeqCst)
+            || self.touch_revealed.load(Ordering::SeqCst)
             || halo_overview()
             || self.halo_keyboard.lock().unwrap().is_some()
             || self.introduced_for().is_some_and(|t| {
@@ -888,6 +891,7 @@ impl CosmicWindow {
                 activated: AtomicBool::new(fullscreen_output.is_some()),
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
+                touch_revealed: AtomicBool::new(false),
                 introduced: Mutex::new(None),
                 fullscreen_output: fullscreen_output.map(Mutex::new),
                 last_title: Mutex::new(last_title),
@@ -1069,6 +1073,7 @@ impl CosmicWindow {
                         output.current_scale().fractional_scale(),
                         pill,
                         p.pointer_over_window.load(Ordering::SeqCst)
+                            || p.touch_revealed.load(Ordering::SeqCst)
                             || p.menu_open.load(Ordering::SeqCst)
                             || p.commands_open.load(Ordering::SeqCst),
                     )
@@ -1133,6 +1138,28 @@ impl CosmicWindow {
         }
 
         result
+    }
+
+    /// Whether this fullscreen window has a Halo the top edge can reveal.
+    pub fn fullscreen_halo_can_reveal(&self) -> bool {
+        self.0.with_program(|p| {
+            p.fullscreen_output.is_some() && p.uses_halo_header() && !is_surface_embedded(&p.window)
+        })
+    }
+
+    pub fn touch_revealed(&self) -> bool {
+        self.0
+            .with_program(|p| p.touch_revealed.load(Ordering::SeqCst))
+    }
+
+    pub fn set_touch_revealed(&self, revealed: bool) {
+        if self
+            .0
+            .with_program(|p| p.touch_revealed.swap(revealed, Ordering::SeqCst))
+            != revealed
+        {
+            self.0.force_update();
+        }
     }
 
     /// Whether the window holds the pointer locked or confined.

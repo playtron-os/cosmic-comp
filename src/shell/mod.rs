@@ -4928,6 +4928,121 @@ impl Shell {
         edge_reveal::reveals_held_back(game, constrained)
     }
 
+    /// Whether a reveal waits at `edge` of `output` around `x`: a surface that
+    /// auto-hides there now, or the fullscreen window's Halo.
+    pub fn reveal_armed(&self, output: &Output, edge: edge_reveal::Edge, x: f64) -> bool {
+        match edge {
+            edge_reveal::Edge::Bottom => {
+                let (windows, maximized, fullscreen) = (
+                    self.output_has_visible_windows(output),
+                    self.output_has_maximized_or_fullscreen(output),
+                    self.output_has_focused_fullscreen(output),
+                );
+                self.auto_hide_surfaces.iter().any(|surface| {
+                    surface.mode.should_hide(windows, maximized, fullscreen)
+                        && self.auto_hide_zone_spans(surface, output, x)
+                })
+            }
+            edge_reveal::Edge::Top => {
+                let (Some(workspace), Some(seat)) =
+                    (self.active_space(output), self.seats.last_active_checked())
+                else {
+                    return false;
+                };
+                !self.reveals_held_back_on(output)
+                    && workspace.get_fullscreen(seat).is_some_and(|fullscreen| {
+                        !fullscreen.is_animating() && fullscreen.halo.fullscreen_halo_can_reveal()
+                    })
+            }
+        }
+    }
+
+    fn auto_hide_zone_spans(
+        &self,
+        surface: &auto_hide::AutoHideSurface,
+        output: &Output,
+        x: f64,
+    ) -> bool {
+        surface.surface.upgrade().is_ok_and(|wl| {
+            self.auto_hide_surface_output(&wl).as_ref() == Some(output)
+                && self
+                    .auto_hide_edge_zone_rect(&wl)
+                    .is_some_and(|zone| x >= zone.loc.x && x < zone.loc.x + zone.size.w)
+        })
+    }
+
+    /// The edge a touch at `position` may swipe a reveal in from.
+    pub fn edge_swipe_start(
+        &self,
+        output: &Output,
+        position: Point<f64, Global>,
+    ) -> Option<edge_reveal::Edge> {
+        let geometry = output.geometry().to_f64();
+        let (top, bottom) = (geometry.loc.y, geometry.loc.y + geometry.size.h);
+        [edge_reveal::Edge::Bottom, edge_reveal::Edge::Top]
+            .into_iter()
+            .find(|&edge| {
+                edge_reveal::EdgeSwipe::starts(edge, top, bottom, position.y)
+                    && self.reveal_armed(output, edge, position.x)
+            })
+    }
+
+    /// A touch swiped in from `edge`: show what waits there until a touch lands elsewhere.
+    pub fn reveal_by_touch(&mut self, output: &Output, edge: edge_reveal::Edge, x: f64) {
+        match edge {
+            edge_reveal::Edge::Bottom => {
+                let spans: Vec<bool> = self
+                    .auto_hide_surfaces
+                    .iter()
+                    .map(|surface| self.auto_hide_zone_spans(surface, output, x))
+                    .collect();
+                for (surface, spans) in self.auto_hide_surfaces.iter_mut().zip(spans) {
+                    if spans {
+                        surface.touch_held = true;
+                        surface.visibility.start_show(false);
+                    }
+                }
+            }
+            edge_reveal::Edge::Top => {
+                if let (Some(workspace), Some(seat)) =
+                    (self.active_space(output), self.seats.last_active_checked())
+                    && let Some(fullscreen) = workspace.get_fullscreen(seat)
+                {
+                    fullscreen.halo.set_touch_revealed(true);
+                }
+            }
+        }
+    }
+
+    /// A touch landed on `touched`: anything swiped in elsewhere goes again.
+    pub fn release_touch_reveals(&mut self, touched: Option<&PointerFocusTarget>) {
+        let client = touched
+            .and_then(|target| target.wl_surface())
+            .and_then(|surface| surface.client());
+        let mut released = false;
+        for surface in &mut self.auto_hide_surfaces {
+            let own = surface
+                .surface
+                .upgrade()
+                .is_ok_and(|wl| wl.client().is_some() && wl.client() == client);
+            if surface.touch_held && !own {
+                surface.touch_held = false;
+                released = true;
+            }
+        }
+        if released {
+            self.refresh_auto_hide();
+        }
+        for workspace in self.workspaces().spaces() {
+            for fullscreen in &workspace.fullscreen_surfaces {
+                let on_it = matches!(touched, Some(PointerFocusTarget::WindowUI(halo)) if *halo == fullscreen.halo);
+                if !on_it && fullscreen.halo.touch_revealed() {
+                    fullscreen.halo.set_touch_revealed(false);
+                }
+            }
+        }
+    }
+
     /// Whether a fullscreen window currently holds the screen on `output`.
     ///
     /// Merely existing is not enough. Focusing another window on the same
@@ -5149,17 +5264,12 @@ impl Shell {
 
             match surface.mode {
                 auto_hide::AutoHideMode::Always | auto_hide::AutoHideMode::OnFullscreen => {
-                    // Rechecks must not dismiss a revealed panel under the pointer.
-                    if !surface
-                        .mode
-                        .should_hide(has_windows, has_max, has_fullscreen)
-                    {
-                        // This output no longer meets the mode's hide condition.
-                        surface.visibility.force_show();
-                    } else if !surface.cursor_over {
-                        // Hide only after the pointer leaves the revealed surface.
-                        surface.visibility.start_hide(false);
-                    }
+                    let should_hide =
+                        surface
+                            .mode
+                            .should_hide(has_windows, has_max, has_fullscreen);
+                    let held = surface.held();
+                    surface.visibility.follow_output(should_hide, held);
                     tracing::debug!(
                         surface_id = surface.surface_id,
                         has_windows,
@@ -5174,7 +5284,7 @@ impl Shell {
                         .should_hide(has_windows, has_max, has_fullscreen)
                     {
                         // Hide for this mode's window state, after the cursor leaves.
-                        if !surface.cursor_over {
+                        if !surface.held() {
                             surface.visibility.start_hide(false);
                         } else {
                             // Cursor is on the dock; delay the hide until cursor leaves.
@@ -5345,8 +5455,10 @@ impl Shell {
                 } else {
                     surface.cursor_over = false;
 
-                    if should_auto_hide(surface.mode, &obj_id) {
-                        surface.visibility.start_hide(true);
+                    if surface
+                        .visibility
+                        .pointer_left(should_auto_hide(surface.mode, &obj_id), surface.touch_held)
+                    {
                         tracing::debug!(
                             surface_id = surface.surface_id,
                             "auto_hide: cursor left, starting hide"
@@ -5367,8 +5479,10 @@ impl Shell {
                     if !still_in_margin {
                         surface.cursor_over = false;
 
-                        if should_auto_hide(surface.mode, &obj_id) {
-                            surface.visibility.start_hide(true);
+                        if surface.visibility.pointer_left(
+                            should_auto_hide(surface.mode, &obj_id),
+                            surface.touch_held,
+                        ) {
                             tracing::debug!(
                                 surface_id = surface.surface_id,
                                 "auto_hide: cursor left margin area, starting hide"

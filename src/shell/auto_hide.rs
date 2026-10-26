@@ -316,6 +316,26 @@ impl AutoHideVisibility {
         }
     }
 
+    /// The output's windows changed: show once the mode stops hiding, else hide
+    /// unless the pointer or a touch holds the surface.
+    pub fn follow_output(&mut self, should_hide: bool, held: bool) {
+        if !should_hide {
+            self.force_show();
+        } else if !held {
+            self.start_hide(false);
+        }
+    }
+
+    /// The pointer left the surface: hide after the delay, unless a touch holds it.
+    /// Returns whether the hide started.
+    pub fn pointer_left(&mut self, should_hide: bool, touch_held: bool) -> bool {
+        let hide = should_hide && !touch_held;
+        if hide {
+            self.start_hide(true);
+        }
+        hide
+    }
+
     /// Force immediate show (no delay). Used when un-maximize occurs.
     pub fn force_show(&mut self) {
         match self {
@@ -358,6 +378,8 @@ pub struct AutoHideSurface {
     pub visibility: AutoHideVisibility,
     /// Whether the cursor is currently over this surface or its edge zone.
     pub cursor_over: bool,
+    /// Swiped in by touch: shown until a touch lands outside its client.
+    pub touch_held: bool,
 }
 
 impl AutoHideSurface {
@@ -369,7 +391,13 @@ impl AutoHideSurface {
             mode,
             visibility: AutoHideVisibility::Visible,
             cursor_over: false,
+            touch_held: false,
         }
+    }
+
+    /// The pointer or a touch keeps it shown.
+    pub fn held(&self) -> bool {
+        self.cursor_over || self.touch_held
     }
 
     /// Compute the render offset for the current animation factor.
@@ -614,6 +642,41 @@ mod tests {
             assert_eq!(edge_zone_height(4, false, scale), 4.0);
             assert_eq!(edge_zone_height(0, true, scale), 0.0);
         }
+    }
+
+    /// A touch has no pointer to leave with: its hold alone keeps a swiped-in
+    /// surface up through window changes and pointer leaves.
+    #[test]
+    fn a_touch_hold_keeps_a_revealed_surface_until_released() {
+        let mut visibility = AutoHideVisibility::Hidden;
+        visibility.start_show(false);
+        visibility.follow_output(true, true);
+        assert!(matches!(visibility, AutoHideVisibility::SlidingIn { .. }));
+        assert!(!visibility.pointer_left(true, true));
+        assert!(matches!(visibility, AutoHideVisibility::SlidingIn { .. }));
+
+        visibility.follow_output(true, false);
+        assert!(
+            matches!(visibility, AutoHideVisibility::SlidingOut { .. }),
+            "released, it hides"
+        );
+        visibility.follow_output(false, false);
+        assert!(
+            matches!(visibility, AutoHideVisibility::SlidingIn { .. }),
+            "a mode that stops hiding shows it"
+        );
+    }
+
+    #[test]
+    fn the_pointer_leaving_hides_after_the_delay() {
+        let mut visibility = AutoHideVisibility::Visible;
+        assert!(
+            !visibility.pointer_left(false, false),
+            "nothing to hide for"
+        );
+        assert!(matches!(visibility, AutoHideVisibility::Visible));
+        assert!(visibility.pointer_left(true, false));
+        assert!(matches!(visibility, AutoHideVisibility::HidePending { .. }));
     }
 
     #[test]
