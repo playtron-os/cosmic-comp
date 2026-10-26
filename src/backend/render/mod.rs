@@ -33,7 +33,7 @@ use crate::{
         CosmicMapped, CosmicMappedRenderElement, OutputId, OverviewMode, SeatExt, Trigger,
         WorkspaceDelta, WorkspaceRenderElement,
         element::{CosmicMappedKey, window::CosmicWindowRenderElement},
-        focus::{FocusTarget, Stage, render_input_order, target::WindowGroup},
+        focus::{FocusTarget, Stage, order::ScaledPopup, render_input_order, target::WindowGroup},
         grabs::{SeatClosingMenus, SeatMenuGrabState, SeatMoveGrabState},
         zoom::ZoomState,
     },
@@ -2105,29 +2105,75 @@ where
                     "overlay stage composed"
                 );
             }
-            Stage::OverrideRedirect { surface, location } => {
+            Stage::OverrideRedirect {
+                surface,
+                location,
+                scaled,
+            } => {
                 if let Some(wl_surface) = surface.wl_surface() {
                     let mut geometry = surface.geometry().as_global();
                     geometry.loc += location;
+                    let origin = location
+                        .to_local(output)
+                        .as_logical()
+                        .to_physical_precise_round(scale);
 
-                    push_render_elements_from_surface_tree(
-                        renderer,
-                        &wl_surface,
-                        location
-                            .to_local(output)
-                            .as_logical()
-                            .to_physical_precise_round(scale),
-                        geometry.to_local(output).as_logical().to_f64(),
-                        Scale::from(scale),
-                        1.0,
-                        false,
-                        [0; 4],
-                        None,
-                        blur_strength,
-                        FRAME_TIME_FILTER,
-                        &mut |elem| elements.extend(crop_to_output(elem.into()).map(Into::into)),
-                        None,
-                    );
+                    // The game's menus scale with it, through its filter.
+                    if let Some(ScaledPopup { placement, filter }) = scaled {
+                        let origin = placement.render_origin(output, scale);
+                        if let Some(elem) = filter.and_then(|filter| {
+                            crate::backend::render::game::prepare_popup(
+                                renderer, surface, &filter, origin, scale,
+                            )
+                        }) {
+                            elements.extend(
+                                crop_to_output(WorkspaceRenderElement::Game(elem)).map(Into::into),
+                            );
+                        } else {
+                            push_render_elements_from_surface_tree(
+                                renderer,
+                                &wl_surface,
+                                origin,
+                                geometry.to_local(output).as_logical().to_f64(),
+                                Scale::from(scale),
+                                1.0,
+                                false,
+                                [0; 4],
+                                None,
+                                blur_strength,
+                                FRAME_TIME_FILTER,
+                                &mut |elem| {
+                                    let scaled = WorkspaceRenderElement::Fullscreen(
+                                        RescaleRenderElement::from_element(
+                                            elem.into(),
+                                            origin,
+                                            placement.scale,
+                                        ),
+                                    );
+                                    elements.extend(crop_to_output(scaled).map(Into::into))
+                                },
+                                None,
+                            );
+                        }
+                    } else {
+                        push_render_elements_from_surface_tree(
+                            renderer,
+                            &wl_surface,
+                            origin,
+                            geometry.to_local(output).as_logical().to_f64(),
+                            Scale::from(scale),
+                            1.0,
+                            false,
+                            [0; 4],
+                            None,
+                            blur_strength,
+                            FRAME_TIME_FILTER,
+                            &mut |elem| {
+                                elements.extend(crop_to_output(elem.into()).map(Into::into))
+                            },
+                            None,
+                        );
+                    }
                 }
             }
             Stage::StickyPopups(layout) => {
