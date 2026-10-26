@@ -786,7 +786,7 @@ pub fn client_has_no_security_context(client: &Client) -> bool {
         .is_none_or(|client_state| client_state.security_context.is_none())
 }
 
-pub fn client_not_sandboxed(client: &Client) -> bool {
+fn client_not_sandboxed(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|client_state| client_state.not_sandboxed())

@@ -131,3 +131,11 @@ that never binds the global, is captured. It needs `xwd`.
 Inside a Kora workspace every client lands in that workspace's realm, which
 shows only while a registry calls it active: pass a stand-in
 `one.playtron.Workspaces1` service in `CC_BUS_SERVICE`.
+
+## Display grants
+
+`tools/grants-check/check.sh` checks what the session, another sandbox (Flatpak's engine) and an
+app the workspace registry boxed see of the guarded globals, and whether a clipboard copy from
+each goes through. It runs once without `COSMIC_WORKSPACES`, then with it while a stand-in
+registry is absent, comes, leaves, returns, predates display grants and adds a field to them.
+The boxed app has rows only inside a workspace slice; outside one, everything guarded is off.

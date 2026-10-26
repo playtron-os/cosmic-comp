@@ -141,9 +141,9 @@ where
         state.realm_state_mut().instances.push(resource);
     }
 
-    // A shell component's, never a boxed app's.
+    // A shell component's; hidden from the apps the registry boxes alone.
     fn can_view(client: Client, _global_data: &()) -> bool {
-        crate::state::client_not_sandboxed(&client)
+        !crate::display_grants::boxed(&client)
     }
 }
 

@@ -202,31 +202,19 @@ impl Table {
 pub struct DisplayGrants(Arc<parking_lot::RwLock<Table>>);
 
 impl DisplayGrants {
-    /// Whether `client` may see a global of `class`: anything not sandboxed
-    /// may; a registry-boxed client may unless its row is off, or, for a
-    /// global with no request to hold (`askable` false), unless it is open;
-    /// any other sandboxed client may not.
+    /// Whether `client` may see a global of `class`; see [`sees`].
     pub fn may(&self, client: &Client, class: Class, askable: bool) -> bool {
         let Some(state) = client.get_data::<ClientState>() else {
             return false;
         };
-        if state.not_sandboxed() {
-            return true;
-        }
-        match self.standing(state, class) {
-            Some(Standing::Open) => true,
-            Some(Standing::Ask) => askable,
-            Some(Standing::Off) | None => false,
-        }
-    }
-
-    /// `None` for a client the registry did not box.
-    pub fn standing(&self, state: &ClientState, class: Class) -> Option<Standing> {
-        let subject = state.security_context.as_ref().and_then(Subject::of)?;
-        Some(
-            self.0
-                .read()
-                .standing(state.workspace.as_deref(), &subject, class),
+        let subject = state.security_context.as_ref().and_then(Subject::of);
+        sees(
+            &self.0.read(),
+            state.not_sandboxed(),
+            subject.as_ref(),
+            state.workspace.as_deref(),
+            class,
+            askable,
         )
     }
 
@@ -296,6 +284,40 @@ impl DisplayGrants {
         }
         old
     }
+}
+
+/// The session's clients see every guarded global and other sandboxes none,
+/// as before grants; a registry-boxed client sees what its row leaves on, and
+/// globals with no request to hold (`askable` false) only when it is open.
+fn sees(
+    table: &Table,
+    not_sandboxed: bool,
+    subject: Option<&Subject>,
+    workspace: Option<&str>,
+    class: Class,
+    askable: bool,
+) -> bool {
+    if not_sandboxed {
+        return true;
+    }
+    let Some(subject) = subject else {
+        return false;
+    };
+    match table.standing(workspace, subject, class) {
+        Standing::Open => true,
+        Standing::Ask => askable,
+        Standing::Off => false,
+    }
+}
+
+/// Whether the registry made `client`'s socket. Shell-only globals are hidden
+/// from such clients alone, so other sandboxes keep what they had.
+pub fn boxed(client: &Client) -> bool {
+    client
+        .get_data::<ClientState>()
+        .and_then(|state| state.security_context.as_ref())
+        .and_then(Subject::of)
+        .is_some()
 }
 
 /// Whether `client` holds an object of any of `interfaces`.
@@ -744,6 +766,62 @@ mod tests {
             None
         );
         assert_eq!(Subject::tagged(Some(APP_ENGINE), Some("")), None);
+        assert_eq!(Subject::tagged(Some(APP_ENGINE), None), None);
+        assert_eq!(Subject::tagged(None, Some("org.example.Mail")), None);
+        assert_eq!(
+            Subject::tagged(Some("com.system76.CosmicPanel"), Some("panel")),
+            None
+        );
+        // An engine from a newer registry is another sandbox until this compositor knows it.
+        assert_eq!(
+            Subject::tagged(Some("one.playtron.Workspaces.Service"), Some("x")),
+            None
+        );
+    }
+
+    const EVERY: [(Class, bool); 6] = [
+        (Class::Input, true),
+        (Class::Input, false),
+        (Class::Screen, true),
+        (Class::Screen, false),
+        (Class::Clipboard, true),
+        (Class::Clipboard, false),
+    ];
+
+    /// Without the registry, or for anything it did not box, the filters are master's.
+    #[test]
+    fn the_session_and_other_sandboxes_see_what_they_saw_before_grants() {
+        let granted = Table::from_grants(vec![grant(
+            "work",
+            "app",
+            "org.example.Mail",
+            &["input", "screen", "clipboard"],
+            &[],
+        )]);
+        for table in [Table::default(), granted] {
+            for (class, askable) in EVERY {
+                for workspace in [None, Some("work")] {
+                    assert!(sees(&table, true, None, workspace, class, askable));
+                    // Flatpak's, or any socket the registry did not tag.
+                    assert!(!sees(&table, false, None, workspace, class, askable));
+                }
+            }
+        }
+    }
+
+    /// A boxed client fails closed: held (and refused with nobody to answer), never open.
+    #[test]
+    fn a_boxed_client_with_the_registry_away_is_held_not_opened() {
+        let mail = Subject::App("org.example.Mail".into());
+        let away = Table::default();
+        for class in Class::ALL {
+            assert_eq!(away.standing(Some("work"), &mail, class), Standing::Ask);
+            assert!(sees(&away, false, Some(&mail), Some("work"), class, true));
+            assert!(!sees(&away, false, Some(&mail), Some("work"), class, false));
+            // Outside every workspace slice, as on a machine without the registry.
+            assert!(!sees(&away, false, Some(&mail), None, class, true));
+        }
+        assert_eq!(Table::from_grants(Vec::new()), away);
     }
 
     #[test]
