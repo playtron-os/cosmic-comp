@@ -58,6 +58,8 @@ pub struct DesktopAction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopApp {
     pub name: Option<String>,
+    /// The entry's `Icon`, for an app whose icon is not named after its app id.
+    pub icon: Option<String>,
     pub new_window: Option<NewWindowAction>,
     /// Every action the entry declares, in declaration order, capped at
     /// [`APP_ACTION_CAP`]. Includes the one `new_window` was derived from: the
@@ -81,6 +83,10 @@ impl DesktopApp {
                 .name(&locales)
                 .filter(|name| !name.is_empty())
                 .map(|name| name.to_string()),
+            icon: entry
+                .icon()
+                .filter(|icon| !icon.is_empty())
+                .map(str::to_owned),
             new_window: NewWindowAction::from_entry(entry),
             actions: DesktopAction::all(entry, &locales),
         })
@@ -188,19 +194,26 @@ impl NewWindowAction {
 }
 
 pub fn for_app(app_id: &str) -> Option<DesktopApp> {
+    for_app_in(app_id, super::xdg_dirs::data_dirs("applications"))
+}
+
+fn for_app_in(app_id: &str, dirs: Vec<std::path::PathBuf>) -> Option<DesktopApp> {
     if app_id.is_empty() || app_id.contains('/') {
         return None;
     }
-    let id = app_id.trim_end_matches(".desktop");
-    let dirs = super::xdg_dirs::data_dirs("applications");
-    // A user entry also masks the system entry when it has no New Window action.
-    for dir in &dirs {
-        let path = dir.join(format!("{id}.desktop"));
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            return DesktopApp::from_content(&path, &content);
+    let id = app_id.strip_suffix(".desktop").unwrap_or(app_id);
+    // A user entry also masks the system entry when it has no New Window action. An id that
+    // ends in `.desktop`, such as Telegram's `org.telegram.desktop`, is still the file's stem.
+    for name in [app_id, id] {
+        for dir in &dirs {
+            let path = dir.join(format!("{name}.desktop"));
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                return DesktopApp::from_content(&path, &content);
+            }
         }
     }
     let mut seen = HashSet::new();
+    let mut best: Option<(Closeness, DesktopEntry)> = None;
     for path in freedesktop_desktop_entry::Iter::new(dirs.into_iter()) {
         let Ok(content) = std::fs::read_to_string(&path) else {
             continue;
@@ -211,22 +224,65 @@ pub fn for_app(app_id: &str) -> Option<DesktopApp> {
         if !seen.insert(entry.appid.clone()) {
             continue;
         }
-        if matches_app(&entry, id) {
+        let Some(closeness) = closeness(&entry, id) else {
+            continue;
+        };
+        if closeness == Closeness::Exact {
             return DesktopApp::from_entry(&entry);
         }
+        if best.as_ref().is_none_or(|(other, _)| closeness > *other) {
+            best = Some((closeness, entry));
+        }
     }
-    None
+    best.and_then(|(_, entry)| DesktopApp::from_entry(&entry))
 }
 
-fn matches_app(entry: &DesktopEntry, id: &str) -> bool {
-    entry.appid.eq_ignore_ascii_case(id)
-        || entry
-            .startup_wm_class()
-            .is_some_and(|class| class.eq_ignore_ascii_case(id))
+/// How closely a window's app id names a desktop entry; later variants are closer.
+/// The taskbar's rule too: case, spaces and punctuation aside, an exact name wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Closeness {
+    /// The entry's `Name`, ignoring case, spaces and punctuation.
+    Name,
+    /// The desktop id or `StartupWMClass` the same way (`Audacity4` for `Audacity 4`).
+    Loose,
+    /// The desktop id or `StartupWMClass` ignoring case, or an `AppIdMatch` pattern.
+    Caseless,
+    /// The desktop id or `StartupWMClass` itself.
+    Exact,
+}
+
+fn closeness(entry: &DesktopEntry, id: &str) -> Option<Closeness> {
+    let names = || std::iter::once(entry.appid.as_str()).chain(entry.startup_wm_class());
+    if names().any(|name| name == id) {
+        return Some(Closeness::Exact);
+    }
+    if names().any(|name| name.eq_ignore_ascii_case(id))
         || ["X-Playtron-AppIdMatch", "X-Cosmic-AppIdMatch"]
             .into_iter()
             .filter_map(|key| entry.desktop_entry(key))
             .any(|pattern| glob_match(pattern, id))
+    {
+        return Some(Closeness::Caseless);
+    }
+    let loose = squash(id);
+    if loose.is_empty() {
+        return None;
+    }
+    if names().any(|name| squash(name) == loose) {
+        return Some(Closeness::Loose);
+    }
+    entry
+        .desktop_entry("Name")
+        .is_some_and(|name| squash(name) == loose)
+        .then_some(Closeness::Name)
+}
+
+/// Lowercase letters and digits only.
+fn squash(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn expand_exec(exec: &str, entry: &DesktopEntry) -> Option<Vec<String>> {
@@ -273,6 +329,87 @@ mod tests {
                 "[Desktop Entry]\nType=Application\nName=Example App\nIcon=example\nActions=new-window;\n{extra}\n[Desktop Action new-window]\nName=New Window\nExec={exec}\n"
             ),
         )
+    }
+
+    #[test]
+    fn an_app_id_ending_in_desktop_finds_its_entry_and_icon() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-apps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("org.telegram.desktop.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Telegram\nIcon=telegram\nExec=Telegram\n",
+        )
+        .unwrap();
+        let app = for_app_in("org.telegram.desktop", vec![dir.clone()]).unwrap();
+        assert_eq!(app.name.as_deref(), Some("Telegram"));
+        assert_eq!(app.icon.as_deref(), Some("telegram"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Desktop files `(file name, keys)`, in a directory of their own.
+    fn apps_dir(test: &str, entries: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-{test}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (file, keys) in entries {
+            std::fs::write(
+                dir.join(file),
+                format!("[Desktop Entry]\nType=Application\nExec=true\n{keys}\n"),
+            )
+            .unwrap();
+        }
+        dir
+    }
+
+    fn name_for(app_id: &str, dir: &Path) -> Option<String> {
+        for_app_in(app_id, vec![dir.to_path_buf()]).and_then(|app| app.name)
+    }
+
+    /// Audacity 4's entry says `StartupWMClass=Audacity 4`, its window `Audacity4`.
+    #[test]
+    fn a_window_finds_its_entry_despite_case_and_punctuation() {
+        let dir = apps_dir(
+            "loose",
+            &[
+                (
+                    "audacity.desktop",
+                    "Name=Audacity\nIcon=audacity\nStartupWMClass=Audacity 4",
+                ),
+                ("org.gnome.Nautilus.desktop", "Name=Files"),
+                ("steam.desktop", "Name=Steam\nStartupWMClass=steam"),
+            ],
+        );
+        let audacity = for_app_in("Audacity4", vec![dir.clone()]).unwrap();
+        assert_eq!(audacity.name.as_deref(), Some("Audacity"));
+        assert_eq!(audacity.icon.as_deref(), Some("audacity"));
+        assert_eq!(
+            name_for("org.gnome.nautilus", &dir).as_deref(),
+            Some("Files")
+        );
+        assert_eq!(name_for("files", &dir).as_deref(), Some("Files"));
+        assert_eq!(name_for("Steam", &dir).as_deref(), Some("Steam"));
+        // A Steam game is a window of its own, not Steam's.
+        assert_eq!(name_for("steam_app_570", &dir), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Two apps that differ only in punctuation each keep their own windows,
+    /// whichever entry the directory lists first.
+    #[test]
+    fn an_exact_name_wins_over_a_loose_one() {
+        let dir = apps_dir(
+            "exact",
+            &[
+                ("spaced.desktop", "Name=Spaced\nStartupWMClass=Foo Bar"),
+                ("joined.desktop", "Name=Joined\nStartupWMClass=FooBar"),
+                ("dashed.desktop", "Name=Dashed\nStartupWMClass=foo-bar"),
+            ],
+        );
+        assert_eq!(name_for("Foo Bar", &dir).as_deref(), Some("Spaced"));
+        assert_eq!(name_for("FooBar", &dir).as_deref(), Some("Joined"));
+        assert_eq!(name_for("foobar", &dir).as_deref(), Some("Joined"));
+        assert_eq!(name_for("foo-bar", &dir).as_deref(), Some("Dashed"));
+        assert!(name_for("foo_bar", &dir).is_some());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

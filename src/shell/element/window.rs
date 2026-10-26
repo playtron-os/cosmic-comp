@@ -370,16 +370,33 @@ fn resolve_app_icon(app_id: &str) -> Option<super::header_bar::AppIcon> {
     }
 
     // 3. Direct pixmap lookup
-    for dir in crate::utils::xdg_dirs::data_dirs("pixmaps") {
-        for ext in &["png", "svg", "xpm"] {
-            let pixmap = dir.join(format!("{lower}.{ext}"));
-            if pixmap.exists() {
-                return Some(prescale_icon_from_path(&pixmap.to_string_lossy()));
+    let pixmap = pixmap_in(&crate::utils::xdg_dirs::data_dirs("pixmaps"), app_id)?;
+    Some(prescale_icon_from_path(&pixmap.to_string_lossy()))
+}
+
+/// `name`'s file in the first of `dirs` that has one, the name as written before its
+/// lowercase: Zoom ships only `pixmaps/Zoom.png`.
+fn pixmap_in(dirs: &[std::path::PathBuf], name: &str) -> Option<std::path::PathBuf> {
+    let lower = name.to_lowercase();
+    for dir in dirs {
+        for name in [name, lower.as_str()] {
+            for ext in ["png", "svg", "xpm"] {
+                let pixmap = dir.join(format!("{name}.{ext}"));
+                if pixmap.exists() {
+                    return Some(pixmap);
+                }
             }
         }
     }
-
     None
+}
+
+/// The icon a desktop entry names, for an app whose icon is not called after its app id, such
+/// as 1Password (`com.onepassword.OnePassword`, icon `1password`).
+fn entry_icon(
+    app: Option<&crate::utils::desktop_action::DesktopApp>,
+) -> Option<super::header_bar::AppIcon> {
+    resolve_app_icon(app?.icon.as_deref()?)
 }
 
 /// Load an icon from a file path, applying Lanczos3 pre-scaling for raster
@@ -922,8 +939,8 @@ impl CosmicWindow {
         let element = cosmic_window.0.clone();
         let app_id_clone = app_id;
         std::thread::spawn(move || {
-            let icon = resolve_app_icon(&icon_name);
             let app = crate::utils::desktop_action::for_app(&app_id_clone);
+            let icon = resolve_app_icon(&icon_name).or_else(|| entry_icon(app.as_ref()));
             element.with_program(|p| {
                 if p.window.app_id() != app_id_clone {
                     return;
@@ -2443,7 +2460,7 @@ impl SpaceElement for CosmicWindow {
             let mut cached = p.cached_icon.lock().unwrap();
             if cached.0 != app_id {
                 let new_ovr = find_desktop_override(&app_id);
-                *p.desktop_app.lock().unwrap() = new_ovr
+                let app = new_ovr
                     .as_ref()
                     .and_then(|entry| entry.app.clone())
                     .or_else(|| crate::utils::desktop_action::for_app(&app_id));
@@ -2451,7 +2468,8 @@ impl SpaceElement for CosmicWindow {
                     .as_ref()
                     .and_then(|o| o.forced_icon.as_deref())
                     .unwrap_or(&app_id);
-                cached.1 = resolve_app_icon(icon_name);
+                cached.1 = resolve_app_icon(icon_name).or_else(|| entry_icon(app.as_ref()));
+                *p.desktop_app.lock().unwrap() = app;
                 cached.0 = app_id.clone();
                 drop(cached);
                 *p.desktop_override.lock().unwrap() = (app_id, new_ovr);
@@ -3222,6 +3240,18 @@ mod tests {
             strip_override_key("X-Playtron-ForcedTitleExtra=x", "ForcedTitle"),
             None
         );
+    }
+
+    #[test]
+    fn a_pixmap_is_found_by_its_names_own_case() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-pixmaps-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Zoom.png"), b"png").unwrap();
+        std::fs::write(dir.join("firefox.png"), b"png").unwrap();
+        let dirs = [dir.clone()];
+        assert_eq!(pixmap_in(&dirs, "Zoom"), Some(dir.join("Zoom.png")));
+        assert_eq!(pixmap_in(&dirs, "Firefox"), Some(dir.join("firefox.png")));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
