@@ -46,10 +46,10 @@ iced_runtime = { git = "https://github.com/playtron-os/iced.git" }
 iced_tiny_skia = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image"] }
 iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["svg", "image", "advanced"] }
 # The icetron widget subset; icetron-themes comes through it as `icetron_p::icetron_themes`.
-icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git", rev = "37d22034d853effbf32101424bee8dedb913b8ca", features = ["themes-dynamic", "themes-color-mode"] }
+icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git", features = ["themes-dynamic", "themes-color-mode"] }
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 shlex = "2"
-icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git", rev = "2bf1ea9a7533f077632e833b18b22314543a546f" }
+icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
