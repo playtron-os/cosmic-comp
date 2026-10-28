@@ -1937,6 +1937,9 @@ impl Workspaces {
                     if seat.focused_output().as_ref() == Some(output) {
                         seat.set_focused_output(None);
                     }
+                    if seat.window_output().as_ref() == Some(output) {
+                        seat.set_window_output(None);
+                    }
                 }
 
                 let new_set = self.sets.get_mut(&new_output).unwrap();
