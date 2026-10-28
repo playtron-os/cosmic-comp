@@ -61,6 +61,7 @@ install:
 	install -Dm0755 "$(CARGO_TARGET_DIR)/$(TARGET)/$(BINARY)" "$(TARGET_BIN)"
 	install -Dm0644 "data/keybindings.ron" "$(KEYBINDINGS_CONF)"
 	install -Dm0644 "data/tiling-exceptions.ron" "$(TILING_EXCEPTIONS_CONF)"
+	install -Dm0644 "data/kora-workspaces/50-cosmic-comp.policy" "$(DESTDIR)$(sharedir)/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy"
 
 install-voice-mode:
 	mkdir -p "$(VOICE_MODE_DIR)"
@@ -92,6 +93,7 @@ install-bare-session: install
 uninstall:
 	rm "$(TARGET_BIN)" "$(KEYBINDINGS_CONF)"
 	rm -rf "$(VOICE_MODE_DIR)"
+	rm -f "$(DESTDIR)$(sharedir)/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy"
 
 uninstall-bare-session:
 	rm "$(DESTDIR)$(sharedir)/wayland-sessions/cosmic.desktop"

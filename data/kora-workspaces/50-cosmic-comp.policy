@@ -1,0 +1,19 @@
+# What an app in a Kora workspace may call on game mode, for kora-workspaces'
+# router: anything not listed, a method added later too, is refused to apps.
+# The router vouches for the app behind each connection; AttestPeer is its own.
+guard    one.playtron.GameMode
+attest   one.playtron.GameMode /one/playtron/GameMode one.playtron.GameMode
+upstream one.playtron.GameMode one.playtron.GameMode EnterGameMode
+upstream one.playtron.GameMode one.playtron.GameMode ExitGameMode
+upstream one.playtron.GameMode one.playtron.GameMode RegisterGameProcess
+upstream one.playtron.GameMode one.playtron.GameMode SetFpsLimit
+upstream one.playtron.GameMode one.playtron.GameMode SetScaling
+upstream one.playtron.GameMode one.playtron.GameMode SetScalingFilter
+upstream one.playtron.GameMode one.playtron.GameMode SetSharpness
+upstream one.playtron.GameMode one.playtron.GameMode SetTearing
+upstream one.playtron.GameMode one.playtron.GameMode SetVrr
+upstream one.playtron.GameMode one.playtron.GameMode SetHdr
+upstream one.playtron.GameMode one.playtron.GameMode SetOverlay
+upstream one.playtron.GameMode one.playtron.GameMode SetOverlayKeyboard
+upstream one.playtron.GameMode one.playtron.GameMode Screenshot
+upstream one.playtron.GameMode one.playtron.GameMode AppFrametimeNs
