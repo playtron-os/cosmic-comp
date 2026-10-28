@@ -528,7 +528,7 @@ impl CompositorHandler for State {
             let map = layer_map_for_output(output);
             let layer = map.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)?;
             let surface_id = layer.wl_surface().id();
-            if shell.is_surface_hidden(&surface_id) {
+            if shell.is_surface_hidden(&surface_id) || shell.is_layer_hiding(&surface_id) {
                 return None;
             }
             let wants_exclusive = with_states(layer.wl_surface(), |states| {
