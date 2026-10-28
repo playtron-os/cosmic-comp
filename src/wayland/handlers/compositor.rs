@@ -550,8 +550,17 @@ impl CompositorHandler for State {
             }
             None
         });
+        // A null buffer unmapped it: smithay resets the role, initial configure included.
+        let unmapped_layer = layer_output.as_ref().is_some_and(|output| {
+            layer_map_for_output(output)
+                .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
+                .is_some_and(|layer| !layer_surface_check_inital_configure(layer))
+        });
         std::mem::drop(shell);
 
+        if unmapped_layer {
+            Common::refocus_off_closed_surface(self, &surface.id());
+        }
         if let Some((target, seat)) = layer_focus_target {
             Shell::set_focus(self, Some(&target), &seat, None, false);
         }
