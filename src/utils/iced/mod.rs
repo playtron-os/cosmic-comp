@@ -1120,11 +1120,15 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
     fn update(&mut self, source: UpdateSource) {
         // A panic here would poison the element's lock, and the main thread's next
         // lock of it would end the session: skip the frame instead.
+        // The panic hook logs each panic; this says once that the session carries on.
+        static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         let frame = std::panic::AssertUnwindSafe(|| self.update_frame(source));
-        if std::panic::catch_unwind(frame).is_err() {
+        if std::panic::catch_unwind(frame).is_err()
+            && !NOTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
             tracing::error!(
                 program = P::program_name(),
-                "iced update panicked; frame skipped"
+                "iced update panicked; skipping frames that panic"
             );
         }
     }
