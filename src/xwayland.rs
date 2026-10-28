@@ -644,7 +644,7 @@ impl Common {
             let active_output = seat.active_output();
 
             // front to back, given that is how the workspace enumerates
-            shell
+            let mut order = shell
                 .workspaces()
                 .sets
                 .iter()
@@ -732,7 +732,22 @@ impl Common {
                                 }),
                         )
                 })
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            // Game mode draws the game's own windows above it, focused or not: X11 must
+            // agree, or the focused game would cover them and the menus mapped before them.
+            if let Some(base) = shell.game_mode.game_surface.as_ref()
+                && shell.game_mode.active
+                && order.contains(base)
+            {
+                let children = &shell.game_mode.children;
+                order.retain(|surface| !children.contains(surface));
+                let at = order
+                    .iter()
+                    .position(|surface| surface == base)
+                    .unwrap_or(0);
+                order.splice(at..at, children.iter().cloned());
+            }
+            order
         };
 
         for xstate in self.xwayland_states_mut() {
@@ -926,6 +941,37 @@ fn x11_workarea(
         .then(|| Rectangle::from_extremities((left, top), (right, bottom)))
 }
 
+/// Fits a fullscreen window to [`fullscreen_rect`] again: a game's window kept at its
+/// fixed size that turns resizable (going fullscreen itself) fills the output, and the
+/// reverse. A render-size request owns the geometry instead. Whether it reconfigured.
+fn refit_fullscreen(shell: &Shell, window: &X11Surface, games_only: bool) -> bool {
+    let target = shell.workspaces().spaces().find_map(|ws| {
+        ws.get_fullscreen_surfaces()
+            .find(|f| {
+                f.surface == *window
+                    && (!games_only || crate::dbus::game_mode::is_game_window(&f.surface))
+            })
+            .map(|f| {
+                (
+                    f.surface.clone(),
+                    fullscreen_rect(&f.surface, ws.output().geometry()),
+                )
+            })
+    });
+    let spoofed = shell
+        .game_mode
+        .spoof_requested
+        .as_ref()
+        .is_some_and(|request| request.surface == *window);
+    match target {
+        Some((surface, rect)) if !spoofed && rect.size.as_logical() != window.geometry().size => {
+            surface.set_geometry(rect, 0);
+            true
+        }
+        _ => false,
+    }
+}
+
 impl XwmHandler for State {
     fn xwm_state(&mut self, xwm: XwmId) -> &mut X11Wm {
         self.common.xwm_for(xwm).unwrap()
@@ -1010,6 +1056,10 @@ impl XwmHandler for State {
             // An overlay marker toggled — recompute overlay-visible + the fast-path gate.
             WmWindowProperty::SteamOverlay | WmWindowProperty::ExternalOverlay => {
                 self.refresh_overlay_visible();
+            }
+            // Wine drops a fixed size after asking for the new one, so refit then too.
+            WmWindowProperty::NormalHints if window.is_fullscreen() => {
+                refit_fullscreen(&self.common.shell.read(), &window, true);
             }
             // STEAM_INPUT_FOCUS toggled — grant/release the input grab over the game.
             WmWindowProperty::SteamInputFocus => {
@@ -1218,6 +1268,8 @@ impl XwmHandler for State {
     }
 
     fn mapped_override_redirect_window(&mut self, xwm: XwmId, window: X11Surface) {
+        // Wine sets no `_NET_WM_PID` on its menus; game mode matches them to the game by this.
+        CosmicSurface::cache_x11_pid(&window);
         let mut shell = self.common.shell.write();
         let already_present = shell
             .override_redirect_windows
@@ -1291,32 +1343,12 @@ impl XwmHandler for State {
         let mut shell = self.common.shell.write();
 
         if window.is_fullscreen() {
-            // A game's window kept at its fixed size that turns resizable (going
-            // fullscreen itself) now fills the output, and the reverse. A render-size
-            // request owns the geometry instead.
-            let target = shell.workspaces().spaces().find_map(|ws| {
-                ws.get_fullscreen_surfaces()
-                    .find(|f| f.surface == window)
-                    .map(|f| {
-                        let rect = fullscreen_rect(&f.surface, ws.output().geometry());
-                        (f.surface.clone(), rect)
-                    })
-            });
-            let spoofed = shell
-                .game_mode
-                .spoof_requested
-                .as_ref()
-                .is_some_and(|request| request.surface == window);
-            match target {
-                Some((surface, rect))
-                    if !spoofed && rect.size.as_logical() != window.geometry().size =>
-                {
-                    surface.set_geometry(rect, 0);
-                }
-                _ => {
-                    let _ = window.configure(None);
-                }
+            if !refit_fullscreen(&shell, &window, false) {
+                let _ = window.configure(None);
             }
+            return;
+        }
+        if shell.game_helper_configure(&window, x, y, w, h) {
             return;
         }
 

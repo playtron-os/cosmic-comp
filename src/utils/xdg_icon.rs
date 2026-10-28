@@ -1,33 +1,21 @@
-//! XDG icon resolution — delegates to `icetron_p::components::image::icons`.
+//! XDG icon resolution — delegates to `icetron_p::utils::icons`.
 //!
 //! Provides convenience wrappers that produce iced `Svg` widgets from
-//! freedesktop icon names. The underlying `lookup_icon` caches resolved paths
-//! so repeated lookups are sub-microsecond.
-
-use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+//! freedesktop icon names. The underlying `lookup_icon` caches resolved paths,
+//! so a repeated lookup costs a file check.
 
 use iced_core::{Color, Length, svg};
 use iced_widget::Svg;
-
-/// Cache of SVG handles built from resolved paths (avoids re-reading files each frame).
-static ICON_HANDLE_CACHE: LazyLock<Mutex<HashMap<String, Option<svg::Handle>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Resolve a symbolic icon name to a filesystem path (cached inside `lookup_icon`).
 pub fn resolve_icon_path(name: &str, size: f32) -> Option<std::path::PathBuf> {
     icetron_p::utils::icons::lookup_icon(name, size)
 }
 
-/// Create an SVG handle for a named icon (cached).
+/// Create an SVG handle for a named icon. Not cached by name: `lookup_icon` already caches
+/// and finds an app installed or moved since, which a name cache would hide.
 pub fn icon_handle(name: &str) -> Option<svg::Handle> {
-    let mut cache = ICON_HANDLE_CACHE.lock().unwrap();
-    if let Some(cached) = cache.get(name) {
-        return cached.clone();
-    }
-    let handle = icetron_p::utils::icons::lookup_icon(name, 48.0).map(svg::Handle::from_path);
-    cache.insert(name.to_string(), handle.clone());
-    handle
+    icetron_p::utils::icons::lookup_icon(name, 48.0).map(svg::Handle::from_path)
 }
 
 /// Create an Svg widget for a named icon at the given size.

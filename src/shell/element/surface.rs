@@ -433,6 +433,15 @@ impl CosmicSurface {
         }
     }
 
+    /// The PID cached by [`Self::cache_x11_pid`], else the window's `_NET_WM_PID`.
+    pub fn x11_pid(surface: &X11Surface) -> Option<u32> {
+        surface
+            .user_data()
+            .get::<X11ClientPid>()
+            .and_then(|pid| pid.0)
+            .or_else(|| surface.pid())
+    }
+
     /// Cache the server's PID before mapping; window properties may use a sandbox's PID namespace.
     pub fn cache_x11_pid(surface: &X11Surface) {
         surface
@@ -443,11 +452,7 @@ impl CosmicSurface {
     /// Server-verified X11 client PID or native socket peer PID in our namespace.
     pub fn pid(&self) -> Option<u32> {
         match self.0.underlying_surface() {
-            WindowSurface::X11(surface) => surface
-                .user_data()
-                .get::<X11ClientPid>()
-                .and_then(|pid| pid.0)
-                .or_else(|| surface.pid()),
+            WindowSurface::X11(surface) => Self::x11_pid(surface),
             WindowSurface::Wayland(toplevel) => {
                 toplevel
                     .wl_surface()

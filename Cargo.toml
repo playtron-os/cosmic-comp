@@ -49,7 +49,7 @@ iced_widget = { git = "https://github.com/playtron-os/iced.git", features = ["sv
 icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git", features = ["themes-dynamic", "themes-color-mode"] }
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 shlex = "2"
-icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git", rev = "2c8bf4051a24ae61afa4ed9729e841a8fee709ad" }
+icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"
 keyframe = "1.1.1"
