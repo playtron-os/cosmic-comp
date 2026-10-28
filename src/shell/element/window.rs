@@ -443,7 +443,8 @@ fn prescale_raster_icon(path: &str) -> Option<super::header_bar::AppIcon> {
             static WARNED: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
                 std::sync::LazyLock::new(Default::default);
             if WARNED.lock().unwrap().insert(path.to_owned()) {
-                tracing::warn!(path, %err, "window icon does not decode; showing none");
+                // In the message: the journal shows fields only in its verbose view.
+                tracing::warn!("window icon {path} does not decode ({err}); showing none");
             }
             return None;
         }
