@@ -65,6 +65,8 @@ struct App {
     qh: QueueHandle<App>,
     shm: wl_shm::WlShm,
     surfaces: Vec<wl_surface::WlSurface>,
+    // The layer surfaces of `surfaces`, by index; destroyed before them, as a client does.
+    layers: Vec<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     mode: Mode,
     activated: Option<bool>,
     pending_activated: bool,
@@ -178,6 +180,7 @@ fn show(mode: Mode) {
     let wm_base: xdg_wm_base::XdgWmBase = globals.bind(&qh, 2..=6, ()).expect("xdg_wm_base");
 
     let mut surfaces = Vec::new();
+    let mut layers = Vec::new();
     let mut bar = None;
     match mode {
         Mode::Overlay { .. } => {
@@ -215,6 +218,7 @@ fn show(mode: Mode) {
                 );
                 surface.commit();
                 surfaces.push(surface);
+                layers.push(layer);
             }
         }
         Mode::Bar => {
@@ -240,6 +244,7 @@ fn show(mode: Mode) {
             layer.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
             surface.commit();
             surfaces.push(surface);
+            layers.push(layer.clone());
             bar = Some((layer, 0));
         }
         Mode::Window => {
@@ -258,6 +263,7 @@ fn show(mode: Mode) {
         qh,
         shm,
         surfaces,
+        layers,
         mode,
         activated: None,
         pending_activated: false,
@@ -279,7 +285,7 @@ fn show(mode: Mode) {
                 menu.popup.destroy();
                 menu.xdg.destroy();
                 menu.surface.destroy();
-                conn.roundtrip().ok();
+                conn.roundtrip().expect("roundtrip");
                 say("closed");
             }
         }
@@ -299,9 +305,12 @@ fn show(mode: Mode) {
             surface.attach(None, 0, 0);
             surface.commit();
         } else {
+            if let Some(layer) = app.layers.get(i) {
+                layer.destroy();
+            }
             surface.destroy();
         }
-        conn.roundtrip().ok();
+        conn.roundtrip().expect("roundtrip");
     }
     if unmap {
         say("unmapped");
