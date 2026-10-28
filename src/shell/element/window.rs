@@ -357,21 +357,24 @@ fn resolve_app_icon(app_id: &str) -> Option<super::header_bar::AppIcon> {
     let size = ICON_PRESCALE_SIZE as f32;
 
     // 1. Exact name in icon theme
-    if let Some(path) = resolve_icon_path(app_id, size) {
-        return Some(prescale_icon_from_path(&path.to_string_lossy()));
+    if let Some(icon) =
+        resolve_icon_path(app_id, size).and_then(|path| prescale_icon_from_path(&path))
+    {
+        return Some(icon);
     }
 
     // 2. Lower-case fallback
     let lower = app_id.to_lowercase();
     if lower != app_id
-        && let Some(path) = resolve_icon_path(&lower, size)
+        && let Some(icon) =
+            resolve_icon_path(&lower, size).and_then(|path| prescale_icon_from_path(&path))
     {
-        return Some(prescale_icon_from_path(&path.to_string_lossy()));
+        return Some(icon);
     }
 
     // 3. Direct pixmap lookup
     let pixmap = pixmap_in(&crate::utils::xdg_dirs::data_dirs("pixmaps"), app_id)?;
-    Some(prescale_icon_from_path(&pixmap.to_string_lossy()))
+    prescale_icon_from_path(&pixmap)
 }
 
 /// `name`'s file in the first of `dirs` that has one, the name as written before its
@@ -400,8 +403,10 @@ fn entry_icon(
 }
 
 /// Load an icon from a file path, applying Lanczos3 pre-scaling for raster
-/// images (PNG) and leaking SVG bytes for static lifetime.
-fn prescale_icon_from_path(path: &str) -> super::header_bar::AppIcon {
+/// images (PNG) and leaking SVG bytes for static lifetime. `None` for a raster
+/// that does not decode, so the header shows its no-icon glyph.
+fn prescale_icon_from_path(path: &std::path::Path) -> Option<super::header_bar::AppIcon> {
+    let path = &*path.to_string_lossy();
     if path.ends_with(".svg") || path.ends_with(".svgz") {
         // icetron's title_icon API wants &'static [u8], so the bytes are
         // leaked -- memoized by path, so each icon file leaks ONCE ever.
@@ -419,13 +424,11 @@ fn prescale_icon_from_path(path: &str) -> super::header_bar::AppIcon {
         let symbolic = icetron_p::components::image::svg_declares_current_color(bytes)
             || path.ends_with("-symbolic.svg")
             || path.ends_with("-symbolic.svgz");
-        return super::header_bar::AppIcon::Svg { bytes, symbolic };
+        return Some(super::header_bar::AppIcon::Svg { bytes, symbolic });
     }
 
     // Raster image: pre-scale with Lanczos3 for crisp rendering
-    prescale_raster_icon(path).unwrap_or_else(|| {
-        super::header_bar::AppIcon::Image(iced_core::image::Handle::from_path(path))
-    })
+    prescale_raster_icon(path)
 }
 
 /// Load a raster image and pre-scale it to ICON_PRESCALE_SIZE using
@@ -433,7 +436,18 @@ fn prescale_icon_from_path(path: &str) -> super::header_bar::AppIcon {
 fn prescale_raster_icon(path: &str) -> Option<super::header_bar::AppIcon> {
     use image::imageops::FilterType;
 
-    let img = image::open(path).ok()?;
+    let img = match image::open(path) {
+        Ok(img) => img,
+        Err(err) => {
+            // Once per file: a window's icon is resolved again on every app id change.
+            static WARNED: std::sync::LazyLock<Mutex<std::collections::HashSet<String>>> =
+                std::sync::LazyLock::new(Default::default);
+            if WARNED.lock().unwrap().insert(path.to_owned()) {
+                tracing::warn!(path, %err, "window icon does not decode; showing none");
+            }
+            return None;
+        }
+    };
     let resized = img.resize(ICON_PRESCALE_SIZE, ICON_PRESCALE_SIZE, FilterType::Lanczos3);
     let rgba = resized.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -3251,6 +3265,26 @@ mod tests {
         let dirs = [dir.clone()];
         assert_eq!(pixmap_in(&dirs, "Zoom"), Some(dir.join("Zoom.png")));
         assert_eq!(pixmap_in(&dirs, "Firefox"), Some(dir.join("firefox.png")));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // A handle iced cannot load panicked the header's renderer and ended the session.
+    #[test]
+    fn an_icon_file_that_does_not_decode_is_no_icon() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-bad-icon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("corrupt.png"), b"\x89PNG\r\n\x1a\nnot really").unwrap();
+        std::fs::write(dir.join("old.xpm"), b"/* XPM */\nstatic char *icon[] = {};").unwrap();
+        image::RgbaImage::new(4, 4)
+            .save(dir.join("good.png"))
+            .unwrap();
+        assert!(prescale_icon_from_path(&dir.join("corrupt.png")).is_none());
+        assert!(prescale_icon_from_path(&dir.join("old.xpm")).is_none());
+        assert!(prescale_icon_from_path(&dir.join("missing.png")).is_none());
+        assert!(matches!(
+            prescale_icon_from_path(&dir.join("good.png")),
+            Some(super::super::header_bar::AppIcon::Image(_))
+        ));
         std::fs::remove_dir_all(&dir).ok();
     }
 
