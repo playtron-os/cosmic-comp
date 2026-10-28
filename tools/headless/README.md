@@ -136,7 +136,8 @@ overlay does. It fails unless the window stays activated and looks the same
 (focus border included) while the overlay holds the keyboard, the overlay gets
 Esc, and a key typed within milliseconds of the overlay going reaches the window,
 with the pointer left on the second output. It types the same way after an
-overlay unmaps (a null buffer) and after a popup of a panel-like bar closes.
+overlay unmaps (a null buffer), after one hides as the launcher does, and after a
+popup of a panel-like bar closes.
 
 Inside a Kora workspace every client lands in that workspace's realm, which
 shows only while a registry calls it active: pass a stand-in

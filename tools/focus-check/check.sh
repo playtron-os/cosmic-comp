@@ -2,9 +2,9 @@
 # A window on the first of two outputs stays activated, and looks the same, while a clear
 # overlay on every output holds the keyboard, as a capture overlay does. The overlay gets
 # Esc, and the keys typed the moment it is gone reach the window, though the pointer was
-# left on the second output. The same once an overlay unmaps instead, and once a popup of
-# a bar that never takes the keyboard closes, as a panel popover does. Runs CC_BIN in
-# tools/headless.
+# left on the second output. The same once an overlay unmaps or hides instead, and once a
+# popup of a bar that never takes the keyboard closes, as a panel popover does. Runs CC_BIN
+# in tools/headless.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 hl=$here/../headless/headless.sh
@@ -89,6 +89,19 @@ t0=$(now)
 typed b
 t1=$(now)
 arrived 48 "the overlay unmapped" $((t1 - t0))
+
+# An overlay that hides and lets go of the keyboard, as the launcher does on Esc; it stays on
+# screen for its close animation.
+"$hl" run "$bin" overlay hide >/dev/null
+sleep 0.2
+hidden=$(latest)
+saw "$hidden" "keyboard enter" || { echo "focus-check: the third overlay never got the keyboard" >&2; exit 1; }
+typed Escape
+gone "$hidden" hidden || { echo "focus-check: the third overlay did not hide" >&2; exit 1; }
+t0=$(now)
+typed d
+t1=$(now)
+arrived 32 "the overlay hid" $((t1 - t0))
 
 # A bar on the first output; a click on it opens a popup with the keyboard.
 "$hl" move $((half / 4)) $((height / 2))

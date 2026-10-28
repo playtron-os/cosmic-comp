@@ -1,11 +1,12 @@
 //! `focus-check window`: a flat-colour window that prints `activated true|false` when its
 //! state changes, and `keyboard enter|leave` and `key CODE` as its keyboard focus does.
 //!
-//! `focus-check overlay [unmap]`: a clear overlay-layer surface on every output that takes the
-//! keyboard, as a capture overlay does; prints the same keyboard lines plus `keyboard on N`
+//! `focus-check overlay [unmap|hide]`: a clear overlay-layer surface on every output that takes
+//! the keyboard, as a capture overlay does; prints the same keyboard lines plus `keyboard on N`
 //! (the surface that got it). On Esc it takes its surfaces down one at a time, the one with
-//! the keyboard first, and prints `exit`; with `unmap` it attaches no buffer instead of
-//! destroying them, prints `unmapped` and stays connected.
+//! the keyboard first, and prints `exit`. With `unmap` it attaches no buffer instead, and with
+//! `hide` it hides them and gives up the keyboard as the launcher does; either way it then
+//! prints `unmapped` or `hidden` and stays connected.
 //!
 //! `focus-check popup`: a bar at the bottom of the output that never takes the keyboard, as
 //! the panel is, printing `bar up` once drawn. A click on it opens a popup that grabs the
@@ -34,6 +35,28 @@ use wayland_protocols::xdg::shell::client::{
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
+/// The compositor's layer surface visibility protocol, from its own XML.
+#[allow(non_upper_case_globals, non_camel_case_types, dead_code, clippy::all)]
+mod visibility {
+    use wayland_client::{self, protocol::*};
+
+    pub mod __interfaces {
+        use wayland_client::{backend as wayland_backend, protocol::__interfaces::*};
+        wayland_scanner::generate_interfaces!(
+            "../../resources/protocols/layer_surface_visibility.xml"
+        );
+    }
+    use self::__interfaces::*;
+
+    wayland_scanner::generate_client_code!(
+        "../../resources/protocols/layer_surface_visibility.xml"
+    );
+}
+use visibility::{
+    zcosmic_layer_surface_visibility_manager_v1 as visibility_manager,
+    zcosmic_layer_surface_visibility_v1 as visibility_controller,
+};
+
 const WINDOW: [u8; 4] = [0x20, 0x50, 0xe0, 0xff];
 const CLEAR: [u8; 4] = [0, 0, 0, 0];
 const BAR: [u8; 4] = [0x30, 0x30, 0x34, 0xff];
@@ -46,8 +69,16 @@ const ESC: u32 = 1;
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     Window,
-    Overlay { unmap: bool },
+    Overlay(Close),
     Bar,
+}
+
+/// How the overlay goes away on Esc.
+#[derive(Clone, Copy, PartialEq)]
+enum Close {
+    Destroy,
+    Unmap,
+    Hide,
 }
 
 /// The bar's popup: its surface and roles, destroyed together on Esc.
@@ -79,6 +110,7 @@ struct App {
     bar: Option<(zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u32)>,
     menu: Option<Menu>,
     close_menu: bool,
+    visibility: Option<visibility_manager::ZcosmicLayerSurfaceVisibilityManagerV1>,
     // The pools' files stay open until the compositor has their fds.
     files: Vec<File>,
 }
@@ -158,12 +190,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["window"] => show(Mode::Window),
-        ["overlay"] => show(Mode::Overlay { unmap: false }),
-        ["overlay", "unmap"] => show(Mode::Overlay { unmap: true }),
+        ["overlay"] => show(Mode::Overlay(Close::Destroy)),
+        ["overlay", "unmap"] => show(Mode::Overlay(Close::Unmap)),
+        ["overlay", "hide"] => show(Mode::Overlay(Close::Hide)),
         ["popup"] => show(Mode::Bar),
         ["diff", a, b, width] => diff(a, b, width),
         _ => {
-            eprintln!("usage: focus-check window | overlay [unmap] | popup | diff A B WIDTH");
+            eprintln!("usage: focus-check window | overlay [unmap|hide] | popup | diff A B WIDTH");
             exit(2);
         }
     }
@@ -183,7 +216,7 @@ fn show(mode: Mode) {
     let mut layers = Vec::new();
     let mut bar = None;
     match mode {
-        Mode::Overlay { .. } => {
+        Mode::Overlay(_) => {
             let layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1 =
                 globals.bind(&qh, 3..=4, ()).expect("layer shell");
             let outputs: Vec<wl_output::WlOutput> = globals.contents().with_list(|list| {
@@ -259,6 +292,7 @@ fn show(mode: Mode) {
         }
     }
 
+    let visibility = globals.bind(&qh, 1..=4, ()).ok();
     let mut app = App {
         qh,
         shm,
@@ -275,6 +309,7 @@ fn show(mode: Mode) {
         bar,
         menu: None,
         close_menu: false,
+        visibility,
         files: Vec::new(),
     };
     while !app.done {
@@ -298,27 +333,52 @@ fn show(mode: Mode) {
         order.retain(|&i| i != focused);
         order.insert(0, focused);
     }
-    let unmap = app.mode == (Mode::Overlay { unmap: true });
+    let close = match app.mode {
+        Mode::Overlay(close) => close,
+        _ => Close::Destroy,
+    };
     for i in order {
         let surface = &app.surfaces[i];
-        if unmap {
-            surface.attach(None, 0, 0);
-            surface.commit();
-        } else {
-            if let Some(layer) = app.layers.get(i) {
-                layer.destroy();
+        match close {
+            Close::Destroy => {
+                if let Some(layer) = app.layers.get(i) {
+                    layer.destroy();
+                }
+                surface.destroy();
             }
-            surface.destroy();
+            Close::Unmap => {
+                surface.attach(None, 0, 0);
+                surface.commit();
+            }
+            // The hide comes first and the surface still asks for the keyboard in a commit
+            // after it, before it lets go, as a client's separate requests can land.
+            Close::Hide => {
+                let manager = app.visibility.as_ref().expect("layer surface visibility");
+                manager
+                    .get_visibility_controller(surface, &app.qh, ())
+                    .set_hidden();
+                conn.roundtrip().expect("roundtrip");
+                surface.commit();
+                conn.roundtrip().expect("roundtrip");
+                app.layers[i]
+                    .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+                surface.commit();
+            }
         }
         conn.roundtrip().expect("roundtrip");
     }
-    if unmap {
-        say("unmapped");
-        loop {
-            queue.blocking_dispatch(&mut app).expect("dispatch");
-        }
+    if close == Close::Destroy {
+        say("exit");
+        return;
     }
-    say("exit");
+    say(if close == Close::Unmap {
+        "unmapped"
+    } else {
+        "hidden"
+    });
+    loop {
+        queue.blocking_dispatch(&mut app).expect("dispatch");
+    }
 }
 
 /// Pixels that differ between two binary PPMs in their leftmost `width` columns.
@@ -407,7 +467,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
                 say(&format!("key {key}"));
                 if key == ESC {
                     match app.mode {
-                        Mode::Overlay { .. } => app.done = true,
+                        Mode::Overlay(_) => app.done = true,
                         Mode::Bar => app.close_menu = app.menu.is_some(),
                         Mode::Window => {}
                     }
@@ -588,3 +648,5 @@ delegate_noop!(App: ignore wl_seat::WlSeat);
 delegate_noop!(App: ignore wl_output::WlOutput);
 delegate_noop!(App: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(App: ignore xdg_positioner::XdgPositioner);
+delegate_noop!(App: ignore visibility_manager::ZcosmicLayerSurfaceVisibilityManagerV1);
+delegate_noop!(App: ignore visibility_controller::ZcosmicLayerSurfaceVisibilityV1);
