@@ -128,6 +128,15 @@ are captured, a drawer marked with `kora_capture_exclusion_v1` is on screen but
 not captured, and a drawer marked then unmarked, never marked, or from a client
 that never binds the global, is captured. It needs `xwd`.
 
+## Focus under an overlay
+
+`tools/focus-check/check.sh` opens a window on the first of two outputs, then a
+clear overlay-layer surface on every output that takes the keyboard, as a capture
+overlay does. It fails unless the window stays activated and looks the same
+(focus border included) while the overlay holds the keyboard, the overlay gets
+Esc, and the window gets its keys back once the overlay is gone, with the pointer
+left on the second output.
+
 Inside a Kora workspace every client lands in that workspace's realm, which
 shows only while a registry calls it active: pass a stand-in
 `one.playtron.Workspaces1` service in `CC_BUS_SERVICE`.
