@@ -134,8 +134,9 @@ that never binds the global, is captured. It needs `xwd`.
 clear overlay-layer surface on every output that takes the keyboard, as a capture
 overlay does. It fails unless the window stays activated and looks the same
 (focus border included) while the overlay holds the keyboard, the overlay gets
-Esc, and the window gets its keys back once the overlay is gone, with the pointer
-left on the second output.
+Esc, and a key typed within milliseconds of the overlay going reaches the window,
+with the pointer left on the second output. It types the same way after an
+overlay unmaps (a null buffer) and after a popup of a panel-like bar closes.
 
 Inside a Kora workspace every client lands in that workspace's realm, which
 shows only while a registry calls it active: pass a stand-in
