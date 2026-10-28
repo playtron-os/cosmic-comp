@@ -1268,3 +1268,40 @@ fn the_halo_outline_lands_on_whole_device_pixels() {
         }
     }
 }
+
+// A panic in a window's header update poisoned its lock, and the main thread's next
+// lock of it ended the session.
+#[test]
+fn a_panic_while_updating_skips_the_frame_and_keeps_the_element() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct Fragile(AtomicBool);
+    impl Program for Fragile {
+        type Message = ();
+        fn view<'a>(&'a self, theme: &'a CompTheme) -> CompElement<'a, ()> {
+            assert!(!self.0.load(Ordering::Relaxed), "the view failed");
+            header_bar().theme(theme).title("Slack").into_element()
+        }
+    }
+    let event_loop = calloop::EventLoop::<crate::state::State>::try_new().unwrap();
+    let theme = theme();
+    let element = IcedElement::new(
+        Fragile(AtomicBool::new(false)),
+        (640, ssd_header_render_height(&theme) as i32),
+        event_loop.handle(),
+        theme,
+    );
+    element.with_program(|program| program.0.store(true, Ordering::Relaxed));
+    // Off the main thread, as a window's icon lookup redraws its header.
+    let other = element.clone();
+    std::thread::spawn(move || other.force_update())
+        .join()
+        .expect("the panic stays inside the update");
+    assert!(!element.0.is_poisoned());
+    element.with_program(|program| program.0.store(false, Ordering::Relaxed));
+    element.force_update();
+    assert!(
+        !element.lock().renderer.layers().is_empty(),
+        "the next frame draws"
+    );
+}

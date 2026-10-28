@@ -1117,8 +1117,20 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         }
     }
 
-    #[profiling::function]
     fn update(&mut self, source: UpdateSource) {
+        // A panic here would poison the element's lock, and the main thread's next
+        // lock of it would end the session: skip the frame instead.
+        let frame = std::panic::AssertUnwindSafe(|| self.update_frame(source));
+        if std::panic::catch_unwind(frame).is_err() {
+            tracing::error!(
+                program = P::program_name(),
+                "iced update panicked; frame skipped"
+            );
+        }
+    }
+
+    #[profiling::function]
+    fn update_frame(&mut self, source: UpdateSource) {
         let update_start = Instant::now();
         let force = matches!(source, UpdateSource::Forced);
 
