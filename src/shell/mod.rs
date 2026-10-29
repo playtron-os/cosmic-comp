@@ -415,6 +415,9 @@ pub struct GameMode {
     /// Preserve the authorized controller's pid across app switches so untagged
     /// child windows can be placed on the gaming output before their first map.
     pub controller_pid: Option<u32>,
+    /// The workspace the controller runs in. A window from any other workspace is never
+    /// game mode's, whatever ids it carries.
+    pub controller_workspace: Option<String>,
     /// Base-layer priority published by the session manager on the X11 root
     /// (`GAMESCOPECTRL_BASELAYER_APPID`), highest priority FIRST.
     ///
@@ -4134,7 +4137,7 @@ impl Shell {
     /// game (its own dialogs) or from the client driving game mode (the game that
     /// client just launched).
     pub fn game_mode_claims(&self, surface: &CosmicSurface) -> bool {
-        if !self.game_mode.active {
+        if !self.game_mode.active || !self.in_game_mode_workspace(surface) {
             return false;
         }
         if [self.game_mode.app_id, self.game_mode.pending_app_id]
@@ -4152,6 +4155,14 @@ impl Shell {
             .into_iter()
             .flatten()
             .any(|ancestor| Self::process_descends_from(pid, ancestor))
+    }
+
+    /// Whether `surface` comes from the workspace game mode's controller runs in.
+    pub fn in_game_mode_workspace(&self, surface: &CosmicSurface) -> bool {
+        crate::dbus::game_mode::same_workspace(
+            self.client_workspace(surface).as_deref(),
+            self.game_mode.controller_workspace.as_deref(),
+        )
     }
 
     /// Whether strict game-mode control would refuse to RENDER `surface`: game
@@ -8457,7 +8468,8 @@ impl Shell {
         let pending_game = self
             .game_mode
             .pending_app_id
-            .is_some_and(|id| crate::dbus::game_mode::app_id_of(&window) == id);
+            .is_some_and(|id| crate::dbus::game_mode::app_id_of(&window) == id)
+            && self.in_game_mode_workspace(&window);
         let game_mode_output = self
             .game_mode_claims(&window)
             .then(|| self.game_mode.output.clone())
