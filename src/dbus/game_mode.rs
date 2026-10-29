@@ -3155,7 +3155,10 @@ mod tests {
         assert!(!same_workspace(Some("default"), Some("gameframe")));
         assert!(same_workspace(Some("gameframe"), Some("gameframe")));
         assert!(same_workspace(None, Some("gameframe")), "a machine window");
-        assert!(same_workspace(Some("default"), None), "a controller in none");
+        assert!(
+            same_workspace(Some("default"), None),
+            "a controller in none"
+        );
     }
 
     #[test]
