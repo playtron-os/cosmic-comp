@@ -140,6 +140,11 @@ where
         let resource = data_init.init(resource, ());
         state.realm_state_mut().instances.push(resource);
     }
+
+    // A shell component's; hidden from the apps the registry boxes alone.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        !crate::display_grants::boxed(&client)
+    }
 }
 
 impl<D> Dispatch<KoraWorkspaceRealmManagerV1, (), D> for RealmState

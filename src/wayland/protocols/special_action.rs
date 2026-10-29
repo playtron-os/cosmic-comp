@@ -356,6 +356,11 @@ where
     ) {
         data_init.init(resource, ());
     }
+
+    // A shell component's; hidden from the apps the registry boxes alone.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        !crate::display_grants::boxed(&client)
+    }
 }
 
 impl<D> Dispatch<zcosmic_special_action_manager_v1::ZcosmicSpecialActionManagerV1, (), D>

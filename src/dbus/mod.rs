@@ -14,7 +14,10 @@ use tracing::{error, warn};
 
 pub mod a11y_keyboard_monitor;
 pub mod capture;
+pub mod display_grants;
 pub mod game_mode;
+#[cfg(test)]
+mod private_bus;
 pub mod workspaces;
 use a11y_keyboard_monitor::A11yKeyboardMonitorState;
 #[cfg(feature = "logind")]

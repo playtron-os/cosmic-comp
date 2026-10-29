@@ -60,6 +60,7 @@ pub mod config;
 pub mod dbus;
 #[cfg(feature = "debug")]
 pub mod debug;
+pub mod display_grants;
 pub mod frametrace;
 pub mod hooks;
 pub mod input;

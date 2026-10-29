@@ -117,6 +117,11 @@ where
         let resource = data_init.init(resource, ());
         state.workspace_transition_state().instances.push(resource);
     }
+
+    // A shell component's; hidden from the apps the registry boxes alone.
+    fn can_view(client: Client, _global_data: &()) -> bool {
+        !crate::display_grants::boxed(&client)
+    }
 }
 
 impl<D> Dispatch<workspace_transition_manager_v1::WorkspaceTransitionManagerV1, (), D>
