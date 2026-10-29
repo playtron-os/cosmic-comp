@@ -188,6 +188,9 @@ pub(crate) struct ActiveOutput(pub Mutex<Output>);
 /// The output which currently has keyboard focus
 struct FocusedOutput(pub Mutex<Option<Output>>);
 
+/// The output of the window that last had keyboard focus
+struct WindowOutput(pub Mutex<Option<Output>>);
+
 #[derive(Default)]
 pub struct PointerConstraintHint(pub Mutex<Option<(WlSurface, Point<f64, Logical>)>>);
 
@@ -214,6 +217,7 @@ pub fn create_seat(
     userdata.insert_if_missing_threadsafe(CursorState::default);
     userdata.insert_if_missing_threadsafe(|| ActiveOutput(Mutex::new(output.clone())));
     userdata.insert_if_missing_threadsafe(|| FocusedOutput(Mutex::new(None)));
+    userdata.insert_if_missing_threadsafe(|| WindowOutput(Mutex::new(None)));
     userdata.insert_if_missing_threadsafe(PointerConstraintHint::default);
     userdata.insert_if_missing_threadsafe(|| Mutex::new(CursorImageStatus::default_named()));
 
@@ -267,6 +271,15 @@ pub trait SeatExt {
     }
     fn set_active_output(&self, output: &Output);
     fn set_focused_output(&self, output: Option<&Output>);
+    /// The output of the window that last had keyboard focus. A layer surface or the lock
+    /// screen taking the keyboard leaves it, so the window under them stays the active one.
+    fn window_output(&self) -> Option<Output>;
+    fn set_window_output(&self, output: Option<&Output>);
+    /// The output whose focused window is the active one.
+    fn active_window_output(&self) -> Output {
+        self.window_output()
+            .unwrap_or_else(|| self.focused_or_active_output())
+    }
     fn devices(&self) -> &Devices;
     fn supressed_keys(&self) -> &SupressedKeys;
     fn supressed_buttons(&self) -> &SupressedButtons;
@@ -331,6 +344,18 @@ impl SeatExt for Seat<State> {
             .0
             .lock()
             .unwrap() = output.cloned();
+    }
+
+    fn window_output(&self) -> Option<Output> {
+        self.user_data()
+            .get::<WindowOutput>()
+            .and_then(|x| x.0.lock().unwrap().clone())
+    }
+
+    fn set_window_output(&self, output: Option<&Output>) {
+        if let Some(stored) = self.user_data().get::<WindowOutput>() {
+            *stored.0.lock().unwrap() = output.cloned();
+        }
     }
 
     fn devices(&self) -> &Devices {

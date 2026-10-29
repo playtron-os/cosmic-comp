@@ -287,7 +287,7 @@ impl Shell {
                     return None;
                 }
 
-                let output = seat.focused_or_active_output();
+                let output = seat.active_window_output();
                 let space = self.active_space(&output).unwrap();
                 let stack = space.focus_stack.get(seat);
                 stack.last().and_then(|target| match target {
@@ -494,17 +494,26 @@ fn update_focus_state(
             // Get focused output calls visible_output_for_surface internally
             // what should happen if the target is some, but it's not visible?
             // should this be an error?
-            seat.set_focused_output(
-                state
-                    .common
-                    .shell
-                    .read()
-                    .get_output_for_focus(seat)
-                    .as_ref(),
-            )
+            let output = state.common.shell.read().get_output_for_focus(seat);
+            seat.set_focused_output(output.as_ref());
+            if !leaves_active_window(target, output.as_ref()) {
+                seat.set_window_output(output.as_ref());
+            }
         } else {
             seat.set_focused_output(None);
+            seat.set_window_output(None);
         };
+    }
+}
+
+/// Whether keyboard focus on `target` leaves the active window where it was: a layer
+/// surface, a popup of one (it has no window's output) or the lock screen, as a capture
+/// overlay or the launcher on another output must not deactivate the window under them.
+fn leaves_active_window(target: Option<&KeyboardFocusTarget>, output: Option<&Output>) -> bool {
+    match target {
+        Some(KeyboardFocusTarget::LayerSurface(_) | KeyboardFocusTarget::LockSurface(_)) => true,
+        Some(KeyboardFocusTarget::Popup(_)) => output.is_none(),
+        _ => false,
     }
 }
 
@@ -621,6 +630,12 @@ impl Common {
                 if focused_output.is_some_and(|f| !shell.outputs().any(|o| &f == o)) {
                     seat.set_focused_output(None);
                 }
+                if seat
+                    .window_output()
+                    .is_some_and(|w| !shell.outputs().any(|o| &w == o))
+                {
+                    seat.set_window_output(None);
+                }
                 if !shell.outputs().any(|o| o == &active_output) {
                     if let Some(other) = shell.outputs().next() {
                         seat.set_active_output(other);
@@ -691,8 +706,9 @@ impl Common {
                     popup_grab.ungrab(PopupUngrabStrategy::All);
                 }
 
-                // update keyboard focus
-                let target = update_focus_target(&shell, seat, &output);
+                // Focus that falls off a layer surface goes back to the window it came from,
+                // on whichever output that is.
+                let target = update_focus_target(&shell, seat, &seat.active_window_output());
                 std::mem::drop(shell);
                 //I can probably feature gate this condition
                 debug!("Restoring focus to {:?}", target.as_ref());

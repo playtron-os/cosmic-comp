@@ -1503,7 +1503,8 @@ where
         .lock()
         .unwrap()
         .is_some();
-    let focused_output = last_active_seat.focused_or_active_output();
+    // The active window's output keeps its focus border while a layer surface has the keyboard.
+    let focused_output = last_active_seat.active_window_output();
     let realm = shell.realm_for_handle(&current.0).ok_or(OutputNoMode)?;
     // An output the backend enables before the shell adds it renders the kept set, as `active` did.
     let set = realm.set_for(output).ok_or(OutputNoMode)?;

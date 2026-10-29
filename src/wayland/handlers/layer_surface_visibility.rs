@@ -127,7 +127,8 @@ impl State {
                 let target = {
                     use crate::shell::SeatExt as _;
                     let shell = self.common.shell.read();
-                    let output = seat.active_output();
+                    // Back to the window the surface took the keyboard from, else under the pointer.
+                    let output = seat.window_output().unwrap_or_else(|| seat.active_output());
                     crate::shell::focus::update_focus_target(&shell, &seat, &output)
                 };
                 Shell::set_focus(self, target.as_ref(), &seat, None, false);
