@@ -415,6 +415,9 @@ pub struct GameMode {
     /// Preserve the authorized controller's pid across app switches so untagged
     /// child windows can be placed on the gaming output before their first map.
     pub controller_pid: Option<u32>,
+    /// The workspace the controller runs in. A window from any other workspace is never
+    /// game mode's, whatever ids it carries.
+    pub controller_workspace: Option<String>,
     /// Base-layer priority published by the session manager on the X11 root
     /// (`GAMESCOPECTRL_BASELAYER_APPID`), highest priority FIRST.
     ///
@@ -1936,6 +1939,9 @@ impl Workspaces {
                     }
                     if seat.focused_output().as_ref() == Some(output) {
                         seat.set_focused_output(None);
+                    }
+                    if seat.window_output().as_ref() == Some(output) {
+                        seat.set_window_output(None);
                     }
                 }
 
@@ -4134,7 +4140,7 @@ impl Shell {
     /// game (its own dialogs) or from the client driving game mode (the game that
     /// client just launched).
     pub fn game_mode_claims(&self, surface: &CosmicSurface) -> bool {
-        if !self.game_mode.active {
+        if !self.game_mode.active || !self.in_game_mode_workspace(surface) {
             return false;
         }
         if [self.game_mode.app_id, self.game_mode.pending_app_id]
@@ -4152,6 +4158,14 @@ impl Shell {
             .into_iter()
             .flatten()
             .any(|ancestor| Self::process_descends_from(pid, ancestor))
+    }
+
+    /// Whether `surface` comes from the workspace game mode's controller runs in.
+    pub fn in_game_mode_workspace(&self, surface: &CosmicSurface) -> bool {
+        crate::dbus::game_mode::same_workspace(
+            self.client_workspace(surface).as_deref(),
+            self.game_mode.controller_workspace.as_deref(),
+        )
     }
 
     /// Whether strict game-mode control would refuse to RENDER `surface`: game
@@ -5734,32 +5748,20 @@ impl Shell {
     /// still-tall (shrinking) buffer, drawn at the new top, then floats up from — or
     /// overshoots below — the fixed bottom edge for a frame: the "content jumps then
     /// settles" blink when an auto-size popover expands/collapses an inline list.
-    /// Shifting the buffer down by the height deficit (`configured - buffer`) re-pins
+    /// Shifting the buffer down by the height deficit (`arranged - buffer`) re-pins
     /// the bottom edge every frame.
     ///
-    /// The deficit is zero whenever the buffer already matches the configured size —
+    /// The deficit is zero whenever the buffer already matches the arranged size —
     /// i.e. in steady state and for every fixed-size surface (docks, the bottom bar) —
     /// so this is a no-op except during the one-or-few frames an auto-size surface is
     /// mid-resize. Only fires for surfaces anchored to the bottom and not stretched
     /// top-to-bottom (those grow upward from a fixed bottom).
     pub fn get_layer_bottom_pin_offset(
         &self,
-        surface: &WlSurface,
+        layer: &LayerSurface,
         buffer_height: i32,
     ) -> (i32, i32) {
-        let (anchor, configured_height) = with_states(surface, |states| {
-            let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
-            let current = state.current();
-            (current.anchor, current.size.h)
-        });
-        if configured_height > 0 && anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP)
-        {
-            let deficit = configured_height - buffer_height;
-            if deficit != 0 {
-                return (0, deficit);
-            }
-        }
-        (0, 0)
+        (0, layer_bottom_pin(layer, buffer_height))
     }
 
     /// Whether `surface` is a layer surface anchored to the bottom edge and not
@@ -7195,6 +7197,24 @@ impl Shell {
         !self.is_surface_hidden(surface_id) && !self.is_layer_off_realm(surface_id)
     }
 
+    /// Whether a hidden layer surface is still animating out. It stays on screen until then,
+    /// but the keyboard must leave it at the hide, or the keys typed meanwhile go to it.
+    pub fn is_layer_hiding(&self, surface_id: &ObjectId) -> bool {
+        self.is_layer_closing(surface_id)
+            || self.layer_slides.iter().any(|s| {
+                s.surface_id == *surface_id
+                    && matches!(
+                        s.visibility,
+                        layer_slide::SlideVisibility::SlidingOut { .. }
+                    )
+            })
+    }
+
+    /// Whether a layer surface may hold the keyboard: shown and not on its way out.
+    pub fn is_layer_focusable(&self, surface_id: &ObjectId) -> bool {
+        self.is_layer_shown(surface_id) && !self.is_layer_hiding(surface_id)
+    }
+
     /// Check if a layer surface was created without a specific output
     pub fn is_output_agnostic_layer(&self, surface_id: &ObjectId) -> bool {
         self.output_agnostic_layers.contains(surface_id)
@@ -8457,7 +8477,8 @@ impl Shell {
         let pending_game = self
             .game_mode
             .pending_app_id
-            .is_some_and(|id| crate::dbus::game_mode::app_id_of(&window) == id);
+            .is_some_and(|id| crate::dbus::game_mode::app_id_of(&window) == id)
+            && self.in_game_mode_workspace(&window);
         let game_mode_output = self
             .game_mode_claims(&window)
             .then(|| self.game_mode.output.clone())
@@ -10627,14 +10648,52 @@ impl Shell {
         // branches below act on `maximized_state`, so keying off the flag makes a
         // desync unrecoverable (unmaximize finds no state and no-ops, and the flag
         // stays set, so maximize is never reached again).
-        if window.maximized_state.lock().unwrap().is_some() {
+        let state = *window.maximized_state.lock().unwrap();
+        if state.is_none() && window.is_fullscreen(true) {
+            return;
+        }
+        let restore = self.fill_zone(window).and_then(|(layer, zone)| {
+            fill_toggle_restore(
+                state,
+                window.fills_output_zone(),
+                layer,
+                zone,
+                window.min_size().unwrap_or_default(),
+            )
+        });
+        if let Some(restore) = restore {
+            *window.maximized_state.lock().unwrap() = Some(restore);
+            self.unmaximize_request_with_options(window);
+        } else if state.is_some() {
             self.unmaximize_request_with_options(window);
         } else {
-            if window.is_fullscreen(true) {
-                return;
-            }
             self.maximize_request_with_options(window, seat, true, false, loop_handle);
         }
+    }
+
+    /// The layer `mapped` lives in and the work area Fill lays it out in.
+    fn fill_zone(&self, mapped: &CosmicMapped) -> Option<(ManagedLayer, Rectangle<i32, Local>)> {
+        let (layer, output) = if let Some(set) = self
+            .workspaces()
+            .sets
+            .values()
+            .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
+        {
+            (ManagedLayer::Sticky, &set.output)
+        } else {
+            let workspace = self.space_for(mapped)?;
+            let layer = if workspace.is_tiled(&mapped.active_window()) {
+                ManagedLayer::Tiling
+            } else {
+                ManagedLayer::Floating
+            };
+            (layer, workspace.output())
+        };
+        let zone = layer_map_for_output(output).non_exclusive_zone();
+        Some((
+            layer,
+            layout::floating::window_zone(zone, mapped.window_room()).as_local(),
+        ))
     }
 
     pub fn minimize_request<S>(&mut self, surface: &S)
@@ -12042,6 +12101,158 @@ pub fn check_grab_preconditions(
     Some(start_data)
 }
 
+/// The state Fill's toggle restores a window from, or `None` to fill it. A window that fills
+/// its work area without a state, as a resize can leave it, restores too: filling it again
+/// would change nothing. A restore never lands on a rectangle that still fills the area.
+fn fill_toggle_restore(
+    state: Option<MaximizedState>,
+    fills_zone: bool,
+    layer: ManagedLayer,
+    zone: Rectangle<i32, Local>,
+    min: Size<i32, Logical>,
+) -> Option<MaximizedState> {
+    let mut state = match state {
+        Some(state) => state,
+        None if fills_zone && layer != ManagedLayer::Tiling => MaximizedState {
+            original_geometry: zone,
+            original_layer: layer,
+            original_snapped: None,
+        },
+        None => return None,
+    };
+    let original = state.original_geometry;
+    // A tiled window goes back to its tile, whatever its size.
+    if state.original_layer != ManagedLayer::Tiling
+        && original.size.w >= zone.size.w
+        && original.size.h >= zone.size.h
+    {
+        // The size a drag away from the top gives it, centred.
+        let (n, d) = DRAG_UNMAXIMIZE_FRACTION;
+        let size = Size::from((
+            (zone.size.w * n / d).max(min.w).min(zone.size.w),
+            (zone.size.h * n / d).max(min.h).min(zone.size.h),
+        ));
+        state.original_geometry = Rectangle::new(
+            zone.loc + Point::from(((zone.size.w - size.w) / 2, (zone.size.h - size.h) / 2)),
+            size,
+        );
+    }
+    Some(state)
+}
+
+#[cfg(test)]
+mod fill_toggle_tests {
+    use super::*;
+
+    fn zone() -> Rectangle<i32, Local> {
+        Rectangle::new(Point::new(10, 40), Size::new(1580, 950))
+    }
+
+    fn state(geometry: Rectangle<i32, Local>, layer: ManagedLayer) -> MaximizedState {
+        MaximizedState {
+            original_geometry: geometry,
+            original_layer: layer,
+            original_snapped: None,
+        }
+    }
+
+    fn restored(state: Option<MaximizedState>) -> Option<Rectangle<i32, Local>> {
+        state.map(|state| state.original_geometry)
+    }
+
+    /// QA: after a press on its edge, a filled window had no state left, so Fill filled it again.
+    #[test]
+    fn a_filled_window_without_a_state_is_sized_down() {
+        let restore =
+            fill_toggle_restore(None, true, ManagedLayer::Floating, zone(), Size::default());
+        assert_eq!(
+            restored(restore),
+            Some(Rectangle::new(Point::new(273, 198), Size::new(1053, 633)))
+        );
+        assert_eq!(restore.unwrap().original_layer, ManagedLayer::Floating);
+    }
+
+    /// A window filled from a rectangle that was already as large as the area had nowhere to go back to.
+    #[test]
+    fn a_restore_as_large_as_the_area_sizes_down() {
+        let restore = fill_toggle_restore(
+            Some(state(zone(), ManagedLayer::Floating)),
+            false,
+            ManagedLayer::Floating,
+            zone(),
+            Size::default(),
+        );
+        let geometry = restored(restore).unwrap();
+        assert!(geometry.size.w < zone().size.w && geometry.size.h < zone().size.h);
+        assert!(zone().contains_rect(geometry));
+    }
+
+    #[test]
+    fn a_maximized_window_goes_back_where_it_was() {
+        let before = Rectangle::new(Point::new(274, 158), Size::new(1052, 632));
+        for fills in [false, true] {
+            let restore = fill_toggle_restore(
+                Some(state(before, ManagedLayer::Floating)),
+                fills,
+                ManagedLayer::Floating,
+                zone(),
+                Size::default(),
+            );
+            assert_eq!(restored(restore), Some(before));
+        }
+        // Full height is not filling: a window as tall as the area but narrower keeps its size.
+        let tall = Rectangle::new(Point::new(10, 40), Size::new(790, 950));
+        let restore = fill_toggle_restore(
+            Some(state(tall, ManagedLayer::Sticky)),
+            false,
+            ManagedLayer::Sticky,
+            zone(),
+            Size::default(),
+        );
+        assert_eq!(restored(restore), Some(tall));
+    }
+
+    #[test]
+    fn a_window_that_does_not_fill_the_area_fills_it() {
+        assert!(
+            fill_toggle_restore(None, false, ManagedLayer::Floating, zone(), Size::default())
+                .is_none()
+        );
+    }
+
+    /// Tiling lays a lone window out across the area; Fill still maximizes it, and Restore
+    /// puts a maximized one back in its tile.
+    #[test]
+    fn a_tiled_window_keeps_its_tile() {
+        assert!(
+            fill_toggle_restore(None, true, ManagedLayer::Tiling, zone(), Size::default())
+                .is_none()
+        );
+        let restore = fill_toggle_restore(
+            Some(state(zone(), ManagedLayer::Tiling)),
+            false,
+            ManagedLayer::Tiling,
+            zone(),
+            Size::default(),
+        );
+        assert_eq!(restored(restore), Some(zone()));
+    }
+
+    #[test]
+    fn sizing_down_respects_the_minimum_size() {
+        let restore = fill_toggle_restore(
+            None,
+            true,
+            ManagedLayer::Floating,
+            zone(),
+            Size::new(1200, 2000),
+        );
+        let geometry = restored(restore).unwrap();
+        assert_eq!(geometry.size, Size::new(1200, 950));
+        assert_eq!(geometry.loc, Point::new(200, 40));
+    }
+}
+
 #[cfg(test)]
 mod transition_tests;
 
@@ -12213,3 +12424,33 @@ mod desktop_policy_tests {
         }
     }
 }
+
+/// How far down to draw `layer`'s buffer of `buffer_height` so its bottom edge
+/// sits where arrange() put it.
+fn layer_bottom_pin(layer: &LayerSurface, buffer_height: i32) -> i32 {
+    let anchor = with_states(layer.wl_surface(), |states| {
+        states
+            .cached_state
+            .get::<LayerSurfaceCachedState>()
+            .current()
+            .anchor
+    });
+    // The size arrange() placed it with, not the one the client asked for: a
+    // request taller than the zone is clamped, and input follows the clamp.
+    let arranged_height = layer
+        .layer_surface()
+        .with_pending_state(|state| state.size.map_or(0, |size| size.h));
+    bottom_pin_deficit(anchor, arranged_height, buffer_height)
+}
+
+/// How far down to draw a bottom-anchored buffer so its bottom edge sits where
+/// `arranged_height` put it.
+fn bottom_pin_deficit(anchor: Anchor, arranged_height: i32, buffer_height: i32) -> i32 {
+    if arranged_height <= 0 || !anchor.contains(Anchor::BOTTOM) || anchor.contains(Anchor::TOP) {
+        return 0;
+    }
+    arranged_height - buffer_height
+}
+
+#[cfg(test)]
+mod bottom_pin_tests;

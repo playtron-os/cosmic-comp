@@ -4,7 +4,7 @@ use crate::delegate_layer_surface_visibility;
 use crate::shell::SeatExt;
 use crate::shell::Shell;
 use crate::shell::focus::target::KeyboardFocusTarget;
-use crate::state::State;
+use crate::state::{Common, State};
 use crate::wayland::protocols::layer_surface_visibility::{
     LayerSurfaceVisibilityHandler, LayerSurfaceVisibilityState, LayerTransition,
 };
@@ -127,7 +127,8 @@ impl State {
                 let target = {
                     use crate::shell::SeatExt as _;
                     let shell = self.common.shell.read();
-                    let output = seat.active_output();
+                    // Back to the window the surface took the keyboard from, else under the pointer.
+                    let output = seat.window_output().unwrap_or_else(|| seat.active_output());
                     crate::shell::focus::update_focus_target(&shell, &seat, &output)
                 };
                 Shell::set_focus(self, target.as_ref(), &seat, None, false);
@@ -191,6 +192,8 @@ impl LayerSurfaceVisibilityHandler for State {
             surface_id = surface_id.protocol_id(),
             "set_surface_hidden_immediately"
         );
+        std::mem::drop(shell);
+        Common::refocus_off_closed_surface(self, &surface_id);
     }
 
     fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition) {

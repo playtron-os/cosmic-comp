@@ -2068,13 +2068,15 @@ impl FloatingLayout {
             let unmaximize = mapped.maximized_state.lock().unwrap().is_some()
                 || mapped.is_maximized(true)
                 || mapped.is_maximized(false);
-            if unmaximize {
+            let restore = if unmaximize {
                 self.prepare_maximized_resize(
                     mapped,
                     Rectangle::new(location, size.as_local()),
                     &output,
-                );
-            }
+                )
+            } else {
+                None
+            };
             mapped.moved_since_mapped.store(true, Ordering::SeqCst);
 
             let grab = grabs::ResizeSurfaceGrab::new(
@@ -2087,6 +2089,7 @@ impl FloatingLayout {
                 size,
                 seat,
                 release,
+                restore,
             );
             if unmaximize {
                 mapped.set_resizing(true);
@@ -2098,22 +2101,24 @@ impl FloatingLayout {
         }
     }
 
+    /// Returns the state the window was maximized with, for the grab to put back if it resizes nothing.
     fn prepare_maximized_resize(
         &mut self,
         mapped: &CosmicMapped,
         geometry: Rectangle<i32, Local>,
         output: &Output,
-    ) {
+    ) -> Option<MaximizedState> {
         // Cancel rather than settle into the animation's target: this gesture
         // owns the new state, and must not briefly reassert maximized/tiled.
         self.animations.remove(mapped);
         self.clear_resize_overrides(mapped);
-        mapped.maximized_state.lock().unwrap().take();
+        let state = mapped.maximized_state.lock().unwrap().take();
         mapped.floating_tiled.lock().unwrap().take();
         mapped.set_maximized(false);
         mapped.set_tiled(false);
         mapped.set_fills_output_zone(false);
         mapped.set_geometry(geometry.to_global(output));
+        state
     }
 
     fn clear_resize_overrides(&mut self, mapped: &CosmicMapped) {

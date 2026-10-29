@@ -251,6 +251,9 @@ struct Minimized(AtomicBool);
 struct Sticky(AtomicBool);
 
 #[derive(Default)]
+struct OffScreen(AtomicBool);
+
+#[derive(Default)]
 struct GlobalGeometry(Mutex<Option<Rectangle<i32, Global>>>);
 
 /// A window's recording through `one.playtron.CaptureEngine1`.
@@ -975,6 +978,24 @@ impl CosmicSurface {
         if let WindowSurface::X11(surface) = self.0.underlying_surface() {
             let _ = surface.set_hidden(minimized);
         }
+    }
+
+    /// Fullscreen on a desktop that is not on screen. It keeps its activated state, so a
+    /// game there never pauses, but window lists must not take it for the active one.
+    pub fn is_off_screen(&self) -> bool {
+        self.0
+            .user_data()
+            .get_or_insert_threadsafe(OffScreen::default)
+            .0
+            .load(Ordering::SeqCst)
+    }
+
+    pub fn set_off_screen(&self, off_screen: bool) {
+        self.0
+            .user_data()
+            .get_or_insert_threadsafe(OffScreen::default)
+            .0
+            .store(off_screen, Ordering::SeqCst);
     }
 
     pub fn is_sticky(&self) -> bool {

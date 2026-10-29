@@ -42,6 +42,7 @@ install -Dm0755 "usr/bin/cosmic-comp" "%{buildroot}%{_bindir}/cosmic-comp"
 install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
 install -Dm0644 "usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults" "%{buildroot}%{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
 install -Dm0644 "usr/share/licenses/cosmic-comp/LICENSE" "%{buildroot}%{_datadir}/licenses/cosmic-comp/LICENSE"
+install -Dm0644 "usr/share/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy" "%{buildroot}%{_datadir}/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy"
 
 # Voice mode configuration (individual key files for cosmic-config). Whatever
 # keys the tarball holds, rather than one line each: this list went stale when
@@ -56,6 +57,7 @@ install -m0644 usr/share/cosmic/com.playtron.VoiceMode/v1/* "%{buildroot}%{_data
 %{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
 %{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
 %{_datadir}/cosmic/com.playtron.VoiceMode/
+%{_datadir}/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy
 
 %changelog
 * Fri Jan 09 2026 Playtron <dev@playtron.one> - 1.0.0-1

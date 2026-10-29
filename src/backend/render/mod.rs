@@ -1503,7 +1503,8 @@ where
         .lock()
         .unwrap()
         .is_some();
-    let focused_output = last_active_seat.focused_or_active_output();
+    // The active window's output keeps its focus border while a layer surface has the keyboard.
+    let focused_output = last_active_seat.active_window_output();
     let realm = shell.realm_for_handle(&current.0).ok_or(OutputNoMode)?;
     // An output the backend enables before the shell adds it renders the kept set, as `active` did.
     let set = realm.set_for(output).ok_or(OutputNoMode)?;
@@ -1756,8 +1757,7 @@ where
                 // bottom glued to its arranged position while its buffer height catches
                 // up to a just-requested grow/shrink (e.g. expanding the Wi-Fi list in
                 // the settings popover), so the content doesn't jump-then-settle.
-                let (pin_x, pin_y) =
-                    shell.get_layer_bottom_pin_offset(layer.wl_surface(), layer_geo.size.h);
+                let (pin_x, pin_y) = shell.get_layer_bottom_pin_offset(&layer, layer_geo.size.h);
                 // And the popover open/close animation translate + scale. The
                 // open slides UP (+6px → 0) + scales 0.97→1.0; the close is the
                 // exact reverse (0 → +6px, 1.0→0.97). Only ONE is ever active for
@@ -1825,7 +1825,7 @@ where
                 // (slide / open / close), which moves it on purpose.
                 //
                 // `get_layer_bottom_pin_offset` already aligned the LOGICAL bottom to
-                // the configured size via `pin_y`; this removes the residual
+                // the arranged size via `pin_y`; this removes the residual
                 // sub-physical-pixel rounding a logical offset can't reach.
                 if !is_scaling
                     && !shell.is_layer_sliding(&surface_id)

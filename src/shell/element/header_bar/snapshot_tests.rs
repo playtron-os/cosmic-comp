@@ -1170,6 +1170,25 @@ fn an_app_icon_is_never_shrunk_to_make_room_for_the_title() {
     }
 }
 
+// iced measured an icon it could not load twice in a frame and panicked on the second.
+#[test]
+fn an_app_icon_that_does_not_load_still_draws_the_header() {
+    let theme = theme();
+    let icon = AppIcon::Image(iced_core::image::Handle::from_path(
+        "/nonexistent/slack.png",
+    ));
+    let (mut renderer, viewport, _cache) =
+        layout_with(&theme, 900.0, "Slack", 1.0, |header| header.app_icon(icon));
+    let mut pixels =
+        tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+    let full = [Rectangle::with_size(viewport.logical_size())];
+    draw(&mut renderer, &viewport, &mut pixels, &full);
+    assert!(
+        pixels.pixels().iter().any(|pixel| pixel.alpha() > 0),
+        "the pill is drawn"
+    );
+}
+
 #[test]
 fn an_absent_or_repeated_app_name_shows_the_title_alone() {
     let theme = theme();

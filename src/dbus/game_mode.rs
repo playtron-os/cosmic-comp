@@ -1298,7 +1298,9 @@ impl State {
             }
             GameModeCommand::SetControllerPid(pid) => {
                 debug!(target: GAMING_TARGET, pid, "cmd: controller pid resolved");
-                self.common.shell.write().game_mode.controller_pid = Some(pid);
+                let mut shell = self.common.shell.write();
+                shell.game_mode.controller_pid = Some(pid);
+                shell.game_mode.controller_workspace = crate::workspace_tag::of_pid(pid);
             }
             GameModeCommand::Enter { app_id } => {
                 debug!(target: GAMING_TARGET, app_id, launcher = app_id == LAUNCHER_APP_ID, "cmd: enter game mode");
@@ -2261,6 +2263,7 @@ impl State {
             shell.game_mode = GameMode {
                 presentation,
                 controller_pid: shell.game_mode.controller_pid,
+                controller_workspace: shell.game_mode.controller_workspace.take(),
                 baselayer_appids: std::mem::take(&mut shell.game_mode.baselayer_appids),
                 workspace,
                 active: true,
@@ -2358,6 +2361,7 @@ impl State {
         // Learned once per client and per root-window change, so the next game
         // still needs them.
         shell.game_mode.controller_pid = game_mode.controller_pid;
+        shell.game_mode.controller_workspace = game_mode.controller_workspace.take();
         shell.game_mode.baselayer_appids = std::mem::take(&mut game_mode.baselayer_appids);
         // Un-fullscreen the game so its now-empty game-mode workspace auto-reaps.
         let dbg_game_app_id = game_mode.game_surface.as_ref().map(app_id_of);
@@ -2781,9 +2785,7 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
     {
         return process.app_id;
     }
-    // Steam Big Picture (a Steam client window with no game appid) is the
-    // base-layer launcher, like the desktop launcher shell.
-    if surface.is_steam_client() {
+    if is_big_picture(surface.is_steam_client(), surface.fixed_size()) {
         return LAUNCHER_APP_ID;
     }
     let app_id = surface.app_id().to_lowercase();
@@ -2791,6 +2793,21 @@ pub fn app_id_of(surface: &CosmicSurface) -> u32 {
         return LAUNCHER_APP_ID;
     }
     0
+}
+
+/// Whether a window marked as the Steam client is Big Picture, the base-layer launcher.
+/// Steam's updater carries the same mark at a fixed size.
+fn is_big_picture(steam_client: bool, fixed_size: Option<Size<i32, Logical>>) -> bool {
+    steam_client && fixed_size.is_none()
+}
+
+/// Whether a window of workspace `window` may be game mode's, its controller running in
+/// `controller`. A side in no workspace, or a session without them, leaves it open.
+pub fn same_workspace(window: Option<&str>, controller: Option<&str>) -> bool {
+    match (window, controller) {
+        (Some(window), Some(controller)) => window == controller,
+        _ => true,
+    }
 }
 
 fn is_game_surface(surface: &CosmicSurface) -> bool {
@@ -2936,6 +2953,7 @@ fn find_game_surface(
         surface.alive()
             && !surface.is_useless()
             && app_id_of(surface) == app_id
+            && shell.in_game_mode_workspace(surface)
             && !matches!(
                 surface.window_type(),
                 Some(
@@ -3124,6 +3142,24 @@ fn reported_focus(focused: u32, on_screen: bool, shown: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steam_s_fixed_size_updater_is_not_big_picture() {
+        assert!(is_big_picture(true, None));
+        assert!(!is_big_picture(true, Some((267, 86).into())), "the updater");
+        assert!(!is_big_picture(false, None), "any other window");
+    }
+
+    #[test]
+    fn a_window_of_another_workspace_is_never_game_mode_s() {
+        assert!(!same_workspace(Some("default"), Some("gameframe")));
+        assert!(same_workspace(Some("gameframe"), Some("gameframe")));
+        assert!(same_workspace(None, Some("gameframe")), "a machine window");
+        assert!(
+            same_workspace(Some("default"), None),
+            "a controller in none"
+        );
+    }
 
     #[test]
     fn a_game_shares_a_desktop_with_any_other_app() {

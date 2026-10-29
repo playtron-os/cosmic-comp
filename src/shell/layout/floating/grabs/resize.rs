@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::{
     backend::render::cursor::CursorState,
     shell::{
-        element::CosmicMapped,
+        ManagedLayer,
+        element::{CosmicMapped, MaximizedState},
         focus::target::PointerFocusTarget,
         grabs::{GrabStartData, ReleaseMode, ResizeEdge},
     },
@@ -87,6 +88,8 @@ pub struct ResizeSurfaceGrab {
     initial_window_size: Size<i32, Logical>,
     last_window_size: Size<i32, Logical>,
     release: ReleaseMode,
+    /// The window's maximized state, given up when the grab started.
+    restore: Option<MaximizedState>,
 }
 
 impl ResizeSurfaceGrab {
@@ -430,8 +433,8 @@ impl PointerGrab<State> for ResizeSurfaceGrab {
         }
     }
 
-    fn unset(&mut self, _data: &mut State) {
-        self.ungrab();
+    fn unset(&mut self, data: &mut State) {
+        self.ungrab(data);
     }
 }
 
@@ -532,8 +535,8 @@ impl TouchGrab<State> for ResizeSurfaceGrab {
         }
     }
 
-    fn unset(&mut self, _data: &mut State) {
-        self.ungrab();
+    fn unset(&mut self, data: &mut State) {
+        self.ungrab(data);
     }
 }
 
@@ -556,6 +559,7 @@ impl ResizeSurfaceGrab {
         initial_window_size: Size<i32, Logical>,
         seat: &Seat<State>,
         release: ReleaseMode,
+        restore: Option<MaximizedState>,
     ) -> ResizeSurfaceGrab {
         let resize_state = ResizeState::Resizing(ResizeData {
             edges,
@@ -596,6 +600,7 @@ impl ResizeSurfaceGrab {
             last_window_size: initial_window_size,
             release,
             edge_snap_threshold,
+            restore,
         }
     }
 
@@ -678,7 +683,7 @@ impl ResizeSurfaceGrab {
         }
     }
 
-    fn ungrab(&mut self) {
+    fn ungrab(&mut self, data: &mut State) {
         // No more buttons are pressed, release the grab.
         self.seat
             .user_data()
@@ -692,15 +697,41 @@ impl ResizeSurfaceGrab {
             return;
         }
 
-        self.window.set_resizing(false);
-        self.window.configure();
-
-        // Update fills_output_zone based on the final resize geometry.
         let zone = crate::shell::layout::floating::window_zone(
             layer_map_for_output(&self.output).non_exclusive_zone(),
             self.window.window_room(),
         )
         .as_local();
+
+        let keep = keeps_fill(
+            self.initial_window_location,
+            self.initial_window_size,
+            self.last_window_size,
+            zone,
+        );
+        if let Some(mut state) = self.restore.take().filter(|_| keep) {
+            // The grab gave up a tiled window's tile; Restore puts it back floating.
+            if state.original_layer == ManagedLayer::Tiling {
+                state.original_layer = ManagedLayer::Floating;
+            }
+            *self.window.maximized_state.lock().unwrap() = Some(state);
+            self.window.set_maximized(true);
+            self.window.set_tiled(true);
+            self.window.set_fills_output_zone(false);
+            self.window.set_resizing(false);
+            self.window.configure();
+            // Giving the state up revealed a panel that hides over maximized windows.
+            data.common
+                .event_loop_handle
+                .insert_idle(|state| state.common.shell.write().refresh_auto_hide());
+            self.finish_resize_state();
+            return;
+        }
+
+        self.window.set_resizing(false);
+        self.window.configure();
+
+        // Update fills_output_zone based on the final resize geometry.
         let final_loc = ResizeData {
             edges: self.edges,
             initial_window_location: self.initial_window_location,
@@ -713,7 +744,10 @@ impl ResizeSurfaceGrab {
                 && self.last_window_size.w >= zone.size.w
                 && self.last_window_size.h >= zone.size.h,
         );
+        self.finish_resize_state();
+    }
 
+    fn finish_resize_state(&self) {
         let mut resize_state = self.window.resize_state.lock().unwrap();
         if let Some(ResizeState::Resizing(resize_data)) = *resize_state {
             *resize_state = Some(ResizeState::WaitingForCommit(resize_data));
@@ -721,6 +755,17 @@ impl ResizeSurfaceGrab {
             debug!("unexpected resize state: {:?}", resize_state);
         }
     }
+}
+
+/// A press on a filled window's edge that resized nothing leaves it filled, so Fill still
+/// sizes it down to where it was rather than filling it again.
+fn keeps_fill(
+    location: Point<i32, Local>,
+    initial: Size<i32, Logical>,
+    last: Size<i32, Logical>,
+    zone: Rectangle<i32, Local>,
+) -> bool {
+    last == initial && Rectangle::new(location, initial.as_local()).contains_rect(zone)
 }
 
 impl Drop for ResizeSurfaceGrab {
@@ -733,6 +778,25 @@ impl Drop for ResizeSurfaceGrab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_press_on_a_filled_window_that_resizes_nothing_keeps_it_filled() {
+        let zone = Rectangle::<i32, Local>::new((10, 40).into(), (1580, 950).into());
+        let full = Size::<i32, Logical>::from((1580, 950));
+        assert!(keeps_fill(zone.loc, full, full, zone));
+        // A panel shown for the gesture shrinks the area; the window still covers it.
+        let smaller = Rectangle::new((10, 40).into(), (1580, 900).into());
+        assert!(keeps_fill(zone.loc, full, full, smaller));
+        assert!(
+            !keeps_fill(zone.loc, full, (1300, 950).into(), zone),
+            "a resize gives the fill up"
+        );
+        let halfway = Size::from((1200, 800));
+        assert!(
+            !keeps_fill((200, 100).into(), halfway, halfway, zone),
+            "a window caught growing toward Fill is not filled yet"
+        );
+    }
 
     #[test]
     fn resize_from_an_inset_maximized_rectangle_keeps_the_opposite_edges_fixed() {

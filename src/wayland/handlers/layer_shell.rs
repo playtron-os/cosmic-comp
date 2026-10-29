@@ -205,6 +205,9 @@ impl WlrLayerShellHandler for State {
 
             self.backend.schedule_render(&output);
         }
+        std::mem::drop(shell);
+
+        Common::refocus_off_closed_surface(self, &surface_id);
     }
 }
 

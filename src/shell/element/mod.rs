@@ -470,6 +470,15 @@ impl CosmicMapped {
         }
     }
 
+    /// Whether the window rests filling its work area without being maximized.
+    pub fn fills_output_zone(&self) -> bool {
+        match &self.element {
+            CosmicMappedInternal::Stack(s) => s.fills_output_zone(),
+            CosmicMappedInternal::Window(w) => w.fills_output_zone(),
+            _ => unreachable!(),
+        }
+    }
+
     /// Record which output edges this window's geometry reaches, so corners
     /// that do not reach one can stay rounded. See [`OutputEdges`].
     pub fn set_output_edges(&self, edges: OutputEdges) {

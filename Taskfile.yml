@@ -94,6 +94,8 @@ tasks:
         sudo install -Dm0644 "$f"
         "{{.DESTDIR}}{{.PREFIX}}/share/cosmic/com.playtron.VoiceMode/v1/$(basename "$f")";
         done
+      - sudo install -Dm0644 data/kora-workspaces/50-cosmic-comp.policy
+        {{.DESTDIR}}{{.PREFIX}}/share/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy
       # restorecon, because a file installed from a user checkout inherits
       # user_home_t and the session then cannot exec it under enforcing SELinux.
       # Named files only — a recursive pass over the whole prefix is slow enough
@@ -184,6 +186,8 @@ tasks:
       - install -Dm0644 "data/keybindings.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
       - install -Dm0644 "data/tiling-exceptions.ron" ".cache/{{.NAME}}/usr/share/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
       - install -Dm0644 "LICENSE" ".cache/{{.NAME}}/usr/share/licenses/cosmic-comp/LICENSE"
+      # Game mode's rules for apps in Kora workspaces, read by kora-workspaces' router.
+      - install -Dm0644 "data/kora-workspaces/50-cosmic-comp.policy" ".cache/{{.NAME}}/usr/share/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy"
       # Whatever keys `data/voice-mode` holds, rather than one line each: the
       # list was already stale here once, staging a `chat_app_id` that had been
       # deleted, which fails the packaging build rather than the build that
