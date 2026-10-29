@@ -8,9 +8,12 @@ use smithay::{
         LayerSurface, PopupKind, PopupManager, layer_map_for_output, utils::bbox_from_surface_tree,
     },
     output::{Output, OutputNoMode},
-    reexports::wayland_server::Resource,
+    reexports::wayland_server::{Client, Resource},
     utils::{Logical, Point, Rectangle, Scale},
-    wayland::{session_lock::LockSurface, shell::wlr_layer::Layer},
+    wayland::{
+        session_lock::LockSurface,
+        shell::wlr_layer::{KeyboardInteractivity, Layer},
+    },
     xwayland::X11Surface,
 };
 
@@ -292,18 +295,25 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    // Overlay-level layer shell, above everything. An exclusive game hides it
-    // all but the launcher's own (its quick settings) and the OSD's volume and
-    // brightness indicator, which takes no input.
+    // Overlay-level layer shell, above everything. An exclusive game hides all
+    // of it but what `shows_over_game` lets through.
     let launcher = game_owns_screen
         .then(|| crate::dbus::game_mode::launcher_client(shell))
         .flatten();
+    let summoned = if game_owns_screen {
+        keyboard_overlay_clients(shell)
+    } else {
+        Vec::new()
+    };
     let over_game = |layer: &LayerSurface| {
+        let client = layer.wl_surface().client();
         !game_owns_screen
-            || launcher.is_some() && layer.wl_surface().client().as_ref() == launcher.as_ref()
-            || layer.namespace() == "osd"
-                && layer.cached_state().keyboard_interactivity
-                    == smithay::wayland::shell::wlr_layer::KeyboardInteractivity::None
+            || shows_over_game(OverGame {
+                from_launcher: launcher.is_some() && client == launcher,
+                osd_indicator: layer.namespace() == "osd"
+                    && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::None,
+                keyboard_client: client.is_some_and(|client| summoned.contains(&client)),
+            })
     };
     for (layer, popup, location, _alpha) in
         layer_popups(output, Layer::Overlay, element_filter, &layer_visibility)
@@ -900,6 +910,44 @@ fn layer_popups<'a>(
     )
 }
 
+/// What decides whether an overlay-layer surface shows over a game.
+#[derive(Debug, Clone, Copy, Default)]
+struct OverGame {
+    /// The launcher's own, its quick settings.
+    from_launcher: bool,
+    /// The OSD's volume and brightness indicator, which takes no input.
+    osd_indicator: bool,
+    /// Its app holds the keyboard with an overlay of its own.
+    keyboard_client: bool,
+}
+
+/// Only what the person calls up shows over a game. An app that took the keyboard with an
+/// overlay, as the window switcher or Kora Capture does, gets every key either way, so all
+/// of its overlay shows, its toolbar included.
+fn shows_over_game(layer: OverGame) -> bool {
+    layer.from_launcher || layer.osd_indicator || layer.keyboard_client
+}
+
+/// The apps with an overlay-layer surface up that takes the keyboard.
+fn keyboard_overlay_clients(shell: &Shell) -> Vec<Client> {
+    let mut clients = Vec::new();
+    for output in shell.outputs() {
+        for layer in layer_map_for_output(output).layers_on(Layer::Overlay) {
+            if layer.cached_state().keyboard_interactivity != KeyboardInteractivity::Exclusive
+                || !shell.is_layer_shown(&layer.wl_surface().id())
+            {
+                continue;
+            }
+            if let Some(client) = layer.wl_surface().client()
+                && !clients.contains(&client)
+            {
+                clients.push(client);
+            }
+        }
+    }
+    clients
+}
+
 // MERGE: `layer_z_level` and the cached/skipped layer paths went away with our
 // blur implementation (they only existed to feed BlurCapture/LayerBlurCapture);
 // upstream's frosted glass blits from the live framebuffer instead.
@@ -980,4 +1028,33 @@ fn layer_surfaces<'a>(
         // Use the surface-specific alpha
         Some((s, loc.as_local().to_global(output), alpha))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Alt+Tab's switcher and Kora Capture's toolbar held every key over a game while
+    /// drawn nowhere, so a switch or a recording happened blind.
+    #[test]
+    fn an_overlay_holding_the_keys_shows_over_a_game() {
+        let summoned = OverGame {
+            keyboard_client: true,
+            ..OverGame::default()
+        };
+        assert!(shows_over_game(summoned));
+    }
+
+    #[test]
+    fn nothing_else_shows_over_a_game() {
+        assert!(!shows_over_game(OverGame::default()), "a notification");
+        assert!(shows_over_game(OverGame {
+            from_launcher: true,
+            ..OverGame::default()
+        }));
+        assert!(shows_over_game(OverGame {
+            osd_indicator: true,
+            ..OverGame::default()
+        }));
+    }
 }

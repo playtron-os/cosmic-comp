@@ -36,7 +36,11 @@ impl Window for CosmicSurface {
     }
 
     fn is_activated(&self) -> bool {
-        !self.is_minimized() && CosmicSurface::is_activated(self, true)
+        listed_active(
+            CosmicSurface::is_activated(self, true),
+            self.is_minimized(),
+            self.is_off_screen(),
+        )
     }
 
     fn is_maximized(&self) -> bool {
@@ -69,3 +73,24 @@ impl Window for CosmicSurface {
 }
 
 delegate_toplevel_info!(State, CosmicSurface);
+
+/// What window lists call active: the window with focus. A minimized one or one on a desktop
+/// off screen can keep its own activated state, as game mode keeps a hidden game.
+fn listed_active(activated: bool, minimized: bool, off_screen: bool) -> bool {
+    activated && !minimized && !off_screen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::listed_active;
+
+    /// Alt+Tab orders windows by when each was last listed active. A game kept activated on
+    /// its hidden desktop never stopped being listed active, so Alt+Tab never went back to it.
+    #[test]
+    fn a_window_on_a_desktop_off_screen_is_not_listed_active() {
+        assert!(!listed_active(true, false, true));
+        assert!(listed_active(true, false, false));
+        assert!(!listed_active(true, true, false));
+        assert!(!listed_active(false, false, false));
+    }
+}
