@@ -5748,32 +5748,20 @@ impl Shell {
     /// still-tall (shrinking) buffer, drawn at the new top, then floats up from — or
     /// overshoots below — the fixed bottom edge for a frame: the "content jumps then
     /// settles" blink when an auto-size popover expands/collapses an inline list.
-    /// Shifting the buffer down by the height deficit (`configured - buffer`) re-pins
+    /// Shifting the buffer down by the height deficit (`arranged - buffer`) re-pins
     /// the bottom edge every frame.
     ///
-    /// The deficit is zero whenever the buffer already matches the configured size —
+    /// The deficit is zero whenever the buffer already matches the arranged size —
     /// i.e. in steady state and for every fixed-size surface (docks, the bottom bar) —
     /// so this is a no-op except during the one-or-few frames an auto-size surface is
     /// mid-resize. Only fires for surfaces anchored to the bottom and not stretched
     /// top-to-bottom (those grow upward from a fixed bottom).
     pub fn get_layer_bottom_pin_offset(
         &self,
-        surface: &WlSurface,
+        layer: &LayerSurface,
         buffer_height: i32,
     ) -> (i32, i32) {
-        let (anchor, configured_height) = with_states(surface, |states| {
-            let mut state = states.cached_state.get::<LayerSurfaceCachedState>();
-            let current = state.current();
-            (current.anchor, current.size.h)
-        });
-        if configured_height > 0 && anchor.contains(Anchor::BOTTOM) && !anchor.contains(Anchor::TOP)
-        {
-            let deficit = configured_height - buffer_height;
-            if deficit != 0 {
-                return (0, deficit);
-            }
-        }
-        (0, 0)
+        (0, layer_bottom_pin(layer, buffer_height))
     }
 
     /// Whether `surface` is a layer surface anchored to the bottom edge and not
@@ -12246,3 +12234,33 @@ mod desktop_policy_tests {
         }
     }
 }
+
+/// How far down to draw `layer`'s buffer of `buffer_height` so its bottom edge
+/// sits where arrange() put it.
+fn layer_bottom_pin(layer: &LayerSurface, buffer_height: i32) -> i32 {
+    let anchor = with_states(layer.wl_surface(), |states| {
+        states
+            .cached_state
+            .get::<LayerSurfaceCachedState>()
+            .current()
+            .anchor
+    });
+    // The size arrange() placed it with, not the one the client asked for: a
+    // request taller than the zone is clamped, and input follows the clamp.
+    let arranged_height = layer
+        .layer_surface()
+        .with_pending_state(|state| state.size.map_or(0, |size| size.h));
+    bottom_pin_deficit(anchor, arranged_height, buffer_height)
+}
+
+/// How far down to draw a bottom-anchored buffer so its bottom edge sits where
+/// `arranged_height` put it.
+fn bottom_pin_deficit(anchor: Anchor, arranged_height: i32, buffer_height: i32) -> i32 {
+    if arranged_height <= 0 || !anchor.contains(Anchor::BOTTOM) || anchor.contains(Anchor::TOP) {
+        return 0;
+    }
+    arranged_height - buffer_height
+}
+
+#[cfg(test)]
+mod bottom_pin_tests;
