@@ -325,6 +325,12 @@ impl Shell {
             .active
             .then(|| self.game_mode.game_surface.clone())
             .flatten();
+        // A window that left a hidden desktop's fullscreen is back in the lists.
+        let on_screen = |window: &CosmicMapped| {
+            for (surface, _) in window.windows() {
+                surface.set_off_screen(false);
+            }
+        };
 
         for output in self.outputs().cloned().collect::<Vec<_>>().into_iter() {
             let set = Shell::realm_mut(&mut self.realms, &self.active_realm)
@@ -339,6 +345,7 @@ impl Shell {
             for window in set.sticky_layer.mapped() {
                 window.set_activated(looks_active(window));
                 window.configure();
+                on_screen(window);
             }
             for window in set
                 .minimized_windows
@@ -363,6 +370,7 @@ impl Shell {
                     });
                 fs.surface.set_activated(is_focused);
                 fs.surface.send_configure();
+                fs.surface.set_off_screen(false);
             }
             if !dragging {
                 for focused in focused_windows.iter() {
@@ -372,6 +380,7 @@ impl Shell {
             for window in workspace.mapped() {
                 window.set_activated(looks_active(window));
                 window.configure();
+                on_screen(window);
             }
             for m in workspace.minimized_windows.iter() {
                 if let Some(window) = m.mapped() {
@@ -392,6 +401,10 @@ impl Shell {
                 for window in workspace.mapped() {
                     window.set_activated(false);
                     window.configure();
+                }
+                // Left activated, so a hidden game plays on; only listings learn it is away.
+                for fs in workspace.get_fullscreen_surfaces() {
+                    fs.surface.set_off_screen(true);
                 }
             }
         }
