@@ -7198,6 +7198,24 @@ impl Shell {
         !self.is_surface_hidden(surface_id) && !self.is_layer_off_realm(surface_id)
     }
 
+    /// Whether a hidden layer surface is still animating out. It stays on screen until then,
+    /// but the keyboard must leave it at the hide, or the keys typed meanwhile go to it.
+    pub fn is_layer_hiding(&self, surface_id: &ObjectId) -> bool {
+        self.is_layer_closing(surface_id)
+            || self.layer_slides.iter().any(|s| {
+                s.surface_id == *surface_id
+                    && matches!(
+                        s.visibility,
+                        layer_slide::SlideVisibility::SlidingOut { .. }
+                    )
+            })
+    }
+
+    /// Whether a layer surface may hold the keyboard: shown and not on its way out.
+    pub fn is_layer_focusable(&self, surface_id: &ObjectId) -> bool {
+        self.is_layer_shown(surface_id) && !self.is_layer_hiding(surface_id)
+    }
+
     /// Check if a layer surface was created without a specific output
     pub fn is_output_agnostic_layer(&self, surface_id: &ObjectId) -> bool {
         self.output_agnostic_layers.contains(surface_id)

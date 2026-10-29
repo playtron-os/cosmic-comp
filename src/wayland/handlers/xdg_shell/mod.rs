@@ -14,7 +14,10 @@ use smithay::{
     output::Output,
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::{wl_output::WlOutput, wl_seat::WlSeat},
+        wayland_server::{
+            Resource,
+            protocol::{wl_output::WlOutput, wl_seat::WlSeat},
+        },
     },
     utils::{Logical, Point, Serial},
     wayland::{
@@ -159,6 +162,10 @@ impl XdgShellHandler for State {
         } else {
             tracing::warn!("No root for grab.");
         }
+    }
+
+    fn popup_destroyed(&mut self, surface: PopupSurface) {
+        Common::refocus_off_closed_surface(self, &surface.wl_surface().id());
     }
 
     fn reposition_request(

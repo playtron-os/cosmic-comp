@@ -9,7 +9,7 @@ use smithay::{
     desktop::{PopupUngrabStrategy, layer_map_for_output},
     input::{Seat, pointer::MotionEvent},
     output::Output,
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    reexports::wayland_server::{Resource, backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Point, SERIAL_COUNTER, Serial},
     wayland::{
         pointer_constraints::{PointerConstraint, with_pointer_constraint},
@@ -735,6 +735,61 @@ impl Common {
 
         state.common.shell.write().update_active()
     }
+
+    /// Hands the keyboard on as soon as the surface holding it, a layer surface or a popup of
+    /// one, goes away: the next refresh can be 150 ms off, and the keys typed until then are lost.
+    pub fn refocus_off_closed_surface(state: &mut State, surface: &ObjectId) {
+        let seats = state
+            .common
+            .shell
+            .read()
+            .seats
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut moved = false;
+        for seat in &seats {
+            let Some(focus) = seat.get_keyboard().and_then(|k| k.current_focus()) else {
+                continue;
+            };
+            if focus.wl_surface().is_none_or(|s| s.id() != *surface) {
+                continue;
+            }
+            let grab_data = seat.user_data().get::<PopupGrabData>();
+            let mut grab = grab_data.and_then(|data| data.take());
+            // A window's popup grab hands the keys back to the window, and a nested popup's to
+            // the one under it; a layer surface's last popup would hand them to a panel.
+            if let KeyboardFocusTarget::Popup(_) = focus
+                && !grab.as_ref().is_some_and(|grab| {
+                    matches!(
+                        grab.keyboard_grab_start_data().focus,
+                        Some(KeyboardFocusTarget::LayerSurface(_))
+                    ) && !matches!(grab.current_grab(), Some(KeyboardFocusTarget::Popup(_)))
+                })
+            {
+                if let Some(data) = grab_data {
+                    data.set(grab);
+                }
+                continue;
+            }
+            if let Some(grab) = grab.as_mut()
+                && !grab.has_ended()
+            {
+                grab.ungrab(PopupUngrabStrategy::All);
+            }
+            let target = update_focus_target(
+                &state.common.shell.read(),
+                seat,
+                &seat.active_window_output(),
+            );
+            debug!("Focus off a closed surface to {:?}", target.as_ref());
+            update_focus_state(seat, target.as_ref(), state, None, false);
+            moved = true;
+        }
+        if moved {
+            state.common.shell.write().update_active();
+        }
+    }
 }
 
 fn focus_target_is_valid(
@@ -754,7 +809,7 @@ fn focus_target_is_valid(
         return if let KeyboardFocusTarget::LayerSurface(layer_surface) = target {
             let data = layer_surface.cached_state();
             (data.keyboard_interactivity, data.layer) == (KeyboardInteractivity::Exclusive, layer)
-                && !shell.is_surface_hidden(&layer_surface.wl_surface().id())
+                && shell.is_layer_focusable(&layer_surface.wl_surface().id())
         } else {
             false
         };
@@ -810,7 +865,7 @@ fn focus_target_is_valid(
             // landed on one is "valid" forever and refresh_focus never repairs it
             // (the exclusive arm above and update_focus_target already check this).
             layer_map_for_output(output).layers().any(|l| l == &layer)
-                && shell.is_layer_shown(&layer.wl_surface().id())
+                && shell.is_layer_focusable(&layer.wl_surface().id())
         }
         KeyboardFocusTarget::Group(WindowGroup { node, .. }) => shell
             .workspaces()
@@ -842,16 +897,22 @@ pub(crate) fn update_focus_target(
             .cloned()
             .map(KeyboardFocusTarget::from)
     } else if let Some(layer) = exclusive_layer_surface_layer(shell) {
-        layer_map_for_output(output)
-            .layers()
-            .find(|layer_surface| {
-                let data = layer_surface.cached_state();
-                (data.keyboard_interactivity, data.layer)
-                    == (KeyboardInteractivity::Exclusive, layer)
-                    // Skip hidden and off-screen-workspace surfaces — no focus
-                    && shell.is_layer_shown(&layer_surface.wl_surface().id())
+        // Else another output's: an overlay on every output closes one surface at a time, and
+        // the keyboard stays on what is left of it until the window gets it back.
+        std::iter::once(output)
+            .chain(shell.outputs())
+            .find_map(|output| {
+                layer_map_for_output(output)
+                    .layers()
+                    .find(|layer_surface| {
+                        let data = layer_surface.cached_state();
+                        (data.keyboard_interactivity, data.layer)
+                            == (KeyboardInteractivity::Exclusive, layer)
+                            // Skip hidden, hiding and off-screen-workspace surfaces — no focus
+                            && shell.is_layer_focusable(&layer_surface.wl_surface().id())
+                    })
+                    .cloned()
             })
-            .cloned()
             .map(KeyboardFocusTarget::from)
     } else {
         let workspace = shell.active_space(output).unwrap();
@@ -955,8 +1016,8 @@ fn exclusive_layer_surface_layer(shell: &Shell) -> Option<Layer> {
     let mut layer = None;
     for output in shell.outputs() {
         for layer_surface in layer_map_for_output(output).layers() {
-            // Skip hidden and off-screen-workspace surfaces — no exclusive focus
-            if !shell.is_layer_shown(&layer_surface.wl_surface().id()) {
+            // Skip hidden, hiding and off-screen-workspace surfaces — no exclusive focus
+            if !shell.is_layer_focusable(&layer_surface.wl_surface().id()) {
                 continue;
             }
             let data = layer_surface.cached_state();
