@@ -1872,6 +1872,11 @@ impl CosmicWindow {
             .with_program(|p| p.fills_output_zone.store(fills, Ordering::Release));
     }
 
+    pub fn fills_output_zone(&self) -> bool {
+        self.0
+            .with_program(|p| p.fills_output_zone.load(Ordering::Acquire))
+    }
+
     /// Record which output edges this window reaches. See [`super::OutputEdges`].
     pub fn set_output_edges(&self, edges: super::OutputEdges) {
         self.0

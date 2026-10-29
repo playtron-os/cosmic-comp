@@ -10627,14 +10627,52 @@ impl Shell {
         // branches below act on `maximized_state`, so keying off the flag makes a
         // desync unrecoverable (unmaximize finds no state and no-ops, and the flag
         // stays set, so maximize is never reached again).
-        if window.maximized_state.lock().unwrap().is_some() {
+        let state = *window.maximized_state.lock().unwrap();
+        if state.is_none() && window.is_fullscreen(true) {
+            return;
+        }
+        let restore = self.fill_zone(window).and_then(|(layer, zone)| {
+            fill_toggle_restore(
+                state,
+                window.fills_output_zone(),
+                layer,
+                zone,
+                window.min_size().unwrap_or_default(),
+            )
+        });
+        if let Some(restore) = restore {
+            *window.maximized_state.lock().unwrap() = Some(restore);
+            self.unmaximize_request_with_options(window);
+        } else if state.is_some() {
             self.unmaximize_request_with_options(window);
         } else {
-            if window.is_fullscreen(true) {
-                return;
-            }
             self.maximize_request_with_options(window, seat, true, false, loop_handle);
         }
+    }
+
+    /// The layer `mapped` lives in and the work area Fill lays it out in.
+    fn fill_zone(&self, mapped: &CosmicMapped) -> Option<(ManagedLayer, Rectangle<i32, Local>)> {
+        let (layer, output) = if let Some(set) = self
+            .workspaces()
+            .sets
+            .values()
+            .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
+        {
+            (ManagedLayer::Sticky, &set.output)
+        } else {
+            let workspace = self.space_for(mapped)?;
+            let layer = if workspace.is_tiled(&mapped.active_window()) {
+                ManagedLayer::Tiling
+            } else {
+                ManagedLayer::Floating
+            };
+            (layer, workspace.output())
+        };
+        let zone = layer_map_for_output(output).non_exclusive_zone();
+        Some((
+            layer,
+            layout::floating::window_zone(zone, mapped.window_room()).as_local(),
+        ))
     }
 
     pub fn minimize_request<S>(&mut self, surface: &S)
@@ -12040,6 +12078,158 @@ pub fn check_grab_preconditions(
     }
 
     Some(start_data)
+}
+
+/// The state Fill's toggle restores a window from, or `None` to fill it. A window that fills
+/// its work area without a state, as a resize can leave it, restores too: filling it again
+/// would change nothing. A restore never lands on a rectangle that still fills the area.
+fn fill_toggle_restore(
+    state: Option<MaximizedState>,
+    fills_zone: bool,
+    layer: ManagedLayer,
+    zone: Rectangle<i32, Local>,
+    min: Size<i32, Logical>,
+) -> Option<MaximizedState> {
+    let mut state = match state {
+        Some(state) => state,
+        None if fills_zone && layer != ManagedLayer::Tiling => MaximizedState {
+            original_geometry: zone,
+            original_layer: layer,
+            original_snapped: None,
+        },
+        None => return None,
+    };
+    let original = state.original_geometry;
+    // A tiled window goes back to its tile, whatever its size.
+    if state.original_layer != ManagedLayer::Tiling
+        && original.size.w >= zone.size.w
+        && original.size.h >= zone.size.h
+    {
+        // The size a drag away from the top gives it, centred.
+        let (n, d) = DRAG_UNMAXIMIZE_FRACTION;
+        let size = Size::from((
+            (zone.size.w * n / d).max(min.w).min(zone.size.w),
+            (zone.size.h * n / d).max(min.h).min(zone.size.h),
+        ));
+        state.original_geometry = Rectangle::new(
+            zone.loc + Point::from(((zone.size.w - size.w) / 2, (zone.size.h - size.h) / 2)),
+            size,
+        );
+    }
+    Some(state)
+}
+
+#[cfg(test)]
+mod fill_toggle_tests {
+    use super::*;
+
+    fn zone() -> Rectangle<i32, Local> {
+        Rectangle::new(Point::new(10, 40), Size::new(1580, 950))
+    }
+
+    fn state(geometry: Rectangle<i32, Local>, layer: ManagedLayer) -> MaximizedState {
+        MaximizedState {
+            original_geometry: geometry,
+            original_layer: layer,
+            original_snapped: None,
+        }
+    }
+
+    fn restored(state: Option<MaximizedState>) -> Option<Rectangle<i32, Local>> {
+        state.map(|state| state.original_geometry)
+    }
+
+    /// QA: after a press on its edge, a filled window had no state left, so Fill filled it again.
+    #[test]
+    fn a_filled_window_without_a_state_is_sized_down() {
+        let restore =
+            fill_toggle_restore(None, true, ManagedLayer::Floating, zone(), Size::default());
+        assert_eq!(
+            restored(restore),
+            Some(Rectangle::new(Point::new(273, 198), Size::new(1053, 633)))
+        );
+        assert_eq!(restore.unwrap().original_layer, ManagedLayer::Floating);
+    }
+
+    /// A window filled from a rectangle that was already as large as the area had nowhere to go back to.
+    #[test]
+    fn a_restore_as_large_as_the_area_sizes_down() {
+        let restore = fill_toggle_restore(
+            Some(state(zone(), ManagedLayer::Floating)),
+            false,
+            ManagedLayer::Floating,
+            zone(),
+            Size::default(),
+        );
+        let geometry = restored(restore).unwrap();
+        assert!(geometry.size.w < zone().size.w && geometry.size.h < zone().size.h);
+        assert!(zone().contains_rect(geometry));
+    }
+
+    #[test]
+    fn a_maximized_window_goes_back_where_it_was() {
+        let before = Rectangle::new(Point::new(274, 158), Size::new(1052, 632));
+        for fills in [false, true] {
+            let restore = fill_toggle_restore(
+                Some(state(before, ManagedLayer::Floating)),
+                fills,
+                ManagedLayer::Floating,
+                zone(),
+                Size::default(),
+            );
+            assert_eq!(restored(restore), Some(before));
+        }
+        // Full height is not filling: a window as tall as the area but narrower keeps its size.
+        let tall = Rectangle::new(Point::new(10, 40), Size::new(790, 950));
+        let restore = fill_toggle_restore(
+            Some(state(tall, ManagedLayer::Sticky)),
+            false,
+            ManagedLayer::Sticky,
+            zone(),
+            Size::default(),
+        );
+        assert_eq!(restored(restore), Some(tall));
+    }
+
+    #[test]
+    fn a_window_that_does_not_fill_the_area_fills_it() {
+        assert!(
+            fill_toggle_restore(None, false, ManagedLayer::Floating, zone(), Size::default())
+                .is_none()
+        );
+    }
+
+    /// Tiling lays a lone window out across the area; Fill still maximizes it, and Restore
+    /// puts a maximized one back in its tile.
+    #[test]
+    fn a_tiled_window_keeps_its_tile() {
+        assert!(
+            fill_toggle_restore(None, true, ManagedLayer::Tiling, zone(), Size::default())
+                .is_none()
+        );
+        let restore = fill_toggle_restore(
+            Some(state(zone(), ManagedLayer::Tiling)),
+            false,
+            ManagedLayer::Tiling,
+            zone(),
+            Size::default(),
+        );
+        assert_eq!(restored(restore), Some(zone()));
+    }
+
+    #[test]
+    fn sizing_down_respects_the_minimum_size() {
+        let restore = fill_toggle_restore(
+            None,
+            true,
+            ManagedLayer::Floating,
+            zone(),
+            Size::new(1200, 2000),
+        );
+        let geometry = restored(restore).unwrap();
+        assert_eq!(geometry.size, Size::new(1200, 950));
+        assert_eq!(geometry.loc, Point::new(200, 40));
+    }
 }
 
 #[cfg(test)]

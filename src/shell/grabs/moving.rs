@@ -1107,9 +1107,11 @@ impl Drop for MoveGrab {
                                 let pre_drag_geometry = *window.last_geometry.lock().unwrap();
 
                                 if sz == SnappingZone::Maximize {
-                                    shell.maximize_toggle(
+                                    // Fill, not toggle: a drop as large as the area would toggle down.
+                                    shell.maximize_request(
                                         &window,
                                         &seat,
+                                        true,
                                         &state.common.event_loop_handle,
                                     );
                                     if let Some(geo) = pre_drag_geometry
