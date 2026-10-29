@@ -5747,22 +5747,7 @@ impl Shell {
         layer: &LayerSurface,
         buffer_height: i32,
     ) -> (i32, i32) {
-        let anchor = with_states(layer.wl_surface(), |states| {
-            states
-                .cached_state
-                .get::<LayerSurfaceCachedState>()
-                .current()
-                .anchor
-        });
-        // The size arrange() placed it with, not the one the client asked for: a
-        // request taller than the zone is clamped, and input follows the clamp.
-        let arranged_height = layer
-            .layer_surface()
-            .with_pending_state(|state| state.size.map_or(0, |size| size.h));
-        (
-            0,
-            bottom_pin_deficit(anchor, arranged_height, buffer_height),
-        )
+        (0, layer_bottom_pin(layer, buffer_height))
     }
 
     /// Whether `surface` is a layer surface anchored to the bottom edge and not
@@ -12217,6 +12202,24 @@ mod desktop_policy_tests {
     }
 }
 
+/// How far down to draw `layer`'s buffer of `buffer_height` so its bottom edge
+/// sits where arrange() put it.
+fn layer_bottom_pin(layer: &LayerSurface, buffer_height: i32) -> i32 {
+    let anchor = with_states(layer.wl_surface(), |states| {
+        states
+            .cached_state
+            .get::<LayerSurfaceCachedState>()
+            .current()
+            .anchor
+    });
+    // The size arrange() placed it with, not the one the client asked for: a
+    // request taller than the zone is clamped, and input follows the clamp.
+    let arranged_height = layer
+        .layer_surface()
+        .with_pending_state(|state| state.size.map_or(0, |size| size.h));
+    bottom_pin_deficit(anchor, arranged_height, buffer_height)
+}
+
 /// How far down to draw a bottom-anchored buffer so its bottom edge sits where
 /// `arranged_height` put it.
 fn bottom_pin_deficit(anchor: Anchor, arranged_height: i32, buffer_height: i32) -> i32 {
@@ -12227,33 +12230,4 @@ fn bottom_pin_deficit(anchor: Anchor, arranged_height: i32, buffer_height: i32) 
 }
 
 #[cfg(test)]
-mod bottom_pin_tests {
-    use super::bottom_pin_deficit;
-    use smithay::wayland::shell::wlr_layer::Anchor;
-
-    /// A popover that asked for 900px on a 720px screen is arranged at 666 and draws
-    /// 666; shifting it by the 234px it did not get drew it away from where clicks land.
-    #[test]
-    fn a_clamped_surface_is_drawn_where_it_takes_input() {
-        assert_eq!(
-            bottom_pin_deficit(Anchor::BOTTOM | Anchor::LEFT, 666, 666),
-            0
-        );
-    }
-
-    #[test]
-    fn a_growing_buffer_stays_on_its_bottom_edge() {
-        assert_eq!(bottom_pin_deficit(Anchor::BOTTOM, 500, 400), 100);
-        assert_eq!(bottom_pin_deficit(Anchor::BOTTOM, 400, 500), -100);
-    }
-
-    #[test]
-    fn only_bottom_anchored_surfaces_are_pinned() {
-        assert_eq!(bottom_pin_deficit(Anchor::TOP, 500, 400), 0);
-        assert_eq!(
-            bottom_pin_deficit(Anchor::TOP | Anchor::BOTTOM, 500, 400),
-            0
-        );
-        assert_eq!(bottom_pin_deficit(Anchor::BOTTOM, 0, 400), 0);
-    }
-}
+mod bottom_pin_tests;
