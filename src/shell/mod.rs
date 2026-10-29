@@ -5759,7 +5759,10 @@ impl Shell {
         let arranged_height = layer
             .layer_surface()
             .with_pending_state(|state| state.size.map_or(0, |size| size.h));
-        (0, bottom_pin_deficit(anchor, arranged_height, buffer_height))
+        (
+            0,
+            bottom_pin_deficit(anchor, arranged_height, buffer_height),
+        )
     }
 
     /// Whether `surface` is a layer surface anchored to the bottom edge and not
@@ -12232,7 +12235,10 @@ mod bottom_pin_tests {
     /// 666; shifting it by the 234px it did not get drew it away from where clicks land.
     #[test]
     fn a_clamped_surface_is_drawn_where_it_takes_input() {
-        assert_eq!(bottom_pin_deficit(Anchor::BOTTOM | Anchor::LEFT, 666, 666), 0);
+        assert_eq!(
+            bottom_pin_deficit(Anchor::BOTTOM | Anchor::LEFT, 666, 666),
+            0
+        );
     }
 
     #[test]
@@ -12244,7 +12250,10 @@ mod bottom_pin_tests {
     #[test]
     fn only_bottom_anchored_surfaces_are_pinned() {
         assert_eq!(bottom_pin_deficit(Anchor::TOP, 500, 400), 0);
-        assert_eq!(bottom_pin_deficit(Anchor::TOP | Anchor::BOTTOM, 500, 400), 0);
+        assert_eq!(
+            bottom_pin_deficit(Anchor::TOP | Anchor::BOTTOM, 500, 400),
+            0
+        );
         assert_eq!(bottom_pin_deficit(Anchor::BOTTOM, 0, 400), 0);
     }
 }
