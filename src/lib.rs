@@ -54,6 +54,8 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use std::error::Error;
 
 pub mod backend;
+#[cfg(test)]
+mod client_buffer_tests;
 pub mod clipboard;
 pub mod comp_theme;
 pub mod config;
@@ -613,11 +615,16 @@ pub(crate) fn freeze_on_exit_enabled() -> bool {
     )
 }
 
+// A client that stops reading is dropped once this fills. 4 KiB lasts ~4 s of
+// pointer motion; 4 MiB lets a stalled client recover after minutes.
+const CLIENT_MAX_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+
 fn init_wayland_display(
     event_loop: &mut EventLoop<state::State>,
 ) -> Result<(DisplayHandle, OsString)> {
     let display = Display::new().unwrap();
     let handle = display.handle();
+    handle.set_default_max_buffer_size(CLIENT_MAX_BUFFER_SIZE);
 
     let source = ListeningSocketSource::new_auto().unwrap();
     let socket_name = source.socket_name().to_os_string();
