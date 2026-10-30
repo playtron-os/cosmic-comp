@@ -1147,6 +1147,20 @@ fn opens_on_own_desktop(moves: bool, others_there: bool) -> bool {
     moves && others_there
 }
 
+/// The empty desktop of `desktops` (each with whether it is empty) that an app opening over
+/// the game on `game` takes: the nearest after the game's, else the nearest before it.
+fn empty_desktop_beside(
+    desktops: &[(WorkspaceHandle, bool)],
+    game: &WorkspaceHandle,
+) -> Option<WorkspaceHandle> {
+    let at = desktops.iter().position(|(handle, _)| handle == game)?;
+    desktops[at + 1..]
+        .iter()
+        .chain(desktops[..at].iter().rev())
+        .find(|(_, empty)| *empty)
+        .map(|(handle, _)| *handle)
+}
+
 /// Whether an output switches to the desktop a window opening fullscreen was
 /// given: when the desktop it opened over is the one that output shows, whichever
 /// output the pointer is on.
@@ -3912,6 +3926,89 @@ impl Shell {
             .map(|ws| ws.handle)
     }
 
+    /// Whether `window` is an app the user opened, rather than a window of the game, of the
+    /// launcher, or of anything game mode's controller started.
+    pub fn opened_over_game_mode(&self, window: &CosmicSurface) -> bool {
+        let gm = &self.game_mode;
+        gm.active
+            && window.alive()
+            && !window.is_useless()
+            && !window.is_overlay()
+            && crate::dbus::game_mode::app_id_of(window) == 0
+            && !crate::dbus::game_mode::is_quick_access_window(window)
+            && !self.game_mode_claims(window)
+            && gm
+                .game_surface
+                .as_ref()
+                .zip(gm.app_id)
+                .is_none_or(|(base, app_id)| {
+                    base != window && !crate::dbus::game_mode::is_game_child(base, app_id, window)
+                })
+    }
+
+    /// Whether game mode draws `surface` over the launcher: with no game in front, an app the
+    /// user opens shows as it would over any fullscreen app.
+    pub fn shows_over_launcher(&self, surface: &CosmicSurface) -> bool {
+        self.game_mode.app_id == Some(crate::dbus::game_mode::LAUNCHER_APP_ID)
+            && self.opened_over_game_mode(surface)
+    }
+
+    /// The desktop an app gets instead of the game's, where game mode draws only the game:
+    /// an empty one of the game's, reused or made, and switched to.
+    fn app_desktop_beside_game(
+        &mut self,
+        window: &CosmicSurface,
+        output: &Output,
+        target: Option<WorkspaceHandle>,
+        state: &mut WorkspaceUpdateGuard<'_, State>,
+    ) -> Option<WorkspaceHandle> {
+        let game = self.game_mode.workspace?;
+        let game_output = self.game_mode.output.clone()?;
+        let lands = target.or_else(|| self.active_space(output).map(|ws| ws.handle))?;
+        if lands != game || !self.game_mode_shows_game() || !self.opened_over_game_mode(window) {
+            return None;
+        }
+        let global = self.workspaces().mode == WorkspaceMode::Global;
+        let desktops = self
+            .workspaces()
+            .sets
+            .get(&game_output)?
+            .workspaces
+            .iter()
+            .map(|ws| (ws.handle, ws.is_empty()))
+            .collect::<Vec<_>>();
+        let reused = empty_desktop_beside(&desktops, &game);
+        let desktop = match reused {
+            Some(desktop) => desktop,
+            None => {
+                // Desktops that span outputs stay index-aligned.
+                for set in self.workspaces_mut().sets.values_mut() {
+                    if global || set.output == game_output {
+                        set.add_empty_workspace(state);
+                    }
+                }
+                self.workspaces()
+                    .sets
+                    .get(&game_output)?
+                    .workspaces
+                    .last()?
+                    .handle
+            }
+        };
+        let idx = self.workspaces().idx_for_handle(&game_output, &desktop)?;
+        self.activate(&game_output, idx, WorkspaceDelta::new_shortcut(), state)
+            .ok()?;
+        tracing::debug!(
+            target: crate::logger::GAMING_TARGET,
+            app = %window.app_id(),
+            desktop = idx + 1,
+            of = self.workspaces().sets.get(&game_output).map_or(0, |set| set.workspaces.len()),
+            reused = reused.is_some(),
+            "an app opened over the game goes to a desktop beside it"
+        );
+        Some(desktop)
+    }
+
     /// Only the gaming controller can release its current fullscreen surface.
     pub fn game_mode_controls<S>(&self, surface: &S) -> bool
     where
@@ -4191,7 +4288,8 @@ impl Shell {
         // ~150ms refresh tick has not rebuilt yet for a window that just mapped.
         if self.game_mode.app_id.is_some_and(|app_id| {
             crate::dbus::game_mode::is_game_child(controlled, app_id, surface)
-        }) {
+        }) || self.shows_over_launcher(surface)
+        {
             return false;
         }
         // Only the controlled surface's own workspace is under strict control;
@@ -8553,6 +8651,18 @@ impl Shell {
             let mut guard = workspace_state.update();
             self.ensure_realm(&realm, &mut guard);
         }
+        // A window opening fullscreen already gets a desktop of its own.
+        let beside_game = (!should_be_fullscreen && realm == self.active_realm)
+            .then(|| {
+                self.app_desktop_beside_game(
+                    &window,
+                    &output,
+                    workspace_handle,
+                    &mut workspace_state.update(),
+                )
+            })
+            .flatten();
+        let workspace_handle = beside_game.or(workspace_handle);
 
         // this is beyond stupid, just to make the borrow checker happy
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {

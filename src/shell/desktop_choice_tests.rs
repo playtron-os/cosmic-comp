@@ -57,3 +57,33 @@ fn the_chooser_offers_every_desktop_but_the_spare() {
     // With desktops the user keeps, an empty one is a destination like any other.
     assert_eq!(desktop_choices(&desktops, &h[1], false).len(), 3);
 }
+
+#[test]
+fn an_app_over_a_game_reuses_the_nearest_empty_desktop_after_it() {
+    let h = handles(5);
+    let desktops = [
+        (h[0], true),
+        (h[1], false),
+        (h[2], false),
+        (h[3], true),
+        (h[4], true),
+    ];
+    assert_eq!(empty_desktop_beside(&desktops, &h[1]), Some(h[3]));
+    assert_eq!(
+        empty_desktop_beside(&desktops[..3], &h[1]),
+        Some(h[0]),
+        "else the nearest before"
+    );
+}
+
+#[test]
+fn an_app_over_a_game_with_no_empty_desktop_needs_a_new_one() {
+    let h = handles(2);
+    assert_eq!(
+        empty_desktop_beside(&[(h[0], false), (h[1], false)], &h[0]),
+        None
+    );
+    // The game's own desktop is never the app's, and a desktop of another set is no answer.
+    assert_eq!(empty_desktop_beside(&[(h[0], true)], &h[0]), None);
+    assert_eq!(empty_desktop_beside(&[(h[0], true)], &h[1]), None);
+}

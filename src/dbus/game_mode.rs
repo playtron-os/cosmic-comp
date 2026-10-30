@@ -3047,7 +3047,9 @@ fn resolve_game_children(shell: &Shell, base: &CosmicSurface, app_id: u32) -> Ve
     let mut children: Vec<CosmicSurface> = ws
         .mapped()
         .map(|mapped| mapped.active_window())
-        .filter(|surface| is_game_child(base, app_id, surface))
+        .filter(|surface| {
+            is_game_child(base, app_id, surface) || shell.shows_over_launcher(surface)
+        })
         .collect();
     // Apply the session manager's base-layer priority: a window whose app id
     // appears EARLIER in the list stacks above one that appears later, which is
