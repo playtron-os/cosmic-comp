@@ -57,6 +57,8 @@ cargo test
   gaps and fullscreen animations. Other workspaces remain ordinary desktops.
 - Preserve the controller pid and base-layer priority when adopting a new surface.
   A surface can still be alive after X11 unmaps it; check workspace membership too.
+- Game mode never hides an app the user opens: over the launcher it draws it on top; over a
+  game it gives it an empty desktop beside the game's and shows that desktop.
 - Client unfullscreen requests cannot release the controller's surface. Repairing
   fullscreen afterward can repeatedly resize clients that reject a render size.
 - Keep the original outgoing workspace through rapid gaming-window replacements;
