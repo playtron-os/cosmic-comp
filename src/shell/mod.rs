@@ -1147,6 +1147,36 @@ fn opens_on_own_desktop(moves: bool, others_there: bool) -> bool {
     moves && others_there
 }
 
+/// The window a new one belongs with: a dialog's parent, the X11 window it is transient for,
+/// or the surface it is embedded in, with the desktop that holds it when one does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parent {
+    None,
+    On(WorkspaceHandle),
+    Elsewhere,
+}
+
+/// Where a window that would open on the game's desktop goes while a game has the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OverGame {
+    Stays,
+    /// With its parent on another desktop, which is not brought on screen.
+    WithParent(WorkspaceHandle),
+    /// An empty desktop beside the game's, brought on screen.
+    Beside,
+}
+
+/// Only an app's own new window leaves the game: a window with a parent goes with that parent,
+/// so a dialog never takes the screen from the game.
+fn over_game(app: bool, parent: Parent, game: WorkspaceHandle) -> OverGame {
+    match parent {
+        Parent::On(desktop) if desktop != game => OverGame::WithParent(desktop),
+        Parent::On(_) | Parent::Elsewhere => OverGame::Stays,
+        Parent::None if app => OverGame::Beside,
+        Parent::None => OverGame::Stays,
+    }
+}
+
 /// The empty desktop of `desktops` (each with whether it is empty) that an app opening over
 /// the game on `game` takes: the nearest after the game's, else the nearest before it.
 fn empty_desktop_beside(
@@ -3953,9 +3983,32 @@ impl Shell {
             && self.opened_over_game_mode(surface)
     }
 
-    /// The desktop an app gets instead of the game's, where game mode draws only the game:
-    /// an empty one of the game's, reused or made, and switched to.
-    fn app_desktop_beside_game(
+    /// What `window` belongs with, and the desktop that holds it.
+    fn parent_of(&self, window: &CosmicSurface) -> Parent {
+        let holds = |is_it: &dyn Fn(&CosmicSurface) -> bool| {
+            self.workspaces()
+                .spaces()
+                .find(|ws| {
+                    ws.mapped().any(|m| m.windows().any(|(w, _)| is_it(&w)))
+                        || ws.get_fullscreen_surfaces().any(|f| is_it(&f.surface))
+                })
+                .map_or(Parent::Elsewhere, |ws| Parent::On(ws.handle))
+        };
+        if let Some(parent) = window.0.toplevel().and_then(|toplevel| toplevel.parent()) {
+            return holds(&|w| *w == parent);
+        }
+        if let Some(parent) = window.transient_for() {
+            return holds(&|w| w.x11_key() == Some(parent));
+        }
+        if crate::wayland::handlers::surface_embed::get_embed_render_info(window).is_some() {
+            return Parent::Elsewhere;
+        }
+        Parent::None
+    }
+
+    /// Where a window goes instead of the game's desktop, where game mode draws only the game:
+    /// an app's window to an empty desktop, reused or made, and switched to; a dialog to its parent.
+    fn desktop_instead_of_game(
         &mut self,
         window: &CosmicSurface,
         output: &Output,
@@ -3965,8 +4018,20 @@ impl Shell {
         let game = self.game_mode.workspace?;
         let game_output = self.game_mode.output.clone()?;
         let lands = target.or_else(|| self.active_space(output).map(|ws| ws.handle))?;
-        if lands != game || !self.game_mode_shows_game() || !self.opened_over_game_mode(window) {
+        if lands != game || !self.game_mode_shows_game() {
             return None;
+        }
+        match over_game(
+            self.opened_over_game_mode(window),
+            self.parent_of(window),
+            game,
+        ) {
+            OverGame::Stays => return None,
+            OverGame::WithParent(desktop) => {
+                tracing::debug!(target: crate::logger::GAMING_TARGET, app = %window.app_id(), "a window over the game joins its parent's desktop");
+                return Some(desktop);
+            }
+            OverGame::Beside => {}
         }
         let global = self.workspaces().mode == WorkspaceMode::Global;
         let desktops = self
@@ -8652,9 +8717,9 @@ impl Shell {
             self.ensure_realm(&realm, &mut guard);
         }
         // A window opening fullscreen already gets a desktop of its own.
-        let beside_game = (!should_be_fullscreen && realm == self.active_realm)
+        let off_game = (!should_be_fullscreen && realm == self.active_realm)
             .then(|| {
-                self.app_desktop_beside_game(
+                self.desktop_instead_of_game(
                     &window,
                     &output,
                     workspace_handle,
@@ -8662,7 +8727,7 @@ impl Shell {
                 )
             })
             .flatten();
-        let workspace_handle = beside_game.or(workspace_handle);
+        let workspace_handle = off_game.or(workspace_handle);
 
         // this is beyond stupid, just to make the borrow checker happy
         let workspace = if let Some(handle) = workspace_handle.filter(|handle| {

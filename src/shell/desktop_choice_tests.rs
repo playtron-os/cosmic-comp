@@ -87,3 +87,28 @@ fn an_app_over_a_game_with_no_empty_desktop_needs_a_new_one() {
     assert_eq!(empty_desktop_beside(&[(h[0], true)], &h[0]), None);
     assert_eq!(empty_desktop_beside(&[(h[0], true)], &h[1]), None);
 }
+
+#[test]
+fn only_an_apps_own_window_leaves_the_game() {
+    let game = handles(1)[0];
+    assert_eq!(over_game(true, Parent::None, game), OverGame::Beside);
+    // Not the user's: the game's own, the launcher's, what the controller started.
+    assert_eq!(over_game(false, Parent::None, game), OverGame::Stays);
+}
+
+#[test]
+fn a_dialog_over_the_game_goes_with_its_parent_and_takes_no_screen() {
+    let h = handles(2);
+    let (game, other) = (h[0], h[1]);
+    for app in [true, false] {
+        // The game's or the launcher's dialog stays over the game.
+        assert_eq!(over_game(app, Parent::On(game), game), OverGame::Stays);
+        // An app's dialog joins the app on its desktop, without switching to it.
+        assert_eq!(
+            over_game(app, Parent::On(other), game),
+            OverGame::WithParent(other)
+        );
+        // A parent on no desktop here, or a view embedded in another surface, moves nothing.
+        assert_eq!(over_game(app, Parent::Elsewhere, game), OverGame::Stays);
+    }
+}
