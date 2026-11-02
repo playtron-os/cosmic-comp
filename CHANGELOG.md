@@ -1,3 +1,11 @@
+## [1.64.1](https://github.com/playtron-os/cosmic-comp/compare/v1.64.0...v1.64.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** move to iced master for the Wayland teardown fix ([0077ef2](https://github.com/playtron-os/cosmic-comp/commit/0077ef27ce9eeb2d00e479afb916ee906eca3cd1))
+* **deps:** move to icetron main for the restart and focus fixes ([d581d06](https://github.com/playtron-os/cosmic-comp/commit/d581d06f359e129e1d68d1f08e005662a5dd3c22)), closes [playtron-os/icetron#191](https://github.com/playtron-os/icetron/issues/191) [192/#195](https://github.com/playtron-os/cosmic-comp/issues/195)
+
 # [1.64.0](https://github.com/playtron-os/cosmic-comp/compare/v1.63.0...v1.64.0) (2026-11-02)
 
 
