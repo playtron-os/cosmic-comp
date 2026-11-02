@@ -1,3 +1,49 @@
+# [1.64.0](https://github.com/playtron-os/cosmic-comp/compare/v1.63.0...v1.64.0) (2026-11-02)
+
+
+### Bug Fixes
+
+* **focus:** hand the keyboard on when a layer surface closes ([d739060](https://github.com/playtron-os/cosmic-comp/commit/d739060df7808d0f0c80a7de2974f1b32e41b3ae))
+* **focus:** keep the window active while a layer surface has the keys ([2c988ab](https://github.com/playtron-os/cosmic-comp/commit/2c988ab509974f624abed84c8747461c0ab652ce))
+* **focus:** take the keyboard off a layer surface when it hides ([7e4c37a](https://github.com/playtron-os/cosmic-comp/commit/7e4c37a47c83fa622cbf2fdea35abe46a254fc9c))
+* **game-mode:** draw an overlay that holds the keys over a game ([bac11f6](https://github.com/playtron-os/cosmic-comp/commit/bac11f67c585a1050dec68015cc7cb7826b2f111))
+* **game-mode:** keep a dialog with its parent instead of leaving the game ([dcc17a2](https://github.com/playtron-os/cosmic-comp/commit/dcc17a240dbf954192f9b711c578722a2219223c))
+* **game-mode:** leave Steam's updater and other workspaces alone ([47c663a](https://github.com/playtron-os/cosmic-comp/commit/47c663ad97312fb6e00ca79aaa2518d88cc06e98))
+* **game-mode:** show apps opened in GameFrame instead of hiding them ([75f29c8](https://github.com/playtron-os/cosmic-comp/commit/75f29c817183668cf90fff1ca0f3ed2a2c3f57ce))
+* **gaming:** draw a scaled game's popups at their own size ([f7834d4](https://github.com/playtron-os/cosmic-comp/commit/f7834d48a0b4ea1fc0e6cef7d97b57822458046a))
+* **gaming:** drop clicks only under a helper that stays over the game ([5a2442f](https://github.com/playtron-os/cosmic-comp/commit/5a2442f91ab3e24a71d7e0fbed9e2c78eed31594))
+* **gaming:** keep fixed-size game windows at their size; trim Halos ([64b8b27](https://github.com/playtron-os/cosmic-comp/commit/64b8b27500320308949608eb92145ecc9c148b46))
+* **gaming:** refit only game windows when their size hints change ([5ef0db1](https://github.com/playtron-os/cosmic-comp/commit/5ef0db1bd4facab69b3f08d54043f19f53255ba9))
+* **gaming:** scale menus with the game; keep helpers off it in X11 ([44bea59](https://github.com/playtron-os/cosmic-comp/commit/44bea594edb961860d6d9d5820a1d0455ef70fdd))
+* **gaming:** show a fixed-size game window 1:1, centered ([d446b83](https://github.com/playtron-os/cosmic-comp/commit/d446b838b790a143c404b49c75f6c41c553bc425))
+* **halo:** size a filled window down when Fill is pressed ([37340d5](https://github.com/playtron-os/cosmic-comp/commit/37340d54f96037c74d56cf66816822fc7c3deeba))
+* **header:** find a window's entry despite case and punctuation ([b0f313c](https://github.com/playtron-os/cosmic-comp/commit/b0f313ca9340b59ff64f1ce6d4bb740886795465))
+* **header:** name the undecodable icon file in the warning's text ([efd97b5](https://github.com/playtron-os/cosmic-comp/commit/efd97b5af2920cec39c653372cd5e0c9bb61da3d))
+* **header:** show no icon for an icon file that does not decode ([8202005](https://github.com/playtron-os/cosmic-comp/commit/8202005f29dcea237488d0dca1422a34035a7f50))
+* **header:** show the icon of an app installed after start ([0e26e0a](https://github.com/playtron-os/cosmic-comp/commit/0e26e0a68c4146460bca7591ddc08954bd6f48c0))
+* **header:** take an app's icon from its desktop entry ([3bb6456](https://github.com/playtron-os/cosmic-comp/commit/3bb645643994acee92877e6e4c921bf496f7c31c))
+* **iced:** say once, not every frame, that a panicking update was skipped ([8c243d4](https://github.com/playtron-os/cosmic-comp/commit/8c243d40a564366e685e37706590a0e9f22ed665))
+* **iced:** skip a frame whose update panics instead of crashing ([2a1f5b3](https://github.com/playtron-os/cosmic-comp/commit/2a1f5b320e11d159a63a2ac91cefea452128b645))
+* **layer:** pin a bottom-anchored surface to the height it was given ([84f3867](https://github.com/playtron-os/cosmic-comp/commit/84f3867fbc644d9eaef5d71dd84ea7c660cd23dd))
+* let a stalled client buffer events instead of being dropped ([2a5a7f6](https://github.com/playtron-os/cosmic-comp/commit/2a5a7f629a87d25710681119a8db10c105717dff))
+* **security-context:** leave other sandboxes and older registries as before ([cbb8ff3](https://github.com/playtron-os/cosmic-comp/commit/cbb8ff3e14c015b5766e9d37fbd0e1ebf2221aaf))
+* **security-context:** replay held keys after a focus change, not inside it ([6d2d503](https://github.com/playtron-os/cosmic-comp/commit/6d2d503232f9dc6e1e460258ed034b2f5dfc6506))
+* **tooltip:** hide a tooltip while the pointer is off its parent ([e28806a](https://github.com/playtron-os/cosmic-comp/commit/e28806aba934c9b3137c04b94db85ffb14d11a8a))
+* **toplevel-info:** stop listing a window on a hidden desktop as active ([79a8710](https://github.com/playtron-os/cosmic-comp/commit/79a8710ed97e0948f7a87b372bb70ee8ce02e17f))
+* **xwayland:** keep maximized X11 windows inside the work area ([741d6a7](https://github.com/playtron-os/cosmic-comp/commit/741d6a700f126185bfaaf8a2ba9f7491fbb93bbf))
+* **xwayland:** pin smithay with exact X11 window sizes ([1120da9](https://github.com/playtron-os/cosmic-comp/commit/1120da92dfc1d1e90cd309a6574ae7708b1fdcdf))
+
+
+### Features
+
+* **capture:** let a client leave its own surfaces out of captures ([fccfe0b](https://github.com/playtron-os/cosmic-comp/commit/fccfe0b1eb6dc7da300eb40df9976ed96b0834ce))
+* **game-mode:** ship the router rules for apps in workspaces ([13cc5ab](https://github.com/playtron-os/cosmic-comp/commit/13cc5ab8f74a68f5d3f0945106434ec9fc6eda1e))
+* **gaming:** scale fixed-size game windows with their popups ([1f9f2d8](https://github.com/playtron-os/cosmic-comp/commit/1f9f2d8376a970f38e7928ff9c174d746136459f))
+* **input:** reach edge reveals at shared edges and by touch ([ef228e8](https://github.com/playtron-os/cosmic-comp/commit/ef228e820b724aa57cfe51b8023cd84e1fe6c1ab))
+* **security-context:** ask before a boxed client types, captures or pastes ([697b64e](https://github.com/playtron-os/cosmic-comp/commit/697b64e31fb1f2e61a5b65066185e36e56b2cf48))
+* **security-context:** open guarded protocols to boxed clients by grant ([42b214f](https://github.com/playtron-os/cosmic-comp/commit/42b214f9ceced3a13c8d2e8665e9629a8793e793))
+* **shell:** edge reveals over the launcher, never over a game ([1799b51](https://github.com/playtron-os/cosmic-comp/commit/1799b51dc0088a698bedbce35f41aec23ffdf45c))
+
 # [1.63.0](https://github.com/playtron-os/cosmic-comp/compare/v1.62.2...v1.63.0) (2026-10-25)
 
 
