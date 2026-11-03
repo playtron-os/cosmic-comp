@@ -45,6 +45,7 @@ impl SecurityContextHandler for State {
                     .app_id
                     .clone()
                     .or_else(|| pid.and_then(crate::launch_scope::of_pid));
+                let socket = crate::client_socket::ClientSocket::new(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
@@ -53,6 +54,7 @@ impl SecurityContextHandler for State {
                         advertised_drm_node: drm_node,
                         workspace,
                         launched_app,
+                        socket,
                         ..new_state
                     }),
                 ) {

@@ -79,6 +79,7 @@ impl Common {
             .insert_source(listener, move |client_stream, _, state: &mut State| {
                 let workspace = crate::workspace_tag::of_stream(&client_stream);
                 let pid = crate::workspace_tag::peer_pid(&client_stream);
+                let socket = crate::client_socket::ClientSocket::new(&client_stream);
                 if let Err(err) = state.common.display_handle.insert_client(
                     client_stream,
                     Arc::new(ClientState {
@@ -86,6 +87,7 @@ impl Common {
                         advertised_drm_node: Some(render_node),
                         workspace,
                         launched_app: pid.and_then(crate::launch_scope::of_pid),
+                        socket,
                         ..state.new_client_state()
                     }),
                 ) {
