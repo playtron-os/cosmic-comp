@@ -100,8 +100,9 @@ fn hung_up(stream: &UnixStream) -> bool {
         events: 0,
         revents: 0,
     };
-    // SAFETY: one valid pollfd, no timeout.
-    unsafe { libc::poll(&raw mut poll, 1, 0) };
+    // Another test starting a process holds a copy of every fd until it execs, so the
+    // hang-up can come a moment later. SAFETY: one valid pollfd.
+    unsafe { libc::poll(&raw mut poll, 1, 5000) };
     poll.revents & libc::POLLHUP != 0
 }
 
