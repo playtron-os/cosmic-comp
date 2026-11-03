@@ -38,6 +38,7 @@ Environment for `up`:
   CC_SIZE     window size in physical pixels (default: 1920x1080)
   CC_OUTPUTS  outputs side by side in that window, each an equal slice (default: 1)
   CC_SCALE    initial output scale (default: 1)
+  CC_POINTER  X,Y where the pointer starts, in window pixels (default: the middle)
   CC_MODE     dark or light (default: dark)
   CC_THEMES   dir holding <theme>/{dark,light}.ron (default: the built-in fallback)
   CC_THEME    theme to activate from CC_THEMES (default: playtron)
@@ -246,6 +247,8 @@ cmd_up() {
 	fi
 
 	start_xvfb "$size"
+	# cosmic-comp learns where the pointer is when its window appears under it.
+	[ -z "${CC_POINTER:-}" ] || xdo mousemove "${CC_POINTER%,*}" "${CC_POINTER#*,}"
 	sandbox
 	local n; n=$(cut -c2- "$STATE/display")
 
