@@ -14,7 +14,7 @@ use smithay::{
         session_lock::LockSurface,
         shell::wlr_layer::{KeyboardInteractivity, Layer},
     },
-    xwayland::X11Surface,
+    xwayland::{X11Surface, xwm::WmWindowType},
 };
 
 use tracing::trace;
@@ -137,6 +137,36 @@ pub fn game_override_role(
         OverrideRole::Game
     } else {
         OverrideRole::Unrelated
+    }
+}
+
+/// Whether an override-redirect window draws above the shell's layers, as a tray menu opened from
+/// the panel must. Windows programs type their menus as normal windows or dialogs, so for those
+/// only the size tells a menu from a game that covers the output.
+pub fn above_shell(
+    kind: Option<WmWindowType>,
+    rect: Rectangle<i32, Global>,
+    output: Rectangle<i32, Global>,
+) -> bool {
+    match kind {
+        Some(
+            WmWindowType::DropdownMenu
+            | WmWindowType::PopupMenu
+            | WmWindowType::Menu
+            | WmWindowType::Tooltip
+            | WmWindowType::Combo
+            | WmWindowType::Dnd
+            | WmWindowType::Notification,
+        ) => true,
+        None | Some(WmWindowType::Normal | WmWindowType::Dialog | WmWindowType::Utility) => {
+            !rect.contains_rect(output)
+        }
+        Some(
+            WmWindowType::Desktop
+            | WmWindowType::Dock
+            | WmWindowType::Splash
+            | WmWindowType::Toolbar,
+        ) => false,
     }
 }
 
@@ -295,7 +325,37 @@ fn render_input_order_internal<R: 'static>(
         }
     }
 
-    // Overlay-level layer shell, above everything. An exclusive game hides all
+    // X11 menus and tooltips, above every layer: a tray menu opens over the panel.
+    // Game mode keeps them in its own order further down.
+    let or_above_shell = |or: &X11Surface| {
+        !game_mode_exclusive
+            && above_shell(
+                or.window_type(),
+                or.last_configure().as_global(),
+                output.geometry(),
+            )
+    };
+    if element_filter != ElementFilter::LayerShellOnly {
+        for surface in shell
+            .override_redirect_windows
+            .iter()
+            .rev()
+            .filter(|or| or_above_shell(or))
+        {
+            let rect = surface.last_configure().as_global();
+            if rect.intersection(output.geometry()).is_some()
+                && shell.x11_in_active_workspace(surface)
+            {
+                callback(Stage::OverrideRedirect {
+                    surface,
+                    location: rect.loc,
+                    scaled: None,
+                })?;
+            }
+        }
+    }
+
+    // Overlay-level layer shell, above everything else. An exclusive game hides all
     // of it but what `shows_over_game` lets through.
     let launcher = game_owns_screen
         .then(|| crate::dbus::game_mode::launcher_client(shell))
@@ -520,6 +580,7 @@ fn render_input_order_internal<R: 'static>(
             .override_redirect_windows
             .iter()
             .rev()
+            .filter(|or| !or_above_shell(or))
             .filter_map(|or| {
                 let rect = or.last_configure().as_global();
                 // Not under strict control, every window renders as it is.
@@ -1043,6 +1104,48 @@ mod tests {
             ..OverGame::default()
         };
         assert!(shows_over_game(summoned));
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Global> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    /// A Windows program's tray menu opened in the panel, under its pill, and showed nothing.
+    #[test]
+    fn a_tray_menu_draws_above_the_panel() {
+        let output = rect(0, 0, 1280, 960);
+        let menu = rect(840, 928, 37, 15);
+        assert!(above_shell(Some(WmWindowType::Dialog), menu, output));
+        assert!(above_shell(Some(WmWindowType::Normal), menu, output));
+        assert!(above_shell(None, menu, output));
+        assert!(above_shell(Some(WmWindowType::PopupMenu), menu, output));
+        assert!(above_shell(Some(WmWindowType::Tooltip), menu, output));
+        // On a second output.
+        assert!(above_shell(
+            None,
+            rect(2100, 1400, 37, 15),
+            rect(1280, 0, 1920, 1440)
+        ));
+    }
+
+    /// The panel must still show over a window that covers the screen, or it cannot be reached.
+    #[test]
+    fn a_window_covering_the_output_stays_under_the_panel() {
+        let output = rect(0, 0, 1280, 960);
+        assert!(!above_shell(None, output, output));
+        assert!(!above_shell(
+            Some(WmWindowType::Normal),
+            rect(-10, -10, 1300, 980),
+            output
+        ));
+        for kind in [
+            WmWindowType::Desktop,
+            WmWindowType::Dock,
+            WmWindowType::Splash,
+            WmWindowType::Toolbar,
+        ] {
+            assert!(!above_shell(Some(kind), rect(100, 100, 300, 200), output));
+        }
     }
 
     #[test]
