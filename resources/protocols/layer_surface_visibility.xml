@@ -36,7 +36,7 @@
     - Can be shown instantly without Wayland roundtrip overhead
   </description>
 
-  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="5">
+  <interface name="zcosmic_layer_surface_visibility_manager_v1" version="6">
     <description summary="manager for layer surface visibility">
       This interface allows layer-shell clients to control the visibility
       of their surfaces.
@@ -62,7 +62,7 @@
     </request>
   </interface>
 
-  <interface name="zcosmic_layer_surface_visibility_v1" version="5">
+  <interface name="zcosmic_layer_surface_visibility_v1" version="6">
     <description summary="visibility controller for a layer surface">
       This interface controls whether a layer surface is visible or hidden.
 
@@ -153,6 +153,19 @@
 
         Prefer set_hidden everywhere else. A surface that IS on screen should
         animate away, and a client that hides with this request forgoes that.
+      </description>
+    </request>
+
+    <request name="follow_pointer" since="6">
+      <description summary="show the surface where the pointer is">
+        For a surface created without an output: map it on the output under
+        the seat's pointer, and move it there each time it is shown, rather
+        than on the seat's active output, which keyboard focus also moves.
+        Meant for surfaces that appear on their own, such as notifications,
+        which belong where the person is looking.
+
+        Has no effect on a surface created for a given output. Send it before
+        the first commit for it to choose where the surface first maps.
       </description>
     </request>
 

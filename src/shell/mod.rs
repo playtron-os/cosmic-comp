@@ -318,6 +318,23 @@ pub struct PendingLayer {
     pub output: Output,
 }
 
+/// Keyboard focus moves the active output too, so a surface that follows the
+/// pointer takes the output under it instead.
+fn agnostic_layer_output<'a>(
+    follows_pointer: bool,
+    pointer: Option<Point<f64, Global>>,
+    mut outputs: impl Iterator<Item = &'a Output>,
+    active: Output,
+) -> Output {
+    let Some(pointer) = pointer.filter(|_| follows_pointer) else {
+        return active;
+    };
+    outputs
+        .find(|output| output.geometry().to_f64().contains(pointer))
+        .cloned()
+        .unwrap_or(active)
+}
+
 /// Smallest the desktop/windows area may be reserved at while resizing the side
 /// panel. Once the panel would shrink the windows below this, its exclusive zone is
 /// capped here and the panel surface grows *over* the windows instead, so app
@@ -662,10 +679,11 @@ pub struct Shell {
     /// When the animation completes, moved to `hidden_surfaces`.
     layer_fade_out: std::collections::HashMap<ObjectId, Instant>,
 
-    /// Layer surfaces created without a specific wl_output.
-    /// When these become visible via the visibility protocol, the compositor
-    /// moves them to the output where the cursor currently is.
+    /// Layer surfaces created without a specific wl_output. When these become
+    /// visible via the visibility protocol, the compositor moves them to [`Shell::agnostic_layer_output`].
     pub output_agnostic_layers: std::collections::HashSet<ObjectId>,
+    /// Output-agnostic layer surfaces that asked to show under the pointer.
+    pub pointer_following_layers: std::collections::HashSet<ObjectId>,
 
     /// Layer surfaces that have already been granted Exclusive keyboard
     /// focus in the commit handler.  Cleared when interactivity drops
@@ -3670,6 +3688,7 @@ impl Shell {
 
             // Layer surfaces that follow the cursor to whichever output
             output_agnostic_layers: std::collections::HashSet::new(),
+            pointer_following_layers: std::collections::HashSet::new(),
 
             // Exclusive keyboard focus already granted (avoid re-granting every frame)
             exclusive_focus_granted: std::collections::HashSet::new(),
@@ -7383,6 +7402,17 @@ impl Shell {
         self.output_agnostic_layers.contains(surface_id)
     }
 
+    /// The output an output-agnostic layer surface maps and shows on.
+    pub fn agnostic_layer_output(&self, surface_id: &ObjectId, seat: &Seat<State>) -> Output {
+        agnostic_layer_output(
+            self.pointer_following_layers.contains(surface_id),
+            seat.get_pointer()
+                .map(|pointer| pointer.current_location().as_global()),
+            self.outputs(),
+            seat.active_output(),
+        )
+    }
+
     /// Remove a surface from hidden tracking (called when surface is destroyed)
     pub fn remove_hidden_surface(&mut self, surface_id: &ObjectId) {
         self.hidden_surfaces.remove(surface_id);
@@ -9316,9 +9346,15 @@ impl Shell {
             .iter()
             .position(|pending| &pending.surface == layer_surface)
             .unwrap();
-        let pending = self.pending_layers.remove(pos);
+        let mut pending = self.pending_layers.remove(pos);
 
         let surface_id = pending.surface.wl_surface().id();
+        // Where the pointer is now, not where it was when the surface was made.
+        if self.pointer_following_layers.contains(&surface_id)
+            && self.is_output_agnostic_layer(&surface_id)
+        {
+            pending.output = self.agnostic_layer_output(&surface_id, &pending.seat);
+        }
         // A workspace client's layer surfaces belong to its workspace, no
         // request needed and none honoured; an assignment made before the
         // map (a machine-plane client's) stands.
@@ -12438,6 +12474,8 @@ mod fullscreen_desktop_tests;
 mod assign_desktop_tests;
 #[cfg(test)]
 mod desktop_choice_tests;
+#[cfg(test)]
+mod layer_output_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {
