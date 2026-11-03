@@ -1,3 +1,10 @@
+## [1.64.3](https://github.com/playtron-os/cosmic-comp/compare/v1.64.2...v1.64.3) (2026-11-03)
+
+
+### Bug Fixes
+
+* log which client was dropped and whether it stopped reading ([4f1ab92](https://github.com/playtron-os/cosmic-comp/commit/4f1ab9216a49bbefdc3f3e4cdbf21710d7c8686b))
+
 ## [1.64.2](https://github.com/playtron-os/cosmic-comp/compare/v1.64.1...v1.64.2) (2026-11-03)
 
 
