@@ -1,3 +1,10 @@
+## [1.64.2](https://github.com/playtron-os/cosmic-comp/compare/v1.64.1...v1.64.2) (2026-11-03)
+
+
+### Bug Fixes
+
+* **deps:** show X11 windows again after their app hides them ([c76d04f](https://github.com/playtron-os/cosmic-comp/commit/c76d04fca18e27c2aad23dac2232f00873a84183))
+
 ## [1.64.1](https://github.com/playtron-os/cosmic-comp/compare/v1.64.0...v1.64.1) (2026-11-02)
 
 
