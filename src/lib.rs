@@ -56,6 +56,7 @@ use std::error::Error;
 pub mod backend;
 #[cfg(test)]
 mod client_buffer_tests;
+pub mod client_socket;
 pub mod clipboard;
 pub mod comp_theme;
 pub mod config;
@@ -642,6 +643,7 @@ fn init_wayland_display(
                 pid,
                 workspace,
                 launched_app: pid.and_then(crate::launch_scope::of_pid),
+                socket: crate::client_socket::ClientSocket::new(&client_stream),
                 ..state.new_client_state()
             };
             match state

@@ -202,6 +202,8 @@ pub struct ClientState {
     /// The app its process was launched as, from its systemd unit: what a window
     /// of a client that sets no app id is reported as.
     pub launched_app: Option<String>,
+    /// Kept to tell at disconnect whether the client stopped reading.
+    pub socket: crate::client_socket::ClientSocket,
 }
 unsafe impl Send for ClientState {}
 unsafe impl Sync for ClientState {}
@@ -221,13 +223,34 @@ impl ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        let unread = self.socket.close();
+        let pid = self.pid;
+        let app = self.launched_app.as_deref();
+        // Read now: a client dropped for not reading is still running.
+        let process = pid.and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok());
+        let process = process.as_deref().map(str::trim_end);
         match &reason {
-            DisconnectReason::ConnectionClosed => {
-                warn!(?client_id, "Client disconnected: connection closed");
-            }
+            DisconnectReason::ConnectionClosed => match unread {
+                Some(unread_bytes) => warn!(
+                    ?client_id,
+                    pid,
+                    app,
+                    process,
+                    unread_bytes,
+                    event_buffer_bytes = crate::CLIENT_MAX_BUFFER_SIZE,
+                    "Dropped a client that stopped reading: its event buffer is full"
+                ),
+                None => warn!(
+                    ?client_id,
+                    pid, app, process, "Client disconnected: connection closed"
+                ),
+            },
             DisconnectReason::ProtocolError(protocol_error) => {
                 error!(
                     ?client_id,
+                    pid,
+                    app,
+                    process,
                     code = protocol_error.code,
                     object_id = protocol_error.object_id,
                     object_interface = %protocol_error.object_interface,
@@ -1215,6 +1238,7 @@ impl State {
             // Filled in by the socket sources, which have the peer credentials.
             workspace: None,
             launched_app: None,
+            socket: Default::default(),
         }
     }
 
