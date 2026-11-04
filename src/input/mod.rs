@@ -53,7 +53,7 @@ use smithay::{
         PointerAxisEvent, ProximityState, TabletToolButtonEvent, TabletToolEvent,
         TabletToolProximityEvent, TabletToolTipEvent, TabletToolTipState, TouchEvent,
     },
-    desktop::{WindowSurfaceType, utils::under_from_surface_tree},
+    desktop::{PopupPointerGrab, WindowSurfaceType, utils::under_from_surface_tree},
     input::{
         Seat,
         keyboard::{FilterResult, KeysymHandle, ModifiersState},
@@ -2193,7 +2193,8 @@ impl State {
             keyboard.with_grab(|_serial, grab| grab.is::<SwapWindowGrab>()) == Some(true);
         // A client's popup and an app's drag under a held button answer Escape themselves;
         // ending their grab here swallowed the key.
-        let pointer_grabbed = escape::ends_pointer_grab(&pointer);
+        let pointer_grabbed =
+            escape::ends_pointer_grab(&pointer, |grab| grab.is::<PopupPointerGrab<State>>());
         let is_grabbed = keyboard_grabbed || pointer_grabbed;
 
         let current_focus = keyboard.current_focus();

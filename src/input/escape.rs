@@ -1,24 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use smithay::{
-    desktop::PopupPointerGrab,
-    input::{
-        SeatHandler,
-        pointer::{ClickGrab, PointerHandle},
-    },
-    wayland::seat::WaylandFocus,
+use smithay::input::{
+    SeatHandler,
+    pointer::{ClickGrab, PointerGrab, PointerHandle},
 };
 
-/// Whether Escape ends the pointer's grab instead of reaching the client. A client's popup
-/// and the button it holds on its own surface (an in-app drag) keep the key.
-pub fn ends_pointer_grab<D>(pointer: &PointerHandle<D>) -> bool
-where
-    D: SeatHandler + 'static,
-    D::KeyboardFocus: WaylandFocus,
-    D::PointerFocus: From<D::KeyboardFocus> + WaylandFocus,
-{
-    pointer
-        .with_grab(|_serial, grab| !grab.is::<PopupPointerGrab<D>>() && !grab.is::<ClickGrab<D>>())
+/// Whether Escape ends the pointer's grab instead of reaching the client. A button held on
+/// a client's surface is the app's own drag, and `client_grab` names the client's other grabs.
+pub fn ends_pointer_grab<D: SeatHandler + 'static>(
+    pointer: &PointerHandle<D>,
+    client_grab: impl Fn(&dyn PointerGrab<D>) -> bool,
+) -> bool {
+    pointer.with_grab(|_serial, grab| !grab.is::<ClickGrab<D>>() && !client_grab(grab))
         == Some(true)
 }
 
@@ -183,10 +176,13 @@ mod tests {
     #[test]
     fn a_held_button_leaves_escape_to_the_app() {
         let (mut compositor, _seat, pointer) = seat();
-        assert!(!ends_pointer_grab(&pointer), "no grab at all");
+        assert!(!ends_pointer_grab(&pointer, |_| false), "no grab at all");
         pointer.button(&mut compositor, &left(ButtonState::Pressed));
         assert!(pointer.is_grabbed(), "a held button grabs the pointer");
-        assert!(!ends_pointer_grab(&pointer), "the app's drag keeps Escape");
+        assert!(
+            !ends_pointer_grab(&pointer, |_| false),
+            "the app's drag keeps Escape"
+        );
         pointer.button(&mut compositor, &left(ButtonState::Released));
         assert!(!pointer.is_grabbed());
     }
@@ -205,6 +201,6 @@ mod tests {
             SERIAL_COUNTER.next_serial(),
             Focus::Clear,
         );
-        assert!(ends_pointer_grab(&pointer));
+        assert!(ends_pointer_grab(&pointer, |_| false));
     }
 }
