@@ -1,0 +1,193 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
+use smithay::{
+    desktop::PopupPointerGrab,
+    input::{
+        SeatHandler,
+        pointer::{ClickGrab, PointerHandle},
+    },
+    wayland::seat::WaylandFocus,
+};
+
+/// Whether Escape ends the pointer's grab instead of reaching the client. A client's popup
+/// and the button it holds on its own surface (an in-app drag) keep the key.
+pub fn ends_pointer_grab<D>(pointer: &PointerHandle<D>) -> bool
+where
+    D: SeatHandler + 'static,
+    D::KeyboardFocus: WaylandFocus,
+    D::PointerFocus: From<D::KeyboardFocus> + WaylandFocus,
+{
+    pointer.with_grab(|_serial, grab| {
+        !grab.is::<PopupPointerGrab<D>>() && !grab.is::<ClickGrab<D>>()
+    }) == Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ends_pointer_grab;
+    use smithay::{
+        input::{
+            Seat, SeatHandler, SeatState,
+            pointer::{
+                AxisFrame, ButtonEvent, Focus, GestureHoldBeginEvent, GestureHoldEndEvent,
+                GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
+                GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+                GrabStartData, MotionEvent, PointerGrab, PointerHandle, PointerInnerHandle,
+                RelativeMotionEvent,
+            },
+        },
+        backend::input::ButtonState,
+        reexports::wayland_server::protocol::wl_surface::WlSurface,
+        utils::{Logical, Point, SERIAL_COUNTER},
+    };
+
+    struct Compositor {
+        seats: SeatState<Self>,
+    }
+
+    impl SeatHandler for Compositor {
+        type KeyboardFocus = WlSurface;
+        type PointerFocus = WlSurface;
+        type TouchFocus = WlSurface;
+
+        fn seat_state(&mut self) -> &mut SeatState<Self> {
+            &mut self.seats
+        }
+    }
+
+    /// A grab of the compositor's own, as a window move or a menu holds.
+    struct OwnGrab(GrabStartData<Compositor>);
+
+    impl PointerGrab<Compositor> for OwnGrab {
+        fn motion(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: Option<(WlSurface, Point<f64, Logical>)>,
+            _: &MotionEvent,
+        ) {
+        }
+        fn relative_motion(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: Option<(WlSurface, Point<f64, Logical>)>,
+            _: &RelativeMotionEvent,
+        ) {
+        }
+        fn button(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &ButtonEvent,
+        ) {
+        }
+        fn axis(&mut self, _: &mut Compositor, _: &mut PointerInnerHandle<'_, Compositor>, _: AxisFrame) {
+        }
+        fn frame(&mut self, _: &mut Compositor, _: &mut PointerInnerHandle<'_, Compositor>) {}
+        fn gesture_swipe_begin(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GestureSwipeBeginEvent,
+        ) {
+        }
+        fn gesture_swipe_update(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GestureSwipeUpdateEvent,
+        ) {
+        }
+        fn gesture_swipe_end(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GestureSwipeEndEvent,
+        ) {
+        }
+        fn gesture_pinch_begin(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GesturePinchBeginEvent,
+        ) {
+        }
+        fn gesture_pinch_update(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GesturePinchUpdateEvent,
+        ) {
+        }
+        fn gesture_pinch_end(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GesturePinchEndEvent,
+        ) {
+        }
+        fn gesture_hold_begin(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GestureHoldBeginEvent,
+        ) {
+        }
+        fn gesture_hold_end(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: &GestureHoldEndEvent,
+        ) {
+        }
+        fn start_data(&self) -> &GrabStartData<Compositor> {
+            &self.0
+        }
+        fn unset(&mut self, _: &mut Compositor) {}
+    }
+
+    fn seat() -> (Compositor, Seat<Compositor>, PointerHandle<Compositor>) {
+        let mut seats = SeatState::new();
+        let mut seat = seats.new_seat("test");
+        let pointer = seat.add_pointer();
+        (Compositor { seats }, seat, pointer)
+    }
+
+    fn left(state: ButtonState) -> ButtonEvent {
+        ButtonEvent {
+            serial: SERIAL_COUNTER.next_serial(),
+            time: 0,
+            button: 0x110,
+            state,
+        }
+    }
+
+    #[test]
+    fn a_held_button_leaves_escape_to_the_app() {
+        let (mut compositor, _seat, pointer) = seat();
+        assert!(!ends_pointer_grab(&pointer), "no grab at all");
+        pointer.button(&mut compositor, &left(ButtonState::Pressed));
+        assert!(pointer.is_grabbed(), "a held button grabs the pointer");
+        assert!(!ends_pointer_grab(&pointer), "the app's drag keeps Escape");
+        pointer.button(&mut compositor, &left(ButtonState::Released));
+        assert!(!pointer.is_grabbed());
+    }
+
+    #[test]
+    fn the_compositors_own_grab_still_takes_escape() {
+        let (mut compositor, _seat, pointer) = seat();
+        let start = GrabStartData {
+            focus: None,
+            button: 0x110,
+            location: Point::default(),
+        };
+        pointer.set_grab(
+            &mut compositor,
+            OwnGrab(start),
+            SERIAL_COUNTER.next_serial(),
+            Focus::Clear,
+        );
+        assert!(ends_pointer_grab(&pointer));
+    }
+}
