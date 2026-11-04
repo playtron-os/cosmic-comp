@@ -2,7 +2,8 @@
 # What the session, another sandbox (Flatpak's engine) and an app the workspace registry boxed see
 # of the guarded globals, and whether their clipboard copies go through: without workspaces, and
 # with them as the registry is absent, comes, leaves, returns, predates display grants or adds a
-# field to them. Runs CC_BIN in tools/headless; GRANTS_CHECK names a prebuilt grants-check.
+# field to them; then whether a boxed app's paste at "Ask me first" goes through. Runs CC_BIN in
+# tools/headless; GRANTS_CHECK names a prebuilt grants-check.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 hl=$here/../headless/headless.sh
@@ -43,12 +44,13 @@ nested() (
 )
 
 registry_pid=
+# start_registry KIND [CLASSES]: APP_ID's classes open (default screen,clipboard; "" for none).
 start_registry() {
 	local pidfile=$CC_STATE/registry.pid
 	rm -f "$pidfile"
 	# The stand-in records its own pid: the background job is only the subshell around it.
 	nested sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" "$bin" registry "$1" "${ws:-none}" "$app" \
-		screen,clipboard >"$CC_STATE/registry.log" 2>&1 &
+		"${2-screen,clipboard}" >"$CC_STATE/registry.log" 2>&1 &
 	for _ in $(seq 100); do
 		[ -s "$pidfile" ] && grep -q ready "$CC_STATE/registry.log" && { registry_pid=$(cat "$pidfile"); return; }
 		sleep 0.05
@@ -91,7 +93,8 @@ clients() {
 echo "workspace: ${ws:-none}"
 env -u COSMIC_WORKSPACES "$hl" up >/dev/null
 clients "without workspaces" "$held" "$refused"
-if grep -i -E 'grant|registry|held request' "$CC_STATE/comp.log"; then
+# A disconnect line names the process, which is grants-check itself.
+if grep -v '"grants-check"' "$CC_STATE/comp.log" | grep -i -E 'grant|registry|held request'; then
 	echo "FAILED: the compositor logged about grants without workspaces" >&2
 	exit 1
 fi
@@ -111,4 +114,26 @@ clients "older registry" "$held" "$refused"
 stop_registry
 start_registry newer
 clients "newer registry" "$opened" "$kept"
+stop_registry
+
+# expect_paste NAME RESULT [window]: a boxed app's paste on a connection that hangs up at once.
+expect_paste() {
+	local got
+	got=$(nested "$bin" paste one.playtron.Workspaces.App "$app" ${3:+"$3"})
+	[ "$got" = "paste=$2" ] && { echo "ok $1"; return; }
+	echo "FAILED $1: got $got, want paste=$2" >&2
+	exit 1
+}
+
+# Only a workspace's boxed app is asked: elsewhere it has no rows and data control is hidden.
+if [ -n "$ws" ]; then
+	start_registry allow ""
+	expect_paste "a paste the person allows after its client hung up" pasted
+	stop_registry
+	start_registry deny ""
+	expect_paste "a paste the person denies" empty
+	expect_paste "a paste into the app's own window, unasked" pasted window
+	stop_registry
+	alive
+fi
 echo "grants: ok"

@@ -15,6 +15,9 @@
 //! Keys of a boxed client reach a window only while one of its own
 //! workspace's windows has the keyboard: the access dialog holds the keyboard
 //! while it is up, and the row's words are "windows in this workspace".
+//!
+//! A clipboard request from the process whose own window has the keyboard is
+//! a copy or paste through focus, so it is not held.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::fd::OwnedFd;
@@ -502,6 +505,9 @@ fn drain(state: &mut State, id: &ClientId, ask: Ask) {
 
 fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
     let grants = state.common.display_grants.clone();
+    let owner = (ask.0 == Class::Clipboard)
+        .then(|| keyboard_owner(state))
+        .flatten();
     let asks = &mut state.common.display_asks;
     let Some(asker) = asks.clients.get_mut(id) else {
         return Decision::Refuse;
@@ -510,6 +516,7 @@ fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
     let passes = match grants.standing_of(&asker.workspace, &asker.subject, class) {
         Standing::Off => return Decision::Refuse,
         Standing::Open => true,
+        Standing::Ask if through_focus(ask, asker, owner.as_ref()) => true,
         Standing::Ask => {
             let denied = (
                 asker.workspace.clone(),
@@ -595,6 +602,54 @@ fn focus_in(state: &State, workspace: &str) -> bool {
     }
 }
 
+/// The boxed process whose surface has the keyboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Owner {
+    pid: u32,
+    subject: Subject,
+    workspace: String,
+}
+
+fn keyboard_owner(state: &State) -> Option<Owner> {
+    let shell = state.common.shell.read();
+    let focus = shell
+        .seats
+        .last_active_checked()
+        .and_then(|seat| seat.get_keyboard())
+        .and_then(|keyboard| keyboard.current_focus())?;
+    let client = focus.wl_surface()?.client()?;
+    let client_state = client.get_data::<ClientState>()?;
+    Some(Owner {
+        pid: client_state.pid?,
+        subject: client_state
+            .security_context
+            .as_ref()
+            .and_then(Subject::of)?,
+        workspace: client_state.workspace.clone()?,
+    })
+}
+
+/// Whether `ask` is a copy or paste through focus, which no row guards: a toolkit may use data
+/// control for its text fields, on a connection other than its window's.
+fn through_focus(ask: Ask, asker: &Asker, owner: Option<&Owner>) -> bool {
+    ask.0 == Class::Clipboard
+        && owner.is_some_and(|owner| {
+            asker.pid == Some(owner.pid)
+                && asker.subject == owner.subject
+                && asker.workspace == owner.workspace
+        })
+}
+
+/// Whether a held `ask` is still carried out once allowed after its client hung up: an agent's
+/// keys, as `wtype` exits before anyone answers, and a paste, which waits on its pipe instead.
+fn outlives_client(subject: &Subject, ask: Ask) -> bool {
+    match ask {
+        (Class::Input, _) => matches!(subject, Subject::Agent(_)),
+        (Class::Clipboard, change) => !change,
+        (Class::Screen, _) => false,
+    }
+}
+
 /// The registry answered a question.
 pub fn answered(state: &mut State, (id, ask, verdict): Answer) {
     let asks = &mut state.common.display_asks;
@@ -669,19 +724,19 @@ pub fn runs_changed(state: &mut State) {
     }
 }
 
-/// `id` disconnected. An agent's held keys still type once allowed, as
-/// `wtype` exits before anyone answers; anything else it held is dropped.
+/// `id` disconnected. What [`outlives_client`] still runs once allowed; the
+/// rest it held is dropped.
 pub fn client_gone(state: &mut State, id: &ClientId) {
     let asks = &mut state.common.display_asks;
     let Some(asker) = asks.clients.get_mut(id) else {
         return;
     };
     asker.gone = true;
-    let agent = matches!(asker.subject, Subject::Agent(_));
+    let subject = asker.subject.clone();
     let dropped: Vec<Held> = asker
         .held
         .iter_mut()
-        .filter(|(ask, _)| !(agent && ask.0 == Class::Input))
+        .filter(|(ask, _)| !outlives_client(&subject, **ask))
         .flat_map(|(_, q)| q.drain(..))
         .collect();
     for held in dropped {
@@ -878,6 +933,85 @@ mod tests {
             ask_of(Class::Clipboard, Effect::Change),
             (Class::Clipboard, true)
         );
+    }
+
+    fn asker(pid: Option<u32>, subject: Subject, workspace: &str) -> Asker {
+        Asker {
+            workspace: workspace.into(),
+            subject,
+            pid,
+            gone: false,
+            allowed: HashMap::new(),
+            asking: HashSet::new(),
+            held: HashMap::new(),
+        }
+    }
+
+    /// An app's text field pastes through data control on a connection of its own: with its own
+    /// window on the keyboard that is a paste through focus, not a read outside one.
+    #[test]
+    fn the_process_whose_window_has_the_keyboard_copies_and_pastes_unasked() {
+        let mail = Subject::App("org.example.Mail".into());
+        let owner = Owner {
+            pid: 40,
+            subject: mail.clone(),
+            workspace: "work".into(),
+        };
+        let paste = (Class::Clipboard, false);
+        let copy = (Class::Clipboard, true);
+        let app = asker(Some(40), mail.clone(), "work");
+        assert!(through_focus(paste, &app, Some(&owner)));
+        assert!(through_focus(copy, &app, Some(&owner)));
+
+        // Another process, subject or workspace, or no window on the keyboard, still asks.
+        let other = |pid, subject: &Subject, workspace| asker(pid, subject.clone(), workspace);
+        assert!(!through_focus(
+            paste,
+            &other(Some(41), &mail, "work"),
+            Some(&owner)
+        ));
+        assert!(!through_focus(
+            paste,
+            &other(None, &mail, "work"),
+            Some(&owner)
+        ));
+        let clips = Subject::App("org.example.Clips".into());
+        assert!(!through_focus(
+            paste,
+            &other(Some(40), &clips, "work"),
+            Some(&owner)
+        ));
+        let agent = Subject::Agent("kora".into());
+        assert!(!through_focus(
+            paste,
+            &other(Some(40), &agent, "work"),
+            Some(&owner)
+        ));
+        assert!(!through_focus(
+            paste,
+            &other(Some(40), &mail, "home"),
+            Some(&owner)
+        ));
+        assert!(!through_focus(paste, &app, None));
+
+        // Typing and capture are never a paste.
+        assert!(!through_focus((Class::Input, true), &app, Some(&owner)));
+        assert!(!through_focus((Class::Screen, false), &app, Some(&owner)));
+    }
+
+    /// A paste on a connection of its own hangs up once it has asked and waits on its pipe, so
+    /// dropping the read there made every paste at "Ask me first" come back empty.
+    #[test]
+    fn a_held_paste_and_an_agents_keys_outlive_their_client() {
+        let app = Subject::App("org.example.Mail".into());
+        let agent = Subject::Agent("kora".into());
+        for subject in [&app, &agent] {
+            assert!(outlives_client(subject, (Class::Clipboard, false)));
+            assert!(!outlives_client(subject, (Class::Clipboard, true)));
+            assert!(!outlives_client(subject, (Class::Screen, false)));
+        }
+        assert!(outlives_client(&agent, (Class::Input, true)));
+        assert!(!outlives_client(&app, (Class::Input, true)));
     }
 
     #[test]

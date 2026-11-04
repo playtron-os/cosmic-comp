@@ -4,14 +4,19 @@
 //! through (`kept`), is refused (`refused`), or cannot be made (`hidden`). Prints
 //! `globals=a,b,...` and `copy=...`.
 //!
-//! `grants-check registry current|older|newer WORKSPACE APP_ID CLASS,...`: a stand-in workspace
-//! registry on the session bus. `current` lists APP_ID's CLASSES open in WORKSPACE and answers
-//! every held request with a deny; `older` is a released registry without either call; `newer`
-//! adds a field to each row.
+//! `grants-check paste ENGINE APP_ID [window]`: whether a boxed app's paste on a connection that
+//! hangs up once it has asked gets the session's text; see [`paste`]. `grants-check box ENGINE
+//! APP_ID` keeps such a socket for a real app; see [`boxed`].
+//!
+//! `grants-check registry current|older|newer|allow|deny WORKSPACE APP_ID CLASS,...`: a stand-in
+//! workspace registry on the session bus. `current` lists APP_ID's CLASSES open in WORKSPACE and
+//! answers every held request with a deny; `older` is a released registry without either call;
+//! `newer` adds a field to each row. `allow` and `deny` also show WORKSPACE on screen and answer
+//! each held request that way after half a second, as the person would.
 
 use std::{
     collections::HashMap,
-    io::Write,
+    io::{Read, Write},
     os::{
         fd::AsFd,
         unix::net::{UnixListener, UnixStream},
@@ -26,7 +31,10 @@ use wayland_client::{
     backend::ObjectId,
     delegate_noop,
     globals::{GlobalList, GlobalListContents, registry_queue_init},
-    protocol::{wl_registry, wl_seat},
+    protocol::{
+        wl_buffer, wl_compositor, wl_keyboard, wl_registry, wl_seat, wl_shm, wl_shm_pool,
+        wl_surface,
+    },
 };
 use wayland_protocols::{
     ext::data_control::v1::client::{
@@ -39,6 +47,7 @@ use wayland_protocols::{
         wp_security_context_manager_v1::WpSecurityContextManagerV1,
         wp_security_context_v1::WpSecurityContextV1,
     },
+    xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
 };
 
 /// The globals whose filters grants or the boxing change.
@@ -62,6 +71,9 @@ struct App {
     cancelled: bool,
     offers: HashMap<ObjectId, Vec<String>>,
     selection: Option<Vec<String>>,
+    offer: Option<ExtDataControlOfferV1>,
+    /// What its own source gives a paste.
+    serves: Option<Vec<u8>>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for App {
@@ -92,7 +104,8 @@ impl Dispatch<ExtDataControlSourceV1, ()> for App {
     ) {
         match event {
             ext_data_control_source_v1::Event::Send { fd, .. } => {
-                let _ = std::fs::File::from(fd).write_all(b"grants-check");
+                let text = state.serves.as_deref().unwrap_or(b"grants-check");
+                let _ = std::fs::File::from(fd).write_all(text);
             }
             ext_data_control_source_v1::Event::Cancelled => state.cancelled = true,
             _ => {}
@@ -115,9 +128,11 @@ impl Dispatch<ExtDataControlDeviceV1, ()> for App {
             }
             ext_data_control_device_v1::Event::Selection { id } => {
                 state.selection = Some(
-                    id.and_then(|offer| state.offers.get(&offer.id()).cloned())
+                    id.as_ref()
+                        .and_then(|offer| state.offers.get(&offer.id()).cloned())
                         .unwrap_or_default(),
                 );
+                state.offer = id;
             }
             _ => {}
         }
@@ -207,25 +222,10 @@ fn client(tag: Option<(&str, &str)>) {
         // A second client of the session, so the copy is read back by another.
         None => connect(Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"))),
         Some((engine, app_id)) => {
-            let qh = session_queue.handle();
-            let manager: WpSecurityContextManagerV1 = session_globals
-                .bind(&qh, 1..=1, ())
-                .unwrap_or_else(|_| fail("no wp_security_context_manager_v1"));
-            let path = PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap())
-                .join(format!("grants-check-{}", std::process::id()));
-            let _ = std::fs::remove_file(&path);
-            let listener = UnixListener::bind(&path).unwrap_or_else(|_| fail("cannot listen"));
-            let (close, kept) = UnixStream::pair().unwrap();
-            let context = manager.create_listener(listener.as_fd(), close.as_fd(), &qh, ());
-            context.set_sandbox_engine(engine.into());
-            context.set_app_id(app_id.into());
-            context.set_instance_id("grants-check".into());
-            context.commit();
-            session_queue.roundtrip(&mut app).unwrap();
-            let stream = UnixStream::connect(&path).unwrap_or_else(|_| fail("cannot connect"));
-            let _ = std::fs::remove_file(&path);
-            _socket = Some((listener, kept));
-            connect(Connection::from_socket(stream).unwrap())
+            let socket = Tagged::new(&session_globals, &mut session_queue, engine, app_id);
+            let conn = socket.connect();
+            _socket = Some(socket);
+            connect(conn)
         }
     };
     println!("globals={}", names(&globals));
@@ -270,6 +270,291 @@ fn client(tag: Option<(&str, &str)>) {
     println!("copy={copy}");
 }
 
+/// A `wp_security_context_v1` socket tagged with an engine and app id, open while this lives.
+struct Tagged {
+    path: PathBuf,
+    _listener: UnixListener,
+    _close: UnixStream,
+}
+
+impl Tagged {
+    fn new(globals: &GlobalList, queue: &mut EventQueue<App>, engine: &str, app_id: &str) -> Self {
+        let qh = queue.handle();
+        let manager: WpSecurityContextManagerV1 = globals
+            .bind(&qh, 1..=1, ())
+            .unwrap_or_else(|_| fail("no wp_security_context_manager_v1"));
+        let path = PathBuf::from(std::env::var("XDG_RUNTIME_DIR").unwrap())
+            .join(format!("grants-check-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap_or_else(|_| fail("cannot listen"));
+        let (close, kept) = UnixStream::pair().unwrap();
+        let context = manager.create_listener(listener.as_fd(), close.as_fd(), &qh, ());
+        context.set_sandbox_engine(engine.into());
+        context.set_app_id(app_id.into());
+        context.set_instance_id("grants-check".into());
+        context.commit();
+        queue.roundtrip(&mut App::default()).unwrap();
+        Self {
+            path,
+            _listener: listener,
+            _close: kept,
+        }
+    }
+
+    fn connect(&self) -> Connection {
+        let stream = UnixStream::connect(&self.path).unwrap_or_else(|_| fail("cannot connect"));
+        Connection::from_socket(stream).unwrap()
+    }
+}
+
+impl Drop for Tagged {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// A window of the boxed app, and whether it has the keyboard.
+#[derive(Default)]
+struct Window {
+    configured: bool,
+    focused: bool,
+}
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Window {
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+delegate_noop!(Window: wl_compositor::WlCompositor);
+delegate_noop!(Window: wl_shm_pool::WlShmPool);
+delegate_noop!(Window: ignore wl_shm::WlShm);
+delegate_noop!(Window: ignore wl_buffer::WlBuffer);
+delegate_noop!(Window: ignore wl_surface::WlSurface);
+delegate_noop!(Window: ignore wl_seat::WlSeat);
+delegate_noop!(Window: ignore xdg_toplevel::XdgToplevel);
+
+impl Dispatch<xdg_wm_base::XdgWmBase, ()> for Window {
+    fn event(
+        _: &mut Self,
+        base: &xdg_wm_base::XdgWmBase,
+        event: xdg_wm_base::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            base.pong(serial);
+        }
+    }
+}
+
+impl Dispatch<xdg_surface::XdgSurface, ()> for Window {
+    fn event(
+        state: &mut Self,
+        surface: &xdg_surface::XdgSurface,
+        event: xdg_surface::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let xdg_surface::Event::Configure { serial } = event {
+            surface.ack_configure(serial);
+            state.configured = true;
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for Window {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_keyboard::Event::Enter { .. } => state.focused = true,
+            wl_keyboard::Event::Leave { .. } => state.focused = false,
+            _ => {}
+        }
+    }
+}
+
+/// Map a window on its own connection of the tagged socket, and wait for it to get the
+/// keyboard. Returns the connection, kept open while the paste runs.
+fn open_window(socket: &Tagged) -> Connection {
+    const SIZE: i32 = 200;
+    let conn = socket.connect();
+    let (globals, mut queue) =
+        registry_queue_init::<Window>(&conn).unwrap_or_else(|_| fail("no registry"));
+    let qh = queue.handle();
+    let compositor: wl_compositor::WlCompositor = globals
+        .bind(&qh, 1..=4, ())
+        .unwrap_or_else(|_| fail("the window has no wl_compositor"));
+    let shm: wl_shm::WlShm = globals
+        .bind(&qh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the window has no wl_shm"));
+    let base: xdg_wm_base::XdgWmBase = globals
+        .bind(&qh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the window has no xdg_wm_base"));
+    let seat: wl_seat::WlSeat = globals
+        .bind(&qh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the window has no wl_seat"));
+    let _keyboard = seat.get_keyboard(&qh, ());
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = base.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_title("grants-check".into());
+    surface.commit();
+    let mut window = Window::default();
+    pump_window(&mut queue, &mut window, |w| w.configured);
+    if !window.configured {
+        fail("the window was never configured");
+    }
+
+    // A grey buffer in a file of its own: shared memory needs a file, not its name.
+    let path = socket.path.with_extension("buffer");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)
+        .unwrap_or_else(|_| fail("cannot make a buffer"));
+    let _ = std::fs::remove_file(&path);
+    let pixels = vec![0x80u8; (SIZE * SIZE * 4) as usize];
+    (&file).write_all(&pixels).unwrap();
+    let pool = shm.create_pool(file.as_fd(), SIZE * SIZE * 4, &qh, ());
+    let buffer = pool.create_buffer(0, SIZE, SIZE, SIZE * 4, wl_shm::Format::Xrgb8888, &qh, ());
+    surface.attach(Some(&buffer), 0, 0);
+    surface.damage(0, 0, SIZE, SIZE);
+    surface.commit();
+    pump_window(&mut queue, &mut window, |w| w.focused);
+    if !window.focused {
+        fail("the window never got the keyboard");
+    }
+    std::thread::spawn(
+        move || {
+            while queue.blocking_dispatch(&mut window).is_ok() {}
+        },
+    );
+    conn
+}
+
+fn pump_window(
+    queue: &mut EventQueue<Window>,
+    window: &mut Window,
+    done: impl Fn(&Window) -> bool,
+) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while !done(window) && Instant::now() < end {
+        queue
+            .roundtrip(window)
+            .unwrap_or_else(|_| fail("the compositor hung up on the window"));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Put `text` on the clipboard from the session's own socket, served from a thread.
+fn serve_selection(text: &str, mime: &str) {
+    let conn = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
+    let (conn, globals, mut queue) = connect(conn);
+    let qh = queue.handle();
+    let manager: ExtDataControlManagerV1 = globals
+        .bind(&qh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the session has no data control"));
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).unwrap();
+    let device = manager.get_data_device(&seat, &qh, ());
+    let source = manager.create_data_source(&qh, ());
+    source.offer(mime.into());
+    device.set_selection(Some(&source));
+    let mut app = App {
+        serves: Some(text.as_bytes().to_vec()),
+        ..App::default()
+    };
+    pump(&mut queue, &mut app, Duration::from_secs(3), |app| {
+        app.selection.is_some()
+    });
+    std::thread::spawn(move || {
+        let _kept = (conn, device, source);
+        while queue.blocking_dispatch(&mut app).is_ok() {}
+    });
+}
+
+/// `grants-check paste ENGINE APP_ID [window]`: a boxed app pastes the session's text through
+/// data control on a connection of its own that hangs up once it has asked, as paste tools do,
+/// then reads its pipe; with `window` while its own window has the keyboard. Prints
+/// `paste=pasted`, `paste=empty` (refused) or `paste=waiting` (still held after 10 s).
+fn paste(engine: &str, app_id: &str, window: bool) {
+    nested_only();
+    let mime = "text/plain;charset=utf-8";
+    let text = format!("grants-check paste {}", std::process::id());
+    serve_selection(&text, mime);
+    let session = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
+    let (_session, session_globals, mut session_queue) = connect(session);
+    let socket = Tagged::new(&session_globals, &mut session_queue, engine, app_id);
+    let _window = window.then(|| open_window(&socket));
+
+    let read = {
+        let (conn, globals, mut queue) = connect(socket.connect());
+        let qh = queue.handle();
+        let manager: ExtDataControlManagerV1 = globals
+            .bind(&qh, 1..=1, ())
+            .unwrap_or_else(|_| fail("the boxed app has no data control"));
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).unwrap();
+        let mut app = App::default();
+        let _device = manager.get_data_device(&seat, &qh, ());
+        pump(&mut queue, &mut app, Duration::from_secs(3), |app| {
+            app.selection.is_some()
+        });
+        let Some(offer) = app.offer.take() else {
+            fail("the boxed app was offered no selection");
+        };
+        let (read, write) = std::io::pipe().unwrap();
+        offer.receive(mime.into(), write.as_fd());
+        drop(write);
+        queue
+            .roundtrip(&mut app)
+            .unwrap_or_else(|_| fail("the compositor hung up"));
+        drop((queue, conn));
+        read
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut read = read;
+        let mut got = Vec::new();
+        let _ = read.read_to_end(&mut got);
+        let _ = tx.send(got);
+    });
+    let result = match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(got) if got == text.as_bytes() => "pasted",
+        Ok(got) if got.is_empty() => "empty",
+        Ok(_) => "other",
+        Err(_) => "waiting",
+    };
+    println!("paste={result}");
+}
+
+/// `grants-check box ENGINE APP_ID`: a tagged socket for a real app, until stdin closes. Prints
+/// its name, for the app's `WAYLAND_DISPLAY`.
+fn boxed(engine: &str, app_id: &str) {
+    nested_only();
+    let session = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
+    let (_session, globals, mut queue) = connect(session);
+    let socket = Tagged::new(&globals, &mut queue, engine, app_id);
+    println!("{}", socket.path.file_name().unwrap().to_string_lossy());
+    let _ = std::io::stdin().read_to_end(&mut Vec::new());
+}
+
 type Row = (String, String, String, Vec<String>, Vec<String>);
 /// A row with a field this compositor does not know.
 type NewerRow = (String, String, String, Vec<String>, Vec<String>, u32);
@@ -297,6 +582,45 @@ impl Deny {
         _change: bool,
     ) -> String {
         "deny".into()
+    }
+}
+
+/// The person's answer to every held request, as the dialog gives it.
+struct Answers(&'static str);
+
+#[zbus::interface(name = "one.playtron.AgentAccess1")]
+impl Answers {
+    fn judge_display(
+        &self,
+        _pidfd: zbus::zvariant::OwnedFd,
+        _workspace: String,
+        _kind: String,
+        _id: String,
+        _class: String,
+        _change: bool,
+    ) -> String {
+        // Nobody answers before a paste tool has hung up.
+        std::thread::sleep(Duration::from_millis(500));
+        self.0.into()
+    }
+}
+
+/// A registry whose workspace is on screen, so the boxed app's windows show and take the keyboard.
+struct Shown(Vec<Row>);
+
+#[zbus::interface(name = "one.playtron.Workspaces1")]
+impl Shown {
+    fn display_grants(&self) -> Vec<Row> {
+        self.0.clone()
+    }
+
+    fn active(&self) -> String {
+        self.0[0].0.clone()
+    }
+
+    fn list(&self) -> Vec<(String, String, String, String, bool)> {
+        let id = self.0[0].0.clone();
+        vec![(id, "Work".into(), "#00b4d7".into(), "active".into(), true)]
     }
 }
 
@@ -346,7 +670,13 @@ fn registry(kind: &str, workspace: &str, app_id: &str, open: &str) -> zbus::Resu
             .serve_at(path, Deny)?,
         "older" => builder.serve_at(path, Older)?,
         "newer" => builder.serve_at(path, Newer(rows))?.serve_at(path, Deny)?,
-        _ => fail("registry: current, older or newer"),
+        "allow" => builder
+            .serve_at(path, Shown(rows))?
+            .serve_at(path, Answers("allow"))?,
+        "deny" => builder
+            .serve_at(path, Shown(rows))?
+            .serve_at(path, Answers("deny"))?,
+        _ => fail("registry: current, older, newer, allow or deny"),
     };
     let _conn = builder.name("one.playtron.Workspaces1")?.build()?;
     println!("registry ready");
@@ -361,11 +691,17 @@ fn main() {
     match args.as_slice() {
         ["client"] => client(None),
         ["client", engine, app_id] => client(Some((engine, app_id))),
+        ["paste", engine, app_id] => paste(engine, app_id, false),
+        ["paste", engine, app_id, "window"] => paste(engine, app_id, true),
+        ["box", engine, app_id] => boxed(engine, app_id),
         ["registry", kind, workspace, app_id, open] => {
             if let Err(err) = registry(kind, workspace, app_id, open) {
                 fail(&format!("registry: {err}"));
             }
         }
-        _ => fail("usage: client [ENGINE APP_ID] | registry KIND WORKSPACE APP_ID CLASSES"),
+        _ => fail(
+            "usage: client [ENGINE APP_ID] | paste ENGINE APP_ID [window] | box ENGINE APP_ID \
+             | registry KIND WORKSPACE APP_ID CLASSES",
+        ),
     }
 }
