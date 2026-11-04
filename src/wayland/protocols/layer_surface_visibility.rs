@@ -96,7 +96,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(5, ());
+        >(6, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -128,6 +128,9 @@ pub trait LayerSurfaceVisibilityHandler {
 
     /// Set a surface's show/hide transition animation in the Shell
     fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition);
+
+    /// Place a surface made without an output under the pointer, not on the active output.
+    fn set_surface_follows_pointer(&mut self, surface_id: ObjectId);
 
     /// Check if a surface is hidden
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool;
@@ -336,6 +339,11 @@ where
                     state.set_surface_transition(surface_id, transition);
                 } else {
                     warn!("SetTransition called on dead surface");
+                }
+            }
+            zcosmic_layer_surface_visibility_v1::Request::FollowPointer => {
+                if let Ok(surface) = data.surface.upgrade() {
+                    state.set_surface_follows_pointer(surface.id());
                 }
             }
         }

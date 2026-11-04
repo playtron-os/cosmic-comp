@@ -16,6 +16,7 @@ impl ClientData for Peer {
 enum Call {
     Hidden(bool),
     Released,
+    FollowsPointer,
 }
 
 struct Model {
@@ -35,6 +36,9 @@ impl LayerSurfaceVisibilityHandler for Model {
     }
     fn set_surface_hidden_immediately(&mut self, _: ObjectId) {}
     fn set_surface_transition(&mut self, _: ObjectId, _: LayerTransition) {}
+    fn set_surface_follows_pointer(&mut self, _: ObjectId) {
+        self.calls.push(Call::FollowsPointer);
+    }
     fn is_surface_hidden(&self, _: &ObjectId) -> bool {
         false
     }
@@ -125,4 +129,41 @@ fn dropping_a_controller_shows_its_surface_without_asking_for_focus() {
     );
     request(&mut display, &mut model, &mut socket, &controller, DESTROY);
     assert_eq!(model.calls, [Call::Hidden(true), Call::Released]);
+}
+
+// Notifications ask to show under the pointer; the request must reach the shell.
+#[test]
+fn follow_pointer_reaches_the_shell() {
+    const FOLLOW_POINTER: u32 = 5;
+
+    let mut display = Display::<Model>::new().unwrap();
+    let mut dh = display.handle();
+    let mut model = Model {
+        state: LayerSurfaceVisibilityState::new::<Model>(&dh),
+        calls: Vec::new(),
+    };
+    let (server, mut socket) = UnixStream::pair().unwrap();
+    let client = dh.insert_client(server, Arc::new(Peer)).unwrap();
+    let surface = client
+        .create_resource::<WlSurface, _, Model>(&dh, 6, ())
+        .unwrap();
+    let controller = client
+        .create_resource::<zcosmic_layer_surface_visibility_v1::ZcosmicLayerSurfaceVisibilityV1, _, Model>(
+            &dh,
+            6,
+            LayerSurfaceVisibilityControllerData {
+                surface: surface.downgrade(),
+                hidden: Mutex::new(false),
+            },
+        )
+        .unwrap();
+
+    request(
+        &mut display,
+        &mut model,
+        &mut socket,
+        &controller,
+        FOLLOW_POINTER,
+    );
+    assert_eq!(model.calls, [Call::FollowsPointer]);
 }

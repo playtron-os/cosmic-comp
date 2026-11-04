@@ -97,7 +97,8 @@ bar headers rather than the Halo.
 that many outputs side by side, `WINIT-0` on the left. Each is drawn on its own
 and copied into its slice, so output placement, per-output desktops and moving
 between outputs can be checked headless. Pointer coordinates span the whole
-window, and `scale` sets every output.
+window, and `scale` sets every output. The pointer starts in the middle of the window,
+on the edge between two outputs; `CC_POINTER` starts it elsewhere without moving it.
 
 ## Comparing builds
 

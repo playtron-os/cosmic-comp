@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::delegate_layer_surface_visibility;
-use crate::shell::SeatExt;
 use crate::shell::Shell;
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::state::{Common, State};
@@ -33,10 +32,9 @@ impl State {
             "set_surface_hidden"
         );
 
-        // For output-agnostic layer surfaces becoming visible, move them
-        // to the output where the cursor currently is.
+        // An output-agnostic layer surface becoming visible moves to the output it belongs on.
         if !hidden && is_agnostic {
-            let cursor_output = shell.seats.last_active().active_output();
+            let to_output = shell.agnostic_layer_output(&surface_id, shell.seats.last_active());
             let current_output = shell
                 .outputs()
                 .find(|o| {
@@ -46,13 +44,13 @@ impl State {
                 .cloned();
 
             tracing::debug!(
-                cursor_output = cursor_output.name(),
+                to_output = to_output.name(),
                 current_output = current_output.as_ref().map(|o| o.name()),
                 "Output-agnostic surface show: checking if move needed"
             );
 
             if let Some(ref old_output) = current_output
-                && old_output != &cursor_output
+                && old_output != &to_output
             {
                 // Find the layer surface and move it
                 let layer = {
@@ -64,7 +62,7 @@ impl State {
                 if let Some(layer) = layer {
                     tracing::debug!(
                         from = old_output.name(),
-                        to = cursor_output.name(),
+                        to = to_output.name(),
                         "Moving layer surface between outputs"
                     );
                     {
@@ -72,14 +70,14 @@ impl State {
                         old_map.unmap_layer(&layer);
                     }
                     {
-                        let mut new_map = layer_map_for_output(&cursor_output);
+                        let mut new_map = layer_map_for_output(&to_output);
                         let _ = new_map.map_layer(&layer);
                     }
                     // Update old output's blur cache (surface is gone from its map,
                     // so the general block below won't find it there).
                     shell.workspaces_mut().recalculate();
                     self.backend.schedule_render(old_output);
-                    self.backend.schedule_render(&cursor_output);
+                    self.backend.schedule_render(&to_output);
                 }
             }
         }
@@ -199,6 +197,11 @@ impl LayerSurfaceVisibilityHandler for State {
     fn set_surface_transition(&mut self, surface_id: ObjectId, transition: LayerTransition) {
         let mut shell = self.common.shell.write();
         shell.set_surface_transition(surface_id, transition);
+    }
+
+    fn set_surface_follows_pointer(&mut self, surface_id: ObjectId) {
+        let mut shell = self.common.shell.write();
+        shell.pointer_following_layers.insert(surface_id);
     }
 
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {
