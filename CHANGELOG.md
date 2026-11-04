@@ -1,3 +1,12 @@
+## [1.64.4](https://github.com/playtron-os/cosmic-comp/compare/v1.64.3...v1.64.4) (2026-11-04)
+
+
+### Bug Fixes
+
+* **layer-shell:** show opted-in popups under the pointer ([673df36](https://github.com/playtron-os/cosmic-comp/commit/673df361050f1999918f9cee4060fac020146497))
+* **security-context:** let workspace apps copy and paste text ([92cb603](https://github.com/playtron-os/cosmic-comp/commit/92cb60348a165c80e181772f2314ea95370e2d74))
+* **xwayland:** draw X11 menus and tooltips above the panel ([849a92f](https://github.com/playtron-os/cosmic-comp/commit/849a92f1ee5cc515ca152466fdf491ef497a845a))
+
 ## [1.64.3](https://github.com/playtron-os/cosmic-comp/compare/v1.64.2...v1.64.3) (2026-11-03)
 
 
