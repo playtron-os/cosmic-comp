@@ -17,15 +17,16 @@ where
     D::KeyboardFocus: WaylandFocus,
     D::PointerFocus: From<D::KeyboardFocus> + WaylandFocus,
 {
-    pointer.with_grab(|_serial, grab| {
-        !grab.is::<PopupPointerGrab<D>>() && !grab.is::<ClickGrab<D>>()
-    }) == Some(true)
+    pointer
+        .with_grab(|_serial, grab| !grab.is::<PopupPointerGrab<D>>() && !grab.is::<ClickGrab<D>>())
+        == Some(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::ends_pointer_grab;
     use smithay::{
+        backend::input::ButtonState,
         input::{
             Seat, SeatHandler, SeatState,
             pointer::{
@@ -36,9 +37,9 @@ mod tests {
                 RelativeMotionEvent,
             },
         },
-        backend::input::ButtonState,
-        reexports::wayland_server::protocol::wl_surface::WlSurface,
+        reexports::wayland_server::{Client, protocol::wl_surface::WlSurface},
         utils::{Logical, Point, SERIAL_COUNTER},
+        wayland::compositor::{CompositorClientState, CompositorHandler, CompositorState},
     };
 
     struct Compositor {
@@ -53,6 +54,17 @@ mod tests {
         fn seat_state(&mut self) -> &mut SeatState<Self> {
             &mut self.seats
         }
+    }
+
+    // A surface's touch focus needs one; these tests never have a client or a surface.
+    impl CompositorHandler for Compositor {
+        fn compositor_state(&mut self) -> &mut CompositorState {
+            unreachable!("no surfaces in these tests")
+        }
+        fn client_compositor_state<'a>(&self, _: &'a Client) -> &'a CompositorClientState {
+            unreachable!("no clients in these tests")
+        }
+        fn commit(&mut self, _: &WlSurface) {}
     }
 
     /// A grab of the compositor's own, as a window move or a menu holds.
@@ -82,7 +94,12 @@ mod tests {
             _: &ButtonEvent,
         ) {
         }
-        fn axis(&mut self, _: &mut Compositor, _: &mut PointerInnerHandle<'_, Compositor>, _: AxisFrame) {
+        fn axis(
+            &mut self,
+            _: &mut Compositor,
+            _: &mut PointerInnerHandle<'_, Compositor>,
+            _: AxisFrame,
+        ) {
         }
         fn frame(&mut self, _: &mut Compositor, _: &mut PointerInnerHandle<'_, Compositor>) {}
         fn gesture_swipe_begin(
