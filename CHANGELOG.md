@@ -1,3 +1,11 @@
+## [1.64.5](https://github.com/playtron-os/cosmic-comp/compare/v1.64.4...v1.64.5) (2026-11-04)
+
+
+### Bug Fixes
+
+* **input:** keep the popup check out of the generic Escape test ([44a2f7b](https://github.com/playtron-os/cosmic-comp/commit/44a2f7bc0c30d8b32768ef4b862f209adcbca272))
+* **input:** leave Escape to an app while its button is held ([04fe81a](https://github.com/playtron-os/cosmic-comp/commit/04fe81a028e6fcc3276433ddeec8dcee004df32d))
+
 ## [1.64.4](https://github.com/playtron-os/cosmic-comp/compare/v1.64.3...v1.64.4) (2026-11-04)
 
 
