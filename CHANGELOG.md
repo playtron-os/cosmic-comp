@@ -1,3 +1,18 @@
+# [1.65.0](https://github.com/playtron-os/cosmic-comp/compare/v1.64.6...v1.65.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **deps:** lock smithay to its merged xdg-foreign fix ([7717a4f](https://github.com/playtron-os/cosmic-comp/commit/7717a4f2f2a8e3a3fffd4de9289b5134ec1e313f))
+* **deps:** lock smithay to master with the surface-destroyed fix ([339a9fa](https://github.com/playtron-os/cosmic-comp/commit/339a9fa5fc70e3232f50c6756bd0acd5d7e7fb96))
+* **input:** scroll in nested sessions, whose wheel has only steps ([9d08aef](https://github.com/playtron-os/cosmic-comp/commit/9d08aef1e89cb214abe43b4c0b901c050ae75bfc))
+
+
+### Features
+
+* **input:** keep touches and scrolls off a window with a modal dialog ([28e9a06](https://github.com/playtron-os/cosmic-comp/commit/28e9a068d23f6e8904a409ee12d64fd27f0d71d0))
+* **shell:** keep focus on a window's modal dialog, as on Windows ([2de171a](https://github.com/playtron-os/cosmic-comp/commit/2de171a1d343c086bad54935c0509885e7b5a33f))
+
 ## [1.64.6](https://github.com/playtron-os/cosmic-comp/compare/v1.64.5...v1.64.6) (2026-11-05)
 
 
