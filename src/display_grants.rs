@@ -89,27 +89,6 @@ impl Class {
         }
     }
 
-    /// The interfaces whose requests can be held at "Ask me first".
-    fn askable(self) -> &'static [&'static str] {
-        match self {
-            Class::Input => &["zwp_virtual_keyboard_manager_v1", "zwp_virtual_keyboard_v1"],
-            Class::Screen => &[
-                "ext_image_copy_capture_manager_v1",
-                "ext_image_copy_capture_session_v1",
-                "ext_image_copy_capture_cursor_session_v1",
-                "ext_output_image_capture_source_manager_v1",
-                "ext_foreign_toplevel_image_capture_source_manager_v1",
-                "zcosmic_workspace_image_capture_source_manager_v1",
-            ],
-            Class::Clipboard => &[
-                "ext_data_control_manager_v1",
-                "ext_data_control_device_v1",
-                "zwlr_data_control_manager_v1",
-                "zwlr_data_control_device_v1",
-            ],
-        }
-    }
-
     /// The interfaces that only send events, open only at the row's top level.
     fn open_only(self) -> &'static [&'static str] {
         match self {
@@ -1094,9 +1073,6 @@ mod tests {
         for (from, to) in [(&ask, &off), (&open, &off), (&open, &ask)] {
             let gone = lost(from, to, Some("work"), &mail);
             assert_eq!(gone, events);
-            for class in Class::ALL {
-                assert!(class.askable().iter().all(|i| !gone.contains(i)));
-            }
         }
         assert!(lost(&ask, &open, Some("work"), &mail).is_empty());
         assert!(lost(&off, &ask, Some("work"), &mail).is_empty());
@@ -1104,31 +1080,7 @@ mod tests {
 
     #[test]
     fn the_interfaces_watched_are_the_ones_the_protocols_name() {
-        use smithay::reexports::wayland_protocols::ext::data_control::v1::server::ext_data_control_manager_v1::ExtDataControlManagerV1;
         use smithay::reexports::wayland_protocols::ext::foreign_toplevel_list::v1::server::ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1;
-        use smithay::reexports::wayland_protocols::ext::image_copy_capture::v1::server::ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1;
-        use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1;
-        use smithay::reexports::wayland_protocols_wlr::data_control::v1::server::zwlr_data_control_manager_v1::ZwlrDataControlManagerV1;
-        assert!(
-            Class::Input
-                .askable()
-                .contains(&name_of::<ZwpVirtualKeyboardManagerV1>())
-        );
-        assert!(
-            Class::Clipboard
-                .askable()
-                .contains(&name_of::<ExtDataControlManagerV1>())
-        );
-        assert!(
-            Class::Clipboard
-                .askable()
-                .contains(&name_of::<ZwlrDataControlManagerV1>())
-        );
-        assert!(
-            Class::Screen
-                .askable()
-                .contains(&name_of::<ExtImageCopyCaptureManagerV1>())
-        );
         assert!(
             Class::Screen
                 .open_only()
