@@ -43,7 +43,7 @@ nested() (
 	exec "$@"
 )
 
-registry_pid=
+registry_pid= registry_job=
 # start_registry KIND [CLASSES]: APP_ID's classes open (default screen,clipboard; "" for none).
 start_registry() {
 	local pidfile=$CC_STATE/registry.pid
@@ -51,6 +51,7 @@ start_registry() {
 	# The stand-in records its own pid: the background job is only the subshell around it.
 	nested sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" "$bin" registry "$1" "${ws:-none}" "$app" \
 		"${2-screen,clipboard}" >"$CC_STATE/registry.log" 2>&1 &
+	registry_job=$!
 	for _ in $(seq 100); do
 		[ -s "$pidfile" ] && grep -q ready "$CC_STATE/registry.log" && { registry_pid=$(cat "$pidfile"); return; }
 		sleep 0.05
@@ -61,7 +62,8 @@ stop_registry() {
 	[ -n "$registry_pid" ] || return 0
 	kill "$registry_pid" 2>/dev/null || true
 	for _ in $(seq 40); do kill -0 "$registry_pid" 2>/dev/null || break; sleep 0.05; done
-	wait 2>/dev/null || true
+	# Only the registry's job: a bare wait would also wait for a client coprocess still running.
+	wait "$registry_job" 2>/dev/null || true
 	registry_pid=
 }
 trap 'stop_registry; "$hl" down' EXIT
@@ -155,6 +157,30 @@ if [ -n "$ws" ]; then
 		exit 1
 	}
 	echo "ok input off: logged"
+	stop_registry
+	# The registry keeps an app's Deny as its row at Off: the app's data control, taken before,
+	# stays connected, and its later copy is refused unasked with a line in the log.
+	start_registry current clipboard
+	coproc HOLD { nested "$bin" hold one.playtron.Workspaces.App "$app"; }
+	read -r said <&"${HOLD[0]}"
+	[ "$said" = held ] || { echo "FAILED the holding client: $said" >&2; exit 1; }
+	stop_registry
+	start_registry off clipboard
+	asked=$(grep -c 'holding a request' "$CC_STATE/comp.log" || true)
+	sleep 1
+	echo go >&"${HOLD[1]}"
+	read -r got <&"${HOLD[0]}"
+	wait "$HOLD_PID" 2>/dev/null || true
+	[ "$got" = copy=refused ] || { echo "FAILED a copy after the row turned off: got $got" >&2; exit 1; }
+	grep -q 'refused held requests.*its row is off' "$CC_STATE/comp.log" || {
+		echo "FAILED a copy after the row turned off: no refusal in the log" >&2
+		exit 1
+	}
+	[ "$(grep -c 'holding a request' "$CC_STATE/comp.log" || true)" = "$asked" ] || {
+		echo "FAILED a copy after the row turned off was asked about" >&2
+		exit 1
+	}
+	echo "ok a row turned off refuses a connected client's copy, logged and unasked"
 	stop_registry
 	alive
 fi
