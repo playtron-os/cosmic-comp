@@ -900,6 +900,7 @@ impl State {
         let session_lock_manager_state =
             SessionLockManagerState::new::<Self, _>(dh, client_not_sandboxed);
         XWaylandKeyboardGrabState::new::<Self>(dh);
+        smithay::wayland::shell::xdg::dialog::XdgDialogState::new::<Self>(dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(dh);
         PointerConstraintsState::new::<Self>(dh);
         PointerWarpManager::new::<Self>(dh);

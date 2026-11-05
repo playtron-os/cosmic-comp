@@ -473,6 +473,34 @@ impl CosmicSurface {
         }
     }
 
+    /// Whether this is a modal dialog of `parent`: an xdg-dialog modal child of it, or an
+    /// X11 modal window transient for it.
+    pub fn is_modal_child_of(&self, parent: &CosmicSurface) -> bool {
+        match self.0.underlying_surface() {
+            WindowSurface::Wayland(toplevel) => {
+                let Some(parent) = parent.wl_surface() else {
+                    return false;
+                };
+                toplevel.parent().is_some_and(|p| p == *parent)
+                    && with_states(toplevel.wl_surface(), |states| {
+                        states
+                            .data_map
+                            .get::<XdgToplevelSurfaceData>()
+                            .is_some_and(|data| {
+                                data.lock().unwrap().dialog_hint
+                                    == smithay::wayland::shell::xdg::dialog::ToplevelDialogHint::Modal
+                            })
+                    })
+            }
+            WindowSurface::X11(surface) => {
+                surface.is_modal()
+                    && parent
+                        .x11_key()
+                        .is_some_and(|p| self.transient_for() == Some(p))
+            }
+        }
+    }
+
     /// The X11 window this surface is transient for (`WM_TRANSIENT_FOR`), if any.
     pub fn transient_for(&self) -> Option<X11Key> {
         match self.0.underlying_surface() {

@@ -1313,6 +1313,12 @@ impl State {
                                 }
                             }
 
+                            // A window with a modal dialog open takes no clicks; the
+                            // dialog takes the focus instead.
+                            if self.common.shell.read().modal_child_of(&target).is_some() {
+                                pass_event = false;
+                                seat.supressed_buttons().add(button);
+                            }
                             Shell::set_focus(self, Some(&target), &seat, Some(serial), false);
                         }
                     }

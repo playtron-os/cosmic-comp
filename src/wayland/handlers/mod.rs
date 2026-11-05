@@ -62,6 +62,7 @@ pub mod toplevel_management;
 pub mod workspace;
 pub mod workspace_transition;
 pub mod xdg_activation;
+pub mod xdg_dialog;
 pub mod xdg_foreign;
 pub mod xdg_shell;
 pub mod xdg_toplevel_icon;
