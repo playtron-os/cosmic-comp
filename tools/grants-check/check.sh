@@ -43,7 +43,7 @@ nested() (
 	exec "$@"
 )
 
-registry_pid=
+registry_pid= registry_job=
 # start_registry KIND [CLASSES]: APP_ID's classes open (default screen,clipboard; "" for none).
 start_registry() {
 	local pidfile=$CC_STATE/registry.pid
@@ -51,6 +51,7 @@ start_registry() {
 	# The stand-in records its own pid: the background job is only the subshell around it.
 	nested sh -c 'echo $$ >"$0"; exec "$@"' "$pidfile" "$bin" registry "$1" "${ws:-none}" "$app" \
 		"${2-screen,clipboard}" >"$CC_STATE/registry.log" 2>&1 &
+	registry_job=$!
 	for _ in $(seq 100); do
 		[ -s "$pidfile" ] && grep -q ready "$CC_STATE/registry.log" && { registry_pid=$(cat "$pidfile"); return; }
 		sleep 0.05
@@ -61,7 +62,8 @@ stop_registry() {
 	[ -n "$registry_pid" ] || return 0
 	kill "$registry_pid" 2>/dev/null || true
 	for _ in $(seq 40); do kill -0 "$registry_pid" 2>/dev/null || break; sleep 0.05; done
-	wait 2>/dev/null || true
+	# Only the registry's job: a bare wait would also wait for a client coprocess still running.
+	wait "$registry_job" 2>/dev/null || true
 	registry_pid=
 }
 trap 'stop_registry; "$hl" down' EXIT
