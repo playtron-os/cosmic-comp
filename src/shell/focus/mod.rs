@@ -196,6 +196,11 @@ impl Shell {
         serial: Option<Serial>,
         update_cursor: bool,
     ) {
+        // A window with a modal dialog open hands its focus to the dialog.
+        let modal = target
+            .and_then(|target| state.common.shell.read().modal_child_of(target))
+            .map(KeyboardFocusTarget::Element);
+        let target = modal.as_ref().or(target);
         let focus_target = match target {
             Some(KeyboardFocusTarget::Element(mapped)) => Some(FocusTarget::Window(mapped.clone())),
             Some(KeyboardFocusTarget::Fullscreen(surface)) => {
@@ -531,6 +536,35 @@ fn leaves_active_window(target: Option<&KeyboardFocusTarget>, output: Option<&Ou
 }
 
 impl Shell {
+    /// The modal dialog that takes `target`'s focus: its window's modal child, followed
+    /// down to the innermost one. `None` when the window has none open.
+    pub fn modal_child_of(&self, target: &KeyboardFocusTarget) -> Option<CosmicMapped> {
+        let KeyboardFocusTarget::Element(mapped) = target else {
+            return None;
+        };
+        let mut parent = mapped.clone();
+        let mut found = None;
+        // Capped, so a client that parents its dialogs in a loop cannot hang the shell.
+        for _ in 0..8 {
+            let Some(space) = self.space_for(&parent) else {
+                break;
+            };
+            let parent_window = parent.active_window();
+            let Some(child) = space
+                .mapped()
+                .find(|elem| {
+                    **elem != parent && elem.active_window().is_modal_child_of(&parent_window)
+                })
+                .cloned()
+            else {
+                break;
+            };
+            found = Some(child.clone());
+            parent = child;
+        }
+        found
+    }
+
     /// Bring `mapped` to the front of its workspace without moving keyboard
     /// focus, as a drag passing over windows needs.
     pub fn raise_without_focus(&mut self, mapped: &CosmicMapped) {
