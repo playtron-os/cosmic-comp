@@ -15,6 +15,8 @@
 //! Keys of a boxed client reach a window only while one of its own
 //! workspace's windows has the keyboard: the access dialog holds the keyboard
 //! while it is up, and the row's words are "windows in this workspace".
+//! Held keys still type once allowed after their client hung up, as `wtype`
+//! does before anyone can answer.
 //!
 //! A clipboard request from the process whose own window has the keyboard is
 //! a copy or paste through focus, so it is not held.
@@ -37,7 +39,7 @@ use smithay::{
         security_context::SecurityContext,
     },
 };
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::state::{ClientState, State};
@@ -46,6 +48,10 @@ use crate::state::{ClientState, State};
 pub const APP_ENGINE: &str = "one.playtron.Workspaces.App";
 /// The sandbox engine the registry tags an agent's socket with.
 pub const AGENT_ENGINE: &str = "one.playtron.Workspaces.Agent";
+
+/// Where what the grants hold, ask and refuse is logged: on at info by default, since a held or
+/// refused request otherwise leaves no trace in a release build.
+pub const LOG_TARGET: &str = "display-grants";
 
 /// How long an app's "Allow once" lasts at most, as the registry keeps it.
 const APP_ONCE: Duration = Duration::from_secs(10 * 60);
@@ -202,7 +208,11 @@ impl Table {
 
 /// The grants every global filter reads, kept current by the registry follower.
 #[derive(Debug, Clone, Default)]
-pub struct DisplayGrants(Arc<parking_lot::RwLock<Table>>);
+pub struct DisplayGrants {
+    table: Arc<parking_lot::RwLock<Table>>,
+    /// The boxed clients logged as kept from a class that is off, so each is logged once.
+    told_off: Arc<parking_lot::Mutex<HashSet<(ClientId, Class)>>>,
+}
 
 impl DisplayGrants {
     /// Whether `client` may see a global of `class`; see [`sees`].
@@ -211,18 +221,40 @@ impl DisplayGrants {
             return false;
         };
         let subject = state.security_context.as_ref().and_then(Subject::of);
-        sees(
-            &self.0.read(),
+        let table = self.table.read();
+        let workspace = state.workspace.as_deref();
+        let may = sees(
+            &table,
             state.not_sandboxed(),
             subject.as_ref(),
-            state.workspace.as_deref(),
+            workspace,
             class,
             askable,
-        )
+        );
+        // A hidden global gives the client nothing to be refused, so the refusal is logged here.
+        if let (false, true, Some(subject), Some(_)) = (may, askable, subject.as_ref(), workspace)
+            && table.standing(workspace, subject, class) == Standing::Off
+            && self.told_off.lock().insert((client.id(), class))
+        {
+            info!(
+                target: LOG_TARGET,
+                ?subject,
+                ?workspace,
+                class = class.name(),
+                pid = state.pid,
+                "refused a client the guarded protocols of a row that is off"
+            );
+        }
+        may
     }
 
     fn standing_of(&self, workspace: &str, subject: &Subject, class: Class) -> Standing {
-        self.0.read().standing(Some(workspace), subject, class)
+        self.table.read().standing(Some(workspace), subject, class)
+    }
+
+    /// Forget what was logged of a client that went.
+    fn forget(&self, id: &ClientId) {
+        self.told_off.lock().retain(|(client, _)| client != id);
     }
 
     /// A filter for a global of `class` whose requests can be held.
@@ -244,8 +276,8 @@ impl DisplayGrants {
     /// of a class it can no longer use: one turned off, or an events-only one
     /// no longer open. Returns the table it replaced.
     pub fn replace(&self, table: Table, dh: &DisplayHandle) -> Table {
-        let old = std::mem::replace(&mut *self.0.write(), table);
-        let new = self.0.read().clone();
+        let old = std::mem::replace(&mut *self.table.write(), table);
+        let new = self.table.read().clone();
         let handle = dh.backend_handle();
         let mut clients = Vec::new();
         handle.with_all_clients(|id| clients.push(id));
@@ -279,6 +311,7 @@ impl DisplayGrants {
                 .collect();
             if !lost.is_empty() && holds_any(dh, &id, &lost) {
                 info!(
+                    target: LOG_TARGET,
                     ?subject,
                     "a grant was taken back; disconnecting the client using it"
                 );
@@ -427,7 +460,8 @@ impl DisplayAsks {
 
 enum Decision {
     Pass,
-    Refuse,
+    /// Refused, and why, for the log: nothing without workspaces, where nothing is ever asked.
+    Refuse(Option<&'static str>),
     Wait,
 }
 
@@ -483,8 +517,19 @@ fn drain(state: &mut State, id: &ClientId, ask: Ask) {
             // A keymap at the front shows nothing yet.
             _ if front.setup() => queue.pop_front().unwrap().run(state),
             Decision::Pass => queue.pop_front().unwrap().run(state),
-            Decision::Refuse => {
+            Decision::Refuse(why) => {
                 let refused: Vec<Held> = queue.drain(..).collect();
+                if let (Some(why), Some(asker)) = (why, asks.clients.get(id)) {
+                    info!(
+                        target: LOG_TARGET,
+                        subject = ?asker.subject,
+                        workspace = %asker.workspace,
+                        ?ask,
+                        requests = refused.len(),
+                        why,
+                        "refused held requests"
+                    );
+                }
                 for held in refused {
                     held.refuse(state);
                 }
@@ -510,11 +555,11 @@ fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
         .flatten();
     let asks = &mut state.common.display_asks;
     let Some(asker) = asks.clients.get_mut(id) else {
-        return Decision::Refuse;
+        return Decision::Refuse(Some("its client is gone"));
     };
     let (class, change) = ask;
     let passes = match grants.standing_of(&asker.workspace, &asker.subject, class) {
-        Standing::Off => return Decision::Refuse,
+        Standing::Off => return Decision::Refuse(Some("its row is off")),
         Standing::Open => true,
         Standing::Ask if through_focus(ask, asker, owner.as_ref()) => true,
         Standing::Ask => {
@@ -525,7 +570,7 @@ fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
                 change,
             );
             if asks.denied.contains(&denied) {
-                return Decision::Refuse;
+                return Decision::Refuse(Some("denied until its row changes"));
             }
             let fresh = |at: &Instant| match asker.subject {
                 // The agent's "Allow once" is its runs': dropped when they change.
@@ -550,8 +595,11 @@ fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
         .and_then(|pid| rustix::process::Pid::from_raw(pid as i32))
         .and_then(|pid| rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).ok())
         .or_else(|| std::fs::File::open("/dev/null").ok().map(OwnedFd::from));
-    let (Some(questions), Some(pidfd)) = (&asks.questions, pidfd) else {
-        return Decision::Refuse;
+    let Some(questions) = &asks.questions else {
+        return Decision::Refuse(None);
+    };
+    let Some(pidfd) = pidfd else {
+        return Decision::Refuse(Some("the registry cannot be asked"));
     };
     let question = Question {
         client: id.clone(),
@@ -562,9 +610,15 @@ fn decide(state: &mut State, id: &ClientId, ask: Ask) -> Decision {
         pidfd,
     };
     if questions.unbounded_send(question).is_err() {
-        return Decision::Refuse;
+        return Decision::Refuse(Some("the registry cannot be asked"));
     }
-    debug!(subject = ?asker.subject, ?ask, "holding a request for the person");
+    info!(
+        target: LOG_TARGET,
+        subject = ?asker.subject,
+        workspace = %asker.workspace,
+        ?ask,
+        "holding a request while the registry asks the person"
+    );
     asker.asking.insert(ask);
     Decision::Wait
 }
@@ -640,11 +694,11 @@ fn through_focus(ask: Ask, asker: &Asker, owner: Option<&Owner>) -> bool {
         })
 }
 
-/// Whether a held `ask` is still carried out once allowed after its client hung up: an agent's
-/// keys, as `wtype` exits before anyone answers, and a paste, which waits on its pipe instead.
-fn outlives_client(subject: &Subject, ask: Ask) -> bool {
+/// Whether a held `ask` is still carried out once allowed after its client hung up: keys, as
+/// `wtype` exits before anyone answers, and a paste, which waits on its pipe instead.
+fn outlives_client(ask: Ask) -> bool {
     match ask {
-        (Class::Input, _) => matches!(subject, Subject::Agent(_)),
+        (Class::Input, _) => true,
         (Class::Clipboard, change) => !change,
         (Class::Screen, _) => false,
     }
@@ -657,7 +711,14 @@ pub fn answered(state: &mut State, (id, ask, verdict): Answer) {
         return;
     };
     asker.asking.remove(&ask);
-    info!(subject = ?asker.subject, ?ask, ?verdict, "the registry answered");
+    info!(
+        target: LOG_TARGET,
+        subject = ?asker.subject,
+        workspace = %asker.workspace,
+        ?ask,
+        ?verdict,
+        "the registry answered"
+    );
     match verdict {
         Some(Verdict::Allow) => {
             asker.allowed.insert(ask, Instant::now());
@@ -673,6 +734,14 @@ pub fn answered(state: &mut State, (id, ask, verdict): Answer) {
                 .get_mut(&ask)
                 .map(|q| q.drain(..).collect())
                 .unwrap_or_default();
+            info!(
+                target: LOG_TARGET,
+                subject = ?asker.subject,
+                workspace = %asker.workspace,
+                ?ask,
+                requests = refused.len(),
+                "refused held requests: nobody answered"
+            );
             for held in refused {
                 held.refuse(state);
             }
@@ -727,16 +796,16 @@ pub fn runs_changed(state: &mut State) {
 /// `id` disconnected. What [`outlives_client`] still runs once allowed; the
 /// rest it held is dropped.
 pub fn client_gone(state: &mut State, id: &ClientId) {
+    state.common.display_grants.forget(id);
     let asks = &mut state.common.display_asks;
     let Some(asker) = asks.clients.get_mut(id) else {
         return;
     };
     asker.gone = true;
-    let subject = asker.subject.clone();
     let dropped: Vec<Held> = asker
         .held
         .iter_mut()
-        .filter(|(ask, _)| !outlives_client(&subject, **ask))
+        .filter(|(ask, _)| !outlives_client(**ask))
         .flat_map(|(_, q)| q.drain(..))
         .collect();
     for held in dropped {
@@ -999,19 +1068,14 @@ mod tests {
         assert!(!through_focus((Class::Screen, false), &app, Some(&owner)));
     }
 
-    /// A paste on a connection of its own hangs up once it has asked and waits on its pipe, so
-    /// dropping the read there made every paste at "Ask me first" come back empty.
+    /// A paste on a connection of its own hangs up once it has asked and waits on its pipe, and
+    /// `wtype` once it has sent its keys: dropping what they held made both fail at "Ask me first".
     #[test]
-    fn a_held_paste_and_an_agents_keys_outlive_their_client() {
-        let app = Subject::App("org.example.Mail".into());
-        let agent = Subject::Agent("kora".into());
-        for subject in [&app, &agent] {
-            assert!(outlives_client(subject, (Class::Clipboard, false)));
-            assert!(!outlives_client(subject, (Class::Clipboard, true)));
-            assert!(!outlives_client(subject, (Class::Screen, false)));
-        }
-        assert!(outlives_client(&agent, (Class::Input, true)));
-        assert!(!outlives_client(&app, (Class::Input, true)));
+    fn a_held_paste_and_held_keys_outlive_their_client() {
+        assert!(outlives_client((Class::Clipboard, false)));
+        assert!(outlives_client((Class::Input, true)));
+        assert!(!outlives_client((Class::Clipboard, true)));
+        assert!(!outlives_client((Class::Screen, false)));
     }
 
     #[test]

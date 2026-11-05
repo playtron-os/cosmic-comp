@@ -125,14 +125,36 @@ expect_paste() {
 	exit 1
 }
 
+# expect_type NAME RESULT: keys a boxed app sends on a connection that hangs up at once, as wtype.
+expect_type() {
+	local got
+	got=$(nested "$bin" type one.playtron.Workspaces.App "$app")
+	[ "$got" = "type=$2" ] && { echo "ok $1"; return; }
+	echo "FAILED $1: got $got, want type=$2" >&2
+	exit 1
+}
+
 # Only a workspace's boxed app is asked: elsewhere it has no rows and data control is hidden.
 if [ -n "$ws" ]; then
 	start_registry allow ""
 	expect_paste "a paste the person allows after its client hung up" pasted
+	expect_type "keys the person allows after their client hung up" typed
 	stop_registry
 	start_registry deny ""
 	expect_paste "a paste the person denies" empty
 	expect_paste "a paste into the app's own window, unasked" pasted window
+	expect_type "keys the person denies" nothing
+	stop_registry
+	# Off hides the virtual keyboard, and the compositor logs that refusal: nothing else would.
+	start_registry off input
+	# shellcheck disable=SC2086
+	expect "input off: a boxed app" "$(list ${askable#zwp_virtual_keyboard_manager_v1 })" "$refused" \
+		one.playtron.Workspaces.App "$app"
+	grep -q 'row that is off.*input' "$CC_STATE/comp.log" || {
+		echo "FAILED input off: the compositor did not log the refusal" >&2
+		exit 1
+	}
+	echo "ok input off: logged"
 	stop_registry
 	alive
 fi

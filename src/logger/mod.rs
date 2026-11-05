@@ -66,6 +66,8 @@ pub fn init_logger() -> Result<()> {
         // Which tier night shift landed on per output. One line per change, and
         // otherwise invisible in release, where the base filter is `warn`.
         (crate::backend::kms::NIGHT_SHIFT_LOG_TARGET, "info"),
+        // What a workspace app's guarded requests met: a line per question, answer or refusal.
+        (crate::display_grants::LOG_TARGET, "info"),
     ] {
         if unset(target) {
             filter = filter.add_directive(Directive::from_str(&format!("{target}={lvl}")).unwrap());
