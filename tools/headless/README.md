@@ -151,3 +151,13 @@ app the workspace registry boxed see of the guarded globals, and whether a clipb
 each goes through. It runs once without `COSMIC_WORKSPACES`, then with it while a stand-in
 registry is absent, comes, leaves, returns, predates display grants and adds a field to them.
 The boxed app has rows only inside a workspace slice; outside one, everything guarded is off.
+
+## Modal dialogs
+
+`tools/modal-check/check.sh` opens a window that exports itself with xdg-foreign, a dialog
+from another client that imports it and asks to be modal (xdg-dialog), as Explorer's file
+picker does over an app, and a third window that takes the keyboard. It fails unless a click on
+the parent focuses the dialog, keeps it in front and never reaches the parent, a scroll over the
+parent never reaches it either, both reach the parent again once the dialog is gone, and a
+dialog whose parent app exits is told its parent was destroyed. Touch is not covered: Xvfb has
+no touch device. Inside a Kora workspace, pass a stand-in registry in `CC_BUS_SERVICE`.

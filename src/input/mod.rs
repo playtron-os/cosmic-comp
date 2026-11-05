@@ -1447,8 +1447,11 @@ impl State {
                             }
                         }
                         let ptr = seat.get_pointer().unwrap();
-                        ptr.axis(self, frame);
-                        ptr.frame(self);
+                        // A window with a modal dialog open does not scroll.
+                        if ptr.is_grabbed() || !self.pointer_over_modal_parent(&seat) {
+                            ptr.axis(self, frame);
+                            ptr.frame(self);
+                        }
                     }
                 }
             }
@@ -1755,7 +1758,7 @@ impl State {
 
                     let position =
                         transform_output_mapped_position(&output, &event, shell.zoom_state());
-                    let under = State::surface_under(position, &output, &shell)
+                    let mut under = State::surface_under(position, &output, &shell)
                         .map(|(target, pos)| (target, pos.as_logical()));
 
                     // Determine which window/surface should receive keyboard focus.
@@ -1838,6 +1841,10 @@ impl State {
                     if !touch.is_grabbed()
                         && let Some(target) = keyboard_focus_target
                     {
+                        // A window with a modal dialog open takes no touches, as with clicks.
+                        if self.common.shell.read().modal_child_of(&target).is_some() {
+                            under = None;
+                        }
                         Shell::set_focus(self, Some(&target), &seat, Some(serial), false);
                     }
 
@@ -2963,6 +2970,14 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Whether the pointer is over a window with a modal dialog open, which takes no input.
+    fn pointer_over_modal_parent(&self, seat: &Seat<State>) -> bool {
+        let position = seat.get_pointer().unwrap().current_location().as_global();
+        let shell = self.common.shell.read();
+        State::element_under(position, &seat.active_output(), &shell, seat)
+            .is_some_and(|target| shell.modal_child_of(&target).is_some())
     }
 
     #[profiling::function]
