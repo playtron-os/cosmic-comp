@@ -5,14 +5,16 @@
 //! `globals=a,b,...` and `copy=...`.
 //!
 //! `grants-check paste ENGINE APP_ID [window]`: whether a boxed app's paste on a connection that
-//! hangs up once it has asked gets the session's text; see [`paste`]. `grants-check box ENGINE
-//! APP_ID` keeps such a socket for a real app; see [`boxed`].
+//! hangs up once it has asked gets the session's text; see [`paste`]. `grants-check type ENGINE
+//! APP_ID`: whether keys sent on such a connection reach the app's window; see [`type_key`].
+//! `grants-check box ENGINE APP_ID` keeps such a socket for a real app; see [`boxed`].
 //!
-//! `grants-check registry current|older|newer|allow|deny WORKSPACE APP_ID CLASS,...`: a stand-in
-//! workspace registry on the session bus. `current` lists APP_ID's CLASSES open in WORKSPACE and
-//! answers every held request with a deny; `older` is a released registry without either call;
-//! `newer` adds a field to each row. `allow` and `deny` also show WORKSPACE on screen and answer
-//! each held request that way after half a second, as the person would.
+//! `grants-check registry current|off|older|newer|allow|deny WORKSPACE APP_ID CLASS,...`: a
+//! stand-in workspace registry on the session bus. `current` lists APP_ID's CLASSES open in
+//! WORKSPACE and answers every held request with a deny; `off` lists them off; `older` is a
+//! released registry without either call; `newer` adds a field to each row. `allow` and `deny`
+//! also show WORKSPACE on screen and answer each held request that way after half a second, as the
+//! person would.
 
 use std::{
     collections::HashMap,
@@ -48,6 +50,10 @@ use wayland_protocols::{
         wp_security_context_v1::WpSecurityContextV1,
     },
     xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
 };
 
 /// The globals whose filters grants or the boxing change.
@@ -92,6 +98,8 @@ delegate_noop!(App: ignore wl_seat::WlSeat);
 delegate_noop!(App: WpSecurityContextManagerV1);
 delegate_noop!(App: WpSecurityContextV1);
 delegate_noop!(App: ExtDataControlManagerV1);
+delegate_noop!(App: ZwpVirtualKeyboardManagerV1);
+delegate_noop!(App: ZwpVirtualKeyboardV1);
 
 impl Dispatch<ExtDataControlSourceV1, ()> for App {
     fn event(
@@ -313,11 +321,12 @@ impl Drop for Tagged {
     }
 }
 
-/// A window of the boxed app, and whether it has the keyboard.
+/// A window of the boxed app, whether it has the keyboard, and where the keys it gets go.
 #[derive(Default)]
 struct Window {
     configured: bool,
     focused: bool,
+    keys: Option<std::sync::mpsc::Sender<u32>>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Window {
@@ -383,14 +392,23 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Window {
         match event {
             wl_keyboard::Event::Enter { .. } => state.focused = true,
             wl_keyboard::Event::Leave { .. } => state.focused = false,
+            wl_keyboard::Event::Key {
+                key,
+                state: wayland_client::WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } => {
+                if let Some(keys) = &state.keys {
+                    let _ = keys.send(key);
+                }
+            }
             _ => {}
         }
     }
 }
 
 /// Map a window on its own connection of the tagged socket, and wait for it to get the
-/// keyboard. Returns the connection, kept open while the paste runs.
-fn open_window(socket: &Tagged) -> Connection {
+/// keyboard; the keys it gets go to `keys`. Returns the connection, kept open while the check runs.
+fn open_window(socket: &Tagged, keys: Option<std::sync::mpsc::Sender<u32>>) -> Connection {
     const SIZE: i32 = 200;
     let conn = socket.connect();
     let (globals, mut queue) =
@@ -414,7 +432,10 @@ fn open_window(socket: &Tagged) -> Connection {
     let toplevel = xdg.get_toplevel(&qh, ());
     toplevel.set_title("grants-check".into());
     surface.commit();
-    let mut window = Window::default();
+    let mut window = Window {
+        keys,
+        ..Window::default()
+    };
     pump_window(&mut queue, &mut window, |w| w.configured);
     if !window.configured {
         fail("the window was never configured");
@@ -501,7 +522,7 @@ fn paste(engine: &str, app_id: &str, window: bool) {
     let session = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
     let (_session, session_globals, mut session_queue) = connect(session);
     let socket = Tagged::new(&session_globals, &mut session_queue, engine, app_id);
-    let _window = window.then(|| open_window(&socket));
+    let _window = window.then(|| open_window(&socket, None));
 
     let read = {
         let (conn, globals, mut queue) = connect(socket.connect());
@@ -542,6 +563,60 @@ fn paste(engine: &str, app_id: &str, window: bool) {
         Err(_) => "waiting",
     };
     println!("paste={result}");
+}
+
+/// `grants-check type ENGINE APP_ID`: a boxed app types a key through the virtual keyboard on a
+/// connection of its own that hangs up at once, as `wtype` does, while its own window has the
+/// keyboard. Prints `type=typed` once the window gets the key, else `type=nothing` after 10 s.
+fn type_key(engine: &str, app_id: &str) {
+    // `a` on an evdev keyboard.
+    const KEY: u32 = 30;
+    nested_only();
+    let session = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
+    let (_session, session_globals, mut session_queue) = connect(session);
+    let socket = Tagged::new(&session_globals, &mut session_queue, engine, app_id);
+    let (keys, typed) = std::sync::mpsc::channel();
+    let _window = open_window(&socket, Some(keys));
+    {
+        let (conn, globals, mut queue) = connect(socket.connect());
+        let qh = queue.handle();
+        let manager: ZwpVirtualKeyboardManagerV1 = globals
+            .bind(&qh, 1..=1, ())
+            .unwrap_or_else(|_| fail("the boxed app has no virtual keyboard"));
+        let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).unwrap();
+        let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+        let keymap = b"xkb_keymap {\n  xkb_keycodes { include \"evdev\" };\n  xkb_types { include \"complete\" };\n  xkb_compatibility { include \"complete\" };\n  xkb_symbols { include \"pc+us\" };\n};\n\0";
+        let path = socket.path.with_extension("keymap");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap_or_else(|_| fail("cannot make a keymap"));
+        let _ = std::fs::remove_file(&path);
+        (&file).write_all(keymap).unwrap();
+        keyboard.keymap(
+            wl_keyboard::KeymapFormat::XkbV1.into(),
+            file.as_fd(),
+            keymap.len() as u32,
+        );
+        let mut app = App::default();
+        for state in [1, 0] {
+            keyboard.key(0, KEY, state);
+            queue
+                .roundtrip(&mut app)
+                .unwrap_or_else(|_| fail("the compositor hung up"));
+        }
+        keyboard.destroy();
+        drop((queue, conn));
+    }
+    let result = match typed.recv_timeout(Duration::from_secs(10)) {
+        Ok(KEY) => "typed",
+        Ok(_) => "other",
+        Err(_) => "nothing",
+    };
+    println!("type={result}");
 }
 
 /// `grants-check box ENGINE APP_ID`: a tagged socket for a real app, until stdin closes. Prints
@@ -652,20 +727,27 @@ fn registry(kind: &str, workspace: &str, app_id: &str, open: &str) -> zbus::Resu
     if runtime.is_empty() || runtime.starts_with("/run/user/") || !bus.contains(&runtime) {
         fail("DBUS_SESSION_BUS_ADDRESS must be the nested session's private bus");
     }
+    let classes: Vec<String> = open
+        .split(',')
+        .filter(|c| !c.is_empty())
+        .map(str::to_owned)
+        .collect();
+    // `off` turns the classes off instead of opening them.
+    let (open, off) = match kind {
+        "off" => (Vec::new(), classes),
+        _ => (classes, Vec::new()),
+    };
     let rows = vec![(
         workspace.to_owned(),
         "app".to_owned(),
         app_id.to_owned(),
-        open.split(',')
-            .filter(|c| !c.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        Vec::new(),
+        open,
+        off,
     )];
     let path = "/one/playtron/Workspaces1";
     let builder = zbus::blocking::connection::Builder::session()?;
     let builder = match kind {
-        "current" => builder
+        "current" | "off" => builder
             .serve_at(path, Current(rows))?
             .serve_at(path, Deny)?,
         "older" => builder.serve_at(path, Older)?,
@@ -676,7 +758,7 @@ fn registry(kind: &str, workspace: &str, app_id: &str, open: &str) -> zbus::Resu
         "deny" => builder
             .serve_at(path, Shown(rows))?
             .serve_at(path, Answers("deny"))?,
-        _ => fail("registry: current, older, newer, allow or deny"),
+        _ => fail("registry: current, off, older, newer, allow or deny"),
     };
     let _conn = builder.name("one.playtron.Workspaces1")?.build()?;
     println!("registry ready");
@@ -693,6 +775,7 @@ fn main() {
         ["client", engine, app_id] => client(Some((engine, app_id))),
         ["paste", engine, app_id] => paste(engine, app_id, false),
         ["paste", engine, app_id, "window"] => paste(engine, app_id, true),
+        ["type", engine, app_id] => type_key(engine, app_id),
         ["box", engine, app_id] => boxed(engine, app_id),
         ["registry", kind, workspace, app_id, open] => {
             if let Err(err) = registry(kind, workspace, app_id, open) {
@@ -700,8 +783,8 @@ fn main() {
             }
         }
         _ => fail(
-            "usage: client [ENGINE APP_ID] | paste ENGINE APP_ID [window] | box ENGINE APP_ID \
-             | registry KIND WORKSPACE APP_ID CLASSES",
+            "usage: client [ENGINE APP_ID] | paste ENGINE APP_ID [window] | type ENGINE APP_ID \
+             | box ENGINE APP_ID | registry KIND WORKSPACE APP_ID CLASSES",
         ),
     }
 }
