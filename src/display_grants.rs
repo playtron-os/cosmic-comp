@@ -8,8 +8,9 @@
 //! offers the class's request protocols and holds the first request that
 //! does something (a key, a frame, reading or setting the clipboard) while the
 //! registry asks the person (`JudgeDisplay`). On allow the held requests
-//! replay; on deny they fail as the protocol can, and later ones are refused
-//! unasked until the row changes. The window list and window management have
+//! replay; on deny they fail as the protocol can. The registry keeps an app's
+//! Deny as its row at Off; until that arrives, and for the agent, later ones
+//! are refused unasked until the row changes. The window list and window management have
 //! no request to hold, so they open only at the row's top level.
 //!
 //! Keys of a boxed client reach a window only while one of its own
@@ -272,9 +273,8 @@ impl DisplayGrants {
         move |client: &Client| grants.may(client, class, false)
     }
 
-    /// Take `table`, and disconnect every boxed client that holds an object
-    /// of a class it can no longer use: one turned off, or an events-only one
-    /// no longer open. Returns the table it replaced.
+    /// Take `table`, and disconnect every boxed client that holds an object it can no longer
+    /// use (see [`lost`]). Returns the table it replaced.
     pub fn replace(&self, table: Table, dh: &DisplayHandle) -> Table {
         let old = std::mem::replace(&mut *self.table.write(), table);
         let new = self.table.read().clone();
@@ -291,24 +291,7 @@ impl DisplayGrants {
             let Some(subject) = state.security_context.as_ref().and_then(Subject::of) else {
                 continue;
             };
-            let workspace = state.workspace.as_deref();
-            let lost: Vec<&'static str> = Class::ALL
-                .into_iter()
-                .flat_map(|c| {
-                    let (was, now) = (
-                        old.standing(workspace, &subject, c),
-                        new.standing(workspace, &subject, c),
-                    );
-                    let mut gone: Vec<&'static str> = Vec::new();
-                    if now == Standing::Off && was != Standing::Off {
-                        gone.extend(c.askable());
-                    }
-                    if now != Standing::Open && was == Standing::Open || now == Standing::Off {
-                        gone.extend(c.open_only());
-                    }
-                    gone
-                })
-                .collect();
+            let lost = lost(&old, &new, state.workspace.as_deref(), &subject);
             if !lost.is_empty() && holds_any(dh, &id, &lost) {
                 info!(
                     target: LOG_TARGET,
@@ -354,6 +337,23 @@ pub fn boxed(client: &Client) -> bool {
         .and_then(|state| state.security_context.as_ref())
         .and_then(Subject::of)
         .is_some()
+}
+
+/// What a boxed client may no longer hold once `old` becomes `new`: the events-only protocols of
+/// a class no longer open. A class turned off refuses each later request of the others instead,
+/// so a Deny the registry keeps as Off leaves the app running.
+fn lost(old: &Table, new: &Table, workspace: Option<&str>, subject: &Subject) -> Vec<&'static str> {
+    Class::ALL
+        .into_iter()
+        .filter(|&c| {
+            let (was, now) = (
+                old.standing(workspace, subject, c),
+                new.standing(workspace, subject, c),
+            );
+            now != Standing::Open && was == Standing::Open || now == Standing::Off
+        })
+        .flat_map(|c| c.open_only().iter().copied())
+        .collect()
 }
 
 /// Whether `client` holds an object of any of `interfaces`.
@@ -1076,6 +1076,30 @@ mod tests {
         assert!(outlives_client((Class::Input, true)));
         assert!(!outlives_client((Class::Clipboard, true)));
         assert!(!outlives_client((Class::Screen, false)));
+    }
+
+    /// The registry keeps an app's Deny as its row at Off: that must not cost the app its
+    /// connection, so only the events-only protocols of a class that closes are taken back.
+    #[test]
+    fn a_class_turned_off_takes_back_only_its_events_only_protocols() {
+        let mail = Subject::App("org.example.Mail".into());
+        let every = ["input", "screen", "clipboard"];
+        let ask = Table::default();
+        let off = Table::from_grants(vec![grant("work", "app", "org.example.Mail", &[], &every)]);
+        let open = Table::from_grants(vec![grant("work", "app", "org.example.Mail", &every, &[])]);
+        let events: Vec<&str> = Class::ALL
+            .into_iter()
+            .flat_map(|c| c.open_only().iter().copied())
+            .collect();
+        for (from, to) in [(&ask, &off), (&open, &off), (&open, &ask)] {
+            let gone = lost(from, to, Some("work"), &mail);
+            assert_eq!(gone, events);
+            for class in Class::ALL {
+                assert!(class.askable().iter().all(|i| !gone.contains(i)));
+            }
+        }
+        assert!(lost(&ask, &open, Some("work"), &mail).is_empty());
+        assert!(lost(&off, &ask, Some("work"), &mail).is_empty());
     }
 
     #[test]

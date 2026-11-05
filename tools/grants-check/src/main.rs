@@ -7,7 +7,9 @@
 //! `grants-check paste ENGINE APP_ID [window]`: whether a boxed app's paste on a connection that
 //! hangs up once it has asked gets the session's text; see [`paste`]. `grants-check type ENGINE
 //! APP_ID`: whether keys sent on such a connection reach the app's window; see [`type_key`].
-//! `grants-check box ENGINE APP_ID` keeps such a socket for a real app; see [`boxed`].
+//! `grants-check hold ENGINE APP_ID` copies through data control taken before its row changed;
+//! see [`hold`]. `grants-check box ENGINE APP_ID` keeps such a socket for a real app; see
+//! [`boxed`].
 //!
 //! `grants-check registry current|off|older|newer|allow|deny WORKSPACE APP_ID CLASS,...`: a
 //! stand-in workspace registry on the session bus. `current` lists APP_ID's CLASSES open in
@@ -619,6 +621,59 @@ fn type_key(engine: &str, app_id: &str) {
     println!("type={result}");
 }
 
+/// `grants-check hold ENGINE APP_ID`: a boxed app takes data control and prints `held`; once stdin
+/// has a line it copies through it. Prints `copy=kept`, `copy=refused`, or `copy=disconnected`
+/// when the compositor hung up on it meanwhile.
+fn hold(engine: &str, app_id: &str) {
+    nested_only();
+    let session = Connection::connect_to_env().unwrap_or_else(|_| fail("cannot connect"));
+    let (_session, session_globals, mut session_queue) = connect(session);
+    let socket = Tagged::new(&session_globals, &mut session_queue, engine, app_id);
+    let (_conn, globals, mut queue) = connect(socket.connect());
+    let qh = queue.handle();
+    let manager: ExtDataControlManagerV1 = globals
+        .bind(&qh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the boxed app has no data control"));
+    let seat: wl_seat::WlSeat = globals.bind(&qh, 1..=1, ()).unwrap();
+    let device = manager.get_data_device(&seat, &qh, ());
+    let mut app = App::default();
+    queue
+        .roundtrip(&mut app)
+        .unwrap_or_else(|_| fail("the compositor hung up"));
+    println!("held");
+    let _ = std::io::stdin().read_line(&mut String::new());
+    let mime = format!("text/x-grants-check-{}", std::process::id());
+    let source = manager.create_data_source(&qh, ());
+    source.offer(mime.clone());
+    device.set_selection(Some(&source));
+    let end = Instant::now() + Duration::from_secs(2);
+    while !app.cancelled && Instant::now() < end {
+        if queue.roundtrip(&mut app).is_err() {
+            println!("copy=disconnected");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let sqh = session_queue.handle();
+    let manager: ExtDataControlManagerV1 = session_globals
+        .bind(&sqh, 1..=1, ())
+        .unwrap_or_else(|_| fail("the session has no data control"));
+    let seat: wl_seat::WlSeat = session_globals.bind(&sqh, 1..=1, ()).unwrap();
+    let mut observer = App::default();
+    let _device = manager.get_data_device(&seat, &sqh, ());
+    pump(
+        &mut session_queue,
+        &mut observer,
+        Duration::from_secs(3),
+        |o| o.selection.is_some(),
+    );
+    let copy = match observer.selection {
+        Some(mimes) if mimes.contains(&mime) => "kept",
+        _ => "refused",
+    };
+    println!("copy={copy}");
+}
+
 /// `grants-check box ENGINE APP_ID`: a tagged socket for a real app, until stdin closes. Prints
 /// its name, for the app's `WAYLAND_DISPLAY`.
 fn boxed(engine: &str, app_id: &str) {
@@ -776,6 +831,7 @@ fn main() {
         ["paste", engine, app_id] => paste(engine, app_id, false),
         ["paste", engine, app_id, "window"] => paste(engine, app_id, true),
         ["type", engine, app_id] => type_key(engine, app_id),
+        ["hold", engine, app_id] => hold(engine, app_id),
         ["box", engine, app_id] => boxed(engine, app_id),
         ["registry", kind, workspace, app_id, open] => {
             if let Err(err) = registry(kind, workspace, app_id, open) {
@@ -784,7 +840,7 @@ fn main() {
         }
         _ => fail(
             "usage: client [ENGINE APP_ID] | paste ENGINE APP_ID [window] | type ENGINE APP_ID \
-             | box ENGINE APP_ID | registry KIND WORKSPACE APP_ID CLASSES",
+             | hold ENGINE APP_ID | box ENGINE APP_ID | registry KIND WORKSPACE APP_ID CLASSES",
         ),
     }
 }

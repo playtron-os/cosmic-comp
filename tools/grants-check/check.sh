@@ -156,6 +156,30 @@ if [ -n "$ws" ]; then
 	}
 	echo "ok input off: logged"
 	stop_registry
+	# The registry keeps an app's Deny as its row at Off: the app's data control, taken before,
+	# stays connected, and its later copy is refused unasked with a line in the log.
+	start_registry current clipboard
+	coproc HOLD { nested "$bin" hold one.playtron.Workspaces.App "$app"; }
+	read -r said <&"${HOLD[0]}"
+	[ "$said" = held ] || { echo "FAILED the holding client: $said" >&2; exit 1; }
+	stop_registry
+	start_registry off clipboard
+	asked=$(grep -c 'holding a request' "$CC_STATE/comp.log" || true)
+	sleep 1
+	echo go >&"${HOLD[1]}"
+	read -r got <&"${HOLD[0]}"
+	wait "$HOLD_PID" 2>/dev/null || true
+	[ "$got" = copy=refused ] || { echo "FAILED a copy after the row turned off: got $got" >&2; exit 1; }
+	grep -q 'refused held requests.*its row is off' "$CC_STATE/comp.log" || {
+		echo "FAILED a copy after the row turned off: no refusal in the log" >&2
+		exit 1
+	}
+	[ "$(grep -c 'holding a request' "$CC_STATE/comp.log" || true)" = "$asked" ] || {
+		echo "FAILED a copy after the row turned off was asked about" >&2
+		exit 1
+	}
+	echo "ok a row turned off refuses a connected client's copy, logged and unasked"
+	stop_registry
 	alive
 fi
 echo "grants: ok"
