@@ -1,3 +1,11 @@
+## [1.64.6](https://github.com/playtron-os/cosmic-comp/compare/v1.64.5...v1.64.6) (2026-11-05)
+
+
+### Bug Fixes
+
+* **security-context:** ask before an app's wtype types, and log refusals ([a6e6c11](https://github.com/playtron-os/cosmic-comp/commit/a6e6c11faae1468e2a8caf25b870cec8754b5caf))
+* **security-context:** keep an app connected when its row turns off ([fcfbbf9](https://github.com/playtron-os/cosmic-comp/commit/fcfbbf955fd1bce244a22e31d91f00b8eb77c523))
+
 ## [1.64.5](https://github.com/playtron-os/cosmic-comp/compare/v1.64.4...v1.64.5) (2026-11-04)
 
 
