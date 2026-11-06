@@ -1,0 +1,11 @@
+[package]
+name = "x11-activation-check"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace]
+
+[dependencies]
+x11rb = "0.13"
