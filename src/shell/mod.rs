@@ -8810,6 +8810,12 @@ impl Shell {
         let was_activated = workspace_handle.is_some()
             && (workspace_output != seat.active_output() || active_handle != workspace.handle);
         let workspace_handle = workspace.handle;
+        // A valid token, or an X11 request made before the window mapped, for the desktop it
+        // maps on: the person started or raised it there.
+        let activated_here = matches!(
+            pending_activation,
+            Some(ActivationContext::Workspace(handle)) if handle == workspace_handle
+        );
         let is_dialog = layout::is_dialog(&window);
         let floating_exception = layout::has_floating_exception(&self.tiling_exceptions, &window);
 
@@ -9032,7 +9038,7 @@ impl Shell {
         {
             // Focus stealing prevention: only grant immediate focus if the window
             // was user-initiated (activation token), workspace was empty, or it's a dialog.
-            if workspace_empty || was_activated || is_dialog {
+            if workspace_empty || was_activated || activated_here || is_dialog {
                 Some(KeyboardFocusTarget::from(mapped.clone()))
             } else {
                 self.append_focus_stack(mapped, &seat);

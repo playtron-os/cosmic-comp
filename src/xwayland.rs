@@ -994,6 +994,12 @@ impl XwmHandler for State {
         shell
             .pending_windows
             .retain(|p| p.surface.x11_surface() != Some(&window));
+        // X reuses window ids: a later window must not inherit this one's activation.
+        shell
+            .pending_activations
+            .remove(&crate::shell::ActivationKey::X11(crate::shell::X11Key::of(
+                &window,
+            )));
 
         let seat = shell.seats.last_active().clone();
         if shell
@@ -1695,6 +1701,25 @@ impl XwmHandler for State {
         _timestamp: u32,
         _currently_active_window: Option<X11Surface>,
     ) {
+        // Some clients ask as soon as they see themselves mapped, before their first frame
+        // maps them here: honour it then, or the request is lost and the window opens behind.
+        {
+            let mut shell = self.common.shell.write();
+            if shell
+                .pending_windows
+                .iter()
+                .any(|pending| pending.surface.x11_surface() == Some(&window))
+            {
+                let output = shell.seats.last_active().active_output();
+                if let Some(handle) = shell.active_space(&output).map(|space| space.handle) {
+                    shell.pending_activations.insert(
+                        crate::shell::ActivationKey::X11(crate::shell::X11Key::of(&window)),
+                        ActivationContext::Workspace(handle),
+                    );
+                }
+                return;
+            }
+        }
         if let Some(surface) = window.wl_surface() {
             self.activate_surface(&surface, None);
         }
