@@ -1,3 +1,15 @@
+# [1.66.0](https://github.com/playtron-os/cosmic-comp/compare/v1.65.0...v1.66.0) (2026-11-06)
+
+
+### Bug Fixes
+
+* **xwayland:** open a portal dialog unparented over an unmapped X11 window ([ed8e9a9](https://github.com/playtron-os/cosmic-comp/commit/ed8e9a96faa1bee2b6a87ae631df3460a110a94e))
+
+
+### Features
+
+* **xwayland:** let a portal dialog take an X11 window as its parent ([b46924b](https://github.com/playtron-os/cosmic-comp/commit/b46924b05719beb41016ea2dccca16b5e19bcbe3))
+
 # [1.65.0](https://github.com/playtron-os/cosmic-comp/compare/v1.64.6...v1.65.0) (2026-11-05)
 
 
