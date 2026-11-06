@@ -11,7 +11,8 @@ use icetron_p::icetron_themes::icons;
 use icetron_p::icetron_themes::{TextRole, WindowHeaderStyle};
 use icetron_p::prelude::{
     Source, animated_opacity, animated_tooltip, app_header, hairline, halo_close_hover,
-    header_height_for, header_render_height_for, measure_text_width, styled_text,
+    header_control_metrics, header_height_for, header_render_height_for, measure_text_width,
+    styled_text,
 };
 use icetron_p::{
     animation::transition::ButtonTransition,
@@ -163,8 +164,23 @@ pub(crate) fn halo_pill_rows(theme: &CompTheme) -> (i32, i32) {
     )
 }
 
+/// Where the palette hangs from: the Halo's pill, or the integrated header's bottom edge.
 pub(crate) fn halo_pill_bottom(theme: &CompTheme) -> i32 {
-    halo_pill_rows(theme).1
+    if uses_integrated_header(theme) {
+        ssd_header_height(theme) as i32
+    } else {
+        halo_pill_rows(theme).1
+    }
+}
+
+/// Whether the active theme selects design #308's integrated header.
+pub fn uses_integrated_header(theme: &CompTheme) -> bool {
+    theme.window_header_style() == WindowHeaderStyle::Integrated
+}
+
+/// Whether the shell owns the window's commands: the palette, Super+K and the app's request.
+pub fn uses_shell_palette(theme: &CompTheme) -> bool {
+    theme.window_header_style().shell_owned()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,6 +234,21 @@ pub(crate) fn halo_min_window_size(
     smithay::utils::Size::from((width.ceil() as i32, metrics.pill_height().ceil() as i32))
 }
 
+/// The integrated header's overflow tier (WINDOW-CHROME.md "Geometry and overflow").
+pub(crate) fn integrated_tier(width: f32, panel: bool) -> u8 {
+    if panel {
+        4
+    } else if width >= 800.0 {
+        1
+    } else if width >= 600.0 {
+        2
+    } else if width >= 400.0 {
+        3
+    } else {
+        4
+    }
+}
+
 pub(crate) fn halo_tier(width: f32, panel: bool) -> u8 {
     if panel {
         4
@@ -263,6 +294,8 @@ pub struct TrayEntry<Message> {
     pub label: String,
     /// A stateful command that is currently running.
     pub on: bool,
+    /// Baseline chrome (Screenshot, Record) that the integrated header shows at every width.
+    pub fixed: bool,
 }
 
 /// A control the keyboard can stand on in a Halo, in the order Tab walks them.
@@ -294,7 +327,7 @@ fn ringed<'b, Message: Clone + 'b>(
     };
     let on = shown && focused == control;
     icetron_p::components::focus_ring::focus_ring(element, &**theme)
-        .radius(theme.halo_style().control_size / 2.0)
+        .radius(header_control_metrics(&**theme).control_size / 2.0)
         .force_shown(on)
         .hidden(!on)
         .into()
@@ -583,6 +616,9 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         if uses_halo_header(theme) {
             return self.into_halo_element(theme);
         }
+        if uses_integrated_header(theme) {
+            return self.into_integrated_element(theme);
+        }
         let window_header_style = theme.window_header_style();
 
         let mut header = app_header(&**theme)
@@ -673,6 +709,219 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 ..Default::default()
             })
             .into()
+    }
+
+    /// Design #308: one opaque row inside the frame with a passive glyph, the
+    /// app's name and the controls its tier keeps. No tier has a ⋯ button.
+    fn into_integrated_element(
+        self,
+        theme: &'a CompTheme,
+    ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+        let metrics = header_control_metrics(&**theme);
+        let tier = integrated_tier(self.window_width.unwrap_or(f32::INFINITY), self.panel);
+        let wide = tier <= 2;
+        let focus = self
+            .keyboard_focus
+            .map(|control| (control, !self.menu_open));
+        let (name, selection) = self.identity();
+        let name = name.to_owned();
+        let selection = selection.map(str::to_owned);
+
+        let app_icon = self.app_icon.clone().unwrap_or(AppIcon::Svg {
+            bytes: icons::APP_WINDOW.bytes,
+            symbolic: true,
+        });
+        let mark = app_mark(
+            &app_icon,
+            theme.spacing_5(),
+            theme.text_primary(),
+            Some(theme.icon_stroke()),
+        );
+        // At the narrowest tier a live run takes the glyph as its status action.
+        let glyph = match self.run.as_ref().filter(|_| tier == 4) {
+            Some((run, message)) => halo_glyph(
+                mark,
+                Some(message.clone()),
+                false,
+                self.menu_open,
+                run.verb.clone(),
+                Some(run.state),
+                theme,
+            ),
+            None => halo_glyph(
+                mark,
+                None,
+                false,
+                self.menu_open,
+                String::new(),
+                None,
+                theme,
+            ),
+        };
+        let mut name_style = theme.text_styles().role(TextRole::Body);
+        name_style.font_weight = metrics.title_font_weight;
+        let mut identity = row![
+            glyph,
+            styled_text(name.clone(), name_style, theme.text_primary())
+                .wrapping(iced_widget::text::Wrapping::None)
+                .ellipsis(iced_widget::text::Ellipsis::End),
+        ]
+        .spacing(theme.spacing_2())
+        .align_y(Alignment::Center);
+        if let Some(selection) = selection.as_deref().filter(|_| tier <= 2) {
+            identity = identity.push(
+                styled_text(
+                    selection.to_owned(),
+                    theme.text_styles().role(TextRole::Caption),
+                    theme.text_secondary(),
+                )
+                .wrapping(iced_widget::text::Wrapping::None)
+                .ellipsis(iced_widget::text::Ellipsis::End),
+            );
+        }
+        if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
+            let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
+            identity = identity.push(ringed(focus, HaloControl::Chip, chip, theme));
+        }
+        let identity_tip = match selection.as_deref() {
+            Some(selection) => format!("{name} — {selection}"),
+            None => name.clone(),
+        };
+        let identity = animated_tooltip(identity, identity_tip, &**theme)
+            .position(tooltip::Position::Bottom)
+            .enabled(!(self.menu_open || self.commands_open))
+            .animation_duration(std::time::Duration::ZERO)
+            .compositor_managed(true);
+
+        // Capture, active pins and enabled quick settings stay at every width;
+        // the rest of the optional actions only on wide headers.
+        let mut optional = row![]
+            .spacing(theme.spacing_0_5())
+            .align_y(Alignment::Center);
+        let mut any_optional = false;
+        for (idx, entry) in self.tray.iter().enumerate() {
+            if wide || entry.fixed || entry.on {
+                let button = halo_button(
+                    entry.icon,
+                    Some(entry.message.clone()),
+                    entry.label.clone(),
+                    HaloButtonRole::Tray { on: entry.on },
+                    self.menu_open,
+                    theme,
+                );
+                optional = optional.push(ringed(focus, HaloControl::Tray(idx), button, theme));
+                any_optional = true;
+            }
+        }
+        for (idx, entry) in self.quick_settings.iter().enumerate() {
+            if wide || entry.on {
+                let state = if entry.on {
+                    fl!("halo-quick-setting-on", name = entry.label.as_str())
+                } else {
+                    fl!("halo-quick-setting-off", name = entry.label.as_str())
+                };
+                let button = halo_button(
+                    entry.icon,
+                    Some(entry.message.clone()),
+                    state,
+                    HaloButtonRole::Toggle { on: entry.on },
+                    self.menu_open,
+                    theme,
+                );
+                optional =
+                    optional.push(ringed(focus, HaloControl::QuickSetting(idx), button, theme));
+                any_optional = true;
+            }
+        }
+        if let Some(message) = self.on_new_window.clone().filter(|_| wide) {
+            let button = halo_button(
+                icons::PLUS,
+                Some(message),
+                fl!("halo-new-window", app = name.as_str()),
+                HaloButtonRole::Window,
+                self.menu_open,
+                theme,
+            );
+            optional = optional.push(ringed(focus, HaloControl::NewWindow, button, theme));
+            any_optional = true;
+        }
+
+        let mut actions = row![]
+            .spacing(theme.spacing_0_5())
+            .align_y(Alignment::Center);
+        for (control, icon, message, label, shown) in [
+            (
+                HaloControl::Minimize,
+                icons::MINUS,
+                self.on_minimize.clone(),
+                fl!("halo-minimize"),
+                tier <= 3,
+            ),
+            (
+                HaloControl::Maximize,
+                icons::MAXIMIZE_2,
+                self.on_maximize.clone(),
+                fl!("halo-fill"),
+                tier <= 3,
+            ),
+            (
+                HaloControl::Fullscreen,
+                if self.fullscreen {
+                    icons::SHRINK
+                } else {
+                    icons::FULLSCREEN
+                },
+                self.on_fullscreen.clone(),
+                fullscreen_label(self.fullscreen),
+                wide,
+            ),
+            (
+                HaloControl::Close,
+                icons::X,
+                self.on_close.clone(),
+                fl!("halo-close"),
+                true,
+            ),
+        ] {
+            if let Some(message) = message.filter(|_| shown) {
+                let role = if control == HaloControl::Close {
+                    HaloButtonRole::Close
+                } else {
+                    HaloButtonRole::Window
+                };
+                let button = halo_button(icon, Some(message), label, role, self.menu_open, theme);
+                actions = actions.push(ringed(focus, control, button, theme));
+            }
+        }
+
+        let top_radius = if self.square_top {
+            0.0
+        } else {
+            theme.radius_window()[0]
+        };
+        let mut header = app_header(&**theme)
+            .window_header_style(WindowHeaderStyle::Integrated)
+            .title(Some(&self.title))
+            .focused(self.focused)
+            .hovered(true)
+            .is_windowed(!self.maximized)
+            .top_radius(top_radius)
+            .title_content(identity)
+            .halo_divider(any_optional)
+            .action_buttons(actions);
+        if any_optional {
+            header = header.tray(optional);
+        }
+        if let Some(message) = self.on_drag {
+            header = header.on_drag(message);
+        }
+        if let Some(message) = self.on_maximize {
+            header = header.on_toggle_window(message);
+        }
+        if let Some(message) = self.on_right_click {
+            header = header.on_right_click(message);
+        }
+        header.into()
     }
 
     fn into_halo_element(
@@ -1050,7 +1299,7 @@ fn halo_glyph<'a, Message: Clone + 'static>(
     status: Option<RunState>,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
-    let size = theme.halo_style().control_size;
+    let size = header_control_metrics(&**theme).control_size;
     let radius = theme.radii_max();
     let mut content = container(mark)
         .align_x(Alignment::Center)
@@ -1116,7 +1365,7 @@ fn halo_chip<'a, Message: Clone + 'static>(
     menu_open: bool,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
-    let size = theme.halo_style().control_size;
+    let size = header_control_metrics(&**theme).control_size;
     let color = run_color(run.state, theme);
     let dot = run_dot(run.state, HALO_CHIP_DOT_PX, theme);
     let content: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> = if bare {
@@ -1206,7 +1455,7 @@ fn halo_button<'a, Message: Clone + 'static>(
     menu_open: bool,
     theme: &'a CompTheme,
 ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
-    let metrics = theme.halo_style();
+    let metrics = header_control_metrics(&**theme);
     let active = matches!(role, HaloButtonRole::Toggle { on: true });
     let icon_size = match role {
         HaloButtonRole::Tray { .. } | HaloButtonRole::Toggle { .. } => metrics.glyph_icon_size,
@@ -1317,6 +1566,7 @@ pub(crate) fn capture_tray(recording: bool) -> Vec<TrayEntry<()>> {
             message: (),
             label: fl!("halo-screenshot-window"),
             on: false,
+            fixed: true,
         },
         TrayEntry {
             icon: icons::CIRCLE,
@@ -1327,6 +1577,7 @@ pub(crate) fn capture_tray(recording: bool) -> Vec<TrayEntry<()>> {
                 fl!("window-menu-record")
             },
             on: recording,
+            fixed: true,
         },
     ]
 }
@@ -1339,6 +1590,7 @@ pub(crate) fn hidden_files(on: bool) -> Vec<TrayEntry<()>> {
         message: (),
         label: "Show hidden files".to_owned(),
         on,
+        fixed: false,
     }]
 }
 
@@ -1421,12 +1673,14 @@ mod tests {
                     message: 6,
                     label: String::new(),
                     on: false,
+                    fixed: false,
                 }])
                 .quick_settings(vec![TrayEntry {
                     icon: icons::EYE_OFF,
                     message: 7,
                     label: String::new(),
                     on: false,
+                    fixed: false,
                 }])
                 .window_width(width)
         };

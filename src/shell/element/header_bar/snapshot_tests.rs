@@ -1437,6 +1437,7 @@ fn the_tray_draws_the_pins_it_is_given_in_order() {
         message: (),
         label: String::new(),
         on: false,
+        fixed: false,
     };
     for pins in [
         vec![],
@@ -1666,4 +1667,170 @@ fn a_window_with_no_run_draws_no_run_marks() {
             assert!(run_dots(&mut renderer, HALO_STATUS_DOT_PX, color).is_empty());
         }
     }
+}
+
+fn integrated_theme(dark: bool) -> CompTheme {
+    let mut tokens = DEFAULT_THEME_PAIR.load(dark);
+    tokens.window_header_style = WindowHeaderStyle::Integrated;
+    CompTheme::new(Arc::new(tokens), dark)
+}
+
+/// Design #308: an opaque 40px row inside the frame, its top corners the window's,
+/// a 20px glyph in the text colour and 28px controls, and no ⋯ at any width.
+#[test]
+fn the_integrated_header_is_one_opaque_40px_row_inside_the_frame() {
+    for dark in [true, false] {
+        let theme = integrated_theme(dark);
+        assert_eq!(ssd_header_height(&theme), 40);
+        assert_eq!(ssd_header_overhang(&theme), 0);
+        assert_eq!(ssd_top_reserve(&theme), 40);
+        let width = 1000.0;
+        let (mut renderer, viewport, _cache) = layout_with(&theme, width, "Network", 1.0, |h| {
+            h.app_name("Kora Settings").on_commands(())
+        });
+        let radius = theme.radius_window()[0];
+        let bar = renderer
+            .layers()
+            .iter()
+            .flat_map(|layer| &layer.quads)
+            .find(|(quad, fill)| {
+                *fill == iced_core::Background::Color(theme.surface_2())
+                    && quad.bounds.width == width
+            })
+            .map(|(quad, _)| *quad)
+            .expect("the surface-2 row spans the window");
+        assert_eq!(bar.bounds.height, 40.0 - theme.divider_thickness());
+        assert_eq!(bar.border.radius.top_left, radius);
+        assert_eq!(bar.border.radius.bottom_left, 0.0);
+
+        let icons = control_icons(&mut renderer);
+        assert_eq!(
+            icons[0].width, 20.0,
+            "the app glyph is --size-app-glyph-header"
+        );
+        let close = icons.last().unwrap();
+        let metrics = header_control_metrics(&*theme);
+        assert_eq!(metrics.control_size, 28.0);
+        assert!(close.x + close.width <= width - theme.spacing_3() - 5.0);
+        assert_eq!(glyph_tints(&mut renderer)[0], theme.text_primary());
+        let (name, selection) = identity(&mut renderer, &theme);
+        assert_eq!(name.unwrap().drawn(), "Kora Settings");
+        assert_eq!(selection.unwrap().drawn(), "Network");
+
+        let mode = if dark { "dark" } else { "light" };
+        let pixels = match std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+            Some(dir) => save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("integrated-{mode}.png"),
+            ),
+            None => {
+                let mut pixels =
+                    tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height())
+                        .unwrap();
+                draw(
+                    &mut renderer,
+                    &viewport,
+                    &mut pixels,
+                    &[Rectangle::with_size(viewport.logical_size())],
+                );
+                pixels
+            }
+        };
+        assert_eq!(
+            pixels.pixel(0, 0).unwrap().alpha(),
+            0,
+            "the corner is the window's"
+        );
+        let fill = pixels.pixel(width as u32 / 2, 20).unwrap().demultiply();
+        let surface = theme.surface_2().into_rgba8();
+        // BGRA, as the compositor uploads it.
+        assert_eq!(
+            [fill.blue(), fill.green(), fill.red()],
+            [surface[0], surface[1], surface[2]]
+        );
+
+        if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+            let mut tokens = DEFAULT_THEME_PAIR.load(dark);
+            tokens.window_header_style = WindowHeaderStyle::Bar;
+            let bar = CompTheme::new(Arc::new(tokens), dark);
+            let (mut renderer, viewport, _cache) =
+                layout_with(&bar, width, "Network", 1.0, |h| h.app_name("Kora Settings"));
+            save(&mut renderer, &viewport, &dir, &format!("bar-{mode}.png"));
+        }
+    }
+}
+
+/// WINDOW-CHROME.md's tiers: capture and Close stay at every width, Park and
+/// Fill until the narrowest, the rest only on wide headers; never a ⋯.
+#[test]
+fn the_integrated_header_keeps_what_each_tier_keeps() {
+    let theme = integrated_theme(true);
+    let tier = |width: f32, recording: bool| {
+        let (mut renderer, viewport, _cache) = layout_with(&theme, width, "Home", 1.0, |h| {
+            h.on_commands(())
+                .tray(capture_tray(recording))
+                .window_width(width)
+        });
+        if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("integrated-{width}.png"),
+            );
+        }
+        let (_, selection) = identity(&mut renderer, &theme);
+        (glyph_tints(&mut renderer).len(), selection.is_some())
+    };
+    // Glyph, shot, record, hidden files, new window, park, fill, fullscreen, close.
+    assert_eq!(tier(900.0, false), (9, true));
+    assert_eq!(tier(700.0, false), (9, true));
+    // Glyph, shot, record, park, fill, close.
+    assert_eq!(tier(500.0, false), (6, false));
+    // Glyph, shot, record, close.
+    assert_eq!(tier(360.0, false), (4, false));
+    assert_eq!(
+        super::integrated_tier(1200.0, true),
+        4,
+        "panels take the narrowest tier"
+    );
+}
+
+/// The glyph is passive: a click on it sends nothing.
+#[test]
+fn the_integrated_glyph_is_passive() {
+    let theme = integrated_theme(true);
+    let (mut renderer, _viewport, _cache) =
+        layout_with(&theme, 1000.0, "Home", 1.0, |h| h.on_commands(()));
+    let glyph = control_icons(&mut renderer)[0];
+    let element = header_bar::<()>()
+        .theme(&theme)
+        .title("Home")
+        .app_name("Files")
+        .on_commands(())
+        .on_close(())
+        .into_element();
+    let size = Size::new(1000.0, ssd_header_render_height(&theme) as f32);
+    let mut ui = UserInterface::build(
+        element,
+        size,
+        user_interface::Cache::default(),
+        &mut renderer,
+    );
+    let at = iced_core::Point::new(glyph.center_x(), glyph.center_y());
+    let mut messages = Vec::new();
+    for event in [
+        iced_core::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+        iced_core::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+    ] {
+        ui.update(
+            &[event],
+            mouse::Cursor::Available(at),
+            &mut renderer,
+            &mut messages,
+        );
+    }
+    assert!(messages.is_empty(), "the glyph opens no menu: {messages:?}");
 }
