@@ -1,3 +1,10 @@
+# [1.67.0](https://github.com/playtron-os/cosmic-comp/compare/v1.66.0...v1.67.0) (2026-11-06)
+
+
+### Features
+
+* **header:** draw the integrated window header ([889a939](https://github.com/playtron-os/cosmic-comp/commit/889a939672d63442578be283ca5667fbc3746c04))
+
 # [1.66.0](https://github.com/playtron-os/cosmic-comp/compare/v1.65.0...v1.66.0) (2026-11-06)
 
 
