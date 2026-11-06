@@ -34,6 +34,11 @@ pub const APP_PREFIX: &str = "app:";
 /// about what is on screen *now*, on *this* window, without disturbing it.
 const DEFAULT_PINS: [&str; 2] = ["shot", "record"];
 
+/// Capture is baseline chrome in the integrated header, shown at every width.
+pub fn is_fixed_pin(id: &str) -> bool {
+    DEFAULT_PINS.contains(&id)
+}
+
 /// The edit verbs a window may answer itself, with the chords apps bind them to.
 fn edit_verbs() -> [(&'static str, String, &'static str, Icon); 7] {
     [

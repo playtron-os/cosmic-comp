@@ -687,6 +687,10 @@ impl CosmicWindowInternal {
         super::header_bar::uses_halo_header(&self.theme.lock().unwrap())
     }
 
+    fn uses_shell_palette(&self) -> bool {
+        super::header_bar::uses_shell_palette(&self.theme.lock().unwrap())
+    }
+
     fn halo_revealed(&self) -> bool {
         self.pointer_over_window.load(Ordering::SeqCst)
             || self.touch_revealed.load(Ordering::SeqCst)
@@ -1217,7 +1221,7 @@ impl CosmicWindow {
 
     /// Super+K: open the palette under the pill, or close it if it is up.
     pub fn toggle_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
-        if !self.0.with_program(|p| p.uses_halo_header()) {
+        if !self.0.with_program(|p| p.uses_shell_palette()) {
             return;
         }
         if self.commands_open() {
@@ -1230,14 +1234,14 @@ impl CosmicWindow {
 
     /// The palette the window itself asked for: opened, never toggled shut.
     pub fn show_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
-        if self.0.with_program(|p| p.uses_halo_header()) && !self.commands_open() {
+        if self.0.with_program(|p| p.uses_shell_palette()) && !self.commands_open() {
             self.open_commands(seat, loop_handle);
         }
     }
 
     /// The Move to Desktop chooser for this window.
     pub fn open_move_dialog(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
-        if !self.0.with_program(|p| p.uses_halo_header()) {
+        if !self.0.with_program(|p| p.uses_shell_palette()) {
             return;
         }
         let surface = self.surface();
@@ -2337,6 +2341,7 @@ impl CosmicWindowInternal {
                     }),
                     label: command.label.clone(),
                     on: command.stateful && command.on,
+                    fixed: commands::is_fixed_pin(&command.id),
                 })
                 .collect(),
         );
@@ -2349,6 +2354,7 @@ impl CosmicWindowInternal {
                         message: Message::Action(format!("{}{}", commands::APP_PREFIX, command.id)),
                         label: command.name.clone(),
                         on: command.active,
+                        fixed: false,
                     })
                     .collect(),
             );
