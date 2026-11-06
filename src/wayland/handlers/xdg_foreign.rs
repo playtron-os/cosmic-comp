@@ -3,7 +3,7 @@
 use crate::{shell::X11Key, state::State, workspace_tag};
 use smithay::{
     reexports::wayland_server::{Client, protocol::wl_surface::WlSurface},
-    wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState},
+    wayland::xdg_foreign::{ForeignToplevel, XdgForeignHandler, XdgForeignState},
 };
 
 impl XdgForeignHandler for State {
@@ -11,13 +11,26 @@ impl XdgForeignHandler for State {
         &mut self.common.xdg_foreign_state
     }
 
-    /// `x11:<window id>`, as the desktop portal names an X11 parent, on the importer's own X
-    /// server: every workspace's hands out the same ids, and one must not reach another's.
-    fn foreign_toplevel(&mut self, importer: &Client, handle: &str) -> Option<WlSurface> {
-        let window = x11_window_id(handle)?;
+    /// `x11:<window id>`, as the desktop portal names an X11 parent. One not mapped, such as a
+    /// hidden leader or a window about to map, leaves the dialog without a parent.
+    fn foreign_toplevel(&mut self, importer: &Client, handle: &str) -> ForeignToplevel {
         let realm = workspace_tag::of_client(importer);
+        match x11_parent(handle, |window| {
+            self.mapped_x11_surface(realm.as_deref(), window)
+        }) {
+            None => ForeignToplevel::Unknown,
+            Some(Some(surface)) => ForeignToplevel::Surface(surface),
+            Some(None) => ForeignToplevel::Unparented,
+        }
+    }
+}
+
+impl State {
+    /// X11 `window`'s surface while it is mapped, on `realm`'s own server: every workspace's
+    /// hands out the same ids, and one must not reach another's.
+    fn mapped_x11_surface(&self, realm: Option<&str>, window: u32) -> Option<WlSurface> {
         let xwm = server_of(
-            realm.as_deref(),
+            realm,
             self.common
                 .xwayland_states()
                 .filter_map(|xstate| Some((xstate.realm.as_deref(), xstate.xwm.as_ref()?.id()))),
@@ -34,6 +47,13 @@ impl XdgForeignHandler for State {
                 .wl_surface()
         })
     }
+}
+
+/// `None` for a handle that is no X11 one, else the surface `surface_of` finds for its window:
+/// `Some(None)` when there is none to parent to.
+fn x11_parent<S>(handle: &str, surface_of: impl FnOnce(u32) -> Option<S>) -> Option<Option<S>> {
+    handle.strip_prefix("x11:")?;
+    Some(x11_window_id(handle).and_then(surface_of))
 }
 
 /// The window id in the portal's `x11:<hex id>`.
@@ -87,6 +107,15 @@ mod tests {
         ] {
             assert_eq!(x11_window_id(handle), None, "{handle:?}");
         }
+    }
+
+    #[test]
+    fn an_x11_parent_that_is_not_mapped_leaves_the_dialog_without_a_parent() {
+        assert_eq!(x11_parent("x11:4a", |_| None::<u32>), Some(None));
+        assert_eq!(x11_parent("x11:zz", Some), Some(None));
+        assert_eq!(x11_parent("x11:4a", Some), Some(Some(0x4a)));
+        assert_eq!(x11_parent("wayland:4a", Some), None);
+        assert_eq!(x11_parent("4a", Some), None);
     }
 
     #[test]
