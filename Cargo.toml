@@ -50,6 +50,8 @@ icetron-p = { git = "ssh://git@github.com/playtron-os/icetron-p.git", features =
 freedesktop-desktop-entry = { version = "0.8", default-features = false }
 shlex = "2"
 icetron-paths = { git = "https://github.com/playtron-os/icetron-paths.git" }
+# Steam game names from their appmanifest; default features off keeps icetron-p out of it.
+icetron_utils = { git = "ssh://git@github.com/playtron-os/icetron.git", rev = "e17c09e0f3ca7540955576858b48ee64136cdb90", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png"] }
 indexmap = "2.13"
 keyframe = "1.1.1"

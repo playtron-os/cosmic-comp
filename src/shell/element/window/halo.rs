@@ -196,6 +196,21 @@ pub(super) fn perform_command(
     run_command(state, surface, seat, id, app, None);
 }
 
+/// What a window with no desktop entry is called: a Steam game by its window's title, any
+/// other by its app id.
+fn fallback_name(surface: &CosmicSurface) -> String {
+    fallback_label(surface.app_id(), surface.title())
+}
+
+fn fallback_label(app_id: String, title: String) -> String {
+    let steam_game = icetron_utils::steam::app_id_of(&app_id).is_some();
+    if steam_game && !title.is_empty() {
+        title
+    } else {
+        app_id
+    }
+}
+
 /// [`perform_command`], picked from a menu or palette built from catalog `generation`.
 fn run_command(
     state: &mut State,
@@ -219,7 +234,7 @@ fn run_command(
     if id == "neww" && !can_open_another {
         let name = app
             .and_then(|app| app.name.clone())
-            .unwrap_or_else(|| surface.app_id());
+            .unwrap_or_else(|| fallback_name(surface));
         toast(state, fl!("halo-one-window", app = name.as_str()));
         return;
     }
@@ -275,7 +290,7 @@ pub(super) fn open_move_dialog(
         };
         let name = app
             .and_then(|app| app.name)
-            .unwrap_or_else(|| surface.app_id());
+            .unwrap_or_else(|| fallback_name(&surface));
         let title = surface.title();
         let identity = if title.is_empty() || title == name {
             name
@@ -518,7 +533,7 @@ pub(super) fn open_commands(
     let scope = app
         .as_ref()
         .and_then(|app| app.name.clone())
-        .unwrap_or_else(|| surface.app_id());
+        .unwrap_or_else(|| fallback_name(surface));
     let palette = Palette::new(surface.app_id(), scope, list.clone());
     open.store(true, Ordering::SeqCst);
     crate::frametrace::mark(format_args!("palette opened ({})", surface.app_id()));
@@ -558,6 +573,14 @@ pub(super) fn open_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_steam_game_without_a_manifest_is_named_by_its_window_title() {
+        let name = |id: &str, title: &str| fallback_label(id.to_owned(), title.to_owned());
+        assert_eq!(name("steam_app_440", "Team Fortress 2"), "Team Fortress 2");
+        assert_eq!(name("steam_app_440", ""), "steam_app_440");
+        assert_eq!(name("some-tool", "Window title"), "some-tool");
+    }
 
     #[test]
     fn the_chooser_lists_desktops_with_their_counts_then_a_new_one() {

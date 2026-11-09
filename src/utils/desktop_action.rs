@@ -195,6 +195,18 @@ impl NewWindowAction {
 
 pub fn for_app(app_id: &str) -> Option<DesktopApp> {
     for_app_in(app_id, super::xdg_dirs::data_dirs("applications"))
+        .or_else(|| steam_game(app_id, icetron_utils::steam::name_for_class))
+}
+
+/// A Steam game has no desktop entry, only the class `steam_app_<appid>`; Steam knows its title.
+fn steam_game(app_id: &str, title: impl Fn(&str) -> Option<String>) -> Option<DesktopApp> {
+    icetron_utils::steam::app_id_of(app_id)?;
+    Some(DesktopApp {
+        name: Some(title(app_id)?),
+        icon: None,
+        new_window: None,
+        actions: Vec::new(),
+    })
 }
 
 fn for_app_in(app_id: &str, dirs: Vec<std::path::PathBuf>) -> Option<DesktopApp> {
@@ -321,6 +333,16 @@ fn expand_exec(exec: &str, entry: &DesktopEntry) -> Option<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_steam_game_is_named_by_its_title_not_its_class() {
+        let dota = |class: &str| (class == "steam_app_570").then(|| "Dota 2".to_owned());
+        let app = steam_game("steam_app_570", dota).expect("an installed game");
+        assert_eq!(app.name.as_deref(), Some("Dota 2"));
+        assert!(app.new_window.is_none() && app.actions.is_empty());
+        assert!(steam_game("steam_app_440", dota).is_none());
+        assert!(steam_game("firefox", |_| Some("Not a game".to_owned())).is_none());
+    }
 
     fn action(extra: &str, exec: &str) -> Option<NewWindowAction> {
         NewWindowAction::from_content(

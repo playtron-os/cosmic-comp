@@ -1028,6 +1028,7 @@ dependencies = [
  "iced_widget",
  "icetron-p",
  "icetron-paths",
+ "icetron_utils",
  "id_tree",
  "image",
  "indexmap 2.14.2",
@@ -3052,6 +3053,15 @@ dependencies = [
  "iced_core 0.15.0-dev",
  "ron 0.12.2",
  "serde",
+]
+
+[[package]]
+name = "icetron_utils"
+version = "0.1.0"
+source = "git+ssh://git@github.com/playtron-os/icetron.git?rev=e17c09e0f3ca7540955576858b48ee64136cdb90#e17c09e0f3ca7540955576858b48ee64136cdb90"
+dependencies = [
+ "icetron-paths",
+ "tracing",
 ]
 
 [[package]]
