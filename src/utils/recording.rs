@@ -70,24 +70,120 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
     }
 }
 
+/// Who asked, for how a failure or a start is told.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Caller {
+    Halo,
+    Game,
+}
+
 fn start(state: &mut State, surface: &CosmicSurface) {
-    let Some(identifier) = foreign_toplevel_identifier(surface) else {
-        notify(
+    begin(state, surface, Caller::Halo, |state, result| {
+        if let Err(error) = result {
+            notify(state, fl!("recording-failed"), error);
+        }
+    });
+}
+
+/// Record the game on screen for game mode's launcher, through the halo's path.
+/// `done` gets a [`failure_code`] or nothing.
+pub fn start_game(
+    state: &mut State,
+    surface: &CosmicSurface,
+    done: impl FnOnce(&mut State, Result<(), String>) + 'static,
+) {
+    if surface.recording() != Recording::Idle {
+        done(state, Ok(()));
+        return;
+    }
+    begin(state, surface, Caller::Game, move |state, result| {
+        done(
             state,
-            fl!("recording-failed"),
-            fl!("recording-window-not-capturable"),
+            result.map_err(|error| failure_code(&error).to_owned()),
         );
+    });
+}
+
+/// Finish every recording the engine lists; `done` gets a [`failure_code`] or
+/// nothing. Each file is filed by `RecordingStopped`, as any other ending is.
+pub fn stop_all(state: &mut State, done: impl FnOnce(Result<(), String>) + 'static) {
+    let ids = state.common.game_mode_bridge.recording_ids();
+    if ids.is_empty() {
+        done(Ok(()));
+        return;
+    }
+    let left = std::rc::Rc::new(std::cell::RefCell::new((ids.len(), Ok(()), Some(done))));
+    for id in ids {
+        let left = left.clone();
+        state.common.dbus_state.stop_recording(id, move |_, reply| {
+            let mut left = left.borrow_mut();
+            left.0 -= 1;
+            if let Err(error) = reply {
+                warn!(%error, "Failed to stop a recording");
+                left.1 = Err(failure_code(&error).to_owned());
+            }
+            if left.0 == 0 {
+                let result = std::mem::replace(&mut left.1, Ok(()));
+                if let Some(done) = left.2.take() {
+                    done(result);
+                }
+            }
+        });
+    }
+}
+
+/// A recording's error as a code a launcher can act on: `no-space`,
+/// `no-permission`, `engine-down` or `failed`.
+#[must_use]
+pub fn failure_code(error: &str) -> &'static str {
+    let has = |needle: &str| error.contains(needle);
+    if has("No space left") || has("os error 28") || has("ENOSPC") {
+        "no-space"
+    } else if has("Permission denied") || has("os error 13") || has("AccessDenied") {
+        "no-permission"
+    } else if has("ServiceUnknown")
+        || has("NameHasNoOwner")
+        || has("was not provided")
+        || has("NoReply")
+        || has("the recorder stopped")
+    {
+        "engine-down"
+    } else {
+        "failed"
+    }
+}
+
+/// Room a game's recording needs on its disk before it starts.
+const GAME_RECORDING_MIN_FREE: u64 = 512 * 1024 * 1024;
+
+fn short_of_space(dir: &Path) -> bool {
+    rustix::fs::statvfs(dir)
+        .is_ok_and(|fs| fs.f_bavail.saturating_mul(fs.f_frsize) < GAME_RECORDING_MIN_FREE)
+}
+
+fn begin(
+    state: &mut State,
+    surface: &CosmicSurface,
+    caller: Caller,
+    report: impl FnOnce(&mut State, Result<(), String>) + 'static,
+) {
+    let Some(identifier) = foreign_toplevel_identifier(surface) else {
+        report(state, Err(fl!("recording-window-not-capturable")));
         return;
     };
     let Some(destination) =
         captures::Destination::for_surface(state, surface, CaptureKind::Recording)
     else {
-        notify(state, fl!("recording-failed"), "HOME is not set".into());
+        report(state, Err("HOME is not set".into()));
         return;
     };
     // It waits here while its preview is up, as a screenshot does.
     if let Err(err) = std::fs::create_dir_all(&destination.pending) {
-        notify(state, fl!("recording-failed"), err.to_string());
+        report(state, Err(err.to_string()));
+        return;
+    }
+    if caller == Caller::Game && short_of_space(&destination.pending) {
+        report(state, Err("No space left for a recording".into()));
         return;
     }
     let path = destination.pending.join(format!(
@@ -110,20 +206,24 @@ fn start(state: &mut State, surface: &CosmicSurface) {
                 if surface.recording() == Recording::Starting {
                     let since = std::time::Instant::now();
                     surface.set_recording(Recording::Active { id, path, since });
-                    let notification = notification(fl!("recording-started"), String::new());
-                    state.common.dbus_state.system_toast_or(
-                        fl!("recording-started"),
-                        Tone::Destructive,
-                        notification,
-                    );
+                    // The game's own indicator says so over a game; a toast cannot.
+                    if caller == Caller::Halo {
+                        let notification = notification(fl!("recording-started"), String::new());
+                        state.common.dbus_state.system_toast_or(
+                            fl!("recording-started"),
+                            Tone::Destructive,
+                            notification,
+                        );
+                    }
                 }
                 refresh_halo(state, &surface);
+                report(state, Ok(()));
             }
             Err(error) => {
                 warn!(%error, "Failed to start a recording");
                 surface.set_recording(Recording::Idle);
                 refresh_halo(state, &surface);
-                notify(state, fl!("recording-failed"), error);
+                report(state, Err(error));
             }
         },
     );
@@ -294,5 +394,31 @@ fn notification(summary: String, body: String) -> Notification {
         body,
         expire_timeout: NOTIFICATION_TIMEOUT_MS,
         transient: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_code;
+
+    #[test]
+    fn failures_become_codes_a_launcher_can_act_on() {
+        for (error, code) in [
+            ("No space left on device (os error 28)", "no-space"),
+            ("No space left for a recording", "no-space"),
+            ("Permission denied (os error 13)", "no-permission"),
+            (
+                "org.freedesktop.DBus.Error.AccessDenied: no",
+                "no-permission",
+            ),
+            (
+                "org.freedesktop.DBus.Error.ServiceUnknown: gone",
+                "engine-down",
+            ),
+            ("the recorder stopped", "engine-down"),
+            ("the compositor stopped the session", "failed"),
+        ] {
+            assert_eq!(failure_code(error), code, "{error}");
+        }
     }
 }

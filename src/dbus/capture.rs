@@ -1,10 +1,16 @@
 //! The recorder behind the halo's Record: `one.playtron.CaptureEngine1`, served by
 //! kora-capture-engine and started on demand by the bus, through its client crate.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use calloop::{InsertError, stream::StreamSource};
-use kora_capture_client::engine::{CaptureEngine1Proxy, Codec, RecordOptions, Source};
+use futures_util::{StreamExt, stream::select};
+use kora_capture_client::engine::{BUS_NAME, CaptureEngine1Proxy, Codec, RecordOptions, Source};
 use tracing::debug;
+use zbus::fdo::DBusProxy;
+use zbus::names::BusName;
+use zbus::proxy::CacheProperties;
 
 use super::DBusState;
 use crate::state::State;
@@ -59,6 +65,114 @@ async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
     let proxy = CaptureEngine1Proxy::new(conn).await?;
     proxy.stop_recording(id).await
+}
+
+enum Heard {
+    /// The engine started or stopped being there, or started a recording.
+    Refresh,
+    Stopped {
+        id: String,
+        path: String,
+        error: String,
+    },
+}
+
+/// Mirror the engine's recordings onto game mode: what it lists right now,
+/// re-read each time it says anything or comes and goes, so what game mode
+/// shows is the engine's own answer. Never starts it: the list is only read
+/// while it has an owner, and it serves every recording it has.
+pub(super) async fn watch_recordings(state: DBusState) -> Result<()> {
+    let conn = state.session_conn().await?.clone();
+    let dbus = DBusProxy::new(&conn).await.context("bus proxy")?;
+    let proxy = CaptureEngine1Proxy::builder(&conn)
+        .cache_properties(CacheProperties::No)
+        .build()
+        .await
+        .context("recorder proxy")?;
+    // Subscribed first, so a change in between is not missed.
+    let owners = dbus
+        .receive_name_owner_changed_with_args(&[(0, BUS_NAME)])
+        .await
+        .context("subscribe to the recorder's name")?
+        .map(|_| Heard::Refresh);
+    let started = proxy
+        .receive_recording_started()
+        .await
+        .context("subscribe to RecordingStarted")?
+        .map(|_| Heard::Refresh);
+    let stopped = proxy
+        .receive_recording_stopped()
+        .await
+        .context("subscribe to RecordingStopped")?
+        .filter_map(|signal| {
+            std::future::ready(signal.args().ok().map(|args| Heard::Stopped {
+                id: args.id.clone(),
+                path: args.path.clone(),
+                error: args.error.clone(),
+            }))
+        });
+    let mut events = Box::pin(select(owners, select(started, stopped)));
+
+    let mut known: HashMap<String, String> = HashMap::new();
+    mirror(&state, &dbus, &proxy, Heard::Refresh, &mut known).await;
+    while let Some(heard) = events.next().await {
+        mirror(&state, &dbus, &proxy, heard, &mut known).await;
+    }
+    Ok(())
+}
+
+async fn mirror(
+    state: &DBusState,
+    dbus: &DBusProxy<'_>,
+    proxy: &CaptureEngine1Proxy<'_>,
+    heard: Heard,
+    known: &mut HashMap<String, String>,
+) {
+    let mut ended = Vec::new();
+    if let Heard::Stopped { id, path, error } = heard {
+        known.remove(&id);
+        ended.push((String::new(), path, error));
+    }
+    let name = BusName::from_static_str(BUS_NAME).expect("the recorder's name is valid");
+    // None when the engine is there but did not answer: nothing changes then.
+    let listed = if dbus.name_has_owner(name).await.unwrap_or(false) {
+        proxy.list_recordings().await.ok()
+    } else {
+        Some(Vec::new())
+    };
+    let snapshot = listed.map(|listed| {
+        // What the engine dropped without a RecordingStopped went with its process.
+        known.retain(|id, path| {
+            let live = listed.iter().any(|recording| recording.id == *id);
+            if !live {
+                ended.push((id.clone(), path.clone(), "the recorder stopped".to_owned()));
+            }
+            live
+        });
+        for recording in &listed {
+            known.insert(recording.id.clone(), recording.path.clone());
+        }
+        let since = listed.iter().map(|r| r.started).min().unwrap_or(0);
+        (since, listed.into_iter().map(|r| r.id).collect::<Vec<_>>())
+    });
+    state.0.evlh.insert_idle(move |state| {
+        if let Some((since, ids)) = snapshot {
+            state.common.game_mode_bridge.set_recordings(since, ids);
+        }
+        for (id, path, error) in ended {
+            if !id.is_empty() {
+                crate::utils::recording::stopped(state, &id, &path, &error);
+            }
+            state.common.game_mode_bridge.notify_recording_ended(
+                path,
+                if error.is_empty() {
+                    String::new()
+                } else {
+                    crate::utils::recording::failure_code(&error).to_owned()
+                },
+            );
+        }
+    });
 }
 
 /// Follow `RecordingStopped` for as long as the session bus lives: every

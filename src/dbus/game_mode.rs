@@ -304,6 +304,10 @@ pub struct GameModeShared {
     /// Whether game mode's desktop is the one its output shows.
     pub on_screen: bool,
     pub overlay_visible: bool,
+    /// Unix seconds the engine started a recording; 0 for none.
+    pub recording_since: u64,
+    /// The engine's recordings, for [`GameModeCommand::StopRecording`].
+    pub recording_ids: Vec<String>,
 
     // Tunables
     pub fps_limit: u32,
@@ -640,6 +644,42 @@ pub enum GameModeCommand {
     SetOverlayKeyboard(bool),
     /// Write the window game mode shows into the client's file as a PNG.
     Screenshot(ScreenshotRequest),
+    /// Record the game on screen.
+    StartRecording(RecordingReply),
+    /// Finish every recording running.
+    StopRecording(RecordingReply),
+}
+
+/// Where a recording request is answered; `Err` carries a failure code.
+#[derive(Debug, Clone)]
+pub struct RecordingReply(
+    Arc<std::sync::Mutex<Option<futures_channel::oneshot::Sender<Result<(), String>>>>>,
+);
+
+impl RecordingReply {
+    fn new() -> (Self, futures_channel::oneshot::Receiver<Result<(), String>>) {
+        let (tx, rx) = futures_channel::oneshot::channel();
+        (Self(Arc::new(std::sync::Mutex::new(Some(tx)))), rx)
+    }
+
+    fn send(&self, result: Result<(), String>) {
+        if let Some(reply) = self.0.lock().unwrap().take() {
+            let _ = reply.send(result);
+        }
+    }
+}
+
+async fn recording_answer(
+    rx: futures_channel::oneshot::Receiver<Result<(), String>>,
+) -> zbus::fdo::Result<()> {
+    match rx.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(code)) if code == "no-permission" => Err(zbus::fdo::Error::AccessDenied(code)),
+        Ok(Err(code)) => Err(zbus::fdo::Error::Failed(code)),
+        Err(_) => Err(zbus::fdo::Error::AccessDenied(
+            "the recording was refused".into(),
+        )),
+    }
 }
 
 /// The file a screenshot goes into and where its outcome is answered. Shared
@@ -715,6 +755,49 @@ impl GameModeBridge {
                 let iface = iref.get().await;
                 let _ = iface.active_changed(&e).await;
                 let _ = iface.active_app_id_changed(&e).await;
+            }
+        });
+    }
+
+    /// The engine's recordings, as it lists them.
+    pub fn set_recordings(&self, since: u64, ids: Vec<String>) {
+        let changed = {
+            let mut s = self.io.shared.lock().unwrap();
+            s.recording_ids = ids;
+            let changed = s.recording_since != since;
+            s.recording_since = since;
+            changed
+        };
+        if !changed {
+            return;
+        }
+        let Some(conn) = self.conn.get().cloned() else {
+            return;
+        };
+        self.spawn(async move {
+            if let Ok(iref) = conn
+                .object_server()
+                .interface::<_, GameModeInterface>(OBJECT_PATH)
+                .await
+            {
+                let e = iref.signal_emitter().clone();
+                let _ = iref.get().await.recording_since_changed(&e).await;
+            }
+        });
+    }
+
+    pub fn recording_ids(&self) -> Vec<String> {
+        self.with(|s| s.recording_ids.clone())
+    }
+
+    /// `RecordingEnded`, with empty or a failure code.
+    pub fn notify_recording_ended(&self, path: String, error: String) {
+        let Some(conn) = self.conn.get().cloned() else {
+            return;
+        };
+        self.spawn(async move {
+            if let Ok(emitter) = SignalEmitter::new(&conn, OBJECT_PATH) {
+                let _ = GameModeInterface::recording_ended(&emitter, &path, &error).await;
             }
         });
     }
@@ -1046,6 +1129,31 @@ impl GameModeInterface {
         }
     }
 
+    /// Record the game on screen, its window alone, through the halo's path.
+    /// Answers once recording has begun; an error's text is a failure code.
+    async fn start_recording(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header.sender().map(|name| name.to_string());
+        let (reply, answer) = RecordingReply::new();
+        self.io
+            .send_from(GameModeCommand::StartRecording(reply), sender);
+        recording_answer(answer).await
+    }
+
+    /// Finish every recording `RecordingSince` shows.
+    async fn stop_recording(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header.sender().map(|name| name.to_string());
+        let (reply, answer) = RecordingReply::new();
+        self.io
+            .send_from(GameModeCommand::StopRecording(reply), sender);
+        recording_answer(answer).await
+    }
+
     // ── state ──
     #[zbus(property)]
     async fn active(&self) -> bool {
@@ -1068,6 +1176,12 @@ impl GameModeInterface {
     }
 
     /// False while another desktop or Kora workspace is in front, without leaving game mode.
+    /// Unix seconds the engine started a recording; 0 for none.
+    #[zbus(property)]
+    async fn recording_since(&self) -> u64 {
+        self.io.with_shared(|s| s.recording_since)
+    }
+
     #[zbus(property)]
     async fn on_screen(&self) -> bool {
         self.io.with_shared(|s| s.on_screen)
@@ -1183,6 +1297,14 @@ impl GameModeInterface {
         emitter: &SignalEmitter<'_>,
         app_id: u32,
         overlay_visible: bool,
+    ) -> zbus::Result<()>;
+
+    /// A recording ended: its file, and empty or a failure code.
+    #[zbus(signal)]
+    async fn recording_ended(
+        emitter: &SignalEmitter<'_>,
+        path: &str,
+        error: &str,
     ) -> zbus::Result<()>;
 
     #[zbus(signal)]
@@ -1425,6 +1547,27 @@ impl State {
                     self.grab_overlay_input();
                 }
                 debug!(target: GAMING_TARGET, on, "cmd: set overlay keyboard");
+            }
+            GameModeCommand::StartRecording(reply) => {
+                let game = {
+                    let shell = self.common.shell.read();
+                    shell
+                        .game_mode
+                        .game_surface
+                        .clone()
+                        .filter(|surface| app_id_of(surface) != LAUNCHER_APP_ID)
+                };
+                match game {
+                    Some(surface) => {
+                        crate::utils::recording::start_game(self, &surface, move |_, result| {
+                            reply.send(result);
+                        });
+                    }
+                    None => reply.send(Err("failed".into())),
+                }
+            }
+            GameModeCommand::StopRecording(reply) => {
+                crate::utils::recording::stop_all(self, move |result| reply.send(result));
             }
             GameModeCommand::Screenshot(request) => {
                 let Some((file, reply)) = request.take() else {
