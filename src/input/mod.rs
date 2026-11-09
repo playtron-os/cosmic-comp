@@ -848,12 +848,16 @@ impl State {
                         _ => None,
                     }
                     .unwrap_or_else(|| output.geometry());
-                    let position = area.loc.to_f64()
-                        + smithay::backend::input::AbsolutePositionEvent::position_transformed(
+                    let mut in_area =
+                        smithay::backend::input::AbsolutePositionEvent::position_transformed(
                             &event,
                             area.size.as_logical(),
-                        )
-                        .as_global();
+                        );
+                    if let Some(letterbox) = output.letterbox() {
+                        in_area =
+                            letterbox.panel_to_picture(in_area, area.size.as_logical().to_f64());
+                    }
+                    let position = area.loc.to_f64() + in_area.as_global();
                     if let Some(under) = self
                         .common
                         .shell
@@ -3614,9 +3618,14 @@ where
     let size = transform
         .invert()
         .transform_size(geometry.size.as_logical());
+    // The device spans the panel, which is more than the output when letterboxed.
+    let mut position = event.position_transformed(size);
+    if let Some(letterbox) = output.letterbox() {
+        position = letterbox.panel_to_picture(position, size.to_f64());
+    }
     geometry.loc.to_f64()
         + transform
-            .transform_point_in(event.position_transformed(size), &size.to_f64())
+            .transform_point_in(position, &size.to_f64())
             .as_global()
 }
 

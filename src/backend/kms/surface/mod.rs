@@ -10,7 +10,7 @@ use crate::{
     config::ScreenFilter,
     shell::Shell,
     state::SurfaceDmabufFeedback,
-    utils::prelude::*,
+    utils::{letterbox::Letterbox, prelude::*},
     wayland::handlers::{
         compositor::recursive_frame_time_estimation,
         image_copy_capture::{
@@ -498,7 +498,9 @@ impl Surface {
     /// Whether this surface renders through the offscreen postprocess pass, which
     /// means its planes never carry a client buffer.
     pub fn is_postprocessed(&self) -> bool {
-        !self.shader_filter().is_noop() || self.output.mirroring().is_some()
+        !self.shader_filter().is_noop()
+            || self.output.mirroring().is_some()
+            || self.output.letterbox().is_some()
     }
 
     pub fn known_nodes(&self) -> &HashSet<DrmNode> {
@@ -1131,10 +1133,18 @@ impl SurfaceThreadState {
                 )
             };
 
-            let rate = self
+            // A letterboxed output runs at the panel's refresh, not its mode's.
+            let refresh_mhz = self
                 .output
-                .current_mode()
-                .map(|mode| Duration::from_secs_f64(1_000.0 / mode.refresh as f64));
+                .letterbox()
+                .and(self.compositor.as_ref())
+                .map(|comp| {
+                    comp.with_compositor(|c| {
+                        drm_helpers::calculate_refresh_rate(c.surface().pending_mode()) as i32
+                    })
+                })
+                .or_else(|| self.output.current_mode().map(|mode| mode.refresh));
+            let rate = refresh_mhz.map(|mhz| Duration::from_secs_f64(1_000.0 / mhz as f64));
             let refresh = match rate {
                 Some(rate)
                     if self
@@ -1448,6 +1458,9 @@ impl SurfaceThreadState {
             }
             return Ok(());
         }
+
+        // Follows scale and transform changes while letterboxed; a no-op otherwise.
+        compositor.with_compositor(|c| c.set_output_mode_source(self.output.drm_mode_source()));
 
         let frame_start = std::time::Instant::now();
         let mut profile = crate::backend::render::gpu_profiler::FrameProfile::default();
@@ -1787,7 +1800,17 @@ impl SurfaceThreadState {
                 // texture_px / ceil(output_scale), which on a fractional scale is short —
                 // 75% at 1.5x — shrinking the frozen frame and clearing the rest to black.
                 let tex_size = tex.size();
-                let src = Rectangle::from_size((tex_size.w as f64, tex_size.h as f64).into());
+                // The frozen frame is the whole panel; only its picture is ours to redraw.
+                let src = match self.output.letterbox() {
+                    Some(letterbox) => {
+                        let picture = letterbox.picture();
+                        Rectangle::new(
+                            (picture.loc.x as f64, picture.loc.y as f64).into(),
+                            (picture.size.w as f64, picture.size.h as f64).into(),
+                        )
+                    }
+                    None => Rectangle::from_size((tex_size.w as f64, tex_size.h as f64).into()),
+                };
                 let logical = self.output.geometry().size.as_logical();
                 let elem = TextureRenderElement::from_static_texture(
                     adopt.id.clone(),
@@ -1913,14 +1936,18 @@ impl SurfaceThreadState {
             .layer_slides
             .iter()
             .any(|s| s.visibility.is_animating());
+        // The bars come from scaling through the offscreen pass, so captures of the
+        // output never contain them.
+        let letterbox = self.output.letterbox();
         let source_output = self
             .mirroring
             .as_ref()
-            .or((!self.screen_filter.is_noop()).then_some(&self.output))
+            .or((!self.screen_filter.is_noop() || letterbox.is_some()).then_some(&self.output))
             .filter(|output| {
                 PostprocessOutputConfig::for_output_untransformed(output)
                     != PostprocessOutputConfig::for_output(&self.output)
                     || !self.screen_filter.is_noop()
+                    || letterbox.is_some()
             });
         if has_layer_slides {
             tracing::trace!(
@@ -2107,6 +2134,7 @@ impl SurfaceThreadState {
                 &pre_postprocess_data,
                 postprocess_state,
                 &self.screen_filter,
+                letterbox,
             );
 
             if let Err(err) = compositor.with_compositor(|c| c.use_vrr(vrr)) {
@@ -2979,6 +3007,7 @@ fn postprocess_elements<'a>(
     pre_postprocess_data: &PrePostprocessData,
     postprocess_state: &PostprocessState,
     screen_filter: &ScreenFilter,
+    letterbox: Option<Letterbox>,
 ) -> Vec<CosmicElement<GlMultiRenderer<'a>>> {
     let postprocess_texture_shader =
         thread_user_data(Borrow::<GlesRenderer>::borrow(renderer.as_ref()))
@@ -3078,11 +3107,15 @@ fn postprocess_elements<'a>(
         elements.into_iter().flatten(),
         (0, 0),
         Rectangle::from_size(
-            output
-                .geometry()
-                .size
-                .as_logical()
-                .to_physical_precise_round(output_scale),
+            letterbox
+                .map(|letterbox| letterbox.panel_transformed(output.current_transform()))
+                .unwrap_or_else(|| {
+                    output
+                        .geometry()
+                        .size
+                        .as_logical()
+                        .to_physical_precise_round(output_scale)
+                }),
         ),
         reference,
         ConstrainScaleBehavior::Fit,

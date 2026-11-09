@@ -1,15 +1,15 @@
 use cosmic_comp_config::output::comp::{AdaptiveSync, OutputConfig, OutputState};
 use smithay::{
     backend::drm::VrrSupport as Support,
-    output::{Output, WeakOutput},
-    utils::Rectangle,
+    output::{Output, OutputModeSource, WeakOutput},
+    utils::{Physical, Rectangle, Size},
 };
 
 pub use super::geometry::*;
 pub use crate::shell::{SeatExt, Shell, Workspace};
 pub use crate::state::{Common, State};
 pub use crate::wayland::handlers::xdg_shell::popup::update_reactive_popups;
-use crate::{config::EdidProduct, shell::zoom::OutputZoomState};
+use crate::{config::EdidProduct, shell::zoom::OutputZoomState, utils::letterbox::Letterbox};
 
 use std::{
     cell::{Ref, RefCell, RefMut},
@@ -31,6 +31,13 @@ pub trait OutputExt {
     fn mirroring(&self) -> Option<Output>;
     fn set_mirroring(&self, output: Option<Output>);
 
+    /// Set when the connector is driven at the panel's native size rather than this
+    /// output's mode, so the compositor keeps the mode's shape on the panel.
+    fn set_scanout_panel(&self, panel: Option<Size<i32, Physical>>);
+    fn letterbox(&self) -> Option<Letterbox>;
+    /// What the output's `DrmCompositor` draws into: the panel while letterboxed.
+    fn drm_mode_source(&self) -> OutputModeSource;
+
     fn is_enabled(&self) -> bool;
     /// Disabled because enabling it failed on connect, not by choice.
     fn enable_failed(&self) -> bool;
@@ -43,6 +50,7 @@ pub trait OutputExt {
 
 struct Vrr(AtomicU8);
 struct VrrSupport(AtomicU8);
+struct ScanoutPanel(Mutex<Option<Size<i32, Physical>>>);
 struct Mirroring(Mutex<Option<WeakOutput>>);
 struct EnableFailed(AtomicBool);
 
@@ -128,6 +136,28 @@ impl OutputExt for Output {
             },
             Ordering::SeqCst,
         );
+    }
+
+    fn set_scanout_panel(&self, panel: Option<Size<i32, Physical>>) {
+        let user_data = self.user_data();
+        user_data.insert_if_missing_threadsafe(|| ScanoutPanel(Mutex::new(None)));
+        *user_data.get::<ScanoutPanel>().unwrap().0.lock().unwrap() = panel;
+    }
+
+    fn letterbox(&self) -> Option<Letterbox> {
+        let panel = (*self.user_data().get::<ScanoutPanel>()?.0.lock().unwrap())?;
+        Letterbox::new(self.current_mode()?.size, panel)
+    }
+
+    fn drm_mode_source(&self) -> OutputModeSource {
+        match self.letterbox() {
+            Some(letterbox) => OutputModeSource::Static {
+                size: letterbox.panel(),
+                scale: self.current_scale().fractional_scale().into(),
+                transform: self.current_transform(),
+            },
+            None => self.into(),
+        }
     }
 
     fn mirroring(&self) -> Option<Output> {

@@ -4,7 +4,12 @@ use crate::{
     config::{CompOutputConfig, ScreenFilter},
     shell::Shell,
     state::BackendData,
-    utils::{env::dev_var, global::remove_global_with_timer, prelude::*},
+    utils::{
+        env::dev_var,
+        global::remove_global_with_timer,
+        letterbox::{Timing, panel_timing},
+        prelude::*,
+    },
     wayland::protocols::{drm::WlDrmState, output_power::OutputPowerState},
 };
 
@@ -32,7 +37,7 @@ use smithay::{
         calloop::{Dispatcher, EventLoop, LoopHandle},
         drm::{
             Device as _,
-            control::{Device as _, connector::Interface, crtc, plane},
+            control::{Device as _, Mode, ModeTypeFlags, connector::Interface, crtc, plane},
         },
         input::{self, Libinput},
         wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags,
@@ -325,6 +330,15 @@ fn capture_frozen_frame(
         debug!(size = ?p.size(), src_format = ?p.pixel_format(), import_format = ?format, "adopt: captured frozen frame for handoff backdrop");
     }
     dmabuf
+}
+
+fn drm_timing(mode: &Mode) -> Timing {
+    let (w, h) = mode.size();
+    Timing {
+        size: (w as i32, h as i32).into(),
+        refresh: drm_helpers::calculate_refresh_rate(*mode),
+        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
+    }
 }
 
 /// Import a captured frozen frame as a fullscreen backdrop element for `output`.
@@ -1391,7 +1405,20 @@ impl KmsGuard<'_> {
                     })
                     .ok_or(anyhow::anyhow!("Unable to find matching mode"))?;
 
+                // A monitor stretches a timing of another shape to fill, so such a mode
+                // keeps the panel at its native timing and the compositor scales it.
+                let panel_mode = panel_timing(
+                    &conn_info.modes().iter().map(drm_timing).collect::<Vec<_>>(),
+                    drm_timing(mode),
+                )
+                .map(|index| &conn_info.modes()[index]);
+                let mode = panel_mode.unwrap_or(mode);
+
                 if !test_only {
+                    surface.output.set_scanout_panel(
+                        panel_mode.map(|mode| (mode.size().0 as i32, mode.size().1 as i32).into()),
+                    );
+
                     if !surface.is_active() {
                         let mut planes = drm
                             .device()
@@ -1483,7 +1510,7 @@ impl KmsGuard<'_> {
                                     surface_crtc,
                                     *mode,
                                     &[conn],
-                                    &surface.output,
+                                    surface.output.drm_mode_source(),
                                     Some(planes.clone()),
                                     &mut renderer,
                                     &elements,
@@ -1587,6 +1614,13 @@ impl KmsGuard<'_> {
                             .compositors()
                             .get(&surface_crtc)
                             .is_none_or(|c| c.lock().unwrap().surface().pending_mode() != *mode);
+
+                        if let Some(compositor) = drm.compositors().get(&surface_crtc) {
+                            compositor
+                                .lock()
+                                .unwrap()
+                                .set_output_mode_source(surface.output.drm_mode_source());
+                        }
 
                         if mode_changed {
                             let mut renderer = self

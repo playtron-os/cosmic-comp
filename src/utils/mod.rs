@@ -13,6 +13,7 @@ pub mod global;
 pub mod iced;
 mod iced_keymap;
 pub mod iced_profiler;
+pub mod letterbox;
 pub mod prelude;
 pub mod process;
 pub mod quirks;
