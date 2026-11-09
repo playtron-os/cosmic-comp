@@ -195,12 +195,12 @@ impl NewWindowAction {
 
 pub fn for_app(app_id: &str) -> Option<DesktopApp> {
     for_app_in(app_id, super::xdg_dirs::data_dirs("applications"))
-        .or_else(|| steam_game(app_id, icetron_utils::steam::name_for_class))
+        .or_else(|| steam_game(app_id, icetron_p::utils::steam::name_for_class))
 }
 
 /// A Steam game has no desktop entry, only the class `steam_app_<appid>`; Steam knows its title.
 fn steam_game(app_id: &str, title: impl Fn(&str) -> Option<String>) -> Option<DesktopApp> {
-    icetron_utils::steam::app_id_of(app_id)?;
+    icetron_p::utils::steam::app_id_of(app_id)?;
     Some(DesktopApp {
         name: Some(title(app_id)?),
         icon: None,

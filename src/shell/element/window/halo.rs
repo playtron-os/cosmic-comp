@@ -203,7 +203,7 @@ fn fallback_name(surface: &CosmicSurface) -> String {
 }
 
 fn fallback_label(app_id: String, title: String) -> String {
-    let steam_game = icetron_utils::steam::app_id_of(&app_id).is_some();
+    let steam_game = icetron_p::utils::steam::app_id_of(&app_id).is_some();
     if steam_game && !title.is_empty() {
         title
     } else {
