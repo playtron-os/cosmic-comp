@@ -714,6 +714,8 @@ struct DrawnText {
     /// An ellipsis glyph stood in for the rest.
     ellipsized: bool,
     color: Color,
+    /// Where the glyphs stop, in the header's logical pixels.
+    right: f32,
 }
 
 impl DrawnText {
@@ -733,7 +735,10 @@ fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
         .flat_map(|item| item.as_slice())
         .filter_map(|text| {
             let iced_graphics::text::Text::Paragraph {
-                paragraph, color, ..
+                paragraph,
+                color,
+                position,
+                ..
             } = text
             else {
                 return None;
@@ -748,7 +753,9 @@ fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
                 .join("\n");
             let mut ellipsized = false;
             let mut covered = 0_usize;
+            let mut width = 0.0_f32;
             for run in buffer.layout_runs() {
+                width = width.max(run.line_w);
                 for glyph in run.glyphs {
                     // The ellipsis glyph carries no source range of its own.
                     if glyph.start == glyph.end {
@@ -764,6 +771,7 @@ fn drawn_text(renderer: &mut Renderer) -> Vec<DrawnText> {
                 drawn,
                 ellipsized,
                 color: *color,
+                right: position.x + width,
             })
         })
         .collect()
@@ -1669,6 +1677,116 @@ fn a_window_with_no_run_draws_no_run_marks() {
     }
 }
 
+/// What a thread's whole first prompt looks like as a run label.
+const LONG_LABEL: &str = "Person sitting at his desk on his new setup with Kora OS running on his machine and a couple other PCs on the side with headless Kora OS providing inference";
+
+fn long_run(state: RunState) -> HaloRun {
+    HaloRun {
+        verb: LONG_LABEL.to_owned(),
+        ..halo_run(state, 0)
+    }
+}
+
+#[test]
+fn a_long_run_label_gives_way_to_the_name_and_the_controls() {
+    let theme = theme();
+    let color = run_color(RunState::Running, &theme);
+    let mut ellipsized_somewhere = false;
+    for scale in [1.0_f32, 1.5, 2.0] {
+        for width in [
+            1600.0_f32, 1200.0, 900.0, 700.0, 680.0, 600.0, 520.0, 480.0, 400.0, 280.0, 240.0,
+        ] {
+            let (mut renderer, viewport, _cache) = render(&theme, width, scale, |header| {
+                everything(header)
+                    .window_width(width)
+                    .run(Some(long_run(RunState::Running)), ())
+            });
+            if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR")
+                && scale == 1.0
+                && width <= 1200.0
+            {
+                save(
+                    &mut renderer,
+                    &viewport,
+                    &dir,
+                    &format!("halo-long-label-{width}.png"),
+                );
+            }
+            let bounds = pill(&mut renderer, &theme, width);
+            assert!(
+                bounds.x >= 0.0 && bounds.x + bounds.width <= width + 0.5,
+                "{width}px: the label pushes the pill {bounds:?} out of the window"
+            );
+            let icons = control_icons(&mut renderer);
+            let drawn = drawn_text(&mut renderer);
+            let name = drawn
+                .iter()
+                .find(|text| text.color == theme.text_primary())
+                .expect("the app name");
+            assert!(!name.ellipsized, "{width}px: the label squeezed the name");
+            let close = icons.last().expect("the close button");
+            assert!(
+                close.x + close.width <= bounds.x + bounds.width,
+                "{width}px: close hangs out of the pill"
+            );
+            let Some(chip) = drawn.iter().find(|text| text.color == color) else {
+                continue;
+            };
+            assert!(
+                chip.drawn().len() > 3,
+                "{width}px: a chip with no words is a stray dot"
+            );
+            let first_control = icons.get(1).expect("a control after the identity");
+            assert!(
+                chip.right <= first_control.x,
+                "{width}px: the label runs {} under the controls at {}",
+                chip.right,
+                first_control.x
+            );
+            if let Some(divider) = dividers(&mut renderer, &theme).first() {
+                assert!(
+                    chip.right <= divider.x,
+                    "{width}px: the label crosses the divider"
+                );
+            }
+            ellipsized_somewhere |= chip.ellipsized;
+        }
+    }
+    assert!(ellipsized_somewhere, "no width ever had to cut the label");
+}
+
+#[test]
+fn the_label_goes_before_the_name_or_the_controls_are_squeezed() {
+    let theme = theme();
+    let color = run_color(RunState::Running, &theme);
+    let at = |width: f32| {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |header| {
+            everything(header)
+                .app_name("Photo Editor")
+                .window_width(width)
+                .run(Some(long_run(RunState::Running)), ())
+        });
+        let icons = control_icons(&mut renderer).len();
+        let drawn = drawn_text(&mut renderer);
+        let name = drawn
+            .iter()
+            .find(|text| text.color == theme.text_primary())
+            .cloned()
+            .expect("the app name");
+        let chip = drawn.into_iter().find(|text| text.color == color);
+        (chip, name, icons)
+    };
+    let (roomy, name, roomy_icons) = at(500.0);
+    assert!(roomy.is_some_and(|chip| chip.ellipsized), "room to cut to");
+    assert!(!name.ellipsized);
+    // The name and every control are as they were: only the words left.
+    let (tight, name, tight_icons) = at(480.0);
+    assert!(tight.is_none(), "the label stays at 480px");
+    assert_eq!(name.drawn(), "Photo Editor");
+    assert!(!name.ellipsized);
+    assert_eq!(tight_icons, roomy_icons);
+}
+
 fn integrated_theme(dark: bool) -> CompTheme {
     let mut tokens = DEFAULT_THEME_PAIR.load(dark);
     tokens.window_header_style = WindowHeaderStyle::Integrated;
@@ -1833,4 +1951,54 @@ fn the_integrated_glyph_is_passive() {
         );
     }
     assert!(messages.is_empty(), "the glyph opens no menu: {messages:?}");
+}
+
+#[test]
+fn the_integrated_header_cuts_a_long_run_label_clear_of_its_controls() {
+    let theme = integrated_theme(true);
+    let color = run_color(RunState::Running, &theme);
+    for width in [
+        1600.0_f32, 900.0, 800.0, 700.0, 600.0, 500.0, 400.0, 360.0, 300.0,
+    ] {
+        let (mut renderer, viewport, _cache) = layout_with(&theme, width, "Home", 1.0, |h| {
+            h.on_commands(())
+                .tray(capture_tray(false))
+                .window_width(width)
+                .run(Some(long_run(RunState::Running)), ())
+        });
+        if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("integrated-long-label-{width}.png"),
+            );
+        }
+        let icons = control_icons(&mut renderer);
+        let close = icons.last().expect("the close button");
+        assert!(
+            close.x + close.width <= width + 0.5,
+            "{width}px: close hangs out of the window"
+        );
+        let drawn = drawn_text(&mut renderer);
+        let name = drawn
+            .iter()
+            .find(|text| text.color == theme.text_primary())
+            .expect("the app name");
+        assert!(!name.ellipsized, "{width}px: the label squeezed the name");
+        let Some(chip) = drawn.iter().find(|text| text.color == color) else {
+            continue;
+        };
+        assert!(
+            chip.drawn().len() > 3,
+            "{width}px: a chip with no words is a stray dot"
+        );
+        let first_control = icons.get(1).expect("a control after the identity");
+        assert!(
+            chip.right <= first_control.x,
+            "{width}px: the label runs {} under the controls at {}",
+            chip.right,
+            first_control.x
+        );
+    }
 }

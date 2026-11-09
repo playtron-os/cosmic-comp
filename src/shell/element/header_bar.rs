@@ -760,16 +760,20 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         };
         let mut name_style = theme.text_styles().role(TextRole::Body);
         name_style.font_weight = metrics.title_font_weight;
-        let mut identity = row![
-            glyph,
-            styled_text(name.clone(), name_style, theme.text_primary())
-                .wrapping(iced_widget::text::Wrapping::None)
-                .ellipsis(iced_widget::text::Ellipsis::End),
-        ]
-        .spacing(theme.spacing_2())
-        .align_y(Alignment::Center);
+        // The name keeps its width; the window title and the run's words give
+        // way to it, the words first and all the way out.
+        let mut identity = crate::utils::iced::ElasticRow::new()
+            .spacing(theme.spacing_2())
+            .floor(name_style.font_size * 6.0)
+            .push_rigid(glyph)
+            .push_rigid(
+                styled_text(name.clone(), name_style, theme.text_primary())
+                    .wrapping(iced_widget::text::Wrapping::None)
+                    .ellipsis(iced_widget::text::Ellipsis::End),
+            );
         if let Some(selection) = selection.as_deref().filter(|_| tier <= 2) {
-            identity = identity.push(
+            identity = identity.push_elastic_droppable(
+                1,
                 styled_text(
                     selection.to_owned(),
                     theme.text_styles().role(TextRole::Caption),
@@ -781,7 +785,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
             let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
-            identity = identity.push(ringed(focus, HaloControl::Chip, chip, theme));
+            let chip = ringed(focus, HaloControl::Chip, chip, theme);
+            identity = if tier >= 3 {
+                identity.push_rigid(chip)
+            } else {
+                identity.push_elastic_droppable(0, chip)
+            };
         }
         let identity_tip = match selection.as_deref() {
             Some(selection) => format!("{name} — {selection}"),
@@ -1029,7 +1038,14 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
             let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
-            identity = identity.push_rigid(ringed(focus, HaloControl::Chip, chip, theme));
+            let chip = ringed(focus, HaloControl::Chip, chip, theme);
+            // The words are the first thing to give way, and the status leaves
+            // before the name or the controls are squeezed.
+            identity = if tier >= 3 {
+                identity.push_rigid(chip)
+            } else {
+                identity.push_elastic_droppable(0, chip)
+            };
         }
         let identity: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
             identity.into_single().unwrap_or_else(Into::into);
@@ -1377,7 +1393,8 @@ fn halo_chip<'a, Message: Clone + 'static>(
             row![
                 dot,
                 styled_text(run.chip_text(), style, color)
-                    .wrapping(iced_widget::text::Wrapping::None),
+                    .wrapping(iced_widget::text::Wrapping::None)
+                    .ellipsis(iced_widget::text::Ellipsis::End),
             ]
             .spacing(HALO_CHIP_GAP)
             .align_y(Alignment::Center),
