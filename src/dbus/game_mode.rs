@@ -32,6 +32,7 @@ use smithay::wayland::compositor::{
     SurfaceAttributes, TraversalAction, with_states, with_surface_tree_downward,
 };
 use smithay::wayland::seat::WaylandFocus;
+use smithay::wayland::shell::wlr_layer::KeyboardInteractivity;
 use smithay::xwayland::X11Surface;
 use tracing::{debug, info, trace, warn};
 use zbus::{interface, object_server::SignalEmitter};
@@ -599,6 +600,39 @@ impl GameModeIo {
         });
     }
 
+    /// Forward a recording request only from the launcher's own process: the
+    /// one drawing its window, not any client the allow-list above admits.
+    fn send_from_launcher(self: &Arc<Self>, cmd: GameModeCommand, sender: Option<String>) {
+        let Some(sender) = sender else {
+            warn!(target: GAMING_TARGET, "refusing a recording request with no sender");
+            return;
+        };
+        let Some(executor) = self.executor.clone() else {
+            return;
+        };
+        let io = self.clone();
+        let attested = self.attested.lock().unwrap().get(&sender).cloned();
+        executor.spawn_ok(async move {
+            let pid = match attested {
+                Some(pidfd) => pid_of_pidfd(&pidfd),
+                None => async {
+                    let conn = zbus::Connection::session().await.ok()?;
+                    let proxy = zbus::fdo::DBusProxy::new(&conn).await.ok()?;
+                    let name = zbus::names::BusName::try_from(sender.clone()).ok()?;
+                    proxy.get_connection_unix_process_id(name).await.ok()
+                }
+                .await,
+            };
+            match pid {
+                Some(pid) => io.send(GameModeCommand::Launcher {
+                    pid,
+                    cmd: Box::new(cmd),
+                }),
+                None => warn!(target: GAMING_TARGET, %sender, "refused a recording request from an unknown process"),
+            }
+        });
+    }
+
     fn send(&self, cmd: GameModeCommand) {
         if let Ok(tx) = self.cmd.lock()
             && let Err(err) = tx.send(cmd)
@@ -644,6 +678,11 @@ pub enum GameModeCommand {
     SetOverlayKeyboard(bool),
     /// Write the window game mode shows into the client's file as a PNG.
     Screenshot(ScreenshotRequest),
+    /// A request only the launcher's own process may make.
+    Launcher {
+        pid: u32,
+        cmd: Box<GameModeCommand>,
+    },
     /// Record the game on screen.
     StartRecording(RecordingReply),
     /// Finish every recording running.
@@ -1138,7 +1177,7 @@ impl GameModeInterface {
         let sender = header.sender().map(|name| name.to_string());
         let (reply, answer) = RecordingReply::new();
         self.io
-            .send_from(GameModeCommand::StartRecording(reply), sender);
+            .send_from_launcher(GameModeCommand::StartRecording(reply), sender);
         recording_answer(answer).await
     }
 
@@ -1150,7 +1189,7 @@ impl GameModeInterface {
         let sender = header.sender().map(|name| name.to_string());
         let (reply, answer) = RecordingReply::new();
         self.io
-            .send_from(GameModeCommand::StopRecording(reply), sender);
+            .send_from_launcher(GameModeCommand::StopRecording(reply), sender);
         recording_answer(answer).await
     }
 
@@ -1547,6 +1586,17 @@ impl State {
                     self.grab_overlay_input();
                 }
                 debug!(target: GAMING_TARGET, on, "cmd: set overlay keyboard");
+            }
+            GameModeCommand::Launcher { pid, cmd } => {
+                let launcher_pid = launcher_client(&self.common.shell.read())
+                    .and_then(|client| client.get_credentials(&self.common.display_handle).ok())
+                    .map(|credentials| credentials.pid);
+                if launcher_pid.and_then(|pid| u32::try_from(pid).ok()) == Some(pid) {
+                    self.handle_game_mode_command(*cmd);
+                } else {
+                    // Dropping a request answers it as refused.
+                    warn!(target: GAMING_TARGET, pid, "refused a recording request from outside the launcher");
+                }
             }
             GameModeCommand::StartRecording(reply) => {
                 let game = {
@@ -3000,7 +3050,11 @@ fn launcher_has_overlay_layer(shell: &Shell) -> bool {
     };
     smithay::desktop::layer_map_for_output(output)
         .layers_on(smithay::wayland::shell::wlr_layer::Layer::Overlay)
-        .any(|layer| layer.wl_surface().client().as_ref() == Some(&client))
+        .any(|layer| {
+            layer.wl_surface().client().as_ref() == Some(&client)
+                // Quick settings take the keyboard; a recording indicator never does.
+                && layer.cached_state().keyboard_interactivity != KeyboardInteractivity::None
+        })
 }
 
 /// Whether `surface` is still on game mode's desktop in a realm that is not
