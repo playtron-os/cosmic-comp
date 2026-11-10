@@ -764,6 +764,7 @@ impl LockedBackend<'_> {
 
         // Update layout for changes in resolution, scale, orientation
         shell_ref.workspaces_mut().recalculate();
+        shell_ref.refit_fullscreen();
         let active_outputs = shell_ref.outputs().cloned().collect::<Vec<_>>();
         std::mem::drop(shell_ref);
 
