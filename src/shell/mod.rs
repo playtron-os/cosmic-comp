@@ -3568,7 +3568,23 @@ impl Shell {
         if self.client_workspace(window).is_some() || self.active_workspace().is_none() {
             return self.surface_in_active_workspace(&surface);
         }
-        self.workspaces().holds(&surface)
+        machine_window_listed(self.workspaces().holds(&surface), || {
+            self.dragging(&surface)
+        })
+    }
+
+    /// Whether a seat is dragging `surface`'s window. A move takes the window off its
+    /// desktop until the drop, so no desktop holds it meanwhile.
+    fn dragging(&self, surface: &WlSurface) -> bool {
+        self.seats.iter().any(|seat| {
+            seat.user_data()
+                .get::<SeatMoveGrabState>()
+                .is_some_and(|state| {
+                    state.lock().unwrap().as_ref().is_some_and(|grab| {
+                        grab.element().has_surface(surface, WindowSurfaceType::ALL)
+                    })
+                })
+        })
     }
 
     // These four take the seats, which Shell owns. Reaching them through
@@ -12375,6 +12391,33 @@ fn fill_toggle_restore(
         );
     }
     Some(state)
+}
+
+/// Whether a machine-plane window is listed in the realm on screen: while a desktop there
+/// holds it, or while it is being dragged there, which takes it off its desktop.
+fn machine_window_listed(held: bool, dragging: impl FnOnce() -> bool) -> bool {
+    held || dragging()
+}
+
+#[cfg(test)]
+mod machine_window_listing_tests {
+    use super::machine_window_listed;
+
+    #[test]
+    fn a_window_on_a_desktop_is_listed() {
+        assert!(machine_window_listed(true, || false));
+    }
+
+    /// QA: dragging Settings over GameFrame closed its taskbar tile until the drop.
+    #[test]
+    fn a_dragged_window_stays_listed() {
+        assert!(machine_window_listed(false, || true));
+    }
+
+    #[test]
+    fn a_window_held_nowhere_is_not_listed() {
+        assert!(!machine_window_listed(false, || false));
+    }
 }
 
 #[cfg(test)]
