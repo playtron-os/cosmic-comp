@@ -370,7 +370,7 @@ fn render_input_order_internal<R: 'static>(
         !game_owns_screen
             || shows_over_game(OverGame {
                 from_launcher: launcher.is_some() && client == launcher,
-                osd_indicator: layer.namespace() == "osd"
+                osd_indicator: indicator_namespace(layer.namespace())
                     && layer.cached_state().keyboard_interactivity == KeyboardInteractivity::None,
                 keyboard_client: client.is_some_and(|client| summoned.contains(&client)),
             })
@@ -976,7 +976,8 @@ fn layer_popups<'a>(
 struct OverGame {
     /// The launcher's own, its quick settings.
     from_launcher: bool,
-    /// The OSD's volume and brightness indicator, which takes no input.
+    /// An indicator answering a key the person pressed, the OSD's or a capture's preview,
+    /// which takes no keyboard.
     osd_indicator: bool,
     /// Its app holds the keyboard with an overlay of its own.
     keyboard_client: bool,
@@ -987,6 +988,11 @@ struct OverGame {
 /// of its overlay shows, its toolbar included.
 fn shows_over_game(layer: OverGame) -> bool {
     layer.from_launcher || layer.osd_indicator || layer.keyboard_client
+}
+
+/// The OSD's own namespace, or `osd-<what>` for another key's answer, as a capture's preview.
+fn indicator_namespace(namespace: &str) -> bool {
+    namespace == "osd" || namespace.starts_with("osd-")
 }
 
 /// The apps with an overlay-layer surface up that takes the keyboard.
@@ -1145,6 +1151,16 @@ mod tests {
             WmWindowType::Toolbar,
         ] {
             assert!(!above_shell(Some(kind), rect(100, 100, 300, 200), output));
+        }
+    }
+
+    /// A screenshot over a game was saved without a preview, so it looked as if nothing happened.
+    #[test]
+    fn a_captures_preview_is_an_indicator() {
+        assert!(indicator_namespace("osd"));
+        assert!(indicator_namespace("osd-capture"));
+        for other in ["", "notifications", "agentos-notifications-capture", "osdx"] {
+            assert!(!indicator_namespace(other), "{other}");
         }
     }
 

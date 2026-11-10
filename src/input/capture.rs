@@ -22,6 +22,14 @@ pub fn arguments(action: &shortcuts::Action) -> Option<&'static str> {
     })
 }
 
+/// Whether capture shortcuts still reach the compositor while the focused surface holds
+/// the keys. An X11 keyboard grab (`protocol` false) is how games take keys, not a request
+/// to inhibit; over a game a capture is always the person's, but elsewhere an inhibitor,
+/// Settings recording a shortcut say, keeps them.
+pub fn passes_inhibitor(protocol: bool, game_on_screen: bool) -> bool {
+    !protocol || game_on_screen
+}
+
 /// The command a capture shortcut spawns. Without an installed capture program the
 /// captures fall back to the system screenshot tool, so Print keeps working.
 pub fn command(
@@ -84,6 +92,18 @@ mod tests {
 
     fn screenshot_tool() -> BTreeMap<System, String> {
         BTreeMap::from([(System::Screenshot, "cosmic-screenshot".to_string())])
+    }
+
+    /// A game grabbing the keyboard in X11 swallowed Super+Shift+3, 4 and 5.
+    #[test]
+    fn a_games_keyboard_grab_leaves_the_captures() {
+        assert!(passes_inhibitor(false, false), "an X11 grab");
+        assert!(passes_inhibitor(false, true), "an X11 grab over a game");
+        assert!(passes_inhibitor(true, true), "an inhibitor over a game");
+        assert!(
+            !passes_inhibitor(true, false),
+            "recording a shortcut in Settings"
+        );
     }
 
     #[test]
