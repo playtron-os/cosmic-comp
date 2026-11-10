@@ -1,3 +1,22 @@
+# [1.68.0](https://github.com/playtron-os/cosmic-comp/compare/v1.67.0...v1.68.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **halo:** cut a long run label to fit between the name and the controls ([b8912f9](https://github.com/playtron-os/cosmic-comp/commit/b8912f99f6460fddce7d6d63a58441354648d468))
+* **kms:** keep a mode's shape on a panel of another aspect ratio ([fa6a8eb](https://github.com/playtron-os/cosmic-comp/commit/fa6a8eb7c0b0921eb161c4ef76b6db6fb20fa770))
+* **recording:** file a recording whose window closed ([7c9cb3b](https://github.com/playtron-os/cosmic-comp/commit/7c9cb3ba5bf02935d7e84557e0cb2281e59e633d))
+* **shell:** keep a dragged machine-plane window listed ([89e2131](https://github.com/playtron-os/cosmic-comp/commit/89e21312ce1b80482785211ebc4a4b34922ef77d))
+* **shell:** name open Steam games by their title ([d8dc972](https://github.com/playtron-os/cosmic-comp/commit/d8dc97247e42826aa4c3aeb735cd1ff3c6e6aebe))
+* **shell:** read the Steam name lookup from icetron-p ([3c9a541](https://github.com/playtron-os/cosmic-comp/commit/3c9a541ab677a7a9f7ad9791a9853d00c67f1594))
+
+
+### Features
+
+* **game-mode:** record the game for the launcher ([b65ce07](https://github.com/playtron-os/cosmic-comp/commit/b65ce07491511c0a3160dbba84d2d63bf801d6c8))
+* **game-mode:** take recording requests only from the launcher ([9b05902](https://github.com/playtron-os/cosmic-comp/commit/9b05902eb9b96f1604086b1f641568650610675c))
+* **layer-shell:** let a surface ask to show beside the focused window ([c187bbc](https://github.com/playtron-os/cosmic-comp/commit/c187bbcf881c6ec3c6066fa6256df7151b0ccb90))
+
 # [1.67.0](https://github.com/playtron-os/cosmic-comp/compare/v1.66.0...v1.67.0) (2026-11-06)
 
 
