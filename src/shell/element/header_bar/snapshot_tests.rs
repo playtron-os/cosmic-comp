@@ -1817,7 +1817,13 @@ fn the_integrated_header_is_one_opaque_40px_row_inside_the_frame() {
             })
             .map(|(quad, _)| *quad)
             .expect("the surface-2 row spans the window");
-        assert_eq!(bar.bounds.height, 40.0 - theme.divider_thickness());
+        assert_eq!(bar.bounds.height, 40.0);
+        assert_eq!(bar.border.color, theme.stroke_subtler());
+        assert_eq!(
+            bar.border.sides,
+            Some([0.0, 0.0, theme.divider_thickness(), 0.0]),
+            "the divider is the row's own bottom border"
+        );
         assert_eq!(bar.border.radius.top_left, radius);
         assert_eq!(bar.border.radius.bottom_left, 0.0);
 
@@ -1876,6 +1882,63 @@ fn the_integrated_header_is_one_opaque_40px_row_inside_the_frame() {
             let (mut renderer, viewport, _cache) =
                 layout_with(&bar, width, "Network", 1.0, |h| h.app_name("Kora Settings"));
             save(&mut renderer, &viewport, &dir, &format!("bar-{mode}.png"));
+        }
+    }
+}
+
+/// Design #308 draws the divider as the header's 0.5px `--color-os-divider`
+/// bottom border over its opaque surface: the header's last device row, which
+/// never lets the desktop through, at every scale.
+#[test]
+fn the_integrated_divider_is_one_opaque_device_row() {
+    for dark in [true, false] {
+        let mut tokens = DEFAULT_THEME_PAIR.load(dark);
+        tokens.window_header_style = WindowHeaderStyle::Integrated;
+        tokens.divider_thickness = Some(0.5);
+        let theme = CompTheme::new(Arc::new(tokens), dark);
+        let surface = theme.surface_2();
+        let line = theme.stroke_subtler();
+        let over = |c: fn(Color) -> f32| {
+            ((c(line) * line.a + c(surface) * (1.0 - line.a)) * 255.0).round() as u8
+        };
+        // BGRA, as the compositor uploads it.
+        let divider = [over(|c| c.b), over(|c| c.g), over(|c| c.r), 255];
+        let bar = surface.into_rgba8();
+        let bar = [bar[2], bar[1], bar[0], 255];
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let width = 1000.0;
+            let (mut renderer, viewport, _cache) =
+                layout_with(&theme, width, "Network", scale, |h| {
+                    h.app_name("Kora Settings")
+                });
+            let mut pixels =
+                tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height())
+                    .unwrap();
+            draw(
+                &mut renderer,
+                &viewport,
+                &mut pixels,
+                &[Rectangle::with_size(viewport.logical_size())],
+            );
+            // In the drag space, clear of the identity and the controls.
+            let x = (width * 0.6 * scale) as u32;
+            let at = |y: u32| {
+                let px = pixels.pixel(x, y).unwrap();
+                [px.red(), px.green(), px.blue(), px.alpha()]
+            };
+            let close = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 2);
+            let bottom = (40.0 * scale) as u32 - 1;
+            assert_eq!(pixels.height(), bottom + 1, "{scale}x");
+            assert!(
+                close(at(bottom), divider),
+                "{dark} {scale}x: {:?}",
+                at(bottom)
+            );
+            assert!(
+                close(at(bottom - 1), bar),
+                "{dark} {scale}x: {:?}",
+                at(bottom - 1)
+            );
         }
     }
 }
