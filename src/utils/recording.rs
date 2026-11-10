@@ -5,6 +5,7 @@
 //! window so the halo can show it, and hears every ending through
 //! `RecordingStopped` — the halo's own stop and a window that closed alike.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -57,7 +58,10 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
                         return;
                     }
                     match reply {
-                        Ok(path) => finished(state, &surface, &path, since),
+                        Ok(path) => {
+                            state.common.unfiled_recordings.take(&stopping);
+                            finished(state, &surface, &path, since);
+                        }
                         Err(error) => {
                             warn!(%error, "Failed to stop the recording");
                             surface.set_recording(Recording::Idle);
@@ -194,6 +198,7 @@ fn begin(
 
     surface.set_recording(Recording::Starting);
     refresh_halo(state, surface);
+    let app = app_of(surface);
     let surface = surface.clone();
     let path_string = path.to_string_lossy().into_owned();
     state.common.dbus_state.start_recording(
@@ -205,6 +210,14 @@ fn begin(
                 // closed meanwhile is Idle and its recording ends on its own.
                 if surface.recording() == Recording::Starting {
                     let since = std::time::Instant::now();
+                    state.common.unfiled_recordings.started(
+                        id.clone(),
+                        Filing {
+                            destination,
+                            app,
+                            since,
+                        },
+                    );
                     surface.set_recording(Recording::Active { id, path, since });
                     // The game's own indicator says so over a game; a toast cannot.
                     if caller == Caller::Halo {
@@ -232,7 +245,11 @@ fn begin(
 /// `RecordingStopped` from the recorder: the halo's stop, a window that
 /// closed, or a recording that broke.
 pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
+    let filing = state.common.unfiled_recordings.take(id);
     let Some(surface) = surface_recording(state, id) else {
+        if let Some(filing) = filing {
+            ended_without_window(state, id, &filing, path, error);
+        }
         return;
     };
     let since = match surface.recording() {
@@ -280,16 +297,37 @@ fn finished(state: &mut State, surface: &CosmicSurface, path: &str, since: Insta
     surface.set_recording(Recording::Idle);
     refresh_halo(state, surface);
     let path = PathBuf::from(path);
-    let poster = Some(poster_of(&path)).filter(|p| p.is_file());
     let Some(destination) =
         captures::Destination::for_surface(state, surface, CaptureKind::Recording)
     else {
         return announce(state, &path);
     };
-    let app =
-        crate::utils::screenshot::app_name(&surface.app_id()).unwrap_or_else(|| surface.title());
-    let length = u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let handoff = destination.handoff(&path, &app, poster.as_deref(), Some(length));
+    let filing = Filing {
+        destination,
+        app: app_of(surface),
+        since,
+    };
+    let (handoff, poster) = filing.handoff(&path);
+    preview_or_file(state, handoff, poster);
+}
+
+/// The game quit or the window closed first: its workspace and name went with
+/// it, so this files from what [`begin`] kept.
+fn ended_without_window(state: &mut State, id: &str, filing: &Filing, path: &str, error: &str) {
+    if error.is_empty() {
+        let (handoff, poster) = filing.handoff(Path::new(path));
+        preview_or_file(state, handoff, poster);
+    } else {
+        warn!(%id, %error, "Recording ended with an error after its window closed");
+        notify(state, fl!("recording-failed"), error.to_owned());
+    }
+}
+
+fn app_of(surface: &CosmicSurface) -> String {
+    crate::utils::screenshot::app_name(&surface.app_id()).unwrap_or_else(|| surface.title())
+}
+
+fn preview_or_file(state: &mut State, handoff: captures::Handoff, poster: Option<PathBuf>) {
     state
         .common
         .dbus_state
@@ -314,6 +352,40 @@ fn announce(state: &State, path: &Path) {
         Tone::Neutral,
         notification,
     );
+}
+
+/// What a recording needs to be filed, kept from its start.
+#[derive(Debug)]
+struct Filing {
+    destination: captures::Destination,
+    app: String,
+    since: Instant,
+}
+
+impl Filing {
+    fn handoff(&self, path: &Path) -> (captures::Handoff, Option<PathBuf>) {
+        let poster = Some(poster_of(path)).filter(|p| p.is_file());
+        let length = u64::try_from(self.since.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let handoff = self
+            .destination
+            .handoff(path, &self.app, poster.as_deref(), Some(length));
+        (handoff, poster)
+    }
+}
+
+/// This compositor's recordings not yet ended, by id. Outlives the window, which
+/// can be gone by the time the recorder says its recording finished.
+#[derive(Debug, Default)]
+pub struct UnfiledRecordings(HashMap<String, Filing>);
+
+impl UnfiledRecordings {
+    fn started(&mut self, id: String, filing: Filing) {
+        self.0.insert(id, filing);
+    }
+
+    fn take(&mut self, id: &str) -> Option<Filing> {
+        self.0.remove(id)
+    }
 }
 
 /// `WindowRecordingStarted` from the recorder: another app records the window
@@ -399,7 +471,72 @@ fn notification(summary: String, body: String) -> Notification {
 
 #[cfg(test)]
 mod tests {
-    use super::failure_code;
+    use super::*;
+
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn recording_in(home: &Path, unfiled: &mut UnfiledRecordings, id: &str) -> PathBuf {
+        let destination = captures::Destination::new(
+            CaptureKind::Recording,
+            home,
+            Some("gameframe"),
+            false,
+            None,
+        );
+        std::fs::create_dir_all(&destination.pending).unwrap();
+        let path = destination.pending.join("Screen Recording.mp4");
+        std::fs::write(&path, b"video").unwrap();
+        std::fs::write(poster_of(&path), b"poster").unwrap();
+        unfiled.started(
+            id.to_owned(),
+            Filing {
+                destination,
+                app: "A Game".to_owned(),
+                since: Instant::now(),
+            },
+        );
+        path
+    }
+
+    // The window's workspace is unknowable by now, so it must come from the start.
+    #[test]
+    fn a_recording_whose_game_quit_goes_to_the_game_s_captures() {
+        let home = scratch("rec-quit");
+        let mut unfiled = UnfiledRecordings::default();
+        let path = recording_in(&home, &mut unfiled, "rec-1");
+
+        let filing = unfiled.take("rec-1").expect("started here, so still known");
+        let (handoff, poster) = filing.handoff(&path);
+
+        let expected = home.join("Workspaces/gameframe/Captures/Recordings");
+        assert_eq!(handoff.save_to, expected);
+        assert_eq!(handoff.capture.app.as_deref(), Some("A Game"));
+        assert_eq!(poster, Some(poster_of(&path)));
+
+        let filed = captures::file_into(&handoff.path, &handoff.save_to).unwrap();
+        assert_eq!(filed, expected.join("Screen Recording.mp4"));
+        assert!(filed.is_file());
+        assert!(!path.exists(), "nothing stays in the waiting room");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    // The stop's answer and `RecordingStopped` both report one ending; the file moves once.
+    #[test]
+    fn an_ending_is_filed_once_and_another_app_s_not_at_all() {
+        let home = scratch("rec-once");
+        let mut unfiled = UnfiledRecordings::default();
+        recording_in(&home, &mut unfiled, "rec-1");
+
+        assert!(unfiled.take("rec-1").is_some());
+        assert!(unfiled.take("rec-1").is_none());
+        assert!(unfiled.take("kora-capture-7").is_none());
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn failures_become_codes_a_launcher_can_act_on() {
