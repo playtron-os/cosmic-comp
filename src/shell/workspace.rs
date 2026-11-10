@@ -3525,7 +3525,7 @@ mod fullscreen_rect_tests {
             Rectangle::new(Point::from((0, 0)), Size::from((size.w, size.h)))
         };
         let configured = Some(at(1.5));
-        assert_eq!(configured.unwrap().size, Size::from((1280, 720)));
+        assert_eq!(at(1.5).size, Size::from((1280, 720)));
         for scale in [1.0, 2.0] {
             let wanted = centered_fixed(None, at(scale));
             assert_eq!(refit(configured, wanted), Some(wanted), "{scale}");
