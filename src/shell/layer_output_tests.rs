@@ -27,12 +27,24 @@ fn a_surface_that_follows_the_pointer_shows_under_it() {
     let outputs = [first.clone(), second.clone()];
     let pointer = Some((400., 300.).into());
     assert_eq!(
-        agnostic_layer_output(true, pointer, outputs.iter(), second.clone()),
+        agnostic_layer_output(
+            LayerFollows::Pointer,
+            pointer,
+            None,
+            outputs.iter(),
+            second.clone()
+        ),
         first
     );
     let pointer = Some((2500., 300.).into());
     assert_eq!(
-        agnostic_layer_output(true, pointer, outputs.iter(), first.clone()),
+        agnostic_layer_output(
+            LayerFollows::Pointer,
+            pointer,
+            None,
+            outputs.iter(),
+            first.clone()
+        ),
         second
     );
 }
@@ -44,7 +56,13 @@ fn any_other_surface_shows_on_the_active_output() {
     let outputs = [first.clone(), second.clone()];
     let pointer = Some((400., 300.).into());
     assert_eq!(
-        agnostic_layer_output(false, pointer, outputs.iter(), second.clone()),
+        agnostic_layer_output(
+            LayerFollows::Active,
+            pointer,
+            None,
+            outputs.iter(),
+            second.clone()
+        ),
         second
     );
 }
@@ -55,15 +73,57 @@ fn without_a_pointer_on_an_output_the_active_output_stands() {
     let outputs = [first.clone(), second.clone()];
     assert_eq!(
         agnostic_layer_output(
-            true,
+            LayerFollows::Pointer,
             Some((5000., 300.).into()),
+            None,
             outputs.iter(),
             second.clone()
         ),
         second
     );
     assert_eq!(
-        agnostic_layer_output(true, None, outputs.iter(), first.clone()),
+        agnostic_layer_output(
+            LayerFollows::Pointer,
+            None,
+            None,
+            outputs.iter(),
+            first.clone()
+        ),
         first
+    );
+}
+
+/// The pointer rests on the second display, over another app, while the person types
+/// into a window on the first: dictation feedback belongs beside that window.
+#[test]
+fn a_surface_that_follows_focus_shows_beside_the_focused_window() {
+    let (first, second) = (display("A", 0), display("B", 1920));
+    let outputs = [first.clone(), second.clone()];
+    let pointer = Some((2500., 300.).into());
+    assert_eq!(
+        agnostic_layer_output(
+            LayerFollows::Focus,
+            pointer,
+            Some(first.clone()),
+            outputs.iter(),
+            second.clone()
+        ),
+        first
+    );
+}
+
+#[test]
+fn without_a_focused_window_a_focus_follower_takes_the_active_output() {
+    let (first, second) = (display("A", 0), display("B", 1920));
+    let outputs = [first.clone(), second.clone()];
+    assert_eq!(
+        agnostic_layer_output(
+            LayerFollows::Focus,
+            Some((400., 300.).into()),
+            None,
+            outputs.iter(),
+            second.clone()
+        ),
+        second
     );
 }

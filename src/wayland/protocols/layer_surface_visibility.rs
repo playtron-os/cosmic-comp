@@ -96,7 +96,7 @@ impl LayerSurfaceVisibilityState {
             D,
             zcosmic_layer_surface_visibility_manager_v1::ZcosmicLayerSurfaceVisibilityManagerV1,
             _,
-        >(6, ());
+        >(7, ());
         LayerSurfaceVisibilityState { global }
     }
 
@@ -131,6 +131,9 @@ pub trait LayerSurfaceVisibilityHandler {
 
     /// Place a surface made without an output under the pointer, not on the active output.
     fn set_surface_follows_pointer(&mut self, surface_id: ObjectId);
+
+    /// Place a surface made without an output beside the focused window, not on the active output.
+    fn set_surface_follows_focus(&mut self, surface_id: ObjectId);
 
     /// Check if a surface is hidden
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool;
@@ -344,6 +347,11 @@ where
             zcosmic_layer_surface_visibility_v1::Request::FollowPointer => {
                 if let Ok(surface) = data.surface.upgrade() {
                     state.set_surface_follows_pointer(surface.id());
+                }
+            }
+            zcosmic_layer_surface_visibility_v1::Request::FollowFocus => {
+                if let Ok(surface) = data.surface.upgrade() {
+                    state.set_surface_follows_focus(surface.id());
                 }
             }
         }
