@@ -2220,16 +2220,19 @@ impl State {
         //this should fall back to active output since there may not be a focused output
         let focused_output = seat.focused_or_active_output();
 
-        let shortcuts_inhibited = current_focus.as_ref().is_some_and(|f| {
-            f.wl_surface()
-                .map(|surface| {
-                    seat.keyboard_shortcuts_inhibitor_for_surface(&surface)
-                        .map(|inhibitor| inhibitor.is_active())
-                        .unwrap_or(false)
-                        || seat.has_active_xwayland_grab(&surface)
-                })
-                .unwrap_or(false)
+        let focused_surface = current_focus.as_ref().and_then(|f| f.wl_surface());
+        let protocol_inhibited = focused_surface.as_ref().is_some_and(|surface| {
+            seat.keyboard_shortcuts_inhibitor_for_surface(surface)
+                .is_some_and(|inhibitor| inhibitor.is_active())
         });
+        let shortcuts_inhibited = protocol_inhibited
+            || focused_surface
+                .as_ref()
+                .is_some_and(|surface| seat.has_active_xwayland_grab(surface));
+        let captures_pass = capture::passes_inhibitor(
+            protocol_inhibited,
+            shell.game_mode_on_screen(&focused_output) && shell.game_mode_shows_game(),
+        );
 
         if let Some(a11y_keyboard_monitor) = self.common.dbus_state.a11y_keyboard_monitor() {
             a11y_keyboard_monitor.key_event(modifiers, &handle, event.state());
@@ -2787,9 +2790,9 @@ impl State {
             return FilterResult::Intercept(None);
         }
 
-        // handle the rest of the global shortcuts
+        // handle the rest of the global shortcuts; while inhibited, at most the captures
         let mut clear_queue = true;
-        if !shortcuts_inhibited {
+        if !shortcuts_inhibited || captures_pass {
             let modifiers_queue = seat.modifiers_shortcut_queue();
             let (workspaces_live, halo) = {
                 let shell = self.common.shell.read();
@@ -2798,7 +2801,9 @@ impl State {
             };
 
             for (binding, action) in self.common.config.shortcuts.iter() {
-                if *action == shortcuts::Action::Disable {
+                if *action == shortcuts::Action::Disable
+                    || shortcuts_inhibited && capture::arguments(action).is_none()
+                {
                     continue;
                 }
 
