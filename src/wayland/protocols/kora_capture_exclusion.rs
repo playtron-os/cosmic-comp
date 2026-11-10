@@ -85,22 +85,35 @@ pub struct CaptureExclusionState {
     _global: GlobalId,
 }
 
+/// Which clients see the global. A sandboxed app could otherwise hide its own windows
+/// from what the person, or an agent acting for them, captures.
+pub struct CaptureExclusionGlobalData {
+    filter: Box<dyn for<'a> Fn(&'a Client) -> bool + Send + Sync>,
+}
+
 impl CaptureExclusionState {
-    pub fn new<D>(dh: &DisplayHandle) -> CaptureExclusionState
+    pub fn new<D, F>(dh: &DisplayHandle, client_filter: F) -> CaptureExclusionState
     where
-        D: GlobalDispatch<KoraCaptureExclusionManagerV1, ()>
+        D: GlobalDispatch<KoraCaptureExclusionManagerV1, CaptureExclusionGlobalData>
             + Dispatch<KoraCaptureExclusionManagerV1, ()>
             + Dispatch<KoraSurfaceCaptureExclusionV1, Weak<WlSurface>>
             + 'static,
+        F: for<'a> Fn(&'a Client) -> bool + Send + Sync + 'static,
     {
-        let global = dh.create_global::<D, KoraCaptureExclusionManagerV1, _>(1, ());
+        let global = dh.create_global::<D, KoraCaptureExclusionManagerV1, _>(
+            1,
+            CaptureExclusionGlobalData {
+                filter: Box::new(client_filter),
+            },
+        );
         CaptureExclusionState { _global: global }
     }
 }
 
-impl<D> GlobalDispatch<KoraCaptureExclusionManagerV1, (), D> for CaptureExclusionState
+impl<D> GlobalDispatch<KoraCaptureExclusionManagerV1, CaptureExclusionGlobalData, D>
+    for CaptureExclusionState
 where
-    D: GlobalDispatch<KoraCaptureExclusionManagerV1, ()>
+    D: GlobalDispatch<KoraCaptureExclusionManagerV1, CaptureExclusionGlobalData>
         + Dispatch<KoraCaptureExclusionManagerV1, ()>
         + Dispatch<KoraSurfaceCaptureExclusionV1, Weak<WlSurface>>
         + 'static,
@@ -110,16 +123,20 @@ where
         _handle: &DisplayHandle,
         _client: &Client,
         resource: New<KoraCaptureExclusionManagerV1>,
-        _global_data: &(),
+        _global_data: &CaptureExclusionGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
         data_init.init(resource, ());
+    }
+
+    fn can_view(client: Client, global_data: &CaptureExclusionGlobalData) -> bool {
+        (global_data.filter)(&client)
     }
 }
 
 impl<D> Dispatch<KoraCaptureExclusionManagerV1, (), D> for CaptureExclusionState
 where
-    D: GlobalDispatch<KoraCaptureExclusionManagerV1, ()>
+    D: GlobalDispatch<KoraCaptureExclusionManagerV1, CaptureExclusionGlobalData>
         + Dispatch<KoraCaptureExclusionManagerV1, ()>
         + Dispatch<KoraSurfaceCaptureExclusionV1, Weak<WlSurface>>
         + 'static,
@@ -201,7 +218,7 @@ where
 macro_rules! delegate_kora_capture_exclusion {
     ($(@<$( $lt:tt $( : $clt:tt $(+ $dlt:tt )* )? ),+>)? $ty: ty) => {
         smithay::reexports::wayland_server::delegate_global_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
-            $crate::wayland::protocols::kora_capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1: ()
+            $crate::wayland::protocols::kora_capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1: $crate::wayland::protocols::kora_capture_exclusion::CaptureExclusionGlobalData
         ] => $crate::wayland::protocols::kora_capture_exclusion::CaptureExclusionState);
         smithay::reexports::wayland_server::delegate_dispatch!($(@< $( $lt $( : $clt $(+ $dlt )* )? ),+ >)? $ty: [
             $crate::wayland::protocols::kora_capture_exclusion::kora_capture_exclusion_manager_v1::KoraCaptureExclusionManagerV1: ()

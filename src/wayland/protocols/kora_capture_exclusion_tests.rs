@@ -16,7 +16,7 @@ use std::{
 };
 
 #[derive(Default)]
-struct Peer(CompositorClientState);
+struct Peer(CompositorClientState, bool);
 
 impl ClientData for Peer {
     fn initialized(&self, _: ClientId) {}
@@ -63,35 +63,7 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let display = Display::<Model>::new().unwrap();
-        let mut dh = display.handle();
-        let model = Model {
-            compositor: CompositorState::new::<Model>(&dh),
-            _exclusion: CaptureExclusionState::new::<Model>(&dh),
-        };
-        let (server, socket) = UnixStream::pair().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .unwrap();
-        let client = dh.insert_client(server, Arc::new(Peer::default())).unwrap();
-        let mut world = World {
-            display,
-            model,
-            client,
-            socket,
-        };
-        world.send(DISPLAY, 1, &[Arg::Uint(REGISTRY)]);
-        world.dispatch();
-        let globals: HashMap<String, u32> = world
-            .events()
-            .into_iter()
-            .filter(|(object, opcode, _)| (*object, *opcode) == (REGISTRY, 0))
-            .map(|(_, _, body)| {
-                let len = u32::from_ne_bytes(body[4..8].try_into().unwrap()) as usize;
-                let interface = String::from_utf8(body[8..8 + len - 1].to_vec()).unwrap();
-                (interface, u32::from_ne_bytes(body[..4].try_into().unwrap()))
-            })
-            .collect();
+        let (mut world, globals) = World::connect(false);
         for (interface, id) in [
             ("wl_compositor", COMPOSITOR),
             ("kora_capture_exclusion_manager_v1", MANAGER),
@@ -110,6 +82,43 @@ impl World {
         }
         world.send(COMPOSITOR, 0, &[Arg::Uint(SURFACE)]);
         world
+    }
+
+    /// A client, sandboxed or not, and the globals its registry lists.
+    fn connect(sandboxed: bool) -> (Self, HashMap<String, u32>) {
+        let display = Display::<Model>::new().unwrap();
+        let mut dh = display.handle();
+        let model = Model {
+            compositor: CompositorState::new::<Model>(&dh),
+            _exclusion: CaptureExclusionState::new::<Model, _>(&dh, |client| {
+                !client.get_data::<Peer>().unwrap().1
+            }),
+        };
+        let (server, socket) = UnixStream::pair().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let peer = Peer(CompositorClientState::default(), sandboxed);
+        let client = dh.insert_client(server, Arc::new(peer)).unwrap();
+        let mut world = World {
+            display,
+            model,
+            client,
+            socket,
+        };
+        world.send(DISPLAY, 1, &[Arg::Uint(REGISTRY)]);
+        world.dispatch();
+        let globals = world
+            .events()
+            .into_iter()
+            .filter(|(object, opcode, _)| (*object, *opcode) == (REGISTRY, 0))
+            .map(|(_, _, body)| {
+                let len = u32::from_ne_bytes(body[4..8].try_into().unwrap()) as usize;
+                let interface = String::from_utf8(body[8..8 + len - 1].to_vec()).unwrap();
+                (interface, u32::from_ne_bytes(body[..4].try_into().unwrap()))
+            })
+            .collect();
+        (world, globals)
     }
 
     fn send(&mut self, object: u32, opcode: u16, args: &[Arg]) {
@@ -181,6 +190,15 @@ impl World {
     fn commit(&mut self) {
         self.send(SURFACE, 6, &[]);
     }
+}
+
+#[test]
+fn a_sandboxed_client_cannot_leave_its_surfaces_out_of_captures() {
+    let (_, globals) = World::connect(true);
+    assert!(globals.contains_key("wl_compositor"));
+    assert!(!globals.contains_key("kora_capture_exclusion_manager_v1"));
+    let (_, globals) = World::connect(false);
+    assert!(globals.contains_key("kora_capture_exclusion_manager_v1"));
 }
 
 #[test]
