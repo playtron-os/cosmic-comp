@@ -851,7 +851,8 @@ impl State {
         let realm_state = RealmState::new::<Self>(dh);
         let toplevel_identity_state = IdentityState::new::<Self>(dh);
         let capture_size_state = CaptureSizeState::new::<Self>(dh);
-        let capture_exclusion_state = CaptureExclusionState::new::<Self>(dh);
+        let capture_exclusion_state =
+            CaptureExclusionState::new::<Self, _>(dh, client_not_sandboxed);
         let workspace_transition_state = WorkspaceTransitionState::new::<Self>(dh);
         let edge_resize_state = EdgeResizeState::new::<Self>(dh);
         let session_hold_state = SessionHoldState::new::<Self>(dh);
