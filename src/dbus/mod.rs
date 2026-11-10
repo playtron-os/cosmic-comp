@@ -108,6 +108,12 @@ async fn init_session(state: &DBusState) -> zbus::Result<()> {
             );
         }
     });
+    let recordings = state.clone();
+    state.spawn(async move {
+        if let Err(err) = capture::watch_recordings(recordings).await {
+            warn!(?err, "Not following the recorder for game mode");
+        }
+    });
     let windows = state.clone();
     state.spawn(async move {
         if let Err(err) = capture::watch_windows(windows).await {

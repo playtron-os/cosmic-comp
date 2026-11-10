@@ -16,4 +16,6 @@ upstream one.playtron.GameMode one.playtron.GameMode SetHdr
 upstream one.playtron.GameMode one.playtron.GameMode SetOverlay
 upstream one.playtron.GameMode one.playtron.GameMode SetOverlayKeyboard
 upstream one.playtron.GameMode one.playtron.GameMode Screenshot
+upstream one.playtron.GameMode one.playtron.GameMode StartRecording
+upstream one.playtron.GameMode one.playtron.GameMode StopRecording
 upstream one.playtron.GameMode one.playtron.GameMode AppFrametimeNs
