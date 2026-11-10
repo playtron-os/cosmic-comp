@@ -1632,6 +1632,25 @@ impl Workspace {
         self.floating_layer.recalculate();
     }
 
+    /// Configures every fullscreen window for the output again, after its scale or mode
+    /// changed: one sized for the old logical output overflows the new one. `keep` is a
+    /// window game mode asked to render at another size, which keeps it.
+    pub fn refit_fullscreen(&self, keep: Option<&CosmicSurface>) {
+        let output = self.output.geometry();
+        for fullscreen in self.get_fullscreen_surfaces() {
+            let surface = &fullscreen.surface;
+            if keep == Some(surface) {
+                continue;
+            }
+            if let Some(rect) = refit(surface.global_geometry(), fullscreen_rect(surface, output)) {
+                tracing::debug!(app_id = %surface.app_id(), ?rect, "refitting fullscreen window to its output");
+                surface.set_geometry(rect, 0);
+                surface.send_configure();
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
     pub fn unmaximize_request(&mut self, elem: &CosmicMapped) -> Option<Rectangle<i32, Local>> {
         self.unmaximize_request_with_options(elem)
     }
@@ -3453,6 +3472,15 @@ pub fn fullscreen_rect(
     centered_fixed(fixed.map(|size| size.as_global()), output)
 }
 
+/// The rect a fullscreen window configured at `configured` needs for its output to
+/// fill it as `wanted`, or `None` when it already has it.
+fn refit(
+    configured: Option<Rectangle<i32, Global>>,
+    wanted: Rectangle<i32, Global>,
+) -> Option<Rectangle<i32, Global>> {
+    (configured != Some(wanted)).then_some(wanted)
+}
+
 fn centered_fixed(
     fixed: Option<Size<i32, Global>>,
     output: Rectangle<i32, Global>,
@@ -3482,6 +3510,41 @@ mod fullscreen_rect_tests {
             centered_fixed(Some(Size::from((1920, 400))), output),
             output,
             "wider than the output"
+        );
+    }
+
+    /// A 1920x1080 screen at 150% is 1280x720 logical. At 100% or 200% the window
+    /// sized for 150% would underfill or overflow it, so it is configured again.
+    #[test]
+    fn a_scale_change_refits_a_fullscreen_window() {
+        let at = |scale: f64| {
+            let size = Size::<i32, Physical>::from((1920, 1080))
+                .to_f64()
+                .to_logical(scale)
+                .to_i32_round();
+            Rectangle::new(Point::from((0, 0)), Size::from((size.w, size.h)))
+        };
+        let configured = Some(at(1.5));
+        assert_eq!(configured.unwrap().size, Size::from((1280, 720)));
+        for scale in [1.0, 2.0] {
+            let wanted = centered_fixed(None, at(scale));
+            assert_eq!(refit(configured, wanted), Some(wanted), "{scale}");
+        }
+        assert_eq!(
+            refit(configured, centered_fixed(None, at(1.5))),
+            None,
+            "unchanged"
+        );
+
+        // A game kept at its fixed size stays centred on the new output.
+        let fixed = Some(Size::from((640, 400)));
+        let configured = Some(centered_fixed(fixed, at(1.5)));
+        assert_eq!(
+            refit(configured, centered_fixed(fixed, at(1.0))),
+            Some(Rectangle::new(
+                Point::from((640, 340)),
+                Size::from((640, 400))
+            ))
         );
     }
 

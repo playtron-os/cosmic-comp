@@ -2916,6 +2916,17 @@ impl Shell {
         }
     }
 
+    /// Configures fullscreen windows for their outputs' new size or scale, in every realm:
+    /// one off screen would come back sized for the old output.
+    pub fn refit_fullscreen(&self) {
+        let keep = self.game_mode.spoof_requested.as_ref().map(|r| &r.surface);
+        for workspaces in self.realms.values() {
+            for workspace in workspaces.spaces() {
+                workspace.refit_fullscreen(keep);
+            }
+        }
+    }
+
     pub fn workspaces(&self) -> &Workspaces {
         self.realms
             .get(&self.active_realm)
