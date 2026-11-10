@@ -204,6 +204,11 @@ impl LayerSurfaceVisibilityHandler for State {
         shell.pointer_following_layers.insert(surface_id);
     }
 
+    fn set_surface_follows_focus(&mut self, surface_id: ObjectId) {
+        let mut shell = self.common.shell.write();
+        shell.focus_following_layers.insert(surface_id);
+    }
+
     fn is_surface_hidden(&self, surface_id: &ObjectId) -> bool {
         let shell = self.common.shell.read();
         shell.is_surface_hidden(surface_id)

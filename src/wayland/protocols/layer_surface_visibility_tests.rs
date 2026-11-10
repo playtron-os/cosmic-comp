@@ -36,6 +36,8 @@ impl LayerSurfaceVisibilityHandler for Model {
     }
     fn set_surface_hidden_immediately(&mut self, _: ObjectId) {}
     fn set_surface_transition(&mut self, _: ObjectId, _: LayerTransition) {}
+    fn set_surface_follows_focus(&mut self, _: ObjectId) {}
+
     fn set_surface_follows_pointer(&mut self, _: ObjectId) {
         self.calls.push(Call::FollowsPointer);
     }

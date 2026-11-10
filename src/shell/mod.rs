@@ -320,13 +320,27 @@ pub struct PendingLayer {
 
 /// Keyboard focus moves the active output too, so a surface that follows the
 /// pointer takes the output under it instead.
+/// What an output-agnostic layer surface asked to show beside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayerFollows {
+    /// Nothing: the seat's active output, which the pointer moves.
+    Active,
+    Pointer,
+    /// The window with keyboard focus.
+    Focus,
+}
+
 fn agnostic_layer_output<'a>(
-    follows_pointer: bool,
+    follows: LayerFollows,
     pointer: Option<Point<f64, Global>>,
+    window_output: Option<Output>,
     mut outputs: impl Iterator<Item = &'a Output>,
     active: Output,
 ) -> Output {
-    let Some(pointer) = pointer.filter(|_| follows_pointer) else {
+    if follows == LayerFollows::Focus {
+        return window_output.unwrap_or(active);
+    }
+    let Some(pointer) = pointer.filter(|_| follows == LayerFollows::Pointer) else {
         return active;
     };
     outputs
@@ -684,6 +698,8 @@ pub struct Shell {
     pub output_agnostic_layers: std::collections::HashSet<ObjectId>,
     /// Output-agnostic layer surfaces that asked to show under the pointer.
     pub pointer_following_layers: std::collections::HashSet<ObjectId>,
+    /// Output-agnostic layer surfaces that asked to show beside the focused window.
+    pub focus_following_layers: std::collections::HashSet<ObjectId>,
 
     /// Layer surfaces that have already been granted Exclusive keyboard
     /// focus in the commit handler.  Cleared when interactivity drops
@@ -3689,6 +3705,7 @@ impl Shell {
             // Layer surfaces that follow the cursor to whichever output
             output_agnostic_layers: std::collections::HashSet::new(),
             pointer_following_layers: std::collections::HashSet::new(),
+            focus_following_layers: std::collections::HashSet::new(),
 
             // Exclusive keyboard focus already granted (avoid re-granting every frame)
             exclusive_focus_granted: std::collections::HashSet::new(),
@@ -7404,10 +7421,18 @@ impl Shell {
 
     /// The output an output-agnostic layer surface maps and shows on.
     pub fn agnostic_layer_output(&self, surface_id: &ObjectId, seat: &Seat<State>) -> Output {
+        let follows = if self.focus_following_layers.contains(surface_id) {
+            LayerFollows::Focus
+        } else if self.pointer_following_layers.contains(surface_id) {
+            LayerFollows::Pointer
+        } else {
+            LayerFollows::Active
+        };
         agnostic_layer_output(
-            self.pointer_following_layers.contains(surface_id),
+            follows,
             seat.get_pointer()
                 .map(|pointer| pointer.current_location().as_global()),
+            seat.window_output().or_else(|| seat.focused_output()),
             self.outputs(),
             seat.active_output(),
         )
@@ -9349,8 +9374,9 @@ impl Shell {
         let mut pending = self.pending_layers.remove(pos);
 
         let surface_id = pending.surface.wl_surface().id();
-        // Where the pointer is now, not where it was when the surface was made.
-        if self.pointer_following_layers.contains(&surface_id)
+        // Where the pointer or focus is now, not where it was when the surface was made.
+        if (self.pointer_following_layers.contains(&surface_id)
+            || self.focus_following_layers.contains(&surface_id))
             && self.is_output_agnostic_layer(&surface_id)
         {
             pending.output = self.agnostic_layer_output(&surface_id, &pending.seat);

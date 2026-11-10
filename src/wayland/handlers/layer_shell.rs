@@ -80,6 +80,7 @@ impl WlrLayerShellHandler for State {
         shell.layer_slides.retain(|s| s.surface_id != surface_id);
         shell.output_agnostic_layers.remove(&surface_id);
         shell.pointer_following_layers.remove(&surface_id);
+        shell.focus_following_layers.remove(&surface_id);
         shell.exclusive_focus_granted.remove(&surface_id);
 
         // Release this surface's blurred backdrop. It is a full-output-sized GPU
