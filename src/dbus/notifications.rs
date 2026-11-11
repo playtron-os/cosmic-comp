@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! Toasts through the freedesktop `org.freedesktop.Notifications` interface,
-//! and system toasts and capture previews through agentos-notifications' own
+//! and system toasts and capture previews through kora-notifications' own
 //! client crate, sent over the compositor's session-bus connection.
 
 use std::collections::HashMap;
@@ -34,7 +34,7 @@ trait Notifications {
     ) -> zbus::Result<u32>;
 }
 
-/// The colour grammar a system toast's dot carries, as agentos-notifications
+/// The colour grammar a system toast's dot carries, as kora-notifications
 /// names it. A system toast is a one-line confirmation of something the user
 /// just did, never a notification (no history, no unread, no sound).
 pub use kora_notifications_client::Tone;

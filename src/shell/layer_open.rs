@@ -4,7 +4,7 @@
 //! show/hide transition for every surface that isn't edge-sliding (see
 //! [`super::layer_slide`] and [`super::Shell::set_surface_hidden`]).
 //!
-//! It first shipped for agentos-panel's popover surfaces and now applies to all
+//! It first shipped for kora-panel's popover surfaces and now applies to all
 //! fade+rise surfaces (panels, popovers, modals, notifications, the launcher…),
 //! which animate IN when shown rather than appearing instantly.
 //!

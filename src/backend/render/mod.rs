@@ -1924,7 +1924,7 @@ where
                     center_local.as_logical().to_physical_precise_round(scale)
                 };
 
-                // Neighbor squish (e.g. agentos-panel bottom bar tracking a side
+                // Neighbor squish (e.g. kora-panel bottom bar tracking a side
                 // panel slide). Computed once so both the surface content AND its
                 // shadow scale by the same factor about the left edge.
                 if is_scaling {

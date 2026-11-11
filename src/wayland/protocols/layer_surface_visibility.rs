@@ -44,7 +44,7 @@ pub enum LayerTransition {
     /// Slide the whole surface in/out from its anchored screen edge.
     Slide,
     /// Fade in/out with a subtle upward slide + scale (the default for
-    /// non-edge-anchored surfaces) — the agentos-panel popover animation.
+    /// non-edge-anchored surfaces) — the kora-panel popover animation.
     Fade,
     /// The design's `fluidReveal` / `fluidDismiss`: rises further than [`Self::Fade`]
     /// and overshoots on the way in, accelerates away on the way out.
