@@ -89,6 +89,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - uses: kora-desktop/ci-actions/git-auth@v1
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
       - name: Install Task
         uses: go-task/setup-task@v1
       # The build runs inside docker with CARGO_HOME=.cache/home/.cargo (bind-mounted),
@@ -115,8 +119,6 @@ jobs:
       - name: Set release version
         run: task version:set VERSION=${{ needs.version.outputs.version }}
       - name: Build RPM
-        env:
-          SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
         run: task docker:run TARGET=dist:all ARCH=${{ matrix.arch }} TARGET_ARCH=${{ matrix.target }}
       - name: Upload RPM artifact
         uses: actions/upload-artifact@v4
