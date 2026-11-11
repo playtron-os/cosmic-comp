@@ -1867,6 +1867,17 @@ impl<P: Program + Send + 'static> SpaceElement for IcedElement<P> {
 // MERGE: upstream replaced the `AsRenderElements` impl with this push-based API so the
 // frosted-glass backdrop can be ordered below the rasterized UI buffer.
 
+/// Where an element's render elements go, front to back within each sink.
+pub struct IcedSinks<'a, R: AsGlowRenderer + ImportMem>
+where
+    R::TextureId: Send,
+{
+    pub above: &'a mut dyn FnMut(IcedRenderElement<R>),
+    pub below: Option<&'a mut dyn FnMut(IcedRenderElement<R>)>,
+    /// Tooltips; `above` when unset.
+    pub overlay: Option<&'a mut dyn FnMut(IcedRenderElement<R>)>,
+}
+
 impl<P: Program + Send + 'static> IcedElement<P> {
     pub fn push_render_elements<R>(
         &self,
@@ -1884,6 +1895,27 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         self.push_render_elements_with_focus(
             renderer, location, scale, alpha, radii, push_above, push_below,
         );
+    }
+
+    /// Like `push_render_elements`, but tooltips go to `sinks.overlay`: a bar drawn behind
+    /// its window's client would otherwise hide them there, all but their top edge.
+    pub fn push_render_elements_with_overlay<R>(
+        &self,
+        renderer: &mut R,
+        location: Point<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        radii: [u8; 4],
+        sinks: IcedSinks<'_, R>,
+    ) where
+        R: AsGlowRenderer + ImportMem,
+        R::TextureId: Send + Clone + 'static,
+    {
+        let start = crate::frametrace::enabled().then(Instant::now);
+        self.push_render_elements_untraced(renderer, location, scale, alpha, radii, sinks);
+        if let Some(start) = start {
+            crate::frametrace::iced_push(P::program_name(), start.elapsed());
+        }
     }
 
     /// Return the exact frame used for the Halo, so its window cannot sample
@@ -1904,7 +1936,17 @@ impl<P: Program + Send + 'static> IcedElement<P> {
     {
         let start = crate::frametrace::enabled().then(Instant::now);
         let frame = self.push_render_elements_untraced(
-            renderer, location, scale, alpha, radii, push_above, push_below,
+            renderer,
+            location,
+            scale,
+            alpha,
+            radii,
+            IcedSinks {
+                above: push_above,
+                // Shorten each sink's lifetime to the shared one; `Option` alone won't coerce.
+                below: push_below.map(|below| below as &mut dyn FnMut(_)),
+                overlay: None,
+            },
         );
         if let Some(start) = start {
             crate::frametrace::iced_push(P::program_name(), start.elapsed());
@@ -1919,13 +1961,17 @@ impl<P: Program + Send + 'static> IcedElement<P> {
         mut scale: Scale<f64>,
         alpha: f32,
         radii: [u8; 4],
-        push_above: &mut dyn FnMut(IcedRenderElement<R>),
-        push_below: Option<&mut dyn FnMut(IcedRenderElement<R>)>,
+        sinks: IcedSinks<'_, R>,
     ) -> Option<FocusOutlineFrame>
     where
         R: AsGlowRenderer + ImportMem,
         R::TextureId: Send + Clone + 'static,
     {
+        let IcedSinks {
+            above: push_above,
+            below: push_below,
+            overlay: push_overlay,
+        } = sinks;
         let mut internal = self.lock();
         let internal_ref = &mut *internal;
 
@@ -1994,16 +2040,22 @@ impl<P: Program + Send + 'static> IcedElement<P> {
             .reduce(|a, b| (a.w.min(b.w), a.h.min(b.h)).into());
         // Tooltips have their own fade lifetime. Let an outgoing chip finish
         // even as the Halo fades/slides away; still inherit window-level alpha.
-        internal_ref.tooltip.push(
-            renderer,
-            &internal_ref.theme,
-            location.to_f64(),
-            scale * internal_ref.additional_scale,
-            internal_ref.additional_scale,
-            output,
-            alpha,
-            push_above,
-        );
+        {
+            let tooltip_sink: &mut dyn FnMut(IcedRenderElement<R>) = match push_overlay {
+                Some(overlay) => overlay,
+                None => &mut *push_above,
+            };
+            internal_ref.tooltip.push(
+                renderer,
+                &internal_ref.theme,
+                location.to_f64(),
+                scale * internal_ref.additional_scale,
+                internal_ref.additional_scale,
+                output,
+                alpha,
+                tooltip_sink,
+            );
+        }
         let alpha = internal_ref.visibility_frame.alpha(alpha);
         if alpha <= 0.0 {
             return focus_frame;
