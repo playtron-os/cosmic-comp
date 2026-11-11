@@ -555,6 +555,8 @@ tasks:
         sh: pwd
       SSH_KEY:
         sh: echo "${SSH_KEY}"
+      GIT_AUTH_CONFIG:
+        sh: echo "${GIT_AUTH_CONFIG:-}"
       # Rootless podman maps --user onto a subuid that cannot read the mounted
       # checkout, and SELinux denies the labels. Real Docker needs neither.
       PODMAN_OPTS:
@@ -569,14 +571,14 @@ tasks:
       - mkdir -p .cache/var/lib/rpm
       # A /etc/passwd entry is required so the correct ~/.ssh path is used
       - echo -e "build:x:{{.UID}}:{{.GID}}::/home/build:/bin/bash" > .cache/passwd
-      # Use the SSH key from the host
+      # CI fetches private repos through the git-auth config (GIT_AUTH_CONFIG); locally, use the host's SSH key
       - |
         mkdir -p .cache/.ssh
         {{ if ne .SSH_KEY "" }}
           echo "{{.SSH_KEY}}" > .cache/.ssh/id_ed25519
           chmod 600 .cache/.ssh/id_ed25519
-        {{ else }}
-          cp ~/.ssh/* .cache/.ssh
+        {{ else if eq .GIT_AUTH_CONFIG "" }}
+          find ~/.ssh -maxdepth 1 -type f -exec cp {} .cache/.ssh/ \;
         {{ end }}
       - |
         docker run --rm {{.PODMAN_OPTS}} \
@@ -586,6 +588,7 @@ tasks:
           -v "{{.PWD}}/.cache/var/lib/rpm:/var/lib/rpm" \
           -v "{{.PWD}}/.cache/.ssh:/home/build/.ssh" \
           -v "{{.PWD}}/.cache/passwd:/etc/passwd" \
+          {{ if .GIT_AUTH_CONFIG }}-v "{{.GIT_AUTH_CONFIG}}:/etc/gitconfig:ro"{{ end }} \
           --workdir "{{.PWD}}" \
           -e HOME=/home/build \
           -e CARGO_HOME=/home/build/.cargo \
