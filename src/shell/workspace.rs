@@ -56,6 +56,7 @@ use smithay::{
         Transform,
     },
     wayland::{compositor::with_states, seat::WaylandFocus, xdg_activation::XdgActivationState},
+    xwayland::xwm::XwmId,
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -1635,14 +1636,22 @@ impl Workspace {
     /// Configures every fullscreen window for the output again, after its scale or mode
     /// changed: one sized for the old logical output overflows the new one. `keep` is a
     /// window game mode asked to render at another size, which keeps it.
-    pub fn refit_fullscreen(&self, keep: Option<&CosmicSurface>) {
+    pub fn refit_fullscreen(&self, keep: Option<&CosmicSurface>, pass: RefitPass<'_>) {
         let output = self.output.geometry();
         for fullscreen in self.get_fullscreen_surfaces() {
             let surface = &fullscreen.surface;
             if keep == Some(surface) {
                 continue;
             }
-            if let Some(rect) = refit(surface.global_geometry(), fullscreen_rect(surface, output)) {
+            let x11 = surface.x11_surface().map(|x11| match pass {
+                RefitPass::Xwayland { rescaled } => {
+                    x11.xwm_id().is_some_and(|id| rescaled.contains(&id))
+                }
+                RefitPass::Output => false,
+            });
+            let wanted = fullscreen_rect(surface, output);
+            if let Some(rect) = refit_in(pass.is_xwayland(), x11, surface.global_geometry(), wanted)
+            {
                 tracing::debug!(app_id = %surface.app_id(), ?rect, "refitting fullscreen window to its output");
                 surface.set_geometry(rect, 0);
                 surface.send_configure();
@@ -3481,6 +3490,38 @@ fn refit(
     (configured != Some(wanted)).then_some(wanted)
 }
 
+/// Which fullscreen windows an output change configures again.
+#[derive(Debug, Clone, Copy)]
+pub enum RefitPass<'a> {
+    /// The outputs changed: Wayland windows. An X11 window waits for its server to take
+    /// the new scale, or it is sized in the old scale's pixels and the game keeps that size.
+    Output,
+    /// The X servers have the outputs' scale; those in `rescaled` changed it, so their
+    /// windows need the same logical rect again in the new pixels.
+    Xwayland { rescaled: &'a [XwmId] },
+}
+
+impl RefitPass<'_> {
+    fn is_xwayland(&self) -> bool {
+        matches!(self, RefitPass::Xwayland { .. })
+    }
+}
+
+/// `refit` for one pass. `x11` is `None` for a Wayland window, else whether its X
+/// server was rescaled.
+fn refit_in(
+    xwayland_pass: bool,
+    x11: Option<bool>,
+    configured: Option<Rectangle<i32, Global>>,
+    wanted: Rectangle<i32, Global>,
+) -> Option<Rectangle<i32, Global>> {
+    match (xwayland_pass, x11) {
+        (false, None) => refit(configured, wanted),
+        (true, Some(rescaled)) => refit(configured, wanted).or(rescaled.then_some(wanted)),
+        _ => None,
+    }
+}
+
 fn centered_fixed(
     fixed: Option<Size<i32, Global>>,
     output: Rectangle<i32, Global>,
@@ -3545,6 +3586,37 @@ mod fullscreen_rect_tests {
                 Point::from((640, 340)),
                 Size::from((640, 400))
             ))
+        );
+    }
+
+    /// The test laptop, 2560x1440, from 150% to 200%: refit before Xwayland took 2x, the
+    /// game got 1920x1080 X pixels for its 1280x720 logical rect and kept rendering at it.
+    #[test]
+    fn x11_windows_wait_for_their_servers_scale() {
+        let at = |w, h| Rectangle::new(Point::from((0, 0)), Size::from((w, h)));
+        let configured = Some(at(1707, 960));
+        let wanted = at(1280, 720);
+        assert_eq!(refit_in(false, None, configured, wanted), Some(wanted));
+        assert_eq!(
+            refit_in(false, Some(true), configured, wanted),
+            None,
+            "output pass"
+        );
+        assert_eq!(refit_in(true, None, configured, wanted), None, "Wayland");
+        assert_eq!(
+            refit_in(true, Some(false), configured, wanted),
+            Some(wanted)
+        );
+
+        // Same logical rect, but its server's pixels changed: 1280x720 is 2560x1440 at 2x.
+        assert_eq!(
+            refit_in(true, Some(true), Some(wanted), wanted),
+            Some(wanted)
+        );
+        assert_eq!(
+            refit_in(true, Some(false), Some(wanted), wanted),
+            None,
+            "unchanged"
         );
     }
 

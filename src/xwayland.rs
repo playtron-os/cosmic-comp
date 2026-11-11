@@ -9,8 +9,8 @@ use std::{
 use crate::{
     backend::render::cursor::{Cursor, load_cursor_env, load_cursor_theme},
     shell::{
-        CosmicSurface, PendingWindow, Shell, focus::target::KeyboardFocusTarget, fullscreen_rect,
-        grabs::ReleaseMode,
+        CosmicSurface, PendingWindow, RefitPass, Shell, focus::target::KeyboardFocusTarget,
+        fullscreen_rect, grabs::ReleaseMode,
     },
     state::State,
     utils::prelude::*,
@@ -800,8 +800,10 @@ impl Common {
         // is told the current resources and cursor.
         let shell = self.shell.clone();
         let mut rescaled = None::<Vec<(X11Surface, Rectangle<i32, Logical>)>>;
+        let mut rescaled_wms = Vec::new();
         for xwayland in self.xwayland_states_mut() {
             if xwayland.scale != Some(new_scale) {
+                rescaled_wms.extend(xwayland.xwm.as_ref().map(X11Wm::id));
                 // backup geometries, in every realm: a workspace's server has
                 // windows in its own, on screen or not
                 let xwm_id = xwayland.xwm.as_ref().map(X11Wm::id);
@@ -888,6 +890,11 @@ impl Common {
 
             self.xwayland_scale = Some(new_scale);
         }
+
+        // Output changes leave X11 fullscreen windows to this pass, after the new scale.
+        self.shell.read().refit_fullscreen(RefitPass::Xwayland {
+            rescaled: &rescaled_wms,
+        });
     }
 
     pub fn update_xwayland_primary_output(&mut self) {
