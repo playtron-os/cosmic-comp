@@ -28,7 +28,7 @@
 //! measure, so it is intentionally not broken out here).
 //!
 //! Configuration via environment (no rebuild needed):
-//!  - `COSMIC_COLDSTART_APP`   — target command (default `agentos-settings`)
+//!  - `COSMIC_COLDSTART_APP`   — target command (default `kora-settings`)
 //!  - `COSMIC_COLDSTART_ITERS` — iteration count (default 5)
 //!
 //! Caveat: a *true* cold start requires dropping the page cache, which needs
@@ -60,7 +60,7 @@ const FINISH_DELAY: Duration = Duration::from_millis(600);
 const ITERATION_TIMEOUT: Duration = Duration::from_secs(25);
 
 fn target_app() -> String {
-    std::env::var("COSMIC_COLDSTART_APP").unwrap_or_else(|_| "agentos-settings".to_string())
+    std::env::var("COSMIC_COLDSTART_APP").unwrap_or_else(|_| "kora-settings".to_string())
 }
 
 fn iterations() -> usize {
