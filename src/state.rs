@@ -10,7 +10,7 @@ use crate::{
     config::{CompOutputConfig, Config, ScreenFilter},
     dbus::DBusState,
     input::{PointerFocusState, gestures::GestureState},
-    shell::{CosmicSurface, SeatExt, Shell, grabs::SeatMoveGrabState},
+    shell::{CosmicSurface, RefitPass, SeatExt, Shell, grabs::SeatMoveGrabState},
     utils::prelude::OutputExt,
     wayland::{
         handlers::{
@@ -764,7 +764,7 @@ impl LockedBackend<'_> {
 
         // Update layout for changes in resolution, scale, orientation
         shell_ref.workspaces_mut().recalculate();
-        shell_ref.refit_fullscreen();
+        shell_ref.refit_fullscreen(RefitPass::Output);
         let active_outputs = shell_ref.outputs().cloned().collect::<Vec<_>>();
         std::mem::drop(shell_ref);
 
