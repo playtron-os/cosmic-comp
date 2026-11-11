@@ -1,3 +1,11 @@
+## [1.69.1](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.0...v1.69.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **perf:** drop the old agentos- UI process prefix ([e840c0e](https://github.com/kora-desktop/cosmic-comp/commit/e840c0e8bb196b6cb3557f6c5205d701b0e0e2ce))
+* **xwayland:** refit fullscreen X11 windows after their new scale ([b7f6e67](https://github.com/kora-desktop/cosmic-comp/commit/b7f6e67f911d9e65cdda30bbcba0202b56f7d535))
+
 # [1.69.0](https://github.com/kora-desktop/cosmic-comp/compare/v1.68.0...v1.69.0) (2026-11-11)
 
 
