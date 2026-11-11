@@ -3729,7 +3729,7 @@ dependencies = [
 [[package]]
 name = "kora-capture-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=392e9e0797dc9d58c61c69a8427b4bcfc0a86463#392e9e0797dc9d58c61c69a8427b4bcfc0a86463"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=70ccc509d665b9878ebd8f9e43380b0c3cfa55f1#70ccc509d665b9878ebd8f9e43380b0c3cfa55f1"
 dependencies = [
  "futures-util",
  "serde",
@@ -3739,7 +3739,7 @@ dependencies = [
 [[package]]
 name = "kora-game-mode-client"
 version = "1.0.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=392e9e0797dc9d58c61c69a8427b4bcfc0a86463#392e9e0797dc9d58c61c69a8427b4bcfc0a86463"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=70ccc509d665b9878ebd8f9e43380b0c3cfa55f1#70ccc509d665b9878ebd8f9e43380b0c3cfa55f1"
 dependencies = [
  "futures-util",
  "zbus",
@@ -3748,7 +3748,7 @@ dependencies = [
 [[package]]
 name = "kora-notifications-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=392e9e0797dc9d58c61c69a8427b4bcfc0a86463#392e9e0797dc9d58c61c69a8427b4bcfc0a86463"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=70ccc509d665b9878ebd8f9e43380b0c3cfa55f1#70ccc509d665b9878ebd8f9e43380b0c3cfa55f1"
 dependencies = [
  "serde",
  "zbus",
@@ -3757,7 +3757,7 @@ dependencies = [
 [[package]]
 name = "kora-stt-client"
 version = "1.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=392e9e0797dc9d58c61c69a8427b4bcfc0a86463#392e9e0797dc9d58c61c69a8427b4bcfc0a86463"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=70ccc509d665b9878ebd8f9e43380b0c3cfa55f1#70ccc509d665b9878ebd8f9e43380b0c3cfa55f1"
 dependencies = [
  "futures-util",
  "zbus",
@@ -3766,7 +3766,7 @@ dependencies = [
 [[package]]
 name = "kora-workspaces-client"
 version = "0.1.0"
-source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=392e9e0797dc9d58c61c69a8427b4bcfc0a86463#392e9e0797dc9d58c61c69a8427b4bcfc0a86463"
+source = "git+ssh://git@github.com/playtron-os/kora-sdk.git?rev=70ccc509d665b9878ebd8f9e43380b0c3cfa55f1#70ccc509d665b9878ebd8f9e43380b0c3cfa55f1"
 dependencies = [
  "futures-util",
  "zbus",

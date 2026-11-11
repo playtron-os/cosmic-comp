@@ -142,7 +142,7 @@ popup of a panel-like bar closes.
 
 Inside a Kora workspace every client lands in that workspace's realm, which
 shows only while a registry calls it active: pass a stand-in
-`one.playtron.Workspaces1` service in `CC_BUS_SERVICE`.
+`inc.kora.Workspaces1` service in `CC_BUS_SERVICE`.
 
 ## Display grants
 

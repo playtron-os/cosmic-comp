@@ -1,6 +1,6 @@
 //! Following the active workspace, and its colour.
 //!
-//! The registry (`one.playtron.Workspaces1`) owns which workspace is on screen;
+//! The registry (`inc.kora.Workspaces1`) owns which workspace is on screen;
 //! the compositor is a consumer and does not decide switches. `ListChanged`
 //! matters as much as `ActiveChanged` because recolouring the workspace you are
 //! standing in changes no active id.
@@ -14,8 +14,8 @@ use tracing::{debug, warn};
 
 use crate::state::State;
 
-const DEST: &str = "one.playtron.Workspaces1";
-const PATH: &str = "/one/playtron/Workspaces1";
+const DEST: &str = "inc.kora.Workspaces1";
+const PATH: &str = "/inc/kora/Workspaces1";
 
 /// Whether this session runs workspaces at all.
 ///

@@ -1,5 +1,5 @@
 # game-mode-env.sh — SOURCE this (don't execute it) to point your shell at the
-# cosmic-comp that owns one.playtron.GameMode, so scripts/game-mode-test.sh talks
+# cosmic-comp that owns inc.kora.GameMode, so scripts/game-mode-test.sh talks
 # to the right compositor. It locates the owning bus by ASKING each candidate
 # session bus who owns the name (robust — no PID guessing), preferring the dev
 # build (target/debug/cosmic-comp) over an installed one.
@@ -10,7 +10,7 @@
 # Re-source after restarting the compositor (its bus + display change each run).
 
 _gm_dir=$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)
-_gm_iface="one.playtron.GameMode"
+_gm_iface="inc.kora.GameMode"
 _gm_owner=""
 _gm_bus=""
 _gm_fallback_pid=""
@@ -39,7 +39,7 @@ if [ -z "$_gm_owner" ] && [ -n "$_gm_fallback_pid" ]; then
 fi
 
 if [ -z "$_gm_owner" ]; then
-  echo "game-mode-env: one.playtron.GameMode is not owned on any session bus." >&2
+  echo "game-mode-env: inc.kora.GameMode is not owned on any session bus." >&2
   echo "               Start the dev build with 'make run-debug' first." >&2
 else
   export DBUS_SESSION_BUS_ADDRESS="$_gm_bus"
@@ -51,7 +51,7 @@ else
   eval "gm() { \"$_gm_dir/game-mode-test.sh\" \"\$@\"; }"
 
   _dev=$(ps -o args= -p "$_gm_owner" 2>/dev/null | grep -q 'target/debug' && echo " (dev build)" || echo "")
-  echo "game-mode-env: one.playtron.GameMode owned by pid=$_gm_owner$_dev"
+  echo "game-mode-env: inc.kora.GameMode owned by pid=$_gm_owner$_dev"
   echo "  DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
   if [ -n "$_disp" ]; then
     echo "  DISPLAY=$DISPLAY"

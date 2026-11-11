@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Following the machine's run registry, `one.playtron.Runs1`.
+//! Following the machine's run registry, `inc.kora.Runs1`.
 //!
 //! `Changed` carries only a generation, so every change is a fresh `List`.
 //! Watching the name as well means the start order does not matter and a
@@ -19,8 +19,8 @@ use crate::{
     state::State,
 };
 
-const DEST: &str = "one.playtron.Runs1";
-const PATH: &str = "/one/playtron/Runs1";
+const DEST: &str = "inc.kora.Runs1";
+const PATH: &str = "/inc/kora/Runs1";
 
 type Fields = HashMap<String, OwnedValue>;
 

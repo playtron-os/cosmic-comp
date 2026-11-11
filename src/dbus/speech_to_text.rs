@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! Speech to Text, `one.playtron.SpeechToText1` (contract in `speech-to-text-client`).
+//! Speech to Text, `inc.kora.SpeechToText1` (contract in `speech-to-text-client`).
 //!
 //! The binding is held, and its release never reaches the focused client, so the
 //! compositor tells the desktop's dictation host when a hold starts, finishes or is
@@ -56,7 +56,7 @@ struct Step {
 }
 
 impl SpeechToText {
-    /// Owns `one.playtron.SpeechToText1`, emits each hold in turn and follows the host.
+    /// Owns `inc.kora.SpeechToText1`, emits each hold in turn and follows the host.
     pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) -> Self {
         let (presence, heard) = calloop::channel::channel::<bool>();
         if let Err(err) = handle.insert_source(heard, |event, _, state| {

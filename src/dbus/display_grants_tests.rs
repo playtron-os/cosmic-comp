@@ -11,7 +11,7 @@ use super::*;
 use crate::dbus::private_bus::PrivateBus;
 use crate::display_grants::Class;
 
-const PATH: &str = "/one/playtron/Workspaces1";
+const PATH: &str = "/inc/kora/Workspaces1";
 
 type Row = (String, String, String, Vec<String>, Vec<String>);
 
@@ -47,7 +47,7 @@ struct Registry {
     verdicts: Arc<Mutex<VecDeque<&'static str>>>,
 }
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Registry {
     fn display_grants(&self) -> Vec<Row> {
         self.rows.lock().unwrap().clone()
@@ -59,7 +59,7 @@ impl Registry {
 
 struct Access(Registry);
 
-#[zbus::interface(name = "one.playtron.AgentAccess1")]
+#[zbus::interface(name = "inc.kora.AgentAccess1")]
 impl Access {
     fn judge_display(
         &self,
@@ -83,7 +83,7 @@ impl Access {
 /// A released registry, from before display grants: it answers neither call.
 struct Older;
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Older {
     fn active(&self) -> String {
         "work".into()
@@ -93,7 +93,7 @@ impl Older {
 /// A registry from after this compositor, whose rows carry one more field.
 struct Newer;
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Newer {
     fn display_grants(&self) -> Vec<(String, String, String, Vec<String>, Vec<String>, u32)> {
         let (workspace, kind, id, open, off) = row("org.example.Clips", &["clipboard"]);

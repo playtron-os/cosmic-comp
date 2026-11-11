@@ -1,4 +1,4 @@
-// Native `one.playtron.GameMode` D-Bus interface for cosmic-comp.
+// Native `inc.kora.GameMode` D-Bus interface for cosmic-comp.
 //
 // An app-centric gaming-control interface. Because cosmic-comp is a Wayland
 // compositor that already tracks apps by app_id, the interface is compact: no
@@ -946,12 +946,12 @@ impl GameModeBridge {
 
 // ───────────────────────────── the interface ───────────────────────────────
 
-/// `one.playtron.GameMode` — cosmic-comp's gaming-control interface.
+/// `inc.kora.GameMode` — cosmic-comp's gaming-control interface.
 pub struct GameModeInterface {
     io: Arc<GameModeIo>,
 }
 
-#[interface(name = "one.playtron.GameMode")]
+#[interface(name = "inc.kora.GameMode")]
 impl GameModeInterface {
     /// Enter exclusive game mode for `app_id`: make that app the fullscreen game
     /// (engaging the direct-scanout + VRR + tearing fast paths) and clear the
@@ -3587,7 +3587,7 @@ mod tests {
                 .deserialize()
                 .unwrap();
             for member in [
-                "one.playtron.GameMode",
+                "inc.kora.GameMode",
                 "EnterGameMode",
                 "ExitGameMode",
                 "SetFpsLimit",
@@ -3620,7 +3620,7 @@ mod tests {
                     OBJECT_PATH,
                     Some("org.freedesktop.DBus.Properties"),
                     "Get",
-                    &("one.playtron.GameMode", "ActiveAppId"),
+                    &("inc.kora.GameMode", "ActiveAppId"),
                 )
                 .await
                 .unwrap();
@@ -3632,7 +3632,7 @@ mod tests {
                 .call_method(
                     Some(destination),
                     OBJECT_PATH,
-                    Some("one.playtron.GameMode"),
+                    Some("inc.kora.GameMode"),
                     "SetFpsLimit",
                     &60u32,
                 )

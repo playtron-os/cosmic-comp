@@ -691,7 +691,7 @@ type NewerRow = (String, String, String, Vec<String>, Vec<String>, u32);
 
 struct Current(Vec<Row>);
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Current {
     fn display_grants(&self) -> Vec<Row> {
         self.0.clone()
@@ -700,7 +700,7 @@ impl Current {
 
 struct Deny;
 
-#[zbus::interface(name = "one.playtron.AgentAccess1")]
+#[zbus::interface(name = "inc.kora.AgentAccess1")]
 impl Deny {
     fn judge_display(
         &self,
@@ -718,7 +718,7 @@ impl Deny {
 /// The person's answer to every held request, as the dialog gives it.
 struct Answers(&'static str);
 
-#[zbus::interface(name = "one.playtron.AgentAccess1")]
+#[zbus::interface(name = "inc.kora.AgentAccess1")]
 impl Answers {
     fn judge_display(
         &self,
@@ -738,7 +738,7 @@ impl Answers {
 /// A registry whose workspace is on screen, so the boxed app's windows show and take the keyboard.
 struct Shown(Vec<Row>);
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Shown {
     fn display_grants(&self) -> Vec<Row> {
         self.0.clone()
@@ -756,7 +756,7 @@ impl Shown {
 
 struct Older;
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Older {
     fn active(&self) -> String {
         String::new()
@@ -765,7 +765,7 @@ impl Older {
 
 struct Newer(Vec<Row>);
 
-#[zbus::interface(name = "one.playtron.Workspaces1")]
+#[zbus::interface(name = "inc.kora.Workspaces1")]
 impl Newer {
     fn display_grants(&self) -> Vec<NewerRow> {
         self.0
@@ -799,7 +799,7 @@ fn registry(kind: &str, workspace: &str, app_id: &str, open: &str) -> zbus::Resu
         open,
         off,
     )];
-    let path = "/one/playtron/Workspaces1";
+    let path = "/inc/kora/Workspaces1";
     let builder = zbus::blocking::connection::Builder::session()?;
     let builder = match kind {
         "current" | "off" => builder
@@ -815,7 +815,7 @@ fn registry(kind: &str, workspace: &str, app_id: &str, open: &str) -> zbus::Resu
             .serve_at(path, Answers("deny"))?,
         _ => fail("registry: current, off, older, newer, allow or deny"),
     };
-    let _conn = builder.name("one.playtron.Workspaces1")?.build()?;
+    let _conn = builder.name("inc.kora.Workspaces1")?.build()?;
     println!("registry ready");
     loop {
         std::thread::park();

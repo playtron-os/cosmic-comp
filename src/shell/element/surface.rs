@@ -256,7 +256,7 @@ struct OffScreen(AtomicBool);
 #[derive(Default)]
 struct GlobalGeometry(Mutex<Option<Rectangle<i32, Global>>>);
 
-/// A window's recording through `one.playtron.CaptureEngine1`.
+/// A window's recording through `inc.kora.CaptureEngine1`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Recording {
     #[default]

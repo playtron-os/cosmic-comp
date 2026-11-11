@@ -88,7 +88,7 @@ clients() {
 	local stage=$1 boxed=$2 copy=$3
 	expect "$stage: the session" "$everything" kept
 	expect "$stage: another sandbox" "$others" hidden org.flatpak "$app"
-	expect "$stage: a boxed app" "$boxed" "$copy" one.playtron.Workspaces.App "$app"
+	expect "$stage: a boxed app" "$boxed" "$copy" inc.kora.Workspaces.App "$app"
 	alive
 }
 
@@ -121,7 +121,7 @@ stop_registry
 # expect_paste NAME RESULT [window]: a boxed app's paste on a connection that hangs up at once.
 expect_paste() {
 	local got
-	got=$(nested "$bin" paste one.playtron.Workspaces.App "$app" ${3:+"$3"})
+	got=$(nested "$bin" paste inc.kora.Workspaces.App "$app" ${3:+"$3"})
 	[ "$got" = "paste=$2" ] && { echo "ok $1"; return; }
 	echo "FAILED $1: got $got, want paste=$2" >&2
 	exit 1
@@ -130,7 +130,7 @@ expect_paste() {
 # expect_type NAME RESULT: keys a boxed app sends on a connection that hangs up at once, as wtype.
 expect_type() {
 	local got
-	got=$(nested "$bin" type one.playtron.Workspaces.App "$app")
+	got=$(nested "$bin" type inc.kora.Workspaces.App "$app")
 	[ "$got" = "type=$2" ] && { echo "ok $1"; return; }
 	echo "FAILED $1: got $got, want type=$2" >&2
 	exit 1
@@ -151,7 +151,7 @@ if [ -n "$ws" ]; then
 	start_registry off input
 	# shellcheck disable=SC2086
 	expect "input off: a boxed app" "$(list ${askable#zwp_virtual_keyboard_manager_v1 })" "$refused" \
-		one.playtron.Workspaces.App "$app"
+		inc.kora.Workspaces.App "$app"
 	grep -q 'row that is off.*input' "$CC_STATE/comp.log" || {
 		echo "FAILED input off: the compositor did not log the refusal" >&2
 		exit 1
@@ -161,7 +161,7 @@ if [ -n "$ws" ]; then
 	# The registry keeps an app's Deny as its row at Off: the app's data control, taken before,
 	# stays connected, and its later copy is refused unasked with a line in the log.
 	start_registry current clipboard
-	coproc HOLD { nested "$bin" hold one.playtron.Workspaces.App "$app"; }
+	coproc HOLD { nested "$bin" hold inc.kora.Workspaces.App "$app"; }
 	read -r said <&"${HOLD[0]}"
 	[ "$said" = held ] || { echo "FAILED the holding client: $said" >&2; exit 1; }
 	stop_registry
