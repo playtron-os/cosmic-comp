@@ -12,7 +12,7 @@ use crate::{
     },
     state::State,
     utils::{
-        iced::{IcedElement, IcedRenderElement, Program},
+        iced::{IcedElement, IcedRenderElement, IcedSinks, Program},
         prelude::*,
     },
     wayland::handlers::surface_embed::{get_embed_render_info, is_surface_embedded},
@@ -89,6 +89,8 @@ pub const WINDOW_BLUR_STRENGTH: usize = 2;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WindowRenderStep {
     Header,
+    /// The tooltips of a header drawn behind the client.
+    HeaderTooltips,
     Border,
     Client,
 }
@@ -98,7 +100,8 @@ const HALO_RENDER_STEPS: [WindowRenderStep; 3] = [
     WindowRenderStep::Border,
     WindowRenderStep::Client,
 ];
-const STANDARD_RENDER_STEPS: [WindowRenderStep; 3] = [
+const STANDARD_RENDER_STEPS: [WindowRenderStep; 4] = [
+    WindowRenderStep::HeaderTooltips,
     WindowRenderStep::Border,
     WindowRenderStep::Client,
     WindowRenderStep::Header,
@@ -1707,6 +1710,34 @@ impl CosmicWindow {
             );
         }
 
+        // The bar keeps its place behind the client; its tooltips go in front, now.
+        let mut deferred_header = Vec::new();
+        let mut deferred_below = Vec::new();
+        if has_ssd
+            && !is_embedded
+            && render_steps.first() == Some(&WindowRenderStep::HeaderTooltips)
+        {
+            let mut header_radii = radii;
+            header_radii[0] = 0;
+            header_radii[2] = 0;
+            let ssd_loc = location
+                + self
+                    .0
+                    .with_program(|p| p.window.geometry().loc.to_physical_precise_round(scale));
+            self.0.push_render_elements_with_overlay(
+                renderer,
+                ssd_loc,
+                scale,
+                alpha,
+                header_radii,
+                IcedSinks {
+                    above: &mut |elem| deferred_header.push(elem),
+                    below: Some(&mut |elem| deferred_below.push(elem)),
+                    overlay: Some(&mut |elem| push_above(elem.into())),
+                },
+            );
+        }
+
         // Also `squares_every_corner` rather than `is_maximized`: a window held
         // clear of the screen edges has corners to draw a border around, and the
         // border element is what carries `radii` — without it a rounded
@@ -1796,25 +1827,13 @@ impl CosmicWindow {
             );
         });
 
-        if has_ssd && !is_embedded && render_steps.last() == Some(&WindowRenderStep::Header) {
-            // Conventional SSD bars keep their original position behind the
-            // client elements; only Halo deliberately overlaps the client.
-            let mut header_radii = radii;
-            header_radii[0] = 0;
-            header_radii[2] = 0;
-            let ssd_loc = location
-                + self
-                    .0
-                    .with_program(|p| p.window.geometry().loc.to_physical_precise_round(scale));
-            self.0.push_render_elements(
-                renderer,
-                ssd_loc,
-                scale,
-                alpha,
-                header_radii,
-                &mut |elem| push_above(elem.into()),
-                Some(&mut |elem| push_below(elem.into())),
-            );
+        // Conventional SSD bars keep their original position behind the
+        // client elements; only Halo deliberately overlaps the client.
+        for elem in deferred_header {
+            push_above(elem.into());
+        }
+        for elem in deferred_below {
+            push_below(elem.into());
         }
     }
 
@@ -3239,11 +3258,28 @@ mod tests {
         assert_eq!(
             window_render_steps(false),
             [
+                WindowRenderStep::HeaderTooltips,
                 WindowRenderStep::Border,
                 WindowRenderStep::Client,
                 WindowRenderStep::Header,
             ]
         );
+    }
+
+    /// Drawn behind the client, a bar's title tooltip was hidden but for its top edge,
+    /// which tinted the bar's bottom divider with the wallpaper.
+    #[test]
+    fn header_tooltips_draw_in_front_of_the_client() {
+        for halo in [true, false] {
+            let steps = window_render_steps(halo);
+            let at = |step| steps.iter().position(|s| *s == step);
+            let tooltips = at(WindowRenderStep::HeaderTooltips)
+                .or(halo.then(|| at(WindowRenderStep::Header)).flatten());
+            assert!(
+                tooltips < at(WindowRenderStep::Client) && tooltips.is_some(),
+                "halo={halo}: {steps:?}"
+            );
+        }
     }
 
     #[test]
