@@ -158,7 +158,7 @@ impl Surface {
     }
 
     /// Keep outgoing labels/rasters separate from a replacement tooltip, just
-    /// like agentos-panel's closing tooltip surfaces. No widget fade is used.
+    /// like kora-panel's closing tooltip surfaces. No widget fade is used.
     pub fn sync(&mut self, theme: &CompTheme, now: IcedInstant) {
         if self.active.as_ref().is_some_and(|tip| {
             self.report

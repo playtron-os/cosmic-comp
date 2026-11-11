@@ -99,7 +99,7 @@ mod tests {
     fn other_units_name_no_app() {
         let launched = |unit: &str| of_cgroup(&cgroup(unit));
         assert_eq!(launched("run-p10360-i53821.scope"), None);
-        assert_eq!(launched("agentos-panel.service"), None);
+        assert_eq!(launched("kora-panel.service"), None);
         assert_eq!(launched("app-graphical.slice"), None);
         // An unescaped dash leaves the parts ambiguous.
         assert_eq!(launched("app-kora-google-chrome-1f2e.scope"), None);

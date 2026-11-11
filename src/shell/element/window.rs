@@ -592,7 +592,7 @@ fn find_desktop_override(app_id: &str) -> Option<DesktopOverride> {
 /// Strip an `X-Playtron-<key>=` / `X-Cosmic-<key>=` prefix, returning the value.
 ///
 /// `X-Playtron-*` is the AgentOS shells' vocabulary — the namespace
-/// `agentos-panel` and `agentos-launcher` already read `X-Playtron-IconStyle` /
+/// `kora-panel` and `kora-launcher` already read `X-Playtron-IconStyle` /
 /// `X-Playtron-IconColor` from — and is what new entries should use.
 /// `X-Cosmic-*` stays accepted for the entries already shipping it.
 fn strip_override_key<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -791,7 +791,7 @@ impl CosmicWindowInternal {
         // corners that sit in a SCREEN corner. That used to be all four
         // unconditionally, on the assumption that maximized means edge-to-edge.
         // It no longer does: a maximized window is laid out into the output's
-        // NON-EXCLUSIVE zone, so anything reserving a margin (agentos-panel holds
+        // NON-EXCLUSIVE zone, so anything reserving a margin (kora-panel holds
         // 10px on three edges; the bar reserves the bottom) leaves it inset, with
         // nothing to square against.
         if is_maximized || self.fills_output_zone.load(Ordering::Acquire) {

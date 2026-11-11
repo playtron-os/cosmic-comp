@@ -69,11 +69,11 @@ tasks:
     env:
       RUST_LOG: |-
         {{- if eq .LOG_LEVEL "trace" }}
-        error,agentos_panel=trace,icetron=trace
+        error,kora_panel=trace,icetron=trace
         {{- else if eq .LOG_LEVEL "debug" }}
-        error,agentos_panel=debug,icetron=debug
+        error,kora_panel=debug,icetron=debug
         {{- else }}
-        error,agentos_panel=info
+        error,kora_panel=info
         {{- end }}
     cmds:
       - ./target/{{.TARGET_ARCH}}/debug/{{.NAME}}

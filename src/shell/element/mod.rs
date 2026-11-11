@@ -55,7 +55,7 @@ use std::{
 /// Which of an output's four edges a window's geometry actually touches.
 ///
 /// A maximized window is laid out into the output's NON-EXCLUSIVE zone, so once
-/// something reserves a margin (agentos-panel holds 10px on the top, left and
+/// something reserves a margin (kora-panel holds 10px on the top, left and
 /// right, and the bar itself reserves the bottom) a "maximized" window no longer
 /// reaches the screen edge. Corners that do not reach it have nothing to square
 /// against, and should stay rounded.
@@ -1912,7 +1912,7 @@ mod output_edges_tests {
 
     #[test]
     fn a_window_inset_on_every_side_keeps_every_corner() {
-        // What agentos-panel's spacers produce: 10px reserved on the top, left
+        // What kora-panel's spacers produce: 10px reserved on the top, left
         // and right, and the bar's own zone at the bottom. The window is still
         // maximized — it just no longer touches the screen.
         let inset = rect(10, 10, 1900, 1008);

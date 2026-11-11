@@ -9452,7 +9452,7 @@ impl Shell {
         //     UNLESS it opted into `Fade`. Needs a real exclusive zone to push.
         //   - Fade + rise (the DEFAULT, formerly gated to the popover/modal
         //     namespaces): every other surface fades in with a subtle upward
-        //     slide + scale — the agentos-panel popover open animation. We hold
+        //     slide + scale — the kora-panel popover open animation. We hold
         //     it in `pending_layer_opens` (alpha 0) until the first buffer commit,
         //     then start the real `LayerOpen` in `activate_pending_fade_in`, and
         //     register it in `rise_surfaces` so the hide path plays the matching

@@ -174,14 +174,14 @@ const INPUT_PENDING_CAP: usize = 512;
 const LATENCY_CAP: usize = 2000;
 
 /// Process-name prefixes considered "UI" for the memory section. Matches the
-/// compositor itself plus the HumainOS / AgentOS / icetron application suite.
+/// compositor itself plus the HumainOS / Kora / AgentOS / icetron application suite.
 const UI_APP_PREFIXES: &[&str] = &[
     "cosmic-comp",
     "cosmic-",
     "agentos-",
+    "kora-",
     "humainos-",
     "icetron",
-    "kora-sync",
     "nexus",
 ];
 

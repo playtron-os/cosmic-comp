@@ -46,8 +46,8 @@ static WORKSPACES_INSTALLED: LazyLock<bool> =
     LazyLock::new(|| is_binary_installed("cosmic-workspaces"));
 
 static SETTINGS_BINARY: LazyLock<&'static str> = LazyLock::new(|| {
-    if is_binary_installed("agentos-settings") {
-        "agentos-settings"
+    if is_binary_installed("kora-settings") {
+        "kora-settings"
     } else {
         "cosmic-settings"
     }
@@ -58,7 +58,7 @@ pub fn workspaces_enabled() -> bool {
     *WORKSPACES_INSTALLED
 }
 
-/// Returns the system settings binary to launch, preferring `agentos-settings`
+/// Returns the system settings binary to launch, preferring `kora-settings`
 /// over `cosmic-settings` when it is installed.
 pub fn settings_binary() -> &'static str {
     *SETTINGS_BINARY
