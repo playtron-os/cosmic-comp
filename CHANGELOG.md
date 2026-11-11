@@ -1,3 +1,19 @@
+# [1.69.0](https://github.com/kora-desktop/cosmic-comp/compare/v1.68.0...v1.69.0) (2026-11-11)
+
+
+### Bug Fixes
+
+* **game-mode:** keep the capture shortcuts and preview over games ([ae07030](https://github.com/kora-desktop/cosmic-comp/commit/ae07030cdd9247a3118e3dfdfdcfead8c2564e9d))
+* **header:** draw the bar's tooltips in front of the client ([4b1b756](https://github.com/kora-desktop/cosmic-comp/commit/4b1b75631169f4d495886c9016ffc99b13280868))
+* **header:** keep the desktop out of the integrated header's divider ([9f953b1](https://github.com/kora-desktop/cosmic-comp/commit/9f953b1f4b56a4e565dd7f8bf78075617a63ff58))
+* launch kora-settings and count kora-* apps as UI ([7febda2](https://github.com/kora-desktop/cosmic-comp/commit/7febda2a66d9be6c866bd37a59dda037fc4118fa))
+* **shell:** refit fullscreen windows when the output's scale changes ([e939f0a](https://github.com/kora-desktop/cosmic-comp/commit/e939f0aa95ff889c300bcf52ece650915473cf5e))
+
+
+### Features
+
+* **capture:** keep capture exclusion from sandboxed clients ([6b9cb58](https://github.com/kora-desktop/cosmic-comp/commit/6b9cb58e257c99bbaefa926a771b40982f037579))
+
 # [1.68.0](https://github.com/playtron-os/cosmic-comp/compare/v1.67.0...v1.68.0) (2026-11-10)
 
 
