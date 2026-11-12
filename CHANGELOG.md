@@ -1,3 +1,10 @@
+## [1.69.2](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.1...v1.69.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **dbus:** move to the inc.kora namespace ([2624424](https://github.com/kora-desktop/cosmic-comp/commit/2624424f32230ef01a6d45d0461e437fb7319d9e))
+
 ## [1.69.1](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.0...v1.69.1) (2026-11-11)
 
 
