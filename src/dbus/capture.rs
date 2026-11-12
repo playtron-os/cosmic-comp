@@ -1,4 +1,4 @@
-//! The recorder behind the halo's Record: `one.playtron.CaptureEngine1`, served by
+//! The recorder behind the halo's Record: `inc.kora.CaptureEngine1`, served by
 //! kora-capture-engine and started on demand by the bus, through its client crate.
 
 use std::collections::HashMap;

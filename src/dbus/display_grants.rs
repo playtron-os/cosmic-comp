@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 use crate::display_grants::{Answer, Ask, Question, Table};
 use crate::state::State;
 
-const DEST: &str = "one.playtron.Workspaces1";
+const DEST: &str = "inc.kora.Workspaces1";
 
 pub fn init(handle: &LoopHandle<'static, State>, executor: &ThreadPool) {
     if !super::workspaces::enabled() {

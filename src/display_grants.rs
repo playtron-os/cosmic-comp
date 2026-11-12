@@ -46,9 +46,9 @@ use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::state::{ClientState, State};
 
 /// The sandbox engine the registry tags an app's socket with.
-pub const APP_ENGINE: &str = "one.playtron.Workspaces.App";
+pub const APP_ENGINE: &str = "inc.kora.Workspaces.App";
 /// The sandbox engine the registry tags an agent's socket with.
-pub const AGENT_ENGINE: &str = "one.playtron.Workspaces.Agent";
+pub const AGENT_ENGINE: &str = "inc.kora.Workspaces.Agent";
 
 /// Where what the grants hold, ask and refuse is logged: on at info by default, since a held or
 /// refused request otherwise leaves no trace in a release build.
@@ -877,7 +877,7 @@ mod tests {
         );
         // An engine from a newer registry is another sandbox until this compositor knows it.
         assert_eq!(
-            Subject::tagged(Some("one.playtron.Workspaces.Service"), Some("x")),
+            Subject::tagged(Some("inc.kora.Workspaces.Service"), Some("x")),
             None
         );
     }

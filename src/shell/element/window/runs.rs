@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! What each window is doing, from the machine's `one.playtron.Runs1` feed.
+//! What each window is doing, from the machine's `inc.kora.Runs1` feed.
 //!
 //! One reduction decides it, after the prototype's `halo-run.ts`, so the
 //! chip and the glyph dot can never disagree: running outranks queued,

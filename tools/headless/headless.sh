@@ -45,7 +45,7 @@ Environment for `up`:
   CC_CLEAR    desktop colour, #RRGGBB (default: #2a2a2e)
   CC_DATA_DIRS extra XDG data dirs (desktop entries, icons) for the compositor and clients
   CC_BUS_SERVICE  shell command started on the private bus before the compositor (e.g. a
-              stand-in one.playtron.Workspaces1 registry when run inside a Kora workspace)
+              stand-in inc.kora.Workspaces1 registry when run inside a Kora workspace)
   TMPDIR      parent of the short-lived runtime dir (socket paths must stay short)
 
 Environment for `run`:

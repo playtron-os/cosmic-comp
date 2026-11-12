@@ -1,6 +1,6 @@
 # Review policy
 
-Preserve existing `one.playtron.GameMode` signatures. New controls must be additive,
+Preserve existing `inc.kora.GameMode` signatures. New controls must be additive,
 authorized through the same caller checks, and safe for a client on an older compositor.
 
 Confirmed consumers:

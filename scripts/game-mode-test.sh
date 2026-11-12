@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# game-mode-test.sh — drive cosmic-comp's `one.playtron.GameMode` D-Bus
+# game-mode-test.sh — drive cosmic-comp's `inc.kora.GameMode` D-Bus
 # interface for manual testing of native game mode, plus `xprop` helpers to tag
 # XWayland windows with the Steam atoms cosmic-comp reads.
 #
@@ -23,9 +23,9 @@
 
 set -uo pipefail
 
-SVC="one.playtron.GameMode"
-OBJ="/one/playtron/GameMode"
-IFACE="one.playtron.GameMode"
+SVC="inc.kora.GameMode"
+OBJ="/inc/kora/GameMode"
+IFACE="inc.kora.GameMode"
 BUSCTL=(busctl --user)
 
 _call() { "${BUSCTL[@]}" call "$SVC" "$OBJ" "$IFACE" "$@"; }
@@ -67,7 +67,7 @@ _verify_atom() { xprop -id "$1" "$2" 2>/dev/null || echo "  (could not read $2 o
 
 usage() {
   cat <<'EOF'
-game-mode-test.sh — test cosmic-comp game mode (one.playtron.GameMode)
+game-mode-test.sh — test cosmic-comp game mode (inc.kora.GameMode)
 
 STATE
   status                  Dump every property (Active, FocusedAppId, caps, ...)

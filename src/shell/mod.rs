@@ -433,7 +433,7 @@ pub enum EdgeIndicator {
 /// Native exclusive gaming-mode state.
 ///
 /// Entered when a game-mode client enters game mode for an app over the
-/// `one.playtron.GameMode` D-Bus interface (see [`crate::dbus::game_mode`]). Game
+/// `inc.kora.GameMode` D-Bus interface (see [`crate::dbus::game_mode`]). Game
 /// mode makes the game an exclusive fullscreen surface — which on its own turns
 /// on cosmic-comp's fullscreen fast path (direct scanout + VRR) — and minimizes
 /// everything else, giving the macOS-style "the desktop clears and the game takes
@@ -559,7 +559,7 @@ pub struct Shell {
 
     /// The workspace on screen, as the registry named it.
     ///
-    /// Owned by the workspace registry (`one.playtron.Workspaces1`), not here:
+    /// Owned by the workspace registry (`inc.kora.Workspaces1`), not here:
     /// the compositor is a consumer that learns about switches from
     /// `ActiveChanged`. `None` means no registry workspace is active right now.
     /// It is distinct from `active_realm`, which is a map key and is never empty.
@@ -607,16 +607,16 @@ pub struct Shell {
     pub game_mode: GameMode,
     pub game_processes: Vec<std::sync::Arc<crate::dbus::game_mode::RegisteredGameProcess>>,
     /// Whether tearing (immediate/async page flips) is permitted while in game
-    /// mode. Driven by the `one.playtron.GameMode` `SetTearing` D-Bus call; kept
+    /// mode. Driven by the `inc.kora.GameMode` `SetTearing` D-Bus call; kept
     /// on `Shell` (not `GameMode`) so it persists across game-mode enter/exit.
     pub tearing_allowed: bool,
     /// Game-mode frame-rate cap (0 = uncapped). Read by the KMS surface thread
     /// for the output showing the fullscreen game, which caps its presentation
-    /// rate. Driven by `one.playtron.GameMode.SetFpsLimit`.
+    /// rate. Driven by `inc.kora.GameMode.SetFpsLimit`.
     pub game_mode_fps_limit: u32,
     /// Game-mode VRR policy. Read by the KMS surface thread to override the
     /// output's adaptive-sync setting while a game is fullscreen. Driven by
-    /// `one.playtron.GameMode.SetVrr`.
+    /// `inc.kora.GameMode.SetVrr`.
     pub game_mode_vrr: crate::dbus::game_mode::VrrMode,
     /// Live recent frame time (ns) of the output showing the fullscreen game,
     /// written each frame by the KMS surface thread. Shares its `Arc` with the

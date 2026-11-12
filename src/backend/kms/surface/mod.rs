@@ -1600,7 +1600,7 @@ impl SurfaceThreadState {
             vrr = has_active_fullscreen;
         }
 
-        // Game-mode VRR policy (one.playtron.GameMode SetVrr) overrides the
+        // Game-mode VRR policy (inc.kora.GameMode SetVrr) overrides the
         // output's adaptive-sync setting while a game is fullscreen — gated on
         // the fullscreen surface so a stale policy never leaks onto the desktop.
         if game_mode_active && has_active_fullscreen {

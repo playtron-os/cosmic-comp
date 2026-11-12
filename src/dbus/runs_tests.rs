@@ -86,7 +86,7 @@ impl StandIn {
     }
 }
 
-#[zbus::interface(name = "one.playtron.Runs1")]
+#[zbus::interface(name = "inc.kora.Runs1")]
 impl StandIn {
     fn list(&self) -> (u64, Vec<Fields>) {
         let (generation, rows) = &*self.0.lock().unwrap();
