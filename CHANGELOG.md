@@ -1,3 +1,18 @@
+# [2.0.0](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.2...v2.0.0) (2026-11-12)
+
+
+### Bug Fixes
+
+* **appid:** move app ids to inc.kora ([e20e860](https://github.com/kora-desktop/cosmic-comp/commit/e20e860e86ae470d6ebc7c0e95589d922de93ccc))
+* **dbus:** mark the inc.kora D-Bus move as breaking ([3af13ad](https://github.com/kora-desktop/cosmic-comp/commit/3af13ad1857bf7aa8557b1800ea93da5a116cb8c))
+
+
+### BREAKING CHANGES
+
+* **dbus:** D-Bus names moved from one.playtron to inc.kora
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+
 ## [1.69.2](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.1...v1.69.2) (2026-11-12)
 
 
