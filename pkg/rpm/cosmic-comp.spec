@@ -48,15 +48,15 @@ install -Dm0644 "usr/share/kora-workspaces/session-bus.policy.d/50-cosmic-comp.p
 # keys the tarball holds, rather than one line each: this list went stale when
 # `chat_app_id` was dropped, failing packaging instead of the build that
 # removed it. The Taskfile and Makefile stage the same directory the same way.
-install -dm0755 "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1"
-install -m0644 usr/share/cosmic/com.playtron.VoiceMode/v1/* "%{buildroot}%{_datadir}/cosmic/com.playtron.VoiceMode/v1/"
+install -dm0755 "%{buildroot}%{_datadir}/cosmic/inc.kora.VoiceMode/v1"
+install -m0644 usr/share/cosmic/inc.kora.VoiceMode/v1/* "%{buildroot}%{_datadir}/cosmic/inc.kora.VoiceMode/v1/"
 
 %files
 %license %{_datadir}/licenses/cosmic-comp/LICENSE
 %{_bindir}/cosmic-comp
 %{_datadir}/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults
 %{_datadir}/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults
-%{_datadir}/cosmic/com.playtron.VoiceMode/
+%{_datadir}/cosmic/inc.kora.VoiceMode/
 %{_datadir}/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy
 
 %changelog

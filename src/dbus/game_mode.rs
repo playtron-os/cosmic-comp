@@ -100,12 +100,13 @@ pub struct RenderSizeRequest {
 /// window has no `STEAM_GAME` atom. This keeps `FocusedAppId == LAUNCHER_APP_ID`
 /// working for a native-Wayland launcher (which can't carry `STEAM_GAME`).
 /// Add the launcher's `app_id` here if it ships under a different one.
-const LAUNCHER_APP_IDS: &[&str] = &["one.playtron.grid", "grid"];
+/// The `one.playtron.*` ids stay until every image ships the grid with its new id.
+const LAUNCHER_APP_IDS: &[&str] = &["inc.kora.grid", "one.playtron.grid", "grid"];
 
 /// The launcher's quick-access menu in a window of its own: shown over the
 /// game at the output's right edge, rather than the launcher's whole window
 /// blended over it.
-const QUICK_ACCESS_APP_IDS: &[&str] = &["one.playtron.grid.qam"];
+const QUICK_ACCESS_APP_IDS: &[&str] = &["inc.kora.grid.qam", "one.playtron.grid.qam"];
 /// How long game mode waits for a replacement once the game's window is gone,
 /// before giving the screen back to the launcher or the desktop.
 const REPLACEMENT_WAIT: Duration = Duration::from_secs(8);

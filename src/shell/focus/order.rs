@@ -1159,7 +1159,7 @@ mod tests {
     fn a_captures_preview_is_an_indicator() {
         assert!(indicator_namespace("osd"));
         assert!(indicator_namespace("osd-capture"));
-        for other in ["", "notifications", "agentos-notifications-capture", "osdx"] {
+        for other in ["", "notifications", "kora-notifications-capture", "osdx"] {
             assert!(!indicator_namespace(other), "{other}");
         }
     }

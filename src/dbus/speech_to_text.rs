@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn releasing_the_key_finishes() {
         let (mut speech, mut queue) = speech();
-        speech.start(&ctrl_space(), "one.playtron.Mail".into());
+        speech.start(&ctrl_space(), "inc.kora.Mail".into());
         let outcome = speech.key(false, true, Keysym::space, &ctrl(true));
         assert_eq!(outcome, KeyOutcome::Pass);
         assert!(!speech.is_holding());
@@ -301,7 +301,7 @@ mod tests {
             [
                 Hold::Started {
                     session: 1,
-                    app_id: "one.playtron.Mail".into()
+                    app_id: "inc.kora.Mail".into()
                 },
                 Hold::Finished(1)
             ]
@@ -383,7 +383,7 @@ mod tests {
     fn without_a_host_the_key_passes_through() {
         let (mut speech, mut queue) = without_host();
         assert!(speech.passes_through(&shortcuts::Action::SpeechToText));
-        speech.start(&ctrl_space(), "one.playtron.Mail".into());
+        speech.start(&ctrl_space(), "inc.kora.Mail".into());
         assert!(!speech.is_holding());
         assert!(sent(&mut queue).is_empty());
     }
@@ -450,10 +450,10 @@ mod tests {
     #[test]
     fn a_hold_over_a_claimed_app_goes_to_it_alone() {
         let (mut speech, mut queue) = speech();
-        speech.claims.add("one.playtron.Game", ":1.7");
-        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        speech.claims.add("inc.kora.Game", ":1.7");
+        speech.start(&ctrl_space(), "inc.kora.Game".into());
         speech.key(false, true, Keysym::space, &ctrl(true));
-        speech.start(&ctrl_space(), "one.playtron.Mail".into());
+        speech.start(&ctrl_space(), "inc.kora.Mail".into());
         speech.key(true, false, Keysym::Escape, &ctrl(true));
         let step = |hold, inline| Step { hold, inline };
         let started = |session, app_id: &str| Hold::Started {
@@ -463,9 +463,9 @@ mod tests {
         assert_eq!(
             steps(&mut queue),
             [
-                step(started(1, "one.playtron.Game"), true),
+                step(started(1, "inc.kora.Game"), true),
                 step(Hold::Finished(1), true),
-                step(started(2, "one.playtron.Mail"), false),
+                step(started(2, "inc.kora.Mail"), false),
                 step(Hold::Cancelled(2), false),
             ]
         );
@@ -475,8 +475,8 @@ mod tests {
     #[test]
     fn a_claimed_hold_is_cancelled_inline_when_the_host_goes() {
         let (mut speech, mut queue) = speech();
-        speech.claims.add("one.playtron.Game", ":1.7");
-        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        speech.claims.add("inc.kora.Game", ":1.7");
+        speech.start(&ctrl_space(), "inc.kora.Game".into());
         speech.set_host(false);
         let inline: Vec<bool> = steps(&mut queue).iter().map(|s| s.inline).collect();
         assert_eq!(inline, [true, true]);
@@ -486,9 +486,9 @@ mod tests {
     #[test]
     fn without_a_host_a_claimed_app_still_gets_the_key() {
         let (mut speech, mut queue) = without_host();
-        speech.claims.add("one.playtron.Game", ":1.7");
+        speech.claims.add("inc.kora.Game", ":1.7");
         assert!(speech.passes_through(&shortcuts::Action::SpeechToText));
-        speech.start(&ctrl_space(), "one.playtron.Game".into());
+        speech.start(&ctrl_space(), "inc.kora.Game".into());
         assert!(!speech.is_holding());
         assert!(sent(&mut queue).is_empty());
     }

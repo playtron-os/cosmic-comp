@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use smithay::input::keyboard::{Keysym, ModifiersState};
 
 /// Configuration ID for voice mode settings
-pub const VOICE_CONFIG_ID: &str = "com.playtron.VoiceMode";
+pub const VOICE_CONFIG_ID: &str = "inc.kora.VoiceMode";
+/// The component's name before the app-id move; its saved settings move to [`VOICE_CONFIG_ID`].
+pub const LEGACY_VOICE_CONFIG_ID: &str = "com.playtron.VoiceMode";
 pub const VOICE_CONFIG_VERSION: u64 = 1;
 
 /// Voice mode key binding configuration
@@ -169,10 +171,67 @@ impl CosmicConfigEntry for VoiceConfig {
     }
 }
 
+/// What `move_legacy_config` did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LegacyMove {
+    /// There was no old directory.
+    Nothing,
+    /// The old directory became the new one.
+    Moved,
+    /// The new directory exists already, so it stays and the old one is left in place.
+    Kept,
+    /// The rename failed; the old directory is still the one in use.
+    Failed,
+}
+
+/// Move the saved settings from the old component name to the new one, once. `root` is the
+/// directory holding every component's folder (`~/.config/cosmic`). A rename is atomic, and
+/// nothing is removed if it fails.
+pub fn move_legacy_config(root: &std::path::Path) -> LegacyMove {
+    let (old, new) = (
+        root.join(LEGACY_VOICE_CONFIG_ID),
+        root.join(VOICE_CONFIG_ID),
+    );
+    if !old.exists() {
+        return LegacyMove::Nothing;
+    }
+    if new.exists() {
+        tracing::info!(
+            "voice config: {} exists, leaving {} in place",
+            new.display(),
+            old.display()
+        );
+        return LegacyMove::Kept;
+    }
+    match std::fs::rename(&old, &new) {
+        Ok(()) => LegacyMove::Moved,
+        Err(e) => {
+            tracing::warn!(
+                "voice config: could not move {} to {}: {e}",
+                old.display(),
+                new.display()
+            );
+            LegacyMove::Failed
+        }
+    }
+}
+
+/// The component name to use: the new one once the old settings have moved (or there were none),
+/// the old one if they could not move.
+fn voice_config_id() -> &'static str {
+    static ID: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    ID.get_or_init(|| match dirs::config_dir() {
+        Some(dir) if move_legacy_config(&dir.join("cosmic")) == LegacyMove::Failed => {
+            LEGACY_VOICE_CONFIG_ID
+        }
+        _ => VOICE_CONFIG_ID,
+    })
+}
+
 impl VoiceConfig {
     /// Load voice configuration from cosmic-config
     pub fn load() -> Self {
-        let config = Config::new(VOICE_CONFIG_ID, VOICE_CONFIG_VERSION)
+        let config = Config::new(voice_config_id(), VOICE_CONFIG_VERSION)
             .expect("Failed to create voice config");
 
         match Self::get_entry(&config) {
@@ -188,7 +247,7 @@ impl VoiceConfig {
 
     /// Create a cosmic-config context for watching changes
     pub fn context() -> Result<Config, cosmic_config::Error> {
-        Config::new(VOICE_CONFIG_ID, VOICE_CONFIG_VERSION)
+        Config::new(voice_config_id(), VOICE_CONFIG_VERSION)
     }
 
     /// Check if a keysym and modifiers match any configured voice binding
@@ -412,5 +471,70 @@ mod tests {
             ..Default::default()
         };
         assert!(mods.matches(&smithay_mods));
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("voice-move-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn saved(root: &std::path::Path, id: &str, value: &str) {
+        let dir = root.join(id).join("v1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("enabled"), value).unwrap();
+    }
+
+    fn read(root: &std::path::Path, id: &str) -> Option<String> {
+        std::fs::read_to_string(root.join(id).join("v1").join("enabled")).ok()
+    }
+
+    #[test]
+    fn saved_settings_move_to_the_new_name_once() {
+        let root = scratch("old-only");
+        saved(&root, LEGACY_VOICE_CONFIG_ID, "false");
+        assert_eq!(move_legacy_config(&root), LegacyMove::Moved);
+        assert_eq!(read(&root, VOICE_CONFIG_ID).as_deref(), Some("false"));
+        assert!(!root.join(LEGACY_VOICE_CONFIG_ID).exists());
+        assert_eq!(
+            move_legacy_config(&root),
+            LegacyMove::Nothing,
+            "a second run changes nothing"
+        );
+        assert_eq!(read(&root, VOICE_CONFIG_ID).as_deref(), Some("false"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_the_new_name_is_left_alone() {
+        let root = scratch("new-only");
+        saved(&root, VOICE_CONFIG_ID, "true");
+        assert_eq!(move_legacy_config(&root), LegacyMove::Nothing);
+        assert_eq!(read(&root, VOICE_CONFIG_ID).as_deref(), Some("true"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn both_names_keep_the_new_and_leave_the_old() {
+        let root = scratch("both");
+        saved(&root, LEGACY_VOICE_CONFIG_ID, "false");
+        saved(&root, VOICE_CONFIG_ID, "true");
+        assert_eq!(move_legacy_config(&root), LegacyMove::Kept);
+        assert_eq!(read(&root, VOICE_CONFIG_ID).as_deref(), Some("true"));
+        assert_eq!(
+            read(&root, LEGACY_VOICE_CONFIG_ID).as_deref(),
+            Some("false")
+        );
+        assert_eq!(move_legacy_config(&root), LegacyMove::Kept, "and again");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn nothing_saved_moves_nothing() {
+        let root = scratch("empty");
+        assert_eq!(move_legacy_config(&root), LegacyMove::Nothing);
+        assert!(!root.join(VOICE_CONFIG_ID).exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

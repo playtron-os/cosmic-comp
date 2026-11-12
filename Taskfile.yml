@@ -92,7 +92,7 @@ tasks:
       - >-
         for f in data/voice-mode/*; do
         sudo install -Dm0644 "$f"
-        "{{.DESTDIR}}{{.PREFIX}}/share/cosmic/com.playtron.VoiceMode/v1/$(basename "$f")";
+        "{{.DESTDIR}}{{.PREFIX}}/share/cosmic/inc.kora.VoiceMode/v1/$(basename "$f")";
         done
       - sudo install -Dm0644 data/kora-workspaces/50-cosmic-comp.policy
         {{.DESTDIR}}{{.PREFIX}}/share/kora-workspaces/session-bus.policy.d/50-cosmic-comp.policy
@@ -195,7 +195,7 @@ tasks:
       - >-
         for f in data/voice-mode/*; do
         install -Dm0644 "$f"
-        ".cache/{{.NAME}}/usr/share/cosmic/com.playtron.VoiceMode/v1/$(basename "$f")";
+        ".cache/{{.NAME}}/usr/share/cosmic/inc.kora.VoiceMode/v1/$(basename "$f")";
         done
       - mkdir -p dist
 

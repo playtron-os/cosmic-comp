@@ -33,7 +33,7 @@ SUBST = sed -e 's|@bindir@|$(bindir)|g' -e 's|@systemctl@|$(SYSTEMCTL)|g'
 
 KEYBINDINGS_CONF="$(DESTDIR)$(sharedir)/cosmic/com.system76.CosmicSettings.Shortcuts/v1/defaults"
 TILING_EXCEPTIONS_CONF="$(DESTDIR)$(sharedir)/cosmic/com.system76.CosmicSettings.WindowRules/v1/tiling_exception_defaults"
-VOICE_MODE_DIR="$(DESTDIR)$(sharedir)/cosmic/com.playtron.VoiceMode/v1/defaults"
+VOICE_MODE_DIR="$(DESTDIR)$(sharedir)/cosmic/inc.kora.VoiceMode/v1/defaults"
 
 all: extract-vendor
 	cargo build $(ARGS)
@@ -71,7 +71,7 @@ uninstall-voice-mode:
 	rm -rf "$(VOICE_MODE_DIR)"
 
 # Local user config targets (for development)
-LOCAL_VOICE_MODE_DIR = $(HOME)/.config/cosmic/com.playtron.VoiceMode/v1
+LOCAL_VOICE_MODE_DIR = $(HOME)/.config/cosmic/inc.kora.VoiceMode/v1
 
 install-voice-mode-local:
 	mkdir -p "$(LOCAL_VOICE_MODE_DIR)"
